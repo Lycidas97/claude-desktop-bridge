@@ -5,20 +5,23 @@ import {
   visibleSessionForks,
 } from "./conversation-timeline.js";
 import {
-  collapseProjects,
-  expandAllProjects,
+  CLAUDE_UNSECTIONED_PROJECT_ID,
+  DEFAULT_CONFIGURATION_SESSION_ID,
   expandProject,
   getSessionAncestorIds,
   groupProjectSessionFamilies,
   moveProject,
   orderProjects,
-  previewProjectSessionFamilies,
-  previewProjectSessions,
   sortProjectSessionsByRecent,
   toggleCollapsedProject,
 } from "./project-groups.js";
 
 describe("project group collapse state", () => {
+  it("exports canonical sentinel IDs for unsectioned projects and default configuration", () => {
+    expect(CLAUDE_UNSECTIONED_PROJECT_ID).toBe("claude-unsectioned");
+    expect(DEFAULT_CONFIGURATION_SESSION_ID).toBe("__default__");
+  });
+
   it("collapses and expands projects independently", () => {
     const first = toggleCollapsedProject(new Set<string>(), "project-a");
     const second = toggleCollapsedProject(first, "project-b");
@@ -34,12 +37,7 @@ describe("project group collapse state", () => {
     expect(expandProject(collapsed, "project-c")).toBe(collapsed);
   });
 
-  it("collapses and expands every visible project in one action", () => {
-    expect([...collapseProjects(["project-a", "project-b"])]).toEqual(["project-a", "project-b"]);
-    expect(expandAllProjects()).toEqual(new Set());
-  });
-
-  it("limits inline group preview to the 3 most recent sessions and reports remaining count", () => {
+  it("sorts project sessions by most recent activity", () => {
     const sessions = [
       { id: "s1", lastActivityAt: 100 },
       { id: "s2", lastActivityAt: 500 },
@@ -48,10 +46,6 @@ describe("project group collapse state", () => {
       { id: "s5", lastActivityAt: 200 },
     ];
 
-    const result = previewProjectSessions(sessions);
-    expect(result.preview.map((item) => item.id)).toEqual(["s2", "s4", "s3"]);
-    expect(result.totalCount).toBe(5);
-    expect(result.hiddenCount).toBe(2);
     expect(sortProjectSessionsByRecent(sessions).map((item) => item.id)).toEqual([
       "s2",
       "s4",
@@ -61,7 +55,7 @@ describe("project group collapse state", () => {
     ]);
   });
 
-  it("nests forked sessions under their primary parent and counts families for preview", () => {
+  it("nests forked sessions under their primary parent", () => {
     const sessions = [
       { sessionId: "main-1", lastActivityAt: 100 },
       { sessionId: "fork-1a", parentSessionId: "main-1", lastActivityAt: 500 },
@@ -80,11 +74,6 @@ describe("project group collapse state", () => {
       { primary: "main-2", forks: [], lastActivityAt: 400 },
       { primary: "orphan-fork", forks: [], lastActivityAt: 200 },
     ]);
-
-    const preview = previewProjectSessionFamilies(sessions, 2);
-    expect(preview.totalCount).toBe(3);
-    expect(preview.hiddenCount).toBe(1);
-    expect(preview.preview.map((f) => f.primary.sessionId)).toEqual(["main-1", "main-2"]);
   });
 
   it("keeps four levels of forks under their direct parents regardless of input order", () => {
@@ -156,24 +145,6 @@ describe("project group collapse state", () => {
     expect(sessions[0]!.lastActivityAt).toBe(100);
   });
 
-  it("counts only roots for previews while retaining their nested branches", () => {
-    const sessions = [
-      { sessionId: "root", lastActivityAt: 100 },
-      { sessionId: "child", parentSessionId: "root", lastActivityAt: 200 },
-      { sessionId: "grandchild", parentSessionId: "child", lastActivityAt: 900 },
-      { sessionId: "root-2", lastActivityAt: 800 },
-      { sessionId: "root-3", lastActivityAt: 700 },
-      { sessionId: "root-4", lastActivityAt: 600 },
-    ];
-    const preview = previewProjectSessionFamilies(sessions);
-
-    expect(preview.totalCount).toBe(4);
-    expect(preview.hiddenCount).toBe(1);
-    expect(preview.preview.map((family) => family.primary.sessionId)).toEqual(["root", "root-2", "root-3"]);
-    expect(preview.preview[0]!.forks[0]!.forks[0]!.primary.sessionId).toBe("grandchild");
-    expect(previewProjectSessionFamilies(sessions, 0)).toEqual({ preview: [], totalCount: 4, hiddenCount: 4 });
-  });
-
   it("finds every available ancestor for selection, activity, and new-fork expansion", () => {
     const sessions = [
       { sessionId: "root", lastActivityAt: 100 },
@@ -240,7 +211,6 @@ describe("session order inside a project", () => {
     expect(families.map((family) => [family.primary.sessionId, family.lastActivityAt])).toEqual([
       ["opened-on-phone", 900], ["replied", 700],
     ]);
-    expect(previewProjectSessionFamilies(sessions, 1, recency).preview[0]!.primary.sessionId).toBe("opened-on-phone");
   });
 });
 

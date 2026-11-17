@@ -188,10 +188,6 @@ function indexClaudeProcesses(processes: Map<number, ProcessRow>, platform: Node
   return { sessions, forks, unassigned };
 }
 
-export function parseWindowsClaudeProcessSessions(stdout: string): Map<string, ActiveClaudeProcess[]> {
-  return indexClaudeProcesses(new Map(parseWindowsProcessRows(stdout).map((row) => [row.pid, row])), "win32").sessions;
-}
-
 async function listProcessSessions(platform = process.platform): Promise<ProcessScan | undefined> {
   if ((platform !== "darwin" && platform !== "win32") || process.env.BRIDGE_DISABLE_PROCESS_SCAN === "1") {
     return undefined;
@@ -293,21 +289,6 @@ async function listActiveSessions(
   return result;
 }
 
-export async function scanClaudeProcesses(
-  paths: ClaudeRuntimePaths,
-  platform = process.platform,
-): Promise<Map<string, ActiveClaudeProcess[]>> {
-  return listActiveSessions(paths.sessions, platform);
-}
-
-export async function scanClaudeSessionProcesses(
-  paths: ClaudeRuntimePaths,
-  sessionId: string,
-  platform = process.platform,
-): Promise<ActiveClaudeProcess[]> {
-  return (await scanClaudeProcesses(paths, platform)).get(sessionId) ?? [];
-}
-
 /** Start of the oldest live process (0 when unknown); undefined when none is alive. */
 export function oldestLiveProcessStart(processes: ActiveClaudeProcess[]): number | undefined {
   const live = processes.filter((candidate) => candidate.processAlive);
@@ -349,9 +330,25 @@ async function hasActiveTask(tasksRoot: string, sessionId: string): Promise<bool
   return false;
 }
 
-export async function scanClaudeCatalog(
+const inFlightCatalogScans = new Map<string, Promise<ClaudeCatalogSnapshot>>();
+
+export function scanClaudeCatalog(
   paths: ClaudeRuntimePaths,
   platform = process.platform,
+): Promise<ClaudeCatalogSnapshot> {
+  const key = JSON.stringify([platform, paths.sessions, paths.tasks, paths.projects, paths.desktopSessions]);
+  const existing = inFlightCatalogScans.get(key);
+  if (existing) return existing;
+  const run = scanClaudeCatalogOnce(paths, platform).finally(() => {
+    if (inFlightCatalogScans.get(key) === run) inFlightCatalogScans.delete(key);
+  });
+  inFlightCatalogScans.set(key, run);
+  return run;
+}
+
+async function scanClaudeCatalogOnce(
+  paths: ClaudeRuntimePaths,
+  platform: NodeJS.Platform,
 ): Promise<ClaudeCatalogSnapshot> {
   diag("catalog.start");
   const [desktopState, activeSessions] = await Promise.all([

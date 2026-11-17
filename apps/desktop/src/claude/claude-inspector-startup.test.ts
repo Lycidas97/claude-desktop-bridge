@@ -1,13 +1,18 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ClaudeInspectorStartup, parseInspectorDesktopProcesses } from "./claude-inspector-startup.js";
+import {
+  ClaudeInspectorStartup,
+  ensureClaudeDeveloperSettingsNonInteractive,
+  parseInspectorDesktopProcesses,
+} from "./claude-inspector-startup.js";
 
 const directories: string[] = [];
 afterEach(async () => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true })));
 });
 async function fixture() {
@@ -135,11 +140,99 @@ describe("one native inspector action per Desktop process start", () => {
   });
 });
 
-it.each(["darwin", "linux", "win32"] as const)("parses macOS PID, launch time, and exact main executable on %s hosts, excluding helpers and other apps", platform => {
+it.each(["darwin", "linux", "win32"] as const)("parses macOS PID, launch time, and exact main executable (including Claude-3p) on %s hosts, excluding helpers and other apps", platform => {
   vi.stubGlobal("process", { ...process, platform });
   expect(parseInspectorDesktopProcesses([
     " 42 Tue Nov 10 11:25:09 2026 /Applications/Claude.app/Contents/MacOS/Claude",
+    " 45 Tue Nov 10 11:25:10 2026 /Applications/Claude-3p.app/Contents/MacOS/Claude",
+    " 46 Tue Nov 10 11:25:11 2026 /Applications/Claude-3p.app/Contents/MacOS/Claude-3p",
     " 43 Tue Nov 10 11:25:09 2026 /Applications/Claude.app/Contents/Frameworks/Claude Helper.app/Contents/MacOS/Claude Helper",
     " 44 Tue Nov 10 11:25:09 2026 /Applications/Other.app/Contents/MacOS/Claude",
-  ].join("\n"))).toEqual([{ pid: 42, identity: "42:Tue Nov 10 11:25:09 2026:/Applications/Claude.app/Contents/MacOS/Claude" }]);
+  ].join("\n"))).toEqual([
+    { pid: 42, identity: "42:Tue Nov 10 11:25:09 2026:/Applications/Claude.app/Contents/MacOS/Claude" },
+    { pid: 45, identity: "45:Tue Nov 10 11:25:10 2026:/Applications/Claude-3p.app/Contents/MacOS/Claude" },
+    { pid: 46, identity: "46:Tue Nov 10 11:25:11 2026:/Applications/Claude-3p.app/Contents/MacOS/Claude-3p" },
+  ]);
+});
+
+describe("explicit user-triggered inspector enablement", () => {
+  it("bypasses single-shot passive record after manual closure, polls waiting -> ready, persists before click, and waits for port 9229", async () => {
+    const f = await fixture();
+    // Simulate prior passive open + manual closure in the same Desktop process.
+    await f.startup.check(true);
+    await f.startup.check(false);
+    expect(f.menu).not.toHaveBeenCalled();
+
+    let menuStage = 0;
+    let listeningChecks = 0;
+    const ensureDeveloperSettings = vi.fn(async () => undefined);
+    f.menu.mockImplementation(async (_pid, press) => {
+      if (press) {
+        // Record must already be persisted as attempted before clicking.
+        const persisted = JSON.parse(await readFile(f.recordPath, "utf8"));
+        expect(persisted["42:first-start"]?.state).toBe("attempted");
+        return "clicked";
+      }
+      menuStage += 1;
+      return menuStage < 3 ? "waiting" : "ready";
+    });
+    const startup = new ClaudeInspectorStartup({
+      ...f.options,
+      ensureDeveloperSettings,
+      sleep: async () => undefined,
+      explicitMenuAttempts: 5,
+      explicitPortAttempts: 5,
+    });
+    const result = await startup.enableExplicit(async () => {
+      listeningChecks += 1;
+      // First check (initial), then 2 checks after click before port opens on the 3rd post-click check.
+      return listeningChecks >= 4;
+    });
+    expect(ensureDeveloperSettings).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({ state: "attempted" });
+    expect(f.menu.mock.calls.filter(([, press]) => !press)).toHaveLength(3);
+    expect(f.menu.mock.calls.filter(([, press]) => press)).toHaveLength(1);
+  });
+
+  it("reports accessibility-required orカスタム URL bypass cleanly without pressing OS menus", async () => {
+    const f = await fixture();
+    await f.startup.check(true);
+    const accessibility = vi.fn(() => ({ trusted: false, applicationPath: "/Applications/Bridge.app" }));
+    const untrusted = new ClaudeInspectorStartup({
+      ...f.options,
+      accessibility,
+      sleep: async () => undefined,
+    });
+    const blocked = await untrusted.enableExplicit(async () => false);
+    expect(blocked).toEqual({
+      state: "accessibility-required",
+      detail: expect.stringContaining("/Applications/Bridge.app"),
+    });
+    expect(f.menu).not.toHaveBeenCalled();
+
+    vi.stubEnv("BRIDGE_CLAUDE_INSPECTOR_URL", "http://127.0.0.1:19229");
+    const customUrl = await untrusted.enableExplicit(async () => false);
+    expect(customUrl.state).toBe("already-open");
+    expect(f.menu).not.toHaveBeenCalled();
+  });
+
+  it("enables allowDevTools non-destructively across existing Claude and Claude-3p profiles without dialogs", async () => {
+    const home = await mkdtemp(join(tmpdir(), "bridge-devsettings-auto-"));
+    directories.push(home);
+    const claudeDir = join(home, "Library", "Application Support", "Claude");
+    const claude3pDir = join(home, "Library", "Application Support", "Claude-3p");
+    await mkdir(claudeDir, { recursive: true });
+    await mkdir(claude3pDir, { recursive: true });
+    await writeFile(join(claudeDir, "developer_settings.json"), JSON.stringify({ theme: "dark", allowDevTools: false }));
+
+    await ensureClaudeDeveloperSettingsNonInteractive({ platform: "darwin", environment: {}, home });
+
+    expect(JSON.parse(await readFile(join(claudeDir, "developer_settings.json"), "utf8"))).toEqual({
+      theme: "dark",
+      allowDevTools: true,
+    });
+    expect(JSON.parse(await readFile(join(claude3pDir, "developer_settings.json"), "utf8"))).toEqual({
+      allowDevTools: true,
+    });
+  });
 });

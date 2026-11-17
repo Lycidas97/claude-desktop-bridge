@@ -8,6 +8,7 @@ import {
   findClaudeTranscriptFile,
   isNonDagTranscriptRecord,
   isRecord,
+  setBoundedCache,
   textFromContent,
   toolUses,
 } from "./transcript-dag.js";
@@ -88,8 +89,23 @@ const subagentSummaryCache = new Map<string, {
   signature: string;
   summary: BridgeSubagentSummary;
 }>();
+const subagentSummaryInFlight = new Map<string, Promise<BridgeSubagentSummary | undefined>>();
 
-async function parseSingleSubagentFile(
+function parseSingleSubagentFile(
+  jsonlPath: string,
+  liveSince: number | undefined,
+): Promise<BridgeSubagentSummary | undefined> {
+  const flightKey = `${jsonlPath}\0${liveSince ?? "none"}`;
+  const existing = subagentSummaryInFlight.get(flightKey);
+  if (existing) return existing;
+  const run = parseSingleSubagentFileOnce(jsonlPath, liveSince).finally(() => {
+    if (subagentSummaryInFlight.get(flightKey) === run) subagentSummaryInFlight.delete(flightKey);
+  });
+  subagentSummaryInFlight.set(flightKey, run);
+  return run;
+}
+
+async function parseSingleSubagentFileOnce(
   jsonlPath: string,
   liveSince: number | undefined,
 ): Promise<BridgeSubagentSummary | undefined> {
@@ -127,9 +143,12 @@ async function parseSingleSubagentFile(
   let model: string | undefined;
   const structuredOutputIds = new Set<string>();
 
+  let stream: ReturnType<typeof createReadStream> | undefined;
+  let lines: ReturnType<typeof createInterface> | undefined;
   try {
-    const lines = createInterface({
-      input: createReadStream(jsonlPath, { encoding: "utf8" }),
+    stream = createReadStream(jsonlPath, { encoding: "utf8" });
+    lines = createInterface({
+      input: stream,
       crlfDelay: Infinity,
     });
     for await (const line of lines) {
@@ -182,11 +201,15 @@ async function parseSingleSubagentFile(
         // Other results from the same tool batch do not start a new turn.
         else if (!content?.length || content.some((block) => !isRecord(block) || block.type !== "tool_result")) {
           lastStopReason = undefined;
+          handbackReports.length = 0;
         }
       }
     }
   } catch {
     return undefined;
+  } finally {
+    lines?.close();
+    stream?.destroy();
   }
 
   const reportText = handbackReports.join("\n\n---\n\n");
@@ -229,11 +252,7 @@ async function parseSingleSubagentFile(
     ...(workflowRunId ? { workflowRunId } : {}),
     ...(workflowPhase ? { workflowPhase } : {}),
   };
-  if (subagentSummaryCache.size > 2_000) {
-    const oldestKey = subagentSummaryCache.keys().next().value;
-    if (typeof oldestKey === "string") subagentSummaryCache.delete(oldestKey);
-  }
-  subagentSummaryCache.set(jsonlPath, { signature: cacheSignature, summary });
+  setBoundedCache(subagentSummaryCache, jsonlPath, { signature: cacheSignature, summary });
   return summary;
 }
 
@@ -258,8 +277,19 @@ interface ParentTranscriptTasks {
 }
 
 const parentSubagentCache = new Map<string, ParentTranscriptTasks & { signature: string }>();
+const parentSubagentInFlight = new Map<string, Promise<ParentTranscriptTasks>>();
 
-async function parseParentTranscriptSubagents(transcriptPath: string): Promise<ParentTranscriptTasks> {
+function parseParentTranscriptSubagents(transcriptPath: string): Promise<ParentTranscriptTasks> {
+  const existing = parentSubagentInFlight.get(transcriptPath);
+  if (existing) return existing;
+  const run = parseParentTranscriptSubagentsOnce(transcriptPath).finally(() => {
+    if (parentSubagentInFlight.get(transcriptPath) === run) parentSubagentInFlight.delete(transcriptPath);
+  });
+  parentSubagentInFlight.set(transcriptPath, run);
+  return run;
+}
+
+async function parseParentTranscriptSubagentsOnce(transcriptPath: string): Promise<ParentTranscriptTasks> {
   const fileStat = await stat(transcriptPath).catch(() => undefined);
   if (!fileStat) return { summaries: [], launches: [], compactedAt: 0, taskStates: new Map(), excludedTasks: new Set() };
   const cacheSignature = `${fileStat.mtimeMs}:${fileStat.size}`;
@@ -281,19 +311,23 @@ async function parseParentTranscriptSubagents(transcriptPath: string): Promise<P
     description: string;
     startedAt: number;
     updatedAt: number;
+    endedState?: BridgeSubagentSummary["state"];
     reportText?: string;
   }>();
   const toolIdByAgentId = new Map<string, string>();
-  const reportsByAgentId = new Map<string, { text: string; at: number }>();
+  const pendingReportsByAgentId = new Map<string, { text: string; at: number }>();
   const endedByAgentId = new Map<string, BridgeSubagentSummary["state"]>();
   const endedAt = new Map<string, number>();
   const stopRequests = new Map<string, string>();
   const backgroundCalls = new Map<string, { name: "Bash" | "Workflow"; description: string; inherited: boolean }>();
   const launches: Array<Omit<ParentBackgroundLaunch, "state" | "updatedAt"> & { inherited: boolean }> = [];
 
+  let stream: ReturnType<typeof createReadStream> | undefined;
+  let lines: ReturnType<typeof createInterface> | undefined;
   try {
-    const lines = createInterface({
-      input: createReadStream(transcriptPath, { encoding: "utf8" }),
+    stream = createReadStream(transcriptPath, { encoding: "utf8" });
+    lines = createInterface({
+      input: stream,
       crlfDelay: Infinity,
     });
     for await (const line of lines) {
@@ -417,6 +451,13 @@ async function parseParentTranscriptSubagents(transcriptPath: string): Promise<P
               toolIdByAgentId.set(match[1], call.toolUseId);
               // A resumed agent is live again until its next notification.
               endedByAgentId.delete(match[1]);
+              if (!/Async agent launched/iu.test(txt)) {
+                const cleaned = txt.replace(/(?:^|\n+)agentId:\s*[^\n]+(?:\n*<usage>[\s\S]*?<\/usage>)?\s*$/u, "").trim();
+                if (cleaned) {
+                  call.reportText = cleaned;
+                  call.updatedAt = Math.max(call.updatedAt, ts);
+                }
+              }
             } else if (txt && !/Async agent launched/iu.test(txt)) {
               call.reportText = txt;
               call.updatedAt = Math.max(call.updatedAt, ts);
@@ -426,11 +467,34 @@ async function parseParentTranscriptSubagents(transcriptPath: string): Promise<P
         const rawText = textFromContent(message.content);
         if (rawText.trimStart().startsWith("<task-notification>")) {
           const status = /<status>(\w+)<\/status>/u.exec(rawText)?.[1];
+          const taskIds = [...rawText.matchAll(/<task-id>([^<]+)<\/task-id>/gu)].map(match => match[1]!);
           if (status) {
+            const normalizedState: BridgeSubagentSummary["state"] = status === "completed"
+              ? "completed"
+              : status === "failed"
+                ? "failed"
+                : "stopped";
             // One notification can end several tasks.
-            for (const match of rawText.matchAll(/<task-id>([^<]+)<\/task-id>/gu)) {
-              endedByAgentId.set(match[1]!, status === "completed" ? "completed" : status === "failed" ? "failed" : "stopped");
-              endedAt.set(match[1]!, ts);
+            for (const taskId of taskIds) {
+              endedByAgentId.set(taskId, normalizedState);
+              endedAt.set(taskId, ts);
+              const activeToolId = toolIdByAgentId.get(taskId);
+              const activeCall = activeToolId ? callsByToolId.get(activeToolId) : undefined;
+              if (activeCall) {
+                activeCall.endedState = normalizedState;
+                activeCall.updatedAt = Math.max(activeCall.updatedAt, ts);
+              }
+            }
+          }
+          const notificationResult = /<result>([\s\S]*?)<\/result>/u.exec(rawText)?.[1]?.trim();
+          if (notificationResult && taskIds.length === 1) {
+            const activeToolId = toolIdByAgentId.get(taskIds[0]!);
+            const activeCall = activeToolId ? callsByToolId.get(activeToolId) : undefined;
+            if (activeCall) {
+              activeCall.reportText = notificationResult;
+              activeCall.updatedAt = Math.max(activeCall.updatedAt, ts);
+            } else {
+              pendingReportsByAgentId.set(taskIds[0]!, { text: notificationResult, at: ts });
             }
           }
         }
@@ -440,37 +504,43 @@ async function parseParentTranscriptSubagents(transcriptPath: string): Promise<P
           body = body.replace(/^\[Subagent hand-back\][\s\S]*?The report follows:\s*\n?/u, "");
           body = body.split("\n").map((l) => l.replace(/^ {2}/u, "")).join("\n").trim();
           if (body) {
-            reportsByAgentId.set(agentMsgMatch[1], { text: body, at: ts });
+            const activeToolId = toolIdByAgentId.get(agentMsgMatch[1]);
+            const activeCall = activeToolId ? callsByToolId.get(activeToolId) : undefined;
+            if (activeCall) {
+              activeCall.reportText = body;
+              activeCall.updatedAt = Math.max(activeCall.updatedAt, ts);
+            } else {
+              pendingReportsByAgentId.set(agentMsgMatch[1], { text: body, at: ts });
+            }
           }
         }
       }
     }
   } catch {
     return { summaries: [], launches: [], compactedAt: 0, taskStates: new Map(), excludedTasks };
+  } finally {
+    lines?.close();
+    stream?.destroy();
   }
 
   const results: BridgeSubagentSummary[] = [];
   for (const call of callsByToolId.values()) {
     const agentId = call.agentId ?? call.toolUseId;
-    const report = call.agentId ? reportsByAgentId.get(call.agentId) : undefined;
-    const reportText = report?.text ?? call.reportText;
-    const updatedAt = Math.max(call.updatedAt, report?.at ?? 0);
+    const pendingReport = !call.reportText && call.agentId ? pendingReportsByAgentId.get(call.agentId) : undefined;
+    const reportText = call.reportText ?? pendingReport?.text;
+    const updatedAt = Math.max(call.updatedAt, pendingReport?.at ?? 0);
     results.push({
       agentId,
       toolUseId: call.toolUseId,
       ...(call.agentType ? { agentType: call.agentType } : {}),
       description: call.description,
-      state: endedByAgentId.get(agentId) ?? (reportText ? "completed" : call.inherited ? "unknown" : "running"),
+      state: call.endedState ?? (reportText ? "completed" : call.inherited ? "unknown" : "running"),
       toolCount: 0,
       ...(reportText ? { reportText } : {}),
       startedAt: call.startedAt,
       updatedAt,
       durationMs: Math.max(0, updatedAt - call.startedAt),
     });
-  }
-  if (parentSubagentCache.size > 128) {
-    const oldestKey = parentSubagentCache.keys().next().value;
-    if (typeof oldestKey === "string") parentSubagentCache.delete(oldestKey);
   }
   const result: ParentTranscriptTasks = {
     summaries: results,
@@ -485,7 +555,7 @@ async function parseParentTranscriptSubagents(transcriptPath: string): Promise<P
     }),
     compactedAt, taskStates, excludedTasks,
   };
-  parentSubagentCache.set(transcriptPath, { signature: cacheSignature, ...result });
+  setBoundedCache(parentSubagentCache, transcriptPath, { signature: cacheSignature, ...result });
   return result;
 }
 
@@ -513,20 +583,29 @@ export async function readClaudeTranscriptSubagents(
   }
   for (const fileItem of parsedFiles) {
     if (parent.excludedTasks.has(fileItem.agentId) || (fileItem.toolUseId && parent.excludedTasks.has(fileItem.toolUseId))) continue;
-    const key = fileItem.toolUseId
-      ?? parentCalls.find((c) => c.agentId === fileItem.agentId)?.toolUseId
+    const latestParentForAgent = parentCalls.filter((c) => c.agentId === fileItem.agentId).at(-1);
+    const key = latestParentForAgent?.toolUseId
+      ?? fileItem.toolUseId
       ?? fileItem.agentId;
     const existing = byKey.get(key);
     withChildFile.add(key);
-    byKey.set(key, existing
-      ? {
-          ...existing,
-          ...fileItem,
-          state: fileItem.state === "completed" || existing.state === "running" ? fileItem.state : existing.state,
-          ...(fileItem.toolUseId ?? existing.toolUseId ? { toolUseId: fileItem.toolUseId ?? existing.toolUseId } : {}),
-          ...(fileItem.reportText ? { reportText: fileItem.reportText } : existing.reportText ? { reportText: existing.reportText } : {}),
-        }
-      : fileItem);
+    const resolvedToolUseId = latestParentForAgent?.toolUseId ?? fileItem.toolUseId ?? existing?.toolUseId;
+    if (existing) {
+      const mergedStartedAt = Math.max(existing.startedAt, fileItem.startedAt);
+      const mergedUpdatedAt = Math.max(mergedStartedAt, existing.updatedAt, fileItem.updatedAt);
+      byKey.set(key, {
+        ...existing,
+        ...fileItem,
+        startedAt: mergedStartedAt,
+        updatedAt: mergedUpdatedAt,
+        durationMs: Math.max(0, mergedUpdatedAt - mergedStartedAt),
+        state: fileItem.state === "completed" || existing.state === "running" ? fileItem.state : existing.state,
+        ...(resolvedToolUseId ? { toolUseId: resolvedToolUseId } : {}),
+        ...(fileItem.reportText ? { reportText: fileItem.reportText } : existing.reportText ? { reportText: existing.reportText } : {}),
+      });
+    } else {
+      byKey.set(key, fileItem);
+    }
   }
   return [...byKey.entries()]
     .map(([key, subagent]) => {
@@ -562,7 +641,7 @@ async function readCachedWorkflowFile<T>(path: string, parse: (text: string) => 
   } catch {
     return undefined;
   }
-  workflowFileCache.set(path, { signature, value });
+  setBoundedCache(workflowFileCache, path, { signature, value });
   return value;
 }
 

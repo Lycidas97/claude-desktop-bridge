@@ -1,29 +1,35 @@
-import { ChevronRight, Laptop, MoreHorizontal, Plus, ScanLine, Settings2, Trash2 } from "lucide-react";
+import { ChevronRight, MoreHorizontal, Plus, ScanLine, Settings2, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { PairedHost } from "../../hooks/useMobileBridge.js";
 import type { ThemeControl } from "../../hooks/useTheme.js";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
 import { ConfirmationDialog } from "../common/ConfirmationDialog.js";
 import { IconButton } from "../common/IconButton.js";
-import { MobilePageHeader } from "../mobile/MobilePageHeader.js";
 import { Sheet, SheetAction } from "../common/Sheet.js";
+import { MobilePageHeader } from "../mobile/MobilePageHeader.js";
 
 function statusLabel(host: PairedHost): string {
-  if (host.needsRepair) return "需重配";
-  if (host.status === "running") return `${host.activeTurns} 个任务中`;
-  if (host.status === "attention") return "待处理";
+  if (host.needsRepair) return "需重新扫码配对";
+  if (host.status === "running") return `${host.activeTurns} 个任务运行中`;
+  if (host.status === "attention") return "有待处理消息";
   if (host.status === "offline") return "离线";
   return "在线";
 }
 
 function lastSeenLabel(host: PairedHost): string {
-  if (host.needsRepair) return "旧版配对，需要重新扫码";
+  if (host.needsRepair) return "旧版配对已失效";
   if (!host.lastSeenAt) return "已配对";
   const elapsed = Math.max(0, Date.now() - host.lastSeenAt);
   if (elapsed < 60_000) return "刚刚活跃";
   if (elapsed < 3_600_000) return `${Math.floor(elapsed / 60_000)} 分钟前`;
   if (elapsed < 86_400_000) return `${Math.floor(elapsed / 3_600_000)} 小时前`;
   return new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(host.lastSeenAt);
+}
+
+function statusDotClass(host: PairedHost): string {
+  if (host.needsRepair || host.status === "attention") return "m-status-dot waiting";
+  if (host.status === "offline") return "m-status-dot is-offline";
+  return "m-status-dot is-online";
 }
 
 export function HostBrowser({
@@ -92,57 +98,71 @@ export function HostBrowser({
   return (
     <main className="mobile-workspace host-list-workspace">
       <MobilePageHeader
-        title="电脑"
-        subtitle={`${hosts.length} 台电脑已配对`}
-        actions={<IconButton label="添加电脑" onClick={onAdd}><Plus size={22} /></IconButton>}
+        title="已配对电脑"
+        actions={(
+          <button
+            type="button"
+            className="mobile-header-pill-action"
+            aria-label="添加电脑"
+            onClick={onAdd}
+          >
+            <Plus size={14} aria-hidden="true" />
+            <span>扫码</span>
+          </button>
+        )}
       />
 
       <section className="host-browser" aria-label="已配对的电脑">
+        <header className="host-browser-section-head">
+          <span>已授权主机 · {hosts.length}</span>
+        </header>
         <div className="host-rows">
-          {hosts.map((host) => (
-            <div className="host-row-shell" key={host.roomId}>
-              <button
-                type="button"
-                className="host-row"
-                onClick={() => void openHost(host)}
-                disabled={Boolean(openingHostId) || removing}
-              >
-                <span className="host-row-icon"><Laptop size={20} /></span>
-                <span className="host-row-copy">
-                  <strong>{host.desktopName}</strong>
-                  <small>
-                    {openingHostId === host.roomId
-                      ? "正在连接"
-                      : `${host.roomId === activeHostId ? "当前电脑 · " : ""}${lastSeenLabel(host)}`}
-                  </small>
-                </span>
-                <span className={`host-row-state ${host.needsRepair || host.status === "attention" ? "warning" : host.status}`}>
-                  <i />{statusLabel(host)}
-                </span>
-              </button>
-              <IconButton
-                className="host-row-action"
-                label={`${host.desktopName} 的操作`}
-                onClick={() => setMenuHost(host)}
-                disabled={Boolean(openingHostId) || removing}
-              >
-                <MoreHorizontal size={20} />
-              </IconButton>
-              {host.attentionSessionId && !host.needsRepair && (
+          {hosts.map((host) => {
+            const isCurrent = host.roomId === activeHostId;
+            return (
+              <div className={`host-row-shell${isCurrent ? " is-current" : ""}`} key={host.roomId}>
                 <button
                   type="button"
-                  className="host-attention-button"
+                  className="host-row"
+                  onClick={() => void openHost(host)}
                   disabled={Boolean(openingHostId) || removing}
-                  onClick={() => void openHost(host, host.attentionSessionId)}
                 >
-                  查看待处理<ChevronRight size={15} aria-hidden="true" />
+                  <i className={statusDotClass(host)} aria-hidden="true" />
+                  <span className="host-row-copy">
+                    <strong>{host.desktopName}</strong>
+                    <small>
+                      {openingHostId === host.roomId
+                        ? "正在连接…"
+                        : `${isCurrent ? "当前连接 · " : ""}${statusLabel(host)} · ${lastSeenLabel(host)}`}
+                    </small>
+                  </span>
                 </button>
-              )}
-            </div>
-          ))}
+                <IconButton
+                  className="host-row-action"
+                  label={`${host.desktopName} 的操作`}
+                  onClick={() => setMenuHost(host)}
+                  disabled={Boolean(openingHostId) || removing}
+                >
+                  <MoreHorizontal size={18} />
+                </IconButton>
+                {host.attentionSessionId && !host.needsRepair && (
+                  <button
+                    type="button"
+                    className="host-attention-button"
+                    disabled={Boolean(openingHostId) || removing}
+                    onClick={() => void openHost(host, host.attentionSessionId)}
+                  >
+                    查看待处理<ChevronRight size={15} aria-hidden="true" />
+                  </button>
+                )}
+              </div>
+            );
+          })}
         </div>
         {error && <div className="inline-error host-error" role="alert">{error}</div>}
-        <p className="host-browser-hint">点电脑查看它的会话；连接、桌面应用和默认授权在“⋯”中设置。</p>
+        <p className="host-browser-hint">
+          在电脑端打开 Bridge →「设置 → 手机配对与设备」即可展示配对二维码。所有会话流与工具审批均经端到端加密传输。
+        </p>
       </section>
       {menuHost && (
         <Sheet

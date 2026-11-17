@@ -6,16 +6,14 @@ import {
   ClaudeTranscriptEvidenceCursor,
   estimateClaudeContextFromMessages,
   findClaudeTranscriptFile,
-  isClaudeTranscriptAtTurnBoundary,
-  parseClaudeTranscript,
   parseClaudeTranscriptEvidence,
   parseClaudeTranscriptSnapshot,
   readClaudeSessionContextEstimate,
-  readClaudeSessionHistory,
+  readClaudeSessionHistoryPage,
   readClaudeTranscriptSubagents,
-  readClaudeTranscriptUserMessages,
   scanClaudeContextFromMessages,
 } from "./claude-history.js";
+import { setBoundedCache } from "./transcript-dag.js";
 
 const directories: string[] = [];
 
@@ -48,7 +46,7 @@ describe("Claude transcript history", () => {
     ].join("\n"), "utf8");
 
     expect(await findClaudeTranscriptFile(projects, "session-1", "/work/ega-pms")).toBe(transcript);
-    expect(await parseClaudeTranscript(transcript)).toEqual({
+    expect(await parseClaudeTranscriptSnapshot(transcript)).toMatchObject({
       available: true,
       truncated: false,
       messages: [
@@ -63,10 +61,10 @@ describe("Claude transcript history", () => {
   it("reports a missing local transcript without exposing another file", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-claude-history-missing-"));
     directories.push(root);
-    expect(await readClaudeSessionHistory(join(root, "projects"), "../settings", "/work/demo")).toEqual({
-      available: false,
-      messages: [],
-      truncated: false,
+    expect(await readClaudeSessionHistoryPage(join(root, "projects"), "../settings", "/work/demo")).toEqual({
+      sessionId: "../settings",
+      items: [],
+      hasMore: false,
     });
   });
 
@@ -103,16 +101,15 @@ describe("Claude transcript history", () => {
       }),
     ].join("\n"), "utf8");
 
-    await expect(parseClaudeTranscript(transcript)).resolves.toMatchObject({
+    const snapshot = await parseClaudeTranscriptSnapshot(transcript);
+    expect(snapshot).toMatchObject({
       messages: [
         expect.objectContaining({ id: "user-1" }),
         expect.objectContaining({ id: "assistant-1", text: "Working\n\nBridge continued" }),
       ],
     });
-    expect((await parseClaudeTranscript(transcript)).messages.some((message) => (
-      message.id === "desktop-user"
-    ))).toBe(false);
-    await expect(readClaudeTranscriptUserMessages(transcript)).resolves.toEqual([
+    expect(snapshot.messages.some((message) => message.id === "desktop-user")).toBe(false);
+    expect(snapshot.userMessages).toEqual([
       expect.objectContaining({ id: "user-1", text: "Start" }),
       expect.objectContaining({ id: "desktop-user", text: "Desktop input" }),
     ]);
@@ -149,7 +146,7 @@ describe("Claude transcript history", () => {
       }),
     ].join("\n"), "utf8");
 
-    await expect(parseClaudeTranscript(transcript)).resolves.toMatchObject({
+    await expect(parseClaudeTranscriptSnapshot(transcript)).resolves.toMatchObject({
       available: true,
       messages: [
         { id: "user-1", role: "user", text: "继续推进 P2" },
@@ -194,7 +191,7 @@ describe("Claude transcript history", () => {
       }),
     ].join("\n"), "utf8");
 
-    const result = await parseClaudeTranscript(transcript);
+    const result = await parseClaudeTranscriptSnapshot(transcript);
     expect(result.messages).toEqual([
       expect.objectContaining({ id: "user-1", role: "user", text: "先开始工作" }),
       expect.objectContaining({
@@ -204,7 +201,7 @@ describe("Claude transcript history", () => {
       }),
       expect.objectContaining({ id: "user-2", role: "user", text: "继续完成剩余内容" }),
     ]);
-    await expect(readClaudeTranscriptUserMessages(transcript)).resolves.toEqual([
+    expect(result.userMessages).toEqual([
       expect.objectContaining({ id: "user-1", text: "先开始工作" }),
       expect.objectContaining({ id: "user-2", text: "继续完成剩余内容" }),
     ]);
@@ -248,7 +245,7 @@ describe("Claude transcript history", () => {
       line({ type: "assistant", uuid: "assistant-3", parentUuid: "user-3", message: { role: "assistant", content: "第三轮回复" } }),
     ].join("\n"), "utf8");
 
-    const result = await parseClaudeTranscript(transcript);
+    const result = await parseClaudeTranscriptSnapshot(transcript);
     expect(result.messages).toEqual([
       expect.objectContaining({ id: "user-1", role: "user", text: "第一轮需求" }),
       expect.objectContaining({ id: "assistant-1", role: "assistant", text: "第一轮回复" }),
@@ -295,7 +292,7 @@ describe("Claude transcript history", () => {
       }),
     ].join("\n"), "utf8");
 
-    await expect(parseClaudeTranscript(transcript)).resolves.toMatchObject({
+    await expect(parseClaudeTranscriptSnapshot(transcript)).resolves.toMatchObject({
       messages: [
         { id: "user-1", role: "user", text: "继续" },
         { id: "user-2", role: "user", text: "新会话继续" },
@@ -349,10 +346,10 @@ describe("Claude transcript history", () => {
       }),
     ].join("\n"), "utf8");
 
-    await expect(isClaudeTranscriptAtTurnBoundary(completed)).resolves.toBe(true);
-    await expect(isClaudeTranscriptAtTurnBoundary(waiting)).resolves.toBe(false);
-    await expect(isClaudeTranscriptAtTurnBoundary(interrupted)).resolves.toBe(true);
-    await expect(isClaudeTranscriptAtTurnBoundary(toolInterrupted)).resolves.toBe(true);
+    expect((await parseClaudeTranscriptSnapshot(completed, { limit: 1 })).atTurnBoundary).toBe(true);
+    expect((await parseClaudeTranscriptSnapshot(waiting, { limit: 1 })).atTurnBoundary).toBe(false);
+    expect((await parseClaudeTranscriptSnapshot(interrupted, { limit: 1 })).atTurnBoundary).toBe(true);
+    expect((await parseClaudeTranscriptSnapshot(toolInterrupted, { limit: 1 })).atTurnBoundary).toBe(true);
   });
 
   it("preserves long user and assistant messages, including their middle sections", async () => {
@@ -366,11 +363,11 @@ describe("Claude transcript history", () => {
       line({ type: "assistant", uuid: "assistant-large", parentUuid: "user-large", message: { role: "assistant", content: [{ type: "text", text: assistantText }] } }),
     ].join("\n"), "utf8");
 
-    const result = await parseClaudeTranscript(transcript);
+    const result = await parseClaudeTranscriptSnapshot(transcript);
     expect(result.available).toBe(true);
     expect(result.truncated).toBe(false);
     expect(result.messages.map((message) => message.text)).toEqual([userText, assistantText]);
-    expect((await readClaudeTranscriptUserMessages(transcript))[0]?.text).toBe(userText);
+    expect(result.userMessages[0]?.text).toBe(userText);
   });
 
   it("pages a message larger than the history budget without dropping its text or older messages", async () => {
@@ -385,11 +382,11 @@ describe("Claude transcript history", () => {
       line({ type: "assistant", uuid: "long-assistant", parentUuid: "long-user", message: { role: "assistant", content: text } }),
     ].join("\n"), "utf8");
 
-    const newest = await parseClaudeTranscript(transcript);
+    const newest = await parseClaudeTranscriptSnapshot(transcript);
     expect(newest.messages).toHaveLength(1);
     expect(newest.messages[0]?.text).toBe(text);
     expect(newest.nextCursor).toBe("long-assistant");
-    const older = await parseClaudeTranscript(transcript, { beforeCursor: newest.nextCursor! });
+    const older = await parseClaudeTranscriptSnapshot(transcript, { beforeCursor: newest.nextCursor! });
     expect(older.messages.map((message) => message.id)).toEqual(["older-user", "older-assistant", "long-user"]);
     expect(older.truncated).toBe(false);
   });
@@ -401,7 +398,7 @@ describe("Claude transcript history", () => {
     const report = `${"结论".repeat(5_000)}\n回报中间的完整证据\n${"依据".repeat(5_000)}`;
     await writeFile(transcript, [
       line({ type: "assistant", uuid: "call", message: { role: "assistant", content: [{ type: "tool_use", id: "agent-tool", name: "Agent", input: { description: "审查" } }] } }),
-      line({ type: "user", uuid: "result", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "agent-tool", content: report }] } }),
+      line({ type: "user", uuid: "result", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "agent-tool", content: `${report}\n\nagentId: sync-agent (for resuming)\n<usage>total_tokens: 100</usage>` }] } }),
     ].join("\n"), "utf8");
     expect((await readClaudeTranscriptSubagents(transcript))[0]?.reportText).toBe(report);
 
@@ -434,10 +431,10 @@ describe("Claude transcript history", () => {
     }
     await writeFile(transcript, rows.join("\n"), "utf8");
 
-    const newest = await parseClaudeTranscript(transcript, { limit: 4 });
+    const newest = await parseClaudeTranscriptSnapshot(transcript, { limit: 4 });
     expect(newest.messages.map((message) => message.id))
       .toEqual(["message-4", "message-5", "message-6", "message-7"]);
-    const older = await parseClaudeTranscript(transcript, {
+    const older = await parseClaudeTranscriptSnapshot(transcript, {
       limit: 4,
       before: {
         createdAt: newest.messages[0]!.createdAt,
@@ -970,6 +967,35 @@ describe("Claude transcript history", () => {
       expect((await readClaudeTranscriptSubagents(transcript, 0)).filter((agent) => agent.state === "running")).not.toHaveLength(0);
     });
 
+    it("preserves the first call's completed report when the same agentId is asynchronously resumed", async () => {
+      const root = await mkdtemp(join(tmpdir(), "bridge-claude-subagent-resume-report-"));
+      directories.push(root);
+      const transcript = join(root, "session.jsonl");
+      await writeFile(transcript, [
+        line({ type: "assistant", uuid: "c1", timestamp: new Date(10_000).toISOString(), message: { role: "assistant", content: [{ type: "tool_use", id: "toolu_first", name: "Agent", input: { description: "First audit" } }] } }),
+        line({ type: "user", uuid: "r1", parentUuid: "c1", timestamp: new Date(10_001).toISOString(), message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_first", content: "Async agent launched successfully.\nagentId: shared-child" }] } }),
+        line({ type: "user", uuid: "m1", parentUuid: "r1", timestamp: new Date(15_000).toISOString(), message: { role: "user", content: '<agent-message from="shared-child">\n  ## First Audit Complete\n  All 9 checks passed.\n</agent-message>' } }),
+        line({ type: "user", uuid: "n1", parentUuid: "m1", timestamp: new Date(15_001).toISOString(), message: { role: "user", content: "<task-notification>\n<task-id>shared-child</task-id>\n<status>completed</status>\n</task-notification>" } }),
+        line({ type: "assistant", uuid: "c2", parentUuid: "n1", timestamp: new Date(20_000).toISOString(), message: { role: "assistant", content: [{ type: "tool_use", id: "toolu_resume", name: "Agent", input: { resume: "shared-child", description: "Second audit" } }] } }),
+        line({ type: "user", uuid: "r2", parentUuid: "c2", timestamp: new Date(20_001).toISOString(), message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_resume", content: "Async agent launched successfully.\nagentId: shared-child" }] } }),
+      ].join("\n") + "\n", "utf8");
+
+      const subagents = await readClaudeTranscriptSubagents(transcript, 0);
+      expect(subagents.find((agent) => agent.toolUseId === "toolu_first")).toMatchObject({
+        agentId: "shared-child",
+        toolUseId: "toolu_first",
+        state: "completed",
+        reportText: "## First Audit Complete\nAll 9 checks passed.",
+      });
+      const resumed = subagents.find((agent) => agent.toolUseId === "toolu_resume");
+      expect(resumed).toMatchObject({
+        agentId: "shared-child",
+        toolUseId: "toolu_resume",
+        state: "running",
+      });
+      expect(resumed?.reportText).toBeUndefined();
+    });
+
     it("ends a subagent when its metadata records it finished", async () => {
       expect(await state(await fixture({ childMeta: { finished: true } }), 0)).toBe("completed");
     });
@@ -1114,7 +1140,7 @@ describe("Claude transcript history", () => {
       }),
     ].join("\n"), "utf8");
 
-    const parsed = await parseClaudeTranscript(transcript);
+    const parsed = await parseClaudeTranscriptSnapshot(transcript);
     expect(parsed.messages).toHaveLength(4);
     expect(parsed.messages[1]).toMatchObject({
       id: "a-closing-1",
@@ -1188,7 +1214,7 @@ describe("Claude transcript history", () => {
       }),
     ].join("\n") + "\n", "utf8");
 
-    const beforeAnswer = await parseClaudeTranscript(transcript);
+    const beforeAnswer = await parseClaudeTranscriptSnapshot(transcript);
     expect(beforeAnswer.messages).toHaveLength(2);
     expect(beforeAnswer.messages[1]).toMatchObject({
       id: "a-question-1",
@@ -1232,7 +1258,7 @@ describe("Claude transcript history", () => {
       }),
     ].join("\n") + "\n", "utf8");
 
-    const afterAnswer = await parseClaudeTranscript(transcript);
+    const afterAnswer = await parseClaudeTranscriptSnapshot(transcript);
     expect(afterAnswer.messages.map((m) => m.id)).toEqual(["u-start", "a-question-1", "a-followup-1"]);
     expect(afterAnswer.messages[1]).toMatchObject({
       id: "a-question-1",
@@ -1299,7 +1325,6 @@ describe("Claude transcript history", () => {
       expect(snapshot).toMatchObject({ atTurnBoundary: true, peerInputs: [{ messageId: "bridge-msg", completed: true }] });
       expect(snapshot.pendingUserMessageId).toBeUndefined();
       expect(await parseClaudeTranscriptSnapshot(transcript)).toEqual(snapshot);
-      expect(await parseClaudeTranscript(transcript)).not.toHaveProperty("peerInputs");
     });
 
     it.each([null, "tool_use", "pause_turn"])("keeps a peer receipt incomplete on assistant stop_reason=%s", async (stopReason) => {
@@ -1642,9 +1667,19 @@ describe("Claude transcript history", () => {
       }),
     ].join("\n"), "utf8");
 
-    await expect(isClaudeTranscriptAtTurnBoundary(transcript)).resolves.toBe(true);
-    const parsed = await parseClaudeTranscript(transcript);
+    const parsed = await parseClaudeTranscriptSnapshot(transcript);
+    expect(parsed.atTurnBoundary).toBe(true);
     expect(parsed.messages.map((m) => m.id)).toEqual(["u-1", "a-1"]);
+  });
+
+  it("evicts oldest entries and refreshes updated keys in setBoundedCache", () => {
+    const cache = new Map<string, number>();
+    setBoundedCache(cache, "a", 1, 3);
+    setBoundedCache(cache, "b", 2, 3);
+    setBoundedCache(cache, "c", 3, 3);
+    setBoundedCache(cache, "a", 10, 3);
+    setBoundedCache(cache, "d", 4, 3);
+    expect([...cache.entries()]).toEqual([["c", 3], ["a", 10], ["d", 4]]);
   });
 
   it("uses single-turn context occupancy, merges split message.id records, and excludes sidechain and synthetic messages", () => {

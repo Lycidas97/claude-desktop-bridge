@@ -5,7 +5,18 @@ const mocks = vi.hoisted(() => ({
   runtimeClose: vi.fn(async () => {}), serverClose: vi.fn(async () => {}),
   spawn: vi.fn(), logOpen: vi.fn(), logClose: vi.fn(async () => {}),
   developerSettings: vi.fn(), memoryInitialize: vi.fn(), memoryClose: vi.fn(),
-  windows: [] as Array<{ loadURL: ReturnType<typeof vi.fn>; show: ReturnType<typeof vi.fn>; webContents: { executeJavaScript: ReturnType<typeof vi.fn> } }>,
+  shouldUseDarkColors: true,
+  windows: [] as Array<{
+    options?: Record<string, unknown> | undefined;
+    loadURL: ReturnType<typeof vi.fn>;
+    show: ReturnType<typeof vi.fn>;
+    setBackgroundColor: ReturnType<typeof vi.fn>;
+    webContents: {
+      emit(event: string, ...args: unknown[]): boolean;
+      executeJavaScript: ReturnType<typeof vi.fn>;
+      setWindowOpenHandler: ReturnType<typeof vi.fn>;
+    };
+  }>,
 }));
 vi.mock("./app/claude-desktop-developer-settings.js", () => ({ claudeDesktopDeveloperSettings: mocks.developerSettings }));
 vi.mock("./app/service-runtime.js", () => ({ createServiceRuntime: mocks.runtime }));
@@ -31,9 +42,10 @@ vi.mock("electron", async () => {
     focus = vi.fn();
     hide = vi.fn();
     removeMenu = vi.fn();
+    setBackgroundColor = vi.fn();
     isDestroyed() { return false; }
     destroy = vi.fn();
-    constructor() { super(); mocks.windows.push(this); }
+    constructor(readonly options?: Record<string, unknown>) { super(); mocks.windows.push(this); }
   }
   class Tray extends EventEmitter {
     setToolTip = vi.fn();
@@ -41,10 +53,12 @@ vi.mock("electron", async () => {
   }
   return {
     app, BrowserWindow, Tray,
-    dialog: { showErrorBox: vi.fn(), showOpenDialog: vi.fn(), showMessageBox: vi.fn() },
+    dialog: { showErrorBox: vi.fn(), showOpenDialog: vi.fn(), showMessageBox: vi.fn(), showSaveDialog: vi.fn() },
     protocol: { registerSchemesAsPrivileged: vi.fn() }, ipcMain: { handle: vi.fn() },
     Menu: { buildFromTemplate: vi.fn(() => ({ getMenuItemById: vi.fn(() => ({ checked: false })) })) },
-    nativeImage: { createFromPath: vi.fn(() => ({ resize: vi.fn(), setTemplateImage: vi.fn() })) }, shell: { openExternal: vi.fn(async () => {}) },
+    nativeImage: { createFromPath: vi.fn(() => ({ resize: vi.fn(), setTemplateImage: vi.fn() })) },
+    nativeTheme: { get shouldUseDarkColors() { return mocks.shouldUseDarkColors; }, themeSource: "system" as "system" | "light" | "dark" },
+    shell: { openExternal: vi.fn(async () => {}) },
     systemPreferences: { isTrustedAccessibilityClient: vi.fn(() => false) },
   };
 });
@@ -338,4 +352,110 @@ it("shows startup before connecting and reports connection errors to the UI", as
   await import("./main.js");
   await vi.waitFor(() => expect(dialog.showErrorBox).toHaveBeenCalled());
   expect(vi.mocked(dialog.showErrorBox).mock.calls[0]?.[1]).toContain("service authentication failed: 401");
+});
+
+it("validates rendererDiagnostics at the IPC boundary, merges service + renderer snapshots, and enforces mode 0600 even when overwriting a 0644 file", async () => {
+  process.argv = originalArgv;
+  const { EventEmitter } = await import("node:events");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const realFs = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+  const { dialog, ipcMain } = await import("electron");
+  const call = vi.fn(async (method: string) => {
+    if (method === "snapshot") return { launchAtLogin: false, sessions: [] };
+    if (method === "diagnostics") {
+      return {
+        bridgeVersion: "1.3.4",
+        stateGauges: { controller: { activeDevices: 1 } },
+      };
+    }
+    throw new Error(`Unexpected method: ${method}`);
+  });
+  mocks.connect.mockResolvedValueOnce(Object.assign(new EventEmitter(), { call, close: vi.fn() }));
+  await import("./main.js");
+  await vi.waitFor(() => expect(ipcMain.handle).toHaveBeenCalledWith("bridge:export-diagnostics", expect.any(Function)));
+  const exportDiag = vi.mocked(ipcMain.handle).mock.calls.find(([channel]) => channel === "bridge:export-diagnostics")![1];
+  const event = { senderFrame: { url: process.env.BRIDGE_DEV_SERVER_URL || "file:///bridge/index.html" } } as Electron.IpcMainInvokeEvent;
+
+  expect(() => exportDiag({ senderFrame: { url: "https://untrusted.invalid" } } as Electron.IpcMainInvokeEvent)).toThrow("Untrusted renderer");
+  for (const invalid of ["string", 42, null, ["array"], new Date()]) {
+    await expect(exportDiag(event, invalid)).rejects.toThrow("rendererDiagnostics must be a plain object");
+  }
+  expect(dialog.showSaveDialog).not.toHaveBeenCalled();
+
+  const openCallsBeforeExport = mocks.logOpen.mock.calls.length;
+  vi.mocked(dialog.showSaveDialog).mockResolvedValueOnce({ canceled: true, filePath: "" });
+  await expect(exportDiag(event, { schemaVersion: 1 })).resolves.toEqual({ saved: false });
+  expect(mocks.logOpen).toHaveBeenCalledTimes(openCallsBeforeExport);
+
+  const tempDir = await realFs.mkdtemp(join(tmpdir(), "bridge-export-diag-"));
+  const targetPath = join(tempDir, "existing-0644-diag.json");
+  await realFs.writeFile(targetPath, '{"stale":true}\n', { encoding: "utf8", mode: 0o644 });
+  if (process.platform !== "win32") {
+    await realFs.chmod(targetPath, 0o644);
+    expect((await realFs.stat(targetPath)).mode & 0o777).toBe(0o644);
+  }
+
+  mocks.logOpen.mockImplementationOnce((path: string, flags: string, mode: number) => realFs.open(path, flags, mode));
+  vi.mocked(dialog.showSaveDialog).mockResolvedValueOnce({ canceled: false, filePath: targetPath });
+  const rendererPayload = {
+    schemaVersion: 1,
+    rendererMemory: { usedJSHeapSize: 1234, totalJSHeapSize: 5678, jsHeapSizeLimit: 9999 },
+    stateGauges: { desktopConversations: { trackedHosts: 1 } },
+  };
+  await expect(exportDiag(event, rendererPayload)).resolves.toEqual({
+    saved: true,
+    path: targetPath,
+  });
+  expect(mocks.logOpen).toHaveBeenLastCalledWith(targetPath, "w", 0o600);
+  if (process.platform !== "win32") {
+    expect((await realFs.stat(targetPath)).mode & 0o777).toBe(0o600);
+  }
+  const written = JSON.parse(await realFs.readFile(targetPath, "utf8"));
+  expect(written).toEqual({
+    bridgeVersion: "1.3.4",
+    stateGauges: { controller: { activeDevices: 1 } },
+    renderer: rendererPayload,
+  });
+});
+
+it("configures macOS hiddenInset titlebar and syncs nativeTheme + backgroundColor with renderer theme-color", async () => {
+  process.argv = originalArgv;
+  Object.defineProperty(process, "platform", { value: "darwin" });
+  const { EventEmitter } = await import("node:events");
+  const { nativeTheme } = await import("electron");
+  mocks.shouldUseDarkColors = true;
+  nativeTheme.themeSource = "system";
+  mocks.connect.mockResolvedValueOnce(Object.assign(new EventEmitter(), {
+    call: vi.fn(async () => ({ launchAtLogin: false, sessions: [] })),
+    close: vi.fn(),
+  }));
+  await import("./main.js");
+  await vi.waitFor(() => expect(mocks.windows.length).toBeGreaterThanOrEqual(2));
+  const mainWin = mocks.windows[1]!;
+  expect(mainWin.options).toMatchObject({
+    backgroundColor: "#191816",
+    titleBarStyle: "hiddenInset",
+    trafficLightPosition: { x: 16, y: 16 },
+  });
+  mainWin.webContents.emit("did-change-theme-color", {}, "#faf9f5");
+  expect(nativeTheme.themeSource).toBe("light");
+  expect(mainWin.setBackgroundColor).toHaveBeenCalledWith("#faf9f5");
+  mainWin.webContents.executeJavaScript.mockResolvedValueOnce("#1c1c1e");
+  mainWin.webContents.emit("did-finish-load");
+  await vi.waitFor(() => expect(nativeTheme.themeSource).toBe("dark"));
+  expect(mainWin.setBackgroundColor).toHaveBeenLastCalledWith("#1c1c1e");
+
+  const { shell } = await import("electron");
+  const openHandler = mainWin.webContents.setWindowOpenHandler.mock.calls[0]?.[0] as
+    | ((details: { url: string }) => { action: string })
+    | undefined;
+  expect(openHandler).toBeTypeOf("function");
+  expect(openHandler!({ url: "https://github.com/Lycidas97/claude-desktop-bridge/releases/tag/v1.3.5" })).toEqual({ action: "deny" });
+  expect(openHandler!({ url: "HTTPS://github.com/Lycidas97/claude-desktop-bridge/releases" })).toEqual({ action: "deny" });
+  expect(openHandler!({ url: "http://insecure.invalid" })).toEqual({ action: "deny" });
+  expect(openHandler!({ url: "file:///etc/passwd" })).toEqual({ action: "deny" });
+  expect(shell.openExternal).toHaveBeenCalledTimes(2);
+  expect(shell.openExternal).toHaveBeenNthCalledWith(1, "https://github.com/Lycidas97/claude-desktop-bridge/releases/tag/v1.3.5");
+  expect(shell.openExternal).toHaveBeenNthCalledWith(2, "HTTPS://github.com/Lycidas97/claude-desktop-bridge/releases");
 });

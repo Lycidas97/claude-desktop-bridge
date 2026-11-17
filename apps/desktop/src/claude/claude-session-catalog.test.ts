@@ -1,10 +1,9 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import { rm, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { parseWindowsClaudeProcessSessions, projectIdForCwd, scanClaudeCatalog, scanClaudeProcesses, scanClaudeSessionProcesses } from "./claude-session-catalog.js";
+import { projectIdForCwd, scanClaudeCatalog } from "./claude-session-catalog.js";
 
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
@@ -30,13 +29,6 @@ function mockProcessTable(stdout: string): void {
   }) as typeof execFile);
 }
 
-function mockProcessRows(platform: "darwin" | "win32", rows: Array<{ pid: number; ppid: number; command: string; start?: string }>): void {
-  mockProcessTable(platform === "win32" ? JSON.stringify(rows.map((row) => ({
-    ProcessId: row.pid, ParentProcessId: row.ppid, Name: "claude.exe", CommandLine: row.command,
-    CreationDate: new Date(Date.parse(`Thu Jan 1 ${row.start ?? "10:00:00"} 2026`)).toISOString(),
-  }))) : rows.map((row) => `${row.pid} ${row.ppid} Thu Jan 1 ${row.start ?? "10:00:00"} 2026 ${row.command}`).join("\n"));
-}
-
 afterEach(async () => {
   for (const child of children.splice(0)) child.kill("SIGTERM");
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
@@ -44,117 +36,6 @@ afterEach(async () => {
 });
 
 describe("Claude session process catalog", () => {
-  it.each(["darwin", "win32"] as const)("binds a registered initialize-time session without ID flags on %s", async (platform) => {
-    const root = await mkdtemp(join(tmpdir(), "bridge-process-initialize-"));
-    directories.push(root);
-    const paths = { sessions: join(root, "sessions"), tasks: join(root, "tasks"), projects: join(root, "projects"), desktopSessions: [] };
-    const sessionId = "11111111-1111-4111-8111-111111111111";
-    const startedAt = Date.parse("Thu Jan 1 10:00:00 2026");
-    await mkdir(paths.sessions);
-    await writeFile(join(paths.sessions, "700.json"), JSON.stringify({ pid: 700, sessionId, cwd: root, startedAt: startedAt + 456, entrypoint: "claude-desktop-3p", peerProtocol: 1 }));
-    mockProcessRows(platform, [{ pid: 700, ppid: 1, command: "claude --input-format stream-json --output-format stream-json --await-initialize" }]);
-    expect((await scanClaudeProcesses(paths, platform)).get(sessionId)).toEqual([
-      expect.objectContaining({ pid: 700, processAlive: true, source: "process", entrypoint: "claude-desktop-3p", startedAt, registeredAt: startedAt + 456, peerProtocol: 1 }),
-    ]);
-  });
-
-  it.each(["darwin", "win32"] as const)("does not invent an initialize-time session without a registration on %s", async (platform) => {
-    const root = await mkdtemp(join(tmpdir(), "bridge-process-unregistered-initialize-"));
-    directories.push(root);
-    mockProcessRows(platform, [{ pid: 700, ppid: 1, command: "claude --input-format stream-json --output-format stream-json --await-initialize" }]);
-    expect((await scanClaudeProcesses({ sessions: join(root, "sessions"), tasks: join(root, "tasks"), projects: join(root, "projects"), desktopSessions: [] }, platform)).size).toBe(0);
-  });
-
-  it.each([
-    { platform: "darwin" as const, scenario: "reused PID" }, { platform: "win32" as const, scenario: "reused PID" },
-    { platform: "darwin" as const, scenario: "unrelated process" }, { platform: "win32" as const, scenario: "unrelated process" },
-    { platform: "darwin" as const, scenario: "another session" }, { platform: "win32" as const, scenario: "another session" },
-  ])("rejects an initialize-time registration for $scenario on $platform", async ({ platform, scenario }) => {
-    const root = await mkdtemp(join(tmpdir(), "bridge-process-initialize-identity-"));
-    directories.push(root);
-    const paths = { sessions: join(root, "sessions"), tasks: join(root, "tasks"), projects: join(root, "projects"), desktopSessions: [] };
-    const sessionId = "11111111-1111-4111-8111-111111111111";
-    await mkdir(paths.sessions);
-    await writeFile(join(paths.sessions, "700.json"), JSON.stringify({ pid: 700, sessionId, cwd: root, startedAt: Date.parse("Thu Jan 1 10:00:00 2026") + 456, entrypoint: "claude-desktop-3p", peerProtocol: 1, messagingSocketPath: join(root, "stale.sock") }));
-    mockProcessRows(platform, [{ pid: 700, ppid: 1, start: scenario === "reused PID" ? "10:01:00" : "10:00:00", command: scenario === "unrelated process" ? "node unrelated-worker.js" : `claude --input-format stream-json --output-format stream-json ${scenario === "another session" ? "--session-id 22222222-2222-4222-8222-222222222222" : "--await-initialize"}` }]);
-    const sessions = await scanClaudeProcesses(paths, platform);
-    expect(sessions.get(sessionId)?.filter(process => process.processAlive)).toEqual([]);
-    for (const process of [...sessions.values()].flat().filter(process => process.processAlive)) {
-      expect(process).not.toHaveProperty("messagingSocketPath");
-      expect(process).not.toHaveProperty("peerProtocol");
-    }
-  });
-
-  it.each(["darwin", "win32"] as const)("binds a verified fork executor to its registered child on %s", async (platform) => {
-    const root = await mkdtemp(join(tmpdir(), "bridge-process-fork-"));
-    directories.push(root);
-    const paths = { sessions: join(root, "sessions"), tasks: join(root, "tasks"), projects: join(root, "projects"), desktopSessions: [] };
-    const parent = "11111111-1111-4111-8111-111111111111", child = "22222222-2222-4222-8222-222222222222";
-    const startedAt = Date.parse("Thu Jan 1 10:00:00 2026"), messagingSocketPath = join(root, "child.sock");
-    await mkdir(paths.sessions);
-    await writeFile(join(paths.sessions, "700.json"), JSON.stringify({ pid: 700, sessionId: child, cwd: root, startedAt: startedAt + 456, entrypoint: "claude-desktop-3p", peerProtocol: 1, messagingSocketPath }));
-    mockProcessRows(platform, [{ pid: 700, ppid: 1, command: `claude --input-format stream-json --output-format stream-json --resume ${parent} --fork-session` }]);
-
-    const sessions = await scanClaudeProcesses(paths, platform);
-    expect(sessions.get(child)).toEqual([expect.objectContaining({ pid: 700, processAlive: true, source: "process", entrypoint: "claude-desktop-3p", cwd: root, startedAt, registeredAt: startedAt + 456, peerProtocol: 1, messagingSocketPath })]);
-    expect(sessions.get(parent)).toBeUndefined();
-  });
-
-  it.each(["darwin", "win32"] as const)("does not attribute an unregistered fork to its resumed parent on %s", async (platform) => {
-    const root = await mkdtemp(join(tmpdir(), "bridge-process-unregistered-fork-"));
-    directories.push(root);
-    const parent = "11111111-1111-4111-8111-111111111111";
-    mockProcessRows(platform, [{ pid: 700, ppid: 1, command: `claude --input-format stream-json --output-format stream-json --resume=${parent} --fork-session` }]);
-    expect((await scanClaudeProcesses({ sessions: join(root, "sessions"), tasks: join(root, "tasks"), projects: join(root, "projects"), desktopSessions: [] }, platform)).get(parent)).toBeUndefined();
-  });
-
-  it.each([
-    { platform: "darwin" as const, explicitFirst: false }, { platform: "darwin" as const, explicitFirst: true },
-    { platform: "win32" as const, explicitFirst: false }, { platform: "win32" as const, explicitFirst: true },
-  ])("prefers an explicit fork session ID on $platform with explicitFirst=$explicitFirst", async ({ platform, explicitFirst }) => {
-    const root = await mkdtemp(join(tmpdir(), "bridge-process-explicit-fork-"));
-    directories.push(root);
-    const parent = "11111111-1111-4111-8111-111111111111", child = "22222222-2222-4222-8222-222222222222";
-    const flags = explicitFirst ? `--session-id ${child} --resume ${parent} --fork-session` : `--resume ${parent} --fork-session --session-id ${child}`;
-    mockProcessRows(platform, [{ pid: 700, ppid: 1, command: `claude --input-format stream-json --output-format stream-json ${flags}` }]);
-    const sessions = await scanClaudeProcesses({ sessions: join(root, "sessions"), tasks: join(root, "tasks"), projects: join(root, "projects"), desktopSessions: [] }, platform);
-    expect(sessions.get(child)).toEqual([expect.objectContaining({ pid: 700, processAlive: true })]);
-    expect(sessions.get(parent)).toBeUndefined();
-  });
-
-  it.each([
-    { platform: "darwin" as const, scenario: "reused PID" }, { platform: "win32" as const, scenario: "reused PID" },
-    { platform: "darwin" as const, scenario: "stale parent registration" }, { platform: "win32" as const, scenario: "stale parent registration" },
-    { platform: "darwin" as const, scenario: "different non-fork session" }, { platform: "win32" as const, scenario: "different non-fork session" },
-  ])("rejects fork identity transfer for $scenario on $platform", async ({ platform, scenario }) => {
-    const root = await mkdtemp(join(tmpdir(), "bridge-process-fork-identity-"));
-    directories.push(root);
-    const paths = { sessions: join(root, "sessions"), tasks: join(root, "tasks"), projects: join(root, "projects"), desktopSessions: [] };
-    const parent = "11111111-1111-4111-8111-111111111111", child = "22222222-2222-4222-8222-222222222222";
-    const sessionId = scenario === "stale parent registration" ? parent : child;
-    const messagingSocketPath = join(root, "stale.sock");
-    await mkdir(paths.sessions);
-    await writeFile(join(paths.sessions, "700.json"), JSON.stringify({ pid: 700, sessionId, cwd: root, startedAt: Date.parse("Thu Jan 1 10:00:00 2026") + 456, entrypoint: "claude-desktop-3p", peerProtocol: 1, messagingSocketPath }));
-    mockProcessRows(platform, [{ pid: 700, ppid: 1, start: scenario === "reused PID" ? "10:01:00" : "10:00:00", command: `claude --input-format stream-json --output-format stream-json --resume ${parent}${scenario === "different non-fork session" ? "" : " --fork-session"}` }]);
-    const sessions = await scanClaudeProcesses(paths, platform);
-    expect(sessions.get(sessionId)?.filter((process) => process.processAlive)).toEqual([]);
-    for (const process of [...sessions.values()].flat().filter((process) => process.processAlive)) expect(process).not.toHaveProperty("messagingSocketPath");
-    if (scenario !== "different non-fork session") expect(sessions.get(parent)?.filter((process) => process.processAlive) ?? []).toEqual([]);
-  });
-
-  it.each(["darwin", "win32"] as const)("keeps the real parent and two verified fork executors separate on %s", async (platform) => {
-    const root = await mkdtemp(join(tmpdir(), "bridge-process-fork-siblings-"));
-    directories.push(root);
-    const paths = { sessions: join(root, "sessions"), tasks: join(root, "tasks"), projects: join(root, "projects"), desktopSessions: [] };
-    const parent = "11111111-1111-4111-8111-111111111111", children = ["22222222-2222-4222-8222-222222222222", "33333333-3333-4333-8333-333333333333"];
-    await mkdir(paths.sessions);
-    for (const [index, sessionId] of children.entries()) await writeFile(join(paths.sessions, `${700 + index}.json`), JSON.stringify({ pid: 700 + index, sessionId, cwd: root, startedAt: Date.parse("Thu Jan 1 10:00:00 2026") + 456, entrypoint: "claude-desktop-3p", peerProtocol: 1, messagingSocketPath: join(root, `${index}.sock`) }));
-    mockProcessRows(platform, [{ pid: 600, ppid: 1, command: `claude --input-format stream-json --output-format stream-json --session-id ${parent}` }, ...children.map((_, index) => ({ pid: 700 + index, ppid: 1, command: `claude --input-format stream-json --output-format stream-json --resume ${parent} --fork-session` }))]);
-    const sessions = await scanClaudeProcesses(paths, platform);
-    expect(sessions.get(parent)?.map((process) => process.pid)).toEqual([600]);
-    for (const [index, child] of children.entries()) expect(sessions.get(child)).toEqual([expect.objectContaining({ pid: 700 + index, processAlive: true, entrypoint: "claude-desktop-3p" })]);
-  });
-
   it.each(["claude-bridge", "claude-desktop-3p"])("restores verified %s registration after its executor is reparented", async (entrypoint) => {
     const root = await mkdtemp(join(tmpdir(), "bridge-process-orphan-"));
     directories.push(root);
@@ -222,124 +103,32 @@ describe("Claude session process catalog", () => {
     }
   });
 
-  it("keeps macOS start precision and a verified registration timestamp separately", async () => {
-    const root = await mkdtemp(join(tmpdir(), "bridge-process-precision-"));
-    directories.push(root);
-    const paths = { sessions: join(root, "sessions"), tasks: join(root, "tasks"), projects: join(root, "projects"), desktopSessions: [] };
-    const sessionId = "99999999-9999-4999-8999-999999999999";
-    const startedAt = Date.parse("Thu Jan 1 10:00:00 2026");
-    await mkdir(paths.sessions);
-    await writeFile(join(paths.sessions, "executor.json"), JSON.stringify({
-      pid: process.pid, sessionId, cwd: root, startedAt: startedAt + 456, entrypoint: "claude-desktop-3p",
-    }));
-    mockProcessTable(`${process.pid} 1 Thu Jan 1 10:00:00 2026 claude --input-format stream-json --output-format stream-json --session-id ${sessionId}\n`);
-
-    expect(await scanClaudeSessionProcesses(paths, sessionId, "darwin")).toEqual([
-      expect.objectContaining({ startedAt, startedAtResolutionMs: 1_000, registeredAt: startedAt + 456 }),
-    ]);
-  });
-
-  it("reads Windows CreationDate and retains unknown start times explicitly", () => {
-    const sessionId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-    const command = `claude.exe --input-format stream-json --output-format stream-json --session-id ${sessionId}`;
-    expect(parseWindowsClaudeProcessSessions(JSON.stringify([
-      { ProcessId: 500, ParentProcessId: 1, Name: "claude.exe", CommandLine: command, CreationDate: "2026-01-01T10:00:00.123Z" },
-      { ProcessId: 501, ParentProcessId: 1, Name: "claude.exe", CommandLine: command },
-    ])).get(sessionId)).toEqual([
-      expect.objectContaining({ pid: 500, startedAt: Date.parse("2026-01-01T10:00:00.123Z"), startedAtResolutionMs: 1 }),
-      expect.objectContaining({ pid: 501, startedAt: 0 }),
-    ]);
-  });
-
-  it("scans all Windows session identities once and binds a verified orphan registration", async () => {
+  it("scans Windows session identities once and preserves Desktop ancestry", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-process-batch-"));
     directories.push(root);
     const paths = { sessions: join(root, "sessions"), tasks: join(root, "tasks"), projects: join(root, "projects"), desktopSessions: [] };
     const sessionId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
-    const otherSessionId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
     const startedAt = Date.parse("2026-01-01T10:00:00.123Z");
     await mkdir(paths.sessions);
     await writeFile(join(paths.sessions, "windows-orphan.json"), JSON.stringify({
-      pid: 500, sessionId, cwd: root, startedAt: startedAt + 50, entrypoint: "claude-bridge", peerProtocol: "agent-sdk",
+      pid: 500, sessionId, cwd: root, startedAt: startedAt + 50, entrypoint: "claude-desktop-3p", peerProtocol: "agent-sdk",
     }));
     mockProcessTable(JSON.stringify([
-      { ProcessId: 500, ParentProcessId: 1, Name: "claude.exe", CommandLine: `claude.exe --input-format stream-json --output-format stream-json --session-id ${sessionId}`, CreationDate: "2026-01-01T10:00:00.123Z" },
-      { ProcessId: 501, ParentProcessId: 1, Name: "claude.exe", CommandLine: `claude.exe --input-format stream-json --output-format stream-json --session-id ${otherSessionId}`, CreationDate: "2026-01-01T10:00:01.456Z" },
+      { ProcessId: 500, ParentProcessId: 400, Name: "claude.exe", CommandLine: `claude.exe --input-format stream-json --output-format stream-json --session-id ${sessionId}`, CreationDate: "2026-01-01T10:00:00.123Z" },
+      { ProcessId: 400, ParentProcessId: 1, Name: "Claude.exe", CommandLine: "C:\\Users\\me\\AppData\\Local\\Programs\\Claude\\Claude.exe" },
     ]));
-    const callsBefore = vi.mocked(execFile).mock.calls.length;
 
-    const sessions = await scanClaudeProcesses(paths, "win32");
-    expect(sessions.size).toBe(2);
-    expect(sessions.get(sessionId)).toEqual([expect.objectContaining({ pid: 500, startedAt, startedAtResolutionMs: 1, registeredAt: startedAt + 50, entrypoint: "claude-bridge", cwd: root })]);
-    expect(sessions.get(otherSessionId)).toEqual([expect.objectContaining({ pid: 501, startedAt: startedAt + 1_333, startedAtResolutionMs: 1, entrypoint: "unknown" })]);
-    expect(vi.mocked(execFile).mock.calls).toHaveLength(callsBefore + 1);
-    expect(vi.mocked(execFile).mock.lastCall?.[1]).toEqual(expect.arrayContaining([expect.stringContaining("CreationDate")]));
-  });
-
-  it.skipIf(process.platform !== "darwin").each([false, true])("reads the actual macOS executor start time with registration present=%s", async (registered) => {
-    const root = await mkdtemp(join(tmpdir(), "bridge-process-start-"));
-    directories.push(root);
-    // scanClaudeSessionProcesses reads the real host process table; a fixed id collides with concurrent worktree runs.
-    const sessionId = randomUUID();
-    const before = Date.now() - 1_000;
-    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", "--", "--input-format", "stream-json", "--output-format", "stream-json", "--session-id", sessionId]);
-    children.push(child);
-    await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
-    const sessions = join(root, "sessions");
-    await mkdir(sessions);
-    if (registered) await writeFile(join(sessions, "executor.json"), JSON.stringify({ pid: child.pid, sessionId, cwd: root, startedAt: 1, entrypoint: "claude-desktop-3p" }));
-    const processes = await scanClaudeSessionProcesses({ sessions, tasks: join(root, "tasks"), projects: join(root, "projects"), desktopSessions: [] }, sessionId, "darwin");
-    const live = processes.filter((candidate) => candidate.processAlive);
-    expect(live).toHaveLength(1);
-    expect(live[0]?.startedAt).toBeGreaterThanOrEqual(before);
-    expect(live[0]?.startedAt).toBeLessThanOrEqual(Date.now());
-    expect(live[0]?.startedAtResolutionMs).toBe(1_000);
-    if (registered) expect(processes.find((candidate) => candidate.source === "registration")?.processAlive).toBe(false);
+    const catalog = await scanClaudeCatalog(paths, "win32");
+    expect(catalog.sessions[0]).toMatchObject({
+      sessionId,
+      desktopProcessAlive: true,
+      activeProcesses: [expect.objectContaining({ pid: 500, startedAt, startedAtResolutionMs: 1, registeredAt: startedAt + 50, entrypoint: "claude-desktop-3p" })],
+    });
   });
 
   it("treats Windows path casing as the same project", () => {
     expect(projectIdForCwd("C:\\Work\\Bridge", "win32"))
       .toBe(projectIdForCwd("c:\\work\\bridge", "win32"));
-  });
-
-  it("discovers Windows Claude Code writers and preserves their Desktop ancestry", () => {
-    const sessionId = "33333333-3333-4333-8333-333333333333";
-    const output = JSON.stringify([
-      {
-        ProcessId: 500,
-        ParentProcessId: 400,
-        Name: "claude.exe",
-        CommandLine: `claude.exe --output-format stream-json --input-format stream-json --session-id ${sessionId}`,
-      },
-      {
-        ProcessId: 400,
-        ParentProcessId: 1,
-        Name: "Claude.exe",
-        CommandLine: "C:\\Users\\me\\AppData\\Local\\Programs\\Claude\\Claude.exe",
-      },
-    ]);
-
-    expect(parseWindowsClaudeProcessSessions(output).get(sessionId)).toEqual([
-      expect.objectContaining({
-        pid: 500,
-        entrypoint: "claude-desktop-3p",
-        processAlive: true,
-      }),
-    ]);
-  });
-
-  it("accepts quoted Windows session arguments emitted by process inspection", () => {
-    const sessionId = "44444444-4444-4444-8444-444444444444";
-    const output = JSON.stringify([{
-      ProcessId: 501,
-      ParentProcessId: 1,
-      Name: "claude.exe",
-      CommandLine: `claude.exe --output-format=\"stream-json\" --input-format=\"stream-json\" --resume=\"${sessionId}\"`,
-    }]);
-
-    expect(parseWindowsClaudeProcessSessions(output).get(sessionId)).toEqual([
-      expect.objectContaining({ pid: 501, entrypoint: "unknown" }),
-    ]);
   });
 
   it("retains every live process registered for the same session without calling overlap a write conflict", async () => {
@@ -546,5 +335,73 @@ describe("Claude session process catalog", () => {
       archivedIdxId,
       archivedBtwChildId,
     ]));
+  });
+
+  it("coalesces concurrent catalog scans for the same runtime paths while keeping sequential scans fresh", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-catalog-coalesce-"));
+    directories.push(root);
+    const paths = {
+      sessions: join(root, "sessions"),
+      tasks: join(root, "tasks"),
+      projects: join(root, "projects"),
+      desktopSessions: [join(root, "desktop")],
+    };
+    const sessionId = "99999999-9999-4999-8999-999999999999";
+    const startedAt = Date.parse("Thu Jan 1 10:00:00 2026");
+    await Promise.all([mkdir(paths.sessions), mkdir(paths.desktopSessions[0]!)]);
+    await Promise.all([
+      writeFile(join(paths.sessions, "live.json"), JSON.stringify({
+        pid: process.pid,
+        sessionId,
+        cwd: root,
+        startedAt: startedAt + 100,
+        entrypoint: "claude-desktop-3p",
+      })),
+      writeFile(join(paths.desktopSessions[0]!, "local_live.json"), JSON.stringify({
+        sessionId: "local_live",
+        cliSessionId: sessionId,
+        cwd: root,
+        lastFocusedAt: 10,
+      })),
+    ]);
+
+    const psLine = `${process.pid} 1 Thu Jan 1 10:00:00 2026 claude --input-format stream-json --output-format stream-json --session-id ${sessionId}\n`;
+    const pendingPs: Array<() => void> = [];
+    let psCalls = 0;
+    let currentPsOutput = psLine;
+    const actualChildProcess = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+    vi.mocked(execFile).mockImplementation(((...args: unknown[]) => {
+      psCalls += 1;
+      const output = currentPsOutput;
+      const done = args.at(-1) as (error: null, stdout: string, stderr: string) => void;
+      pendingPs.push(() => done(null, output, ""));
+      return {} as ChildProcess;
+    }) as typeof execFile);
+    try {
+      const concurrent = [
+        scanClaudeCatalog(paths, "darwin"),
+        scanClaudeCatalog({ ...paths, desktopSessions: [...paths.desktopSessions] }, "darwin"),
+        scanClaudeCatalog(paths, "darwin"),
+      ];
+      await vi.waitFor(() => expect(pendingPs.length).toBeGreaterThan(0));
+      expect(psCalls).toBe(1);
+      while (pendingPs.length > 0) pendingPs.shift()!();
+      const results = await Promise.all(concurrent);
+      expect(psCalls).toBe(1);
+      for (const catalog of results) {
+        expect(catalog.sessions).toHaveLength(1);
+        expect(catalog.sessions[0]?.desktopProcessAlive).toBe(true);
+      }
+
+      currentPsOutput = "";
+      const sequentialPromise = scanClaudeCatalog(paths, "darwin");
+      await vi.waitFor(() => expect(pendingPs.length).toBeGreaterThan(0));
+      while (pendingPs.length > 0) pendingPs.shift()!();
+      const sequential = await sequentialPromise;
+      expect(psCalls).toBe(2);
+      expect(sequential.sessions[0]?.desktopProcessAlive).toBe(false);
+    } finally {
+      vi.mocked(execFile).mockImplementation(actualChildProcess.execFile);
+    }
   });
 });

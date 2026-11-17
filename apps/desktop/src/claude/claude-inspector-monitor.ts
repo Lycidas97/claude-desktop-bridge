@@ -72,17 +72,40 @@ export class ClaudeInspectorMonitor {
   private timer: ReturnType<typeof setTimeout> | undefined;
   private closed = false;
   private status: BridgeInspectorStatus;
+  private activeTask: Promise<unknown> | undefined;
+  private enableInFlight: Promise<BridgeInspectorStatus> | undefined;
 
   constructor(private readonly options: {
     onUpdate(status: BridgeInspectorStatus): void;
     onAlert(alert: BridgeInspectorAlert): string | undefined;
     scan?: () => Promise<{ listening: boolean; clients: BridgeInspectorClient[] }>;
     startup?: (listening: boolean) => Promise<BridgeInspectorStatus["startup"]>;
+    enableStartup?: (isListening: () => Promise<boolean>) => Promise<BridgeInspectorStatus["startup"]>;
     platform?: NodeJS.Platform;
     intervalMs?: number;
     port?: number;
   }) {
     this.status = { platform: options.platform ?? process.platform, state: "starting", port: options.port ?? 9229, pollIntervalMs: options.intervalMs ?? 3_000, clients: [], alerts: [] };
+  }
+
+  private serialized<T>(task: () => Promise<T>): Promise<T> {
+    const run = this.activeTask ? this.activeTask.then(task, task) : task();
+    const settled = run.then(
+      () => {
+        if (this.activeTask === settled) this.activeTask = undefined;
+      },
+      () => {
+        if (this.activeTask === settled) this.activeTask = undefined;
+      },
+    );
+    this.activeTask = settled;
+    return run;
+  }
+
+  private scanConnections(): Promise<{ listening: boolean; clients: BridgeInspectorClient[] }> {
+    return (this.options.scan ?? (() => this.status.platform === "win32"
+      ? readWindowsInspectorConnections(this.status.port)
+      : readInspectorConnections({ port: this.status.port })))();
   }
 
   async start(): Promise<void> {
@@ -92,6 +115,61 @@ export class ClaudeInspectorMonitor {
       return;
     }
     await this.poll();
+  }
+
+  async pollNow(startupOverride?: BridgeInspectorStatus["startup"]): Promise<BridgeInspectorStatus> {
+    if (!["darwin", "win32"].includes(this.options.platform ?? process.platform) || this.closed) {
+      return this.status;
+    }
+    await this.poll(startupOverride);
+    return this.status;
+  }
+
+  async enableNow(): Promise<BridgeInspectorStatus> {
+    if (!["darwin", "win32"].includes(this.options.platform ?? process.platform) || this.closed) {
+      return this.status;
+    }
+    const enableStartup = this.options.enableStartup;
+    if (!enableStartup || process.env.BRIDGE_CLAUDE_INSPECTOR_URL) {
+      return this.pollNow();
+    }
+    if (this.enableInFlight) {
+      return this.enableInFlight;
+    }
+    const task = this.serialized(async () => {
+      clearTimeout(this.timer);
+      if (this.closed) return this.status;
+      const isListening = async () => (await this.scanConnections()).listening;
+      try {
+        if (await isListening()) {
+          await this.pollUnlocked();
+          return this.status;
+        }
+      } catch {
+        await this.pollUnlocked();
+        return this.status;
+      }
+      let startup: BridgeInspectorStatus["startup"];
+      try {
+        startup = await enableStartup(isListening);
+      } catch (error) {
+        startup = {
+          state: "failed",
+          recordedAt: Date.now(),
+          detail: `自动开启失败：${error instanceof Error ? error.message : String(error)}`,
+        };
+      }
+      await this.pollUnlocked(startup);
+      return this.status;
+    });
+    this.enableInFlight = task;
+    try {
+      return await task;
+    } finally {
+      if (this.enableInFlight === task) {
+        this.enableInFlight = undefined;
+      }
+    }
   }
 
   notificationFailed(message: string): void {
@@ -104,14 +182,32 @@ export class ClaudeInspectorMonitor {
     clearTimeout(this.timer);
   }
 
-  private async poll(): Promise<void> {
+  private poll(startupOverride?: BridgeInspectorStatus["startup"]): Promise<void> {
+    clearTimeout(this.timer);
+    return this.serialized(() => this.pollUnlocked(startupOverride));
+  }
+
+  private async pollUnlocked(startupOverride?: BridgeInspectorStatus["startup"]): Promise<void> {
+    clearTimeout(this.timer);
+    if (this.closed) return;
     let next: BridgeInspectorStatus;
     try {
-      const observed = await (this.options.scan ?? (() => this.status.platform === "win32"
-        ? readWindowsInspectorConnections(this.status.port)
-        : readInspectorConnections({ port: this.status.port })))();
+      const observed = await this.scanConnections();
       if (this.closed) return;
-      const startup = await this.options.startup?.(observed.listening);
+      let startup: BridgeInspectorStatus["startup"];
+      if (startupOverride !== undefined) {
+        startup = startupOverride;
+      } else {
+        try {
+          startup = await this.options.startup?.(observed.listening);
+        } catch (error) {
+          startup = {
+            state: "failed",
+            recordedAt: Date.now(),
+            detail: `自动开启失败：${error instanceof Error ? error.message : String(error)}`,
+          };
+        }
+      }
       if (this.closed) return;
       const alerts = [...this.status.alerts];
       let notificationError = this.status.notificationError;
@@ -128,12 +224,19 @@ export class ClaudeInspectorMonitor {
       };
     } catch (error) {
       if (this.closed) return;
-      next = { ...this.status, state: "error", clients: [], error: error instanceof Error ? error.message : String(error) };
+      next = {
+        ...this.status,
+        state: "error",
+        clients: [],
+        error: error instanceof Error ? error.message : String(error),
+        ...(startupOverride ? { startup: startupOverride } : {}),
+      };
     }
     if (JSON.stringify(next) !== JSON.stringify(this.status)) {
       this.status = next;
       this.options.onUpdate(next);
     }
+    if (this.closed) return;
     this.timer = setTimeout(() => void this.poll(), this.status.pollIntervalMs);
     this.timer.unref();
   }

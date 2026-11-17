@@ -6,12 +6,21 @@ import { EvidenceStore } from "../evidence/evidence-store.js";
 import { DesktopController } from "../controller/controller.js";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it, vi } from "vitest";
-import { ClaudeDesktopBridge, WorkspaceTrustRequiredError, nativeHistoryItems } from "./claude-desktop-bridge.js";
+import {
+  CLAUDE_UNSECTIONED_PROJECT_ID,
+  CLAUDE_UNSECTIONED_PROJECT_NAME,
+  ClaudeDesktopBridge,
+  DEFAULT_CONFIGURATION_SESSION_ID,
+  WorkspaceTrustRequiredError,
+  nativeHistoryItems,
+} from "./claude-desktop-bridge.js";
 import { InspectorDisconnectedError, NativeCallError } from "./claude-desktop-inspector.js";
 import { ConversationStateStore } from "../controller/conversation-state-store.js";
 import { SessionEventLog } from "../controller/session-event-log.js";
 import { magpieModelIdHash } from "./claude-runtime-discovery.js";
+import { MagpieConnectionRepository } from "./magpie-connection.js";
 import type { ClaudeCatalogSnapshot } from "./claude-session-catalog.js";
 import { createNativeSectionFixture } from "../../../../scripts/fixtures/native-section-store.js";
 
@@ -46,6 +55,7 @@ class NativeDesktop extends EventEmitter {
   promptChoiceValues: string[] | undefined;
   applyPrSettings = true;
   promptResult = true;
+  ignoreStartTitle = false;
   async promptChoices() { return this.promptChoiceValues; }
   async prPreferences(sessionId: string) {
     const session = this.sessions.find(session => session.sessionId === sessionId);
@@ -127,26 +137,67 @@ class NativeDesktop extends EventEmitter {
       if (!this.keepUntrustedAfterSave) this.untrustedCwds.delete(String(args[0]));
       return;
     }
+    if (method === "updateSession" && session && args[1] && typeof args[1] === "object") {
+      Object.assign(session, args[1]);
+      return;
+    }
     if (method === "start") {
       const input = args[0] as Record<string, unknown>;
       if (this.untrustedCwds.has(String(input.cwd))) {
         throw new NativeCallError("Error invoking remote method '$eipc_message$d32c5f9b_$_claude.web_$_LocalSessions_$_start': WorkspaceTrustError: Workspace requires trust approval before starting a session. [ccdErrorCategory:trust_required]");
       }
-      this.sessions.push({ ...input, isRunning: false, turnRunning: false });
+      this.sessions.push({
+        ...input,
+        ...(this.ignoreStartTitle ? { title: "" } : {}),
+        isRunning: false,
+        turnRunning: false,
+      });
       return { sessionId: input.sessionId };
     }
     return undefined;
   }
 }
 
+function withDatabase<T>(databasePath: string, run: (db: DatabaseSync) => T): T {
+  const db = new DatabaseSync(databasePath);
+  try {
+    return run(db);
+  } finally {
+    db.close();
+  }
+}
+
 async function fixture(legacy = false, evidence?: ConstructorParameters<typeof ClaudeDesktopBridge>[0]["evidence"]) {
   const directory = await mkdtemp(join(tmpdir(), "bridge-native-"));
-  const state = new ConversationStateStore({ databasePath: join(directory, "state.sqlite"), sessionsPath: join(directory, "sessions.json"), queuePath: join(directory, "queue.json"), masterSecret: Buffer.alloc(32, 7).toString("base64url") });
+  const databasePath = join(directory, "state.sqlite");
+  const state = new ConversationStateStore({ databasePath, sessionsPath: join(directory, "sessions.json"), queuePath: join(directory, "queue.json"), masterSecret: Buffer.alloc(32, 7).toString("base64url") });
   await state.initialize();
   if (legacy) {
-    state.saveBrokerSessions([{ sessionId: "legacy-unlinked", cwd: "/legacy", title: "Native", createdAt: 1 }], []);
-    const lane = state.listLanes("legacy-unlinked")[0]!;
-    state.saveBrokerQueue([{ sessionId: "legacy-unlinked", laneId: lane.laneId, commandId: "old-command", requestId: "old-request", idempotencyKey: "old-key", state: "pending", text: "Never replay" }], [], []);
+    withDatabase(databasePath, (db) => {
+      db.prepare(`
+        INSERT INTO provider_profiles(id, kind, name, status, detail, configured, local_only_configuration, read_only, models_json)
+        VALUES ('provider:claude-3p:default', 'claude-3p', 'Claude-3p', 'unavailable', '', 0, 0, 0, '[]')
+      `).run();
+      db.prepare(`
+        INSERT INTO conversations(id, cwd, title, source, active_lane_id, active_provider_profile_id, route_state, created_at, updated_at)
+        VALUES ('legacy-unlinked', '/legacy', 'Native', 'bridge', 'lane:claude-3p:legacy-unlinked', 'provider:claude-3p:default', 'ready', 1, 1)
+      `).run();
+      db.prepare(`
+        INSERT INTO lanes(id, conversation_id, provider_profile_id, provider_kind, native_session_id, status, access, model, created_at, updated_at, last_used_at)
+        VALUES ('lane:claude-3p:legacy-unlinked', 'legacy-unlinked', 'provider:claude-3p:default', 'claude-3p', 'legacy-unlinked', 'active', 'read-write', NULL, 1, 1, 1)
+      `).run();
+      db.prepare("INSERT INTO bridge_sessions(session_id, session_json) VALUES (?, ?)").run(
+        "legacy-unlinked",
+        JSON.stringify({ sessionId: "legacy-unlinked", cwd: "/legacy", title: "Native", createdAt: 1 }),
+      );
+      db.prepare(`
+        INSERT INTO turn_queue(command_id, session_id, lane_id, idempotency_key, state, turn_json)
+        VALUES ('old-command', 'legacy-unlinked', 'lane:claude-3p:legacy-unlinked', 'old-key', 'pending', ?)
+      `).run(JSON.stringify({
+        sessionId: "legacy-unlinked", laneId: "lane:claude-3p:legacy-unlinked", commandId: "old-command",
+        requestId: "old-request", idempotencyKey: "old-key", state: "pending", text: "Never replay",
+      }));
+    });
   }
   const eventLog = new SessionEventLog(join(directory, "events.jsonl"));
   await eventLog.initialize();
@@ -156,7 +207,7 @@ async function fixture(legacy = false, evidence?: ConstructorParameters<typeof C
   const bridge = new ClaudeDesktopBridge(options);
   await bridge.initialize();
   return {
-    bridge, native, state, eventLog, options, directory,
+    bridge, native, state, eventLog, options, directory, databasePath,
     async message(message: Record<string, unknown>) {
       const changed = once(bridge, "changed");
       native.emit("event", { type: "message", sessionId: "local-native", message });
@@ -560,6 +611,85 @@ describe("native Sections", () => {
 
       await expect(f.bridge.renameSection(created.projectId, "Gone")).rejects.toThrow("no longer available");
       await expect(f.bridge.deleteSection(created.projectId)).rejects.toThrow("no longer available");
+    } finally { await f.close(); }
+  });
+
+  it("unifies unsectioned sessions under 未分组 when Sections are active, avoids same-name folder collisions, and allows creating into claude-unsectioned", async () => {
+    const f = await fixture();
+    try {
+      const zahuoDir = join(f.directory, "work", "杂活");
+      const latestActiveDir = join(f.directory, "work", "bridge-latest");
+      const archivedDir = join(f.directory, "work", "archived-newer");
+      await Promise.all([mkdir(zahuoDir, { recursive: true }), mkdir(latestActiveDir, { recursive: true }), mkdir(archivedDir, { recursive: true })]);
+      f.native.sessions = [
+        { sessionId: "sectioned-zahuo", cwd: join(zahuoDir, "subtool"), title: "Sectioned task", lastActivityAt: 100, turnRunning: false },
+        { sessionId: "unsectioned-zahuo", cwd: zahuoDir, title: "Unsectioned same-name folder", lastActivityAt: 200, turnRunning: false },
+        { sessionId: "unsectioned-latest", cwd: latestActiveDir, title: "Latest active unsectioned", lastActivityAt: 400, turnRunning: false },
+        { sessionId: "unsectioned-archived", cwd: archivedDir, title: "Archived unsectioned", isArchived: true, lastActivityAt: 900, turnRunning: false },
+      ];
+
+      // Legacy Desktop without Sections keeps per-directory project IDs and folder basenames.
+      await f.bridge.refreshRuntime();
+      expect(f.bridge.session("unsectioned-zahuo")).toMatchObject({ projectName: "杂活", cwd: zahuoDir });
+      expect(f.bridge.session("unsectioned-zahuo")?.projectId).not.toBe(CLAUDE_UNSECTIONED_PROJECT_ID);
+
+      // Enabling Sections unifies all unassigned sessions under 未分组 without altering session.cwd.
+      const sections = await createNativeSectionFixture(f.directory);
+      Object.assign(f.native, {
+        sections: sections.sections,
+        createSection: sections.createSection,
+        assignSection: sections.assignSection,
+        renameSection: sections.renameSection,
+        deleteSection: sections.deleteSection,
+      });
+      await f.bridge.refreshRuntime();
+      const zahuoSection = await f.bridge.createSection("杂活");
+      await f.bridge.moveSessionSection("sectioned-zahuo", zahuoSection.projectId);
+
+      expect(f.bridge.session("sectioned-zahuo")).toMatchObject({
+        projectId: zahuoSection.projectId,
+        projectName: "杂活",
+        cwd: join(zahuoDir, "subtool"),
+      });
+      expect(f.bridge.session("unsectioned-zahuo")).toMatchObject({
+        projectId: CLAUDE_UNSECTIONED_PROJECT_ID,
+        projectName: CLAUDE_UNSECTIONED_PROJECT_NAME,
+        cwd: zahuoDir,
+      });
+      expect(f.bridge.session("unsectioned-latest")).toMatchObject({
+        projectId: CLAUDE_UNSECTIONED_PROJECT_ID,
+        projectName: CLAUDE_UNSECTIONED_PROJECT_NAME,
+        cwd: latestActiveDir,
+      });
+
+      const projects = f.bridge.listProjects();
+      expect(projects.filter(project => project.name === "杂活")).toHaveLength(1);
+      expect(projects.find(project => project.projectId === zahuoSection.projectId)).toMatchObject({
+        name: "杂活",
+        kind: "desktop-group",
+        sessionCount: 1,
+      });
+      const unsectionedProject = projects.find(project => project.projectId === CLAUDE_UNSECTIONED_PROJECT_ID);
+      expect(unsectionedProject).toMatchObject({
+        projectId: CLAUDE_UNSECTIONED_PROJECT_ID,
+        name: CLAUDE_UNSECTIONED_PROJECT_NAME,
+        cwd: latestActiveDir,
+        sessionCount: 3,
+      });
+      expect(unsectionedProject?.kind).toBeUndefined();
+
+      // When 0 unsectioned sessions exist, claude-unsectioned is omitted from listProjects(), yet createSession(..., CLAUDE_UNSECTIONED_PROJECT_ID) succeeds without assignSection.
+      f.native.sessions = [f.native.sessions[0]!];
+      await f.bridge.refreshRuntime();
+      expect(f.bridge.listProjects().some(project => project.projectId === CLAUDE_UNSECTIONED_PROJECT_ID)).toBe(false);
+      sections.calls.length = 0;
+      const createdUnsectioned = await f.bridge.createSession(zahuoDir, "Explicit unsectioned", CLAUDE_UNSECTIONED_PROJECT_ID);
+      expect(sections.calls.some(call => call.method === "move_sessions")).toBe(false);
+      expect(createdUnsectioned).toMatchObject({
+        projectId: CLAUDE_UNSECTIONED_PROJECT_ID,
+        projectName: CLAUDE_UNSECTIONED_PROJECT_NAME,
+        cwd: zahuoDir,
+      });
     } finally { await f.close(); }
   });
 });
@@ -1540,7 +1670,7 @@ describe("Claude native relay", () => {
     } finally { await f.close(); }
   });
 
-  it("does not label an unknown native alias as an unrelated saved model", async () => {
+  it("does not label an unknown native alias as an unrelated saved model or expose raw synthetic hashes", async () => {
     const f = await fixture();
     try {
       const alias = "mythos-magpie-0000000000";
@@ -1549,8 +1679,10 @@ describe("Claude native relay", () => {
         { model: "fixture-provider/model-alpha", label: "Unrelated model" },
       ] } }));
       await f.bridge.refreshRuntime();
-      expect(f.bridge.session("local-native")?.modelDisplayName).toBe(alias);
-      expect(await f.bridge.configuration("local-native")).toMatchObject({ model: alias, modelDisplayName: alias });
+      expect(f.bridge.session("local-native")?.modelDisplayName).toBeUndefined();
+      const config = await f.bridge.configuration("local-native");
+      expect(config.model).toBe(alias);
+      expect(config.modelDisplayName).toBeUndefined();
     } finally { await f.close(); }
   });
 
@@ -1560,6 +1692,200 @@ describe("Claude native relay", () => {
       f.native.sessions.push({ ...f.native.sessions[0], sessionId: "other", model: "historical-model" });
       await f.bridge.refreshRuntime();
       expect(await f.bridge.configuration("local-native")).toMatchObject({ model: "native-model", modelsComplete: false, availableModels: [{ value: "native-model", displayName: "native-model" }] });
+    } finally { await f.close(); }
+  });
+
+  it("resolves host defaultConfiguration() from the most recent active session or catalog defaults when zero sessions exist", async () => {
+    const f = await fixture();
+    try {
+      // Zero sessions and no model catalog yet.
+      f.native.sessions = [];
+      await f.bridge.refreshRuntime();
+      const emptyUncatalogued = await f.bridge.defaultConfiguration();
+      expect(emptyUncatalogued).toEqual({
+        sessionId: DEFAULT_CONFIGURATION_SESSION_ID,
+        effort: "high",
+        nativePermissionMode: "default",
+        modelSource: "claude-desktop",
+        effortSource: "claude-desktop",
+        availableModels: [],
+        availableEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+        modelsComplete: false,
+        appliesAfterTurn: false,
+      });
+
+      // Zero sessions with saved modelPicker catalog.
+      const primaryModel = "fixture-provider/model-primary";
+      const secondaryModel = "fixture-provider/model-secondary[1m]";
+      await writeFile(f.options.settingsPath, JSON.stringify({
+        modelPicker: {
+          options: [
+            { model: primaryModel, label: "Primary Saved Model" },
+            { model: secondaryModel, label: "Secondary Long Context" },
+          ],
+        },
+      }));
+      const emptyCatalogued = await f.bridge.defaultConfiguration();
+      expect(emptyCatalogued).toEqual({
+        sessionId: DEFAULT_CONFIGURATION_SESSION_ID,
+        model: primaryModel,
+        modelDisplayName: "Primary Saved Model",
+        effort: "high",
+        nativePermissionMode: "default",
+        modelSource: "claude-desktop",
+        effortSource: "claude-desktop",
+        availableModels: [
+          { value: primaryModel, displayName: "Primary Saved Model" },
+          { value: secondaryModel, displayName: "Secondary Long Context" },
+        ],
+        availableEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+        modelsComplete: true,
+        appliesAfterTurn: false,
+      });
+
+      // Active and archived sessions exist: picks most recent non-archived session and keeps appliesAfterTurn=false.
+      const secondaryAlias = `mythos-magpie-${magpieModelIdHash("fixture-provider/model-secondary")}[1m]`;
+      f.native.sessions = [
+        { sessionId: "older-active", cwd: "/project", model: primaryModel, effort: "low", permissionMode: "default", lastActivityAt: 100, turnRunning: false },
+        { sessionId: "recent-active", cwd: "/project", model: secondaryAlias, effort: "max", permissionMode: "acceptEdits", lastActivityAt: 500, turnRunning: true },
+        { sessionId: "newest-archived", cwd: "/project", model: primaryModel, effort: "medium", permissionMode: "plan", lastActivityAt: 900, isArchived: true, turnRunning: false },
+      ];
+      await f.bridge.refreshRuntime();
+      expect(await f.bridge.defaultConfiguration()).toEqual({
+        sessionId: DEFAULT_CONFIGURATION_SESSION_ID,
+        model: secondaryModel,
+        modelDisplayName: "Secondary Long Context",
+        effort: "max",
+        nativePermissionMode: "acceptEdits",
+        modelSource: "claude-desktop",
+        effortSource: "claude-desktop",
+        availableModels: [
+          { value: primaryModel, displayName: "Primary Saved Model" },
+          { value: secondaryModel, displayName: "Secondary Long Context" },
+        ],
+        availableEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+        modelsComplete: true,
+        appliesAfterTurn: false,
+      });
+    } finally { await f.close(); }
+  });
+
+  it("resolves real session models for retired Magpie synthetic hashes, [1m]-only picker entries, and unset/default native models", async () => {
+    const f = await fixture();
+    try {
+      const autoOpus1m = "auto/claude-opus-5-5[1m]";
+      const claudeOpus1m = "claude/claude-opus-5-5[1m]";
+      const retiredGeminiAlias = `mythos-magpie-${magpieModelIdHash("antigravity/gemini-4-argon")}[1m]`;
+      const retiredRouteAlias = "mythos-magpie-5277472942";
+      const standardOpusAlias = `mythos-magpie-${magpieModelIdHash("auto/claude-opus-5-5")}`;
+
+      await writeFile(f.options.settingsPath, JSON.stringify({
+        model: claudeOpus1m,
+        modelPicker: {
+          options: [
+            { model: autoOpus1m, label: "Claude Opus 5.5 · routing group · 1M" },
+            { model: claudeOpus1m, label: "Claude Opus 5.5 · Claude" },
+          ],
+        },
+      }));
+
+      f.native.sessions = [
+        { sessionId: "retired-gemini", cwd: "/project", model: retiredGeminiAlias, turnRunning: false, lastActivityAt: 400 },
+        { sessionId: "retired-route-opus", cwd: "/project", model: retiredRouteAlias, turnRunning: false, lastActivityAt: 300 },
+        { sessionId: "standard-opus", cwd: "/project", model: standardOpusAlias, turnRunning: false, lastActivityAt: 200 },
+        { sessionId: "unset-with-turns", cwd: "/project", model: "default", turnRunning: false, lastActivityAt: 150 },
+        { sessionId: "unset-empty", cwd: "/project", model: undefined, turnRunning: false, lastActivityAt: 100 },
+      ];
+      await f.bridge.refreshRuntime();
+
+      // 1. Non-[1m] synthetic hash matches [1m]-only saved picker option and strips trailing " · 1M".
+      expect(f.bridge.session("standard-opus")).toMatchObject({
+        model: standardOpusAlias,
+        modelDisplayName: "Claude Opus 5.5 · routing group",
+      });
+      expect(await f.bridge.configuration("standard-opus")).toMatchObject({
+        model: "auto/claude-opus-5-5",
+        modelDisplayName: "Claude Opus 5.5 · routing group",
+      });
+
+      // 2. Unset native.model with no turns falls back to settings.json default model instead of undefined / "默认模型".
+      expect(f.bridge.session("unset-empty")).toMatchObject({
+        model: claudeOpus1m,
+        modelDisplayName: "Claude Opus 5.5 · Claude",
+      });
+      expect(await f.bridge.configuration("unset-empty")).toMatchObject({
+        model: claudeOpus1m,
+        modelDisplayName: "Claude Opus 5.5 · Claude",
+      });
+
+      // 3. Retired opaque synthetic hash [1m] hydrates actual upstream model from transcript tail on configuration().
+      f.native.page = {
+        messages: [{
+          type: "assistant",
+          uuid: "msg-gemini",
+          message: { id: "msg-gemini", model: "antigravity/gemini-4-argon", usage: { input_tokens: 1_200, output_tokens: 80 } },
+        }],
+        hasMore: false,
+      };
+      const geminiConfig = await f.bridge.configuration("retired-gemini");
+      expect(geminiConfig).toMatchObject({
+        model: retiredGeminiAlias,
+        modelDisplayName: "Gemini 4 Argon · 1M",
+      });
+      expect(f.bridge.session("retired-gemini")).toMatchObject({
+        model: retiredGeminiAlias,
+        modelDisplayName: "Gemini 4 Argon · 1M",
+      });
+
+      // 4. Retired opaque synthetic hash whose transcript model matches a saved Anthropic slug resolves saved label
+      // even when the assistant message carries no token usage block.
+      f.native.page = {
+        messages: [
+          { type: "assistant", uuid: "sidechain-ignored", isSidechain: true, message: { id: "side", model: "openai/gpt-5-4" } },
+          { type: "assistant", uuid: "msg-opus", message: { id: "msg-opus", model: "claude/claude-opus-5-5" } },
+        ],
+        hasMore: false,
+      };
+      const opusConfig = await f.bridge.configuration("retired-route-opus");
+      expect(opusConfig).toMatchObject({
+        model: "claude/claude-opus-5-5",
+        modelDisplayName: "Claude Opus 5.5 · Claude",
+      });
+      expect(f.bridge.session("retired-route-opus")).toMatchObject({
+        model: retiredRouteAlias,
+        modelDisplayName: "Claude Opus 5.5 · Claude",
+      });
+
+      // 5. Session with native.model === "default" migrates model-less live rawMaxTokens when tail hydration discovers the model.
+      f.native.sessions.find(s => s.sessionId === "unset-with-turns")!.turnRunning = true;
+      f.native.contextUsage = { totalTokens: 98_000, rawMaxTokens: 196_000 };
+      f.native.page = {
+        messages: [{
+          type: "assistant",
+          uuid: "msg-sonnet",
+          message: { id: "msg-sonnet", model: "claude-sonnet-4-5" },
+        }],
+        hasMore: false,
+      };
+      const hydratedDefaultConfig = await f.bridge.configuration("unset-with-turns");
+      expect(hydratedDefaultConfig).toMatchObject({
+        model: "claude-sonnet-4-5",
+        modelDisplayName: "Claude Sonnet 4.5",
+        context: { totalTokens: 98_000, maxTokens: 196_000, percentage: 50, estimated: false },
+      });
+      expect(f.bridge.session("unset-with-turns")).toMatchObject({
+        model: "claude-sonnet-4-5",
+        modelDisplayName: "Claude Sonnet 4.5",
+      });
+
+      // 6. configureSession rejects unapplied setModel both on unset/default sessions and on retired-hash sessions
+      // whose transcript history already matches the requested saved model.
+      f.native.codeModels = [claudeOpus1m, "claude/claude-opus-5-5"];
+      f.native.applyModel = false;
+      await expect(f.bridge.configureSession({ sessionId: "unset-empty", model: claudeOpus1m }))
+        .rejects.toThrow(/did not apply/iu);
+      await expect(f.bridge.configureSession({ sessionId: "retired-route-opus", model: "claude/claude-opus-5-5" }))
+        .rejects.toThrow(/did not apply/iu);
     } finally { await f.close(); }
   });
 
@@ -1654,7 +1980,8 @@ describe("Claude native relay", () => {
     try {
       expect(f.bridge.session("local-native")?.transport).toBe("claude-desktop-native");
       expect(f.bridge.session("legacy-unlinked")).toBeUndefined();
-      expect(f.state.loadBrokerState().pending[0]?.commandId).toBe("old-command");
+      const queued = withDatabase(f.databasePath, (db) => db.prepare("SELECT command_id FROM turn_queue").all() as Array<{ command_id: string }>);
+      expect(queued[0]?.command_id).toBe("old-command");
       expect(f.native.calls.some(call => call.method === "sendMessage")).toBe(false);
       expect(f.bridge.session("local-native")?.turnState).toBe("idle"); // A warm CLI is not an active turn.
     } finally { await f.close(); }
@@ -1988,6 +2315,46 @@ describe("Claude native relay", () => {
     } finally { await f.close(); }
   });
 
+  it("coalesces overlapping backgroundTaskDetails and subagent enrichment catalog reads while keeping subsequent reads fresh", async () => {
+    const f = await fixture();
+    try {
+      const transcript = join(f.options.settingsPath, "..", "coalesce-session.jsonl");
+      await writeFile(transcript, [
+        JSON.stringify({ type: "assistant", uuid: "a1", timestamp: new Date(10_000).toISOString(), isSidechain: false, message: { content: [{ type: "tool_use", id: "agent-1", name: "Agent", input: { description: "First agent", prompt: "Inspect" } }] } }),
+        JSON.stringify({ type: "user", uuid: "u1", parentUuid: "a1", timestamp: new Date(11_000).toISOString(), isSidechain: false, message: { content: [{ type: "tool_result", tool_use_id: "agent-1", content: "Async agent launched successfully. agentId: ag-1" }] } }),
+      ].join("\n") + "\n");
+      const observed = {
+        ...f.bridge.session("local-native")!, sessionId: "coalesce-cli", desktopSessionId: "local-native", transcriptPath: transcript,
+        transcriptMtimeMs: 0, processAlive: true, desktopProcessAlive: true, bridgeProcessAlive: false, processOverlap: false, activeTask: false,
+        activeProcesses: [{ startedAt: 1_000, processAlive: true, entrypoint: "claude-desktop-3p", source: "process" as const }],
+      };
+      let releaseCatalog!: () => void;
+      f.options.scanCatalog.mockClear();
+      f.options.scanCatalog.mockImplementationOnce(() => new Promise(resolve => {
+        releaseCatalog = () => resolve({ projects: [], sessions: [observed], observedAt: 0 });
+      }));
+      f.options.scanCatalog.mockResolvedValue({ projects: [], sessions: [{ ...observed, activeProcesses: [] }], observedAt: 1 });
+
+      const overlapping = [
+        f.bridge.backgroundTaskDetails("local-native"),
+        f.bridge.backgroundTaskDetails("local-native"),
+        f.bridge.backgroundTaskDetails("local-native"),
+        f.message({ type: "system", subtype: "task_started", task_id: "ag-1", tool_use_id: "agent-1", description: "First agent", timestamp: 11_000 }),
+      ] as const;
+      await vi.waitFor(() => expect(f.options.scanCatalog).toHaveBeenCalledTimes(1));
+      releaseCatalog();
+      const [first, second, third] = await Promise.all(overlapping);
+      expect(f.options.scanCatalog).toHaveBeenCalledTimes(1);
+      expect(first).toEqual(second);
+      expect(second).toEqual(third);
+      expect(first[0]).toMatchObject({ id: "agent-1", state: "running" });
+
+      const afterExit = await f.bridge.backgroundTaskDetails("local-native");
+      expect(f.options.scanCatalog).toHaveBeenCalledTimes(2);
+      expect(afterExit[0]).toMatchObject({ id: "agent-1", state: "stopped" });
+    } finally { await f.close(); }
+  });
+
   it("adds btw once to the native command menu and preserves native command metadata", async () => {
     const f = await fixture();
     try {
@@ -2013,7 +2380,7 @@ describe("Claude native relay", () => {
       expect(f.native.calls.find(call => call.method === "sendMessage")?.args.slice(0, 2)).toEqual(["local-child", "Why does this work?"]);
       expect(f.native.sessions.find(session => session.sessionId === "local-child")?.spawnedFrom).toMatchObject({ sessionId: "local-native", btw: true });
       expect(f.eventLog.replay(0).some(event => event.type === "session.observed")).toBe(false);
-      expect(f.state.loadBrokerState().sessions).toEqual([]);
+      expect(withDatabase(f.databasePath, (db) => db.prepare("SELECT session_id FROM bridge_sessions").all())).toEqual([]);
       expect(await f.bridge.runCommand(command)).toMatchObject({ action: "session", session: { sessionId: "local-child" } });
       expect(f.native.calls.filter(call => call.method === "startBtwChild")).toHaveLength(1);
       expect(f.native.calls.filter(call => call.method === "sendMessage")).toHaveLength(1);
@@ -2210,6 +2577,86 @@ describe("Claude native relay", () => {
       expect(f.eventLog.latestItem("local-native", "tool.completed", "tool-call")?.data.subagent).toMatchObject({ agentId: "native-task", state: "completed", reportText: "Done" });
       expect(f.bridge.session("local-native")?.runningSubagents).toBeUndefined();
     } finally { await f.close(); }
+  });
+
+  it("preserves full multi-thousand-character subagent reports without truncation over short native summaries", async () => {
+    const f = await fixture();
+    try {
+      const transcript = join(f.options.settingsPath, "..", "cli-session.jsonl");
+      const childDir = join(transcript.replace(/\.jsonl$/u, ""), "subagents");
+      await mkdir(childDir, { recursive: true });
+      const childPath = join(childDir, "agent-child-task.jsonl");
+      const fullReport = `## Subagent Audit Report 🧪\n\n${"- Verified invariant and full markdown detail line with emoji 🔍\n".repeat(180)}\n### Final Verdict\nPASS`;
+      expect([...fullReport].length).toBeGreaterThan(8_000);
+      await writeFile(transcript, `${JSON.stringify({ type: "user", uuid: "u1", message: { role: "user", content: "Audit" } })}\n`);
+      await writeFile(join(childDir, "agent-child-task.meta.json"), JSON.stringify({ toolUseId: "agent-call", agentType: "verifier", description: "Audit sources", finished: true }));
+      await writeFile(childPath, `${JSON.stringify({
+        type: "assistant",
+        timestamp: new Date(2_000).toISOString(),
+        message: { model: "codex/gpt-6.1-sol", role: "assistant", content: [{ type: "text", text: fullReport }], stop_reason: "end_turn" },
+      })}\n`);
+      f.options.scanCatalog.mockResolvedValue({
+        projects: [],
+        sessions: [{
+          ...f.bridge.session("local-native")!,
+          sessionId: "cli-session",
+          desktopSessionId: "local-native",
+          transcriptPath: transcript,
+          transcriptMtimeMs: 0,
+          processAlive: true,
+          desktopProcessAlive: true,
+          bridgeProcessAlive: false,
+          processOverlap: false,
+          activeTask: false,
+          activeProcesses: [{ startedAt: 1, processAlive: true, entrypoint: "claude-desktop-3p", source: "process" }],
+        }],
+        observedAt: 0,
+      });
+
+      const call = { type: "assistant", uuid: "call", message: { model: "parent-model", content: [{ type: "tool_use", id: "agent-call", name: "Agent", input: { description: "Audit sources" } }] } };
+      const shortNotification = { type: "system", subtype: "task_notification", task_id: "child-task", tool_use_id: "agent-call", status: "completed", summary: "Done", timestamp: 2_000 };
+      f.native.page.messages = [call, shortNotification];
+      const page = await f.bridge.history("local-native", "older-cursor");
+      const historySubagent = page.items.find(item => item.id === "agent-call")?.subagent;
+      expect(historySubagent).toMatchObject({
+        agentId: "child-task",
+        model: "codex/gpt-6.1-sol",
+        agentType: "verifier",
+        state: "completed",
+        latestText: "Done",
+        reportText: fullReport,
+      });
+
+      await f.message(shortNotification);
+      expect(f.eventLog.latestItem("local-native", "tool.completed", "agent-call")?.data.subagent).toMatchObject({
+        agentId: "child-task",
+        model: "codex/gpt-6.1-sol",
+        state: "completed",
+        reportText: fullReport,
+      });
+
+      // Resuming the same agentId under a new toolUseId keeps the running resume call separate from the completed call's report.
+      const resumeCall = { type: "assistant", uuid: "resume-msg", message: { model: "parent-model", content: [{ type: "tool_use", id: "resume-call", name: "Agent", input: { resume: "child-task", description: "Follow-up audit" } }] } };
+      const resumeStarted = { type: "system", subtype: "task_started", task_id: "child-task", tool_use_id: "resume-call", description: "Follow-up audit", timestamp: 3_000 };
+      f.native.page.messages = [call, shortNotification, resumeCall, resumeStarted];
+      const resumedPage = await f.bridge.history("local-native", "older-cursor");
+      expect(resumedPage.items.find(item => item.id === "agent-call")?.subagent).toMatchObject({
+        agentId: "child-task",
+        toolUseId: "agent-call",
+        state: "completed",
+        reportText: fullReport,
+      });
+      const runningResumed = resumedPage.items.find(item => item.id === "resume-call")?.subagent;
+      expect(runningResumed).toMatchObject({
+        agentId: "child-task",
+        toolUseId: "resume-call",
+        model: "codex/gpt-6.1-sol",
+        state: "running",
+      });
+      expect(runningResumed?.reportText).toBeUndefined();
+    } finally {
+      await f.close();
+    }
   });
 
   it("projects native task-plan updates and wrap-up onto one stable card", () => {
@@ -3186,7 +3633,8 @@ describe("Claude native relay", () => {
       expect(f.state.nativeDesktopReceipt("crash")?.state).toBe("uncertain");
       expect((await restarted.startTurn({ ...input, idempotencyKey: "crash" })).commandId).toBe("crash-command");
       expect(f.native.calls.filter(call => call.method === "sendMessage")).toEqual([]);
-      expect(f.state.loadBrokerState().pending[0]?.commandId).toBe("old-command");
+      const queued = withDatabase(f.databasePath, (db) => db.prepare("SELECT command_id FROM turn_queue").all() as Array<{ command_id: string }>);
+      expect(queued[0]?.command_id).toBe("old-command");
     } finally { await restarted?.close(); await f.close(); }
   });
 
@@ -3803,5 +4251,401 @@ describe("Claude native relay", () => {
       expect(changed).toBe(1);
       expect(f.bridge.session("local-native")?.runningSubagents).toBeUndefined();
     } finally { await f.close(); }
+  });
+
+  it("discovers configLibrary Magpie gateways, caches /v1/models across refreshes, and resolves Windows/Mac synthetic model labels", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-magpie-runtime-"));
+    const state = new ConversationStateStore({ databasePath: join(root, "state.sqlite") });
+    await state.initialize();
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"));
+    await eventLog.initialize();
+    const native = new NativeDesktop();
+    const deepseekId = "remote-magpie/deepseek/deepseek-flash";
+    const deepseekAlias = `mythos-magpie-${magpieModelIdHash(deepseekId)}`;
+    const fableAlias = `magpie-${magpieModelIdHash("claude/claude-fable-5-2")}.anthropic.claude-fable-5-2[1m]`;
+    native.sessions = [
+      { sessionId: "win-session", cwd: "/project", title: "Win", isRunning: true, turnRunning: false, permissionMode: "default", model: deepseekAlias, pendingToolPermissions: [] },
+      { sessionId: "mac-session", cwd: "/project", title: "Mac", isRunning: true, turnRunning: false, permissionMode: "default", model: fableAlias, pendingToolPermissions: [] },
+    ];
+    const localAppData = join(root, "AppData", "Local");
+    const roamingAppData = join(root, "AppData", "Roaming");
+    const configLib = join(localAppData, "Claude-3p", "configLibrary");
+    await mkdir(configLib, { recursive: true });
+    await writeFile(join(configLib, "_meta.json"), JSON.stringify({ appliedId: "active" }));
+    await writeFile(join(configLib, "active.json"), JSON.stringify({
+      inferenceProvider: "gateway",
+      inferenceGatewayBaseUrl: "http://127.0.0.1:3425",
+      inferenceGatewayAuthScheme: "bearer",
+      inferenceGatewayApiKey: "test-magpie-token",
+      inferenceModels: [
+        { name: "magpie-5782219464.anthropic.claude-fable-5-2", labelOverride: "Claude Fable 5.2 · Offline", prefer1m: true, supports1m: true },
+      ],
+    }), { mode: 0o600 });
+
+    const magpieConnection = new MagpieConnectionRepository(join(root, "magpie-connection-v1.json"), {
+      isEncryptionAvailable: () => true,
+      encryptString: text => Buffer.from(text, "utf8"),
+      decryptString: buf => buf.toString("utf8"),
+    });
+    let currentTime = 1_000;
+    let failGateway = true;
+    const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+      if (failGateway) throw new Error("offline");
+      if (String(url).includes("/magpie/quotas")) {
+        return Response.json({ data: [{ provider: "deepseek", user: "synthetic", windows: [] }] });
+      }
+      return Response.json({
+        data: [
+          { id: deepseekId, display_name: "DeepSeek-V4.1-Flash", magpie_label: "DeepSeek-V4.1-Flash · DeepSeek · Remote magpie", max_input_tokens: 1_048_576 },
+          { id: "claude/claude-fable-5-2", display_name: "Claude Fable 5.2", magpie_label: "Claude Fable 5.2 · Claude Code", max_input_tokens: 1_000_000, supports_1m: true },
+        ],
+      });
+    }) as unknown as typeof fetch;
+
+    const bridge = new ClaudeDesktopBridge({
+      settingsPath: join(root, "settings.json"),
+      eventLog,
+      conversationState: state,
+      inspector: native,
+      magpieConnection,
+      platform: "win32",
+      home: root,
+      environment: { APPDATA: roamingAppData, LOCALAPPDATA: localAppData, ANTHROPIC_BASE_URL: "https://ambient.other.invalid" },
+      fetchImpl,
+      now: () => currentTime,
+      gatewayModelsCacheMs: 60_000,
+      refreshIntervalMs: 60_000,
+    });
+    try {
+      await bridge.initialize();
+      // Even when initial /v1/models fails, snapshot.magpie is populated and offline configLibrary inferenceModels + humanized slug avoid raw IDs.
+      expect(bridge.magpieSettings()).toEqual({
+        magpie: { mode: "auto", baseUrl: "http://127.0.0.1:3425", authScheme: "bearer", keyConfigured: true },
+      });
+      expect(bridge.session("mac-session")?.modelDisplayName).toBe("Claude Fable 5.2 · Offline");
+      expect(bridge.session("win-session")?.modelDisplayName).toBeUndefined();
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+      // Background refresh within negative cache TTL does not hammer /v1/models.
+      currentTime += 2_000;
+      await bridge.refreshRuntime();
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+      // Explicit configuration() retries a failed initial fetch immediately and loads full Windows Magpie catalog.
+      failGateway = false;
+      const winConfig = await bridge.configuration("win-session");
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      expect(winConfig.modelsComplete).toBe(true);
+      expect(winConfig.model).toBe(deepseekId);
+      expect(winConfig.modelDisplayName).toBe("DeepSeek-V4.1-Flash");
+      expect(bridge.session("win-session")?.modelDisplayName).toBe("DeepSeek-V4.1-Flash");
+
+      // Subsequent configuration() and refreshRuntime() within 60s reuse the cached catalog without extra HTTP calls.
+      currentTime += 5_000;
+      await bridge.refreshRuntime();
+      await bridge.configuration("mac-session");
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+
+      // If a later post-TTL background refresh fails, stale models are retained with ok=false so explicit configuration() retries immediately.
+      currentTime += 65_000;
+      failGateway = true;
+      await bridge.refreshRuntime();
+      expect(fetchImpl).toHaveBeenCalledTimes(3);
+      expect(bridge.session("win-session")?.modelDisplayName).toBe("DeepSeek-V4.1-Flash");
+      currentTime += 1_000;
+      await bridge.refreshRuntime();
+      expect(fetchImpl).toHaveBeenCalledTimes(3);
+      failGateway = false;
+      await bridge.configuration("win-session");
+      expect(fetchImpl).toHaveBeenCalledTimes(4);
+
+      // Unsaved testMagpieConnection({ mode: "auto" }) uses full configLibrary gateway discovery even while saved mode is manual.
+      await bridge.saveMagpieConnection({ mode: "manual", baseUrl: "https://manual.example.test", authScheme: "bearer", apiKey: "manual-key" });
+      expect(fetchImpl).toHaveBeenCalledTimes(5);
+      await expect(bridge.testMagpieConnection({ mode: "auto" })).resolves.toEqual({
+        models: { state: "ready", count: 4 },
+        quota: { state: "available" },
+      });
+      await bridge.saveMagpieConnection({ mode: "auto" });
+
+      // When settings.json saves unprefixed claude-fable-5-2[1m], slug fallback matches both session display and configureSession.
+      await writeFile(join(root, "settings.json"), JSON.stringify({
+        modelPicker: { options: [{ model: "claude-fable-5-2[1m]", label: "Claude Fable 5.2 · Claude Code" }] },
+      }));
+      await bridge.refreshRuntime();
+      expect(bridge.session("mac-session")?.modelDisplayName).toBe("Claude Fable 5.2 · Claude Code");
+      native.codeModels = ["magpie-5782219464.anthropic.claude-fable-5-2"];
+      const updated = await bridge.configureSession({ sessionId: "mac-session", model: "claude-fable-5-2[1m]" });
+      expect(native.calls.find(call => call.method === "setModel")?.args).toEqual([
+        "mac-session",
+        "magpie-5782219464.anthropic.claude-fable-5-2[1m]",
+      ]);
+      expect(updated.modelDisplayName).toBe("Claude Fable 5.2 · Claude Code");
+    } finally {
+      await bridge.close();
+      await eventLog.close();
+      state.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("manual session title persistence and automatic first-turn title generation", () => {
+  it("persists an explicit user-provided title via updateSession when start(withoutFirstMessage) leaves native.title empty", async () => {
+    const f = await fixture();
+    try {
+      f.native.ignoreStartTitle = true;
+      const created = await f.bridge.createSession("/new-project", "  移动端远程控制重构  ");
+      expect(created.title).toBe("移动端远程控制重构");
+      expect(f.native.calls.find(call => call.method === "start")?.args[0]).toMatchObject({
+        cwd: "/new-project",
+        title: "移动端远程控制重构",
+        withoutFirstMessage: true,
+        message: "",
+      });
+      expect(f.native.calls.filter(call => call.method === "updateSession")).toEqual([
+        { method: "updateSession", args: [created.sessionId, { title: "移动端远程控制重构" }] },
+      ]);
+
+      // Subsequent first turn must NOT auto-title a manually titled session.
+      await f.bridge.startTurn({ ...input, sessionId: created.sessionId, idempotencyKey: "manual-1", text: "随便聊聊" });
+      await new Promise(resolve => setTimeout(resolve, 30));
+      expect(f.native.calls.filter(call => call.method === "updateSession")).toHaveLength(1);
+      expect(f.bridge.session(created.sessionId)?.title).toBe("移动端远程控制重构");
+    } finally {
+      await f.close();
+    }
+  });
+
+  it("auto-titles a blank session non-blockingly on first turn via gateway /v1/messages at most once, and skips sidechats", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-autotitle-"));
+    const state = new ConversationStateStore({
+      databasePath: join(directory, "state.sqlite"),
+      sessionsPath: join(directory, "sessions.json"),
+      queuePath: join(directory, "queue.json"),
+      masterSecret: Buffer.alloc(32, 5).toString("base64url"),
+    });
+    await state.initialize();
+    const eventLog = new SessionEventLog(join(directory, "events.jsonl"));
+    await eventLog.initialize();
+    const native = new NativeDesktop();
+    native.ignoreStartTitle = true;
+
+    let releaseTitleResponse!: (response: Response) => void;
+    const fetchImpl = vi.fn<typeof fetch>((url) => {
+      if (String(url).endsWith("/v1/models?limit=1000")) {
+        return Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }));
+      }
+      return new Promise<Response>((resolve) => {
+        releaseTitleResponse = resolve;
+      });
+    });
+
+    await writeFile(join(directory, "settings.json"), JSON.stringify({
+      env: {
+        ANTHROPIC_BASE_URL: "https://gateway.example.test",
+        ANTHROPIC_AUTH_TOKEN: "test-gateway-token",
+      },
+    }));
+
+    const bridge = new ClaudeDesktopBridge({
+      settingsPath: join(directory, "settings.json"),
+      eventLog,
+      conversationState: state,
+      inspector: native,
+      fetchImpl,
+      environment: {},
+      home: directory,
+      scanCatalog: async () => ({ projects: [], sessions: [], observedAt: 0 }),
+      refreshIntervalMs: 60_000,
+      autoTitleGraceMs: 5,
+    });
+    await bridge.initialize();
+
+    try {
+      const blank = await bridge.createSession("/new-project", "   ");
+      expect(native.calls.find(call => call.method === "start")?.args[0]).not.toHaveProperty("title");
+      expect(blank.title).toBe("Claude 会话");
+
+      // startTurn resolves immediately without waiting for the background HTTP title request.
+      const receipt = await bridge.startTurn({
+        sessionId: blank.sessionId,
+        text: "请帮我实现新建会话自动生成标题与竞态保护",
+        requestId: "req-1",
+        idempotencyKey: "idem-1",
+        origin: "mobile",
+      });
+      expect(receipt.state).toBe("submitted");
+      await vi.waitFor(() => expect(releaseTitleResponse).toBeTypeOf("function"));
+      expect(bridge.session(blank.sessionId)?.title).toBe("Claude 会话");
+
+      const changed = once(bridge, "changed");
+      releaseTitleResponse(new Response(JSON.stringify({
+        content: [{ type: "text", text: '"自动生成会话标题"' }],
+      }), { status: 200 }));
+      await changed;
+
+      expect(bridge.session(blank.sessionId)?.title).toBe("自动生成会话标题");
+      expect(native.calls.filter(call => call.method === "updateSession")).toEqual([
+        { method: "updateSession", args: [blank.sessionId, { title: "自动生成会话标题" }] },
+      ]);
+
+      // A second turn on the same session never triggers another title generation request.
+      const messageCallsBefore = fetchImpl.mock.calls.filter(([url]) => String(url).endsWith("/v1/messages")).length;
+      await bridge.startTurn({
+        sessionId: blank.sessionId,
+        text: "继续补充边界测试",
+        requestId: "req-2",
+        idempotencyKey: "idem-2",
+        origin: "mobile",
+      });
+      await new Promise(resolve => setTimeout(resolve, 25));
+      expect(fetchImpl.mock.calls.filter(([url]) => String(url).endsWith("/v1/messages"))).toHaveLength(messageCallsBefore);
+
+      // Sidechat (/btw) with empty title must never be auto-titled.
+      native.sessions.push({
+        sessionId: "side-1",
+        cwd: "/new-project",
+        title: "",
+        isRunning: false,
+        turnRunning: false,
+        spawnedFrom: { sessionId: blank.sessionId, btw: true },
+      });
+      await bridge.refreshRuntime();
+      await bridge.startTurn({
+        sessionId: "side-1",
+        text: "顺便问一下这个类型怎么写",
+        requestId: "req-side",
+        idempotencyKey: "idem-side",
+        origin: "mobile",
+      });
+      await new Promise(resolve => setTimeout(resolve, 25));
+      expect(native.calls.some(call => call.method === "updateSession" && call.args[0] === "side-1")).toBe(false);
+    } finally {
+      await bridge.close();
+      await eventLog.close();
+      state.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("never overwrites a title populated natively or via user rename while auto-title generation is in flight", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-autotitle-race-"));
+    const state = new ConversationStateStore({
+      databasePath: join(directory, "state.sqlite"),
+      sessionsPath: join(directory, "sessions.json"),
+      queuePath: join(directory, "queue.json"),
+      masterSecret: Buffer.alloc(32, 6).toString("base64url"),
+    });
+    await state.initialize();
+    const eventLog = new SessionEventLog(join(directory, "events.jsonl"));
+    await eventLog.initialize();
+    const native = new NativeDesktop();
+    native.ignoreStartTitle = true;
+
+    let releaseFetch!: (response: Response) => void;
+    const fetchImpl = vi.fn<typeof fetch>(() => new Promise<Response>((resolve) => { releaseFetch = resolve; }));
+    await writeFile(join(directory, "settings.json"), JSON.stringify({
+      env: { ANTHROPIC_API_KEY: "test-key" },
+    }));
+
+    const bridge = new ClaudeDesktopBridge({
+      settingsPath: join(directory, "settings.json"),
+      eventLog,
+      conversationState: state,
+      inspector: native,
+      fetchImpl,
+      environment: {},
+      home: directory,
+      scanCatalog: async () => ({ projects: [], sessions: [], observedAt: 0 }),
+      refreshIntervalMs: 60_000,
+      autoTitleGraceMs: 5,
+    });
+    await bridge.initialize();
+
+    try {
+      // Case 1: Native Desktop populates title while HTTP generation is in flight.
+      const s1 = await bridge.createSession("/race-1");
+      await bridge.startTurn({
+        sessionId: s1.sessionId,
+        text: "测试原生标题竞态保护",
+        requestId: "r1",
+        idempotencyKey: "k1",
+        origin: "mobile",
+      });
+      await vi.waitFor(() => expect(releaseFetch).toBeTypeOf("function"));
+      const target1 = native.sessions.find(item => item.sessionId === s1.sessionId)!;
+      target1.title = "原生自动生成标题";
+      releaseFetch(new Response(JSON.stringify({
+        content: [{ type: "text", text: "网关晚到的标题" }],
+      }), { status: 200 }));
+      await new Promise(resolve => setTimeout(resolve, 25));
+      expect(native.calls.some(call => call.method === "updateSession" && call.args[0] === s1.sessionId)).toBe(false);
+      expect(bridge.session(s1.sessionId)?.title).toBe("原生自动生成标题");
+
+      // Case 2: Image-only fallback when no gateway is reachable.
+      fetchImpl.mockRejectedValueOnce(new Error("network offline"));
+      const s2 = await bridge.createSession("/race-2");
+      const changed = once(bridge, "changed");
+      await bridge.startTurn({
+        sessionId: s2.sessionId,
+        text: "",
+        attachments: [{ id: "img-1", name: "screen.png", mimeType: "image/png", size: 16, data: "AAAA" }],
+        requestId: "r2",
+        idempotencyKey: "k2",
+        origin: "mobile",
+      });
+      await changed;
+      expect(bridge.session(s2.sessionId)?.title).toBe("图片分析");
+
+      // Case 3: Concurrent rename() while autoTitleSession's final getSession read is already in flight.
+      fetchImpl.mockImplementationOnce(async () => new Response(JSON.stringify({
+        content: [{ type: "text", text: "过期的自动标题" }],
+      }), { status: 200 }));
+      const s3 = await bridge.createSession("/race-3");
+      let getSessionCountForS3 = 0;
+      let releaseFinalGetSession!: () => void;
+      let finalGetSessionEntered!: () => void;
+      const enteredFinalGetSession = new Promise<void>(resolve => { finalGetSessionEntered = resolve; });
+      const holdFinalGetSession = new Promise<void>(resolve => { releaseFinalGetSession = resolve; });
+      const originalCall = native.call.bind(native);
+      native.call = async (method, args = []) => {
+        if (method === "getSession" && args[0] === s3.sessionId) {
+          getSessionCountForS3 += 1;
+          // 1st getSession is pre-check; 2nd getSession is the final serialized re-check before updateSession!
+          if (getSessionCountForS3 === 2) {
+            const staleSnapshot = await originalCall(method, args);
+            finalGetSessionEntered();
+            await holdFinalGetSession;
+            return staleSnapshot;
+          }
+        }
+        return originalCall(method, args);
+      };
+
+      await bridge.startTurn({
+        sessionId: s3.sessionId,
+        text: "测试并发手动重命名不丢失",
+        requestId: "r3",
+        idempotencyKey: "k3",
+        origin: "mobile",
+      });
+      await enteredFinalGetSession;
+      const renamePromise = bridge.rename(s3.sessionId, "用户并发手动改名");
+      releaseFinalGetSession();
+      await renamePromise;
+      await new Promise(resolve => setTimeout(resolve, 25));
+      native.call = originalCall;
+
+      expect(native.calls.filter(call => call.method === "updateSession" && call.args[0] === s3.sessionId)).toEqual([
+        { method: "updateSession", args: [s3.sessionId, { title: "用户并发手动改名" }] },
+      ]);
+      expect(bridge.session(s3.sessionId)?.title).toBe("用户并发手动改名");
+    } finally {
+      await bridge.close();
+      await eventLog.close();
+      state.close();
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 });

@@ -1,157 +1,101 @@
-import { isClaudeNativeRelay } from "../../hooks/useMobileBridge.js";
 import type {
-  BridgeAttachment,
-  BridgeArtifactManifest,
-  BridgeArtifactPreview,
-  BridgeEvidenceBundle,
-  BridgeEvidenceDetailPage,
-  BridgeEvidencePage,
-  BridgeEvent,
-  BridgeHistoryPage,
   BridgeDesktopRuntimeId,
-  BridgeNativePermissionMode,
-  BridgePrAutoFixState,
-  BridgePrAutoFixUpdate,
-  BridgePullRequest,
-  BridgeProviderProfile,
+  BridgeDirectoryListing,
+  BridgeEvent,
+  BridgeProjectInfo,
   BridgeResponse,
-  BridgeSessionCommandResult,
-  BridgeSessionRewindPreview,
-  BridgeSessionRewindResult,
-  BridgeSessionPermissions,
-  BridgeSessionConfiguration,
   BridgeSessionInfo,
-  BridgeSlashCommandCatalog,
   DesktopControlSnapshot,
   LocalBridgeRequest,
 } from "@bridge/protocol";
 import {
   AlertTriangle,
-  Archive,
-  ArchiveRestore,
-  ArrowDownUp,
-  ChevronDown,
-  ChevronRight,
-  ChevronsDown,
-  ChevronsUp,
-  CircleStop,
-  Forward,
-  GitFork,
-  GitPullRequest,
-  LoaderCircle,
-  MessageSquare,
+  Mail,
+  MoreHorizontal,
+  PanelLeft,
   Plus,
-  RefreshCw,
-  Send,
+  Search,
   Settings2,
-  Trash2,
-  X,
+  SquarePen,
 } from "lucide-react";
-import { evidenceSummary } from "@bridge/protocol";
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { SessionEvidenceState, SessionHistoryState } from "../../hooks/useMobileBridge.js";
-import { downloadBridgeArtifact } from "../../lib/artifact-download.js";
-import { useStreamEntrance } from "../../lib/stream-entrance.js";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import type { ThemeControl } from "../../hooks/useTheme.js";
 import {
-  collapseProjects,
-  expandAllProjects,
+  CLAUDE_UNSECTIONED_PROJECT_ID,
   expandProject,
   getSessionAncestorIds,
   groupProjectSessionFamilies,
-  orderProjects,
-  toggleCollapsedProject,
 } from "../../lib/project-groups.js";
-import { ConfirmationDialog } from "../common/ConfirmationDialog.js";
-import { EvidenceInlineSummary, EvidencePanel } from "../evidence/EvidencePanel.js";
-import { FileChangesCard } from "../evidence/FileChangesCard.js";
-import { ComposerAttachmentMenu, FileAttachmentPicker, useFileAttachments } from "../evidence/FileAttachmentPicker.js";
-import { appendUploadedFilePaths, uploadSessionFile } from "../../lib/file-upload.js";
-import { MediaGallery } from "../evidence/MediaGallery.js";
-import { useMediaPreview } from "../evidence/MediaPreviewProvider.js";
-import { mediaArtifacts, mediaKind } from "../../lib/media-preview.js";
-import { IconButton } from "../common/IconButton.js";
-import { MarkdownText } from "../common/MarkdownText.js";
-import {
-  aggregateFileChanges,
-  canConfigureSession,
-  canSendSession,
-  conversationItems,
-  conversationTimeline,
-  fileToAttachment,
-  ownershipLabel,
-  stoppableBridgeTask,
-} from "../../lib/conversation-timeline.js";
-import { desktopRuntimeId, desktopRuntimeName } from "../../lib/runtime-labels.js";
-import { EmptyState } from "../common/EmptyState.js";
-import { ProjectOrderSheet } from "../mobile/ProjectOrderSheet.js";
-import { ProjectGroupHeader } from "../session/ProjectGroupHeader.js";
-import { SessionFamilyList } from "../session/SessionFamilyList.js";
-import { SessionProfileSummary } from "../session/SessionProfileSummary.js";
-import {
-  InteractivePromptCard,
-  matchingQuestionPermission,
-  PermissionPrompt,
-} from "../conversation/PermissionPrompts.js";
-import { SubagentCard } from "../conversation/SubagentCard.js";
-import { NativePromptCard } from "../conversation/NativePromptCard.js";
-import { SessionPrActions, SessionPrBar } from "../conversation/SessionPrBar.js";
-import { Sheet } from "../common/Sheet.js";
-import { SessionActivityIndicator, SessionContextUsageBar } from "../conversation/SessionActivityIndicator.js";
-import { SlashCommandInput } from "../conversation/SlashCommandInput.js";
-import { sessionCommandName, useSessionCommands } from "../../hooks/useSessionCommands.js";
-import { SessionCommandDialogs } from "../conversation/SessionCommandDialogs.js";
-import { SessionRewindDialog } from "../conversation/SessionRewindDialog.js";
-import { SessionNoticeCard } from "../conversation/SessionNoticeCard.js";
-import { sessionActivity } from "../../lib/session-activity.js";
-import {
-  SessionConfigurationDialog,
-  type SessionConfigurationChange,
-} from "../session/SessionConfigurationDialog.js";
-import { SessionCreateDialog } from "../session/SessionCreateDialog.js";
+import { desktopRuntimeId } from "../../lib/runtime-labels.js";
 import { useAssistantMail } from "../assistant/AssistantMailProvider.js";
-import { MailReference } from "../assistant/MailReference.js";
-import { MailCard } from "../assistant/MailCard.js";
+import { EmptyState } from "../common/EmptyState.js";
+import { IconButton } from "../common/IconButton.js";
+import { ThemeMenu } from "../common/ThemeMenu.js";
+import { useConversationDrafts } from "../conversation/ConversationDraftsProvider.js";
+import { ProjectOrderSheet } from "../mobile/ProjectOrderSheet.js";
+import { NewChatCanvas, type NewChatDirectoryPickerRequest } from "../session/NewChatCanvas.js";
+import { ProjectGroupHeader } from "../session/ProjectGroupHeader.js";
+import { SectionCreateDialog, type SectionCreateState } from "../session/SectionCreateDialog.js";
+import { SectionManageDialog, useSectionManage } from "../session/SectionManageDialog.js";
+import { SessionActionSheets } from "../session/SessionActionSheets.js";
+import { SessionCreateDialog } from "../session/SessionCreateDialog.js";
+import { SessionFamilyList } from "../session/SessionFamilyList.js";
+import { useProjectSessionGroups } from "../session/useProjectSessionGroups.js";
+import {
+  SessionSectionDragGhost,
+  UNSECTIONED_DROP_ID,
+  useSessionSectionDrag,
+} from "../session/useSessionSectionDrag.js";
+import "../session/section-create.css";
+import {
+  DesktopSessionConversation,
+  unwrap,
+  useDesktopConversation,
+} from "./DesktopSessionConversation.js";
 
-export function unwrap<T>(response: BridgeResponse): T {
-  if (!response.ok) {
-    throw Object.assign(
-      new Error(response.error?.message ?? "Bridge 请求失败"),
-      response.error?.code ? { code: response.error.code } : {},
-    );
-  }
-  return response.result as T;
+export { unwrap };
+
+export type DesktopWorkspaceTab = "sessions" | "assistant" | "settings";
+
+export function connectionLabel(snapshot: DesktopControlSnapshot): string {
+  if (snapshot.host.version.startsWith("0.2.")) return "需要升级";
+  if (snapshot.connection === "connecting" || snapshot.connection === "reconnecting") return "正在重连";
+  if (snapshot.connection !== "connected") return "主机离线";
+  if (snapshot.transport?.path === "direct") return "直连";
+  if (snapshot.transport?.path === "public-relay") return "安全中继";
+  return "局域网连接";
 }
 
-function sessionState(session: BridgeSessionInfo): string {
-  if (session.transport === "claude-desktop-native") return ownershipLabel(session);
-  if (session.desktopHandoff) return ownershipLabel(session);
-  const bridgeCreated = session.source === "bridge";
-  if (session.ownership === "OWNERSHIP_CONFLICT") return "写入冲突";
-  if (session.ownership === "FALLBACK_CONFIRMATION_REQUIRED") return "等待接管";
-  if (session.turnState === "running" && session.executionStage === "starting") return "正在启动";
-  if (session.turnState === "running" && session.executionStage === "submitted") return "已提交，等待执行";
-  if (session.ownership === "DESKTOP_OBSERVED" && session.turnState === "running") {
-    return "桌面运行中";
-  }
-  if (session.turnState === "running") return bridgeCreated ? "Bridge 运行中" : "运行中";
-  if (session.turnState === "queued") return bridgeCreated ? "Bridge 排队中" : "排队中";
-  if (bridgeCreated) return "Bridge 待机";
-  if (session.transport === "claude-desktop-managed") return "Claude Desktop 同步";
-  if (session.ownership === "DESKTOP_OBSERVED") return "桌面待机";
-  return "待机";
-}
-
-function transportLabel(session: BridgeSessionInfo): string {
-  if (session.transport === "claude-desktop-native") return "Claude Desktop 原生会话";
-  if (!session.runtimeId || session.runtimeId === "claude-desktop") return "Claude Desktop";
-  if (session.desktopHandoff) return "手动交接";
-  if (session.transport === "claude-desktop-managed") return "Claude Desktop 同步";
-  if (session.source === "bridge") {
-    if (session.desktopRegistration?.state === "registered") return "Claude Desktop 已登记";
-    if (session.desktopRegistration?.state === "restart-required") return "等待 Desktop 重启";
-    return "仅在 Bridge";
-  }
-  return "桌面会话接管";
+export function DesktopAssistantNavButton({
+  active,
+  onSelect,
+}: {
+  active: boolean;
+  onSelect(): void;
+}) {
+  const assistantMail = useAssistantMail();
+  const unreadCount = assistantMail?.unreadCount ?? 0;
+  return (
+    <button
+      className={`sidebar-assistant-row${active ? " active" : ""}`}
+      type="button"
+      aria-current={active ? "page" : undefined}
+      onClick={onSelect}
+    >
+      <span className="sidebar-assistant-main">
+        <Mail size={15} aria-hidden="true" />
+        <span>助理</span>
+      </span>
+      {unreadCount > 0 && (
+        <span className="sidebar-assistant-unread" aria-hidden="true">
+          <i className="sidebar-unread-dot" />
+          <b className="desktop-nav-badge" aria-hidden="true">
+            {unreadCount > 99 ? "99+" : unreadCount}
+          </b>
+        </span>
+      )}
+    </button>
+  );
 }
 
 export function DesktopSessions({
@@ -160,538 +104,289 @@ export function DesktopSessions({
   apiRequest,
   onRefreshSnapshot,
   initialSessionId,
-  fixedSessionId,
-  onOpenOtherSession,
+  focusRequest,
+  activeTab = "sessions",
+  onSelectTab,
+  themeControl,
+  renderRightCanvas,
 }: {
   initialSessionId?: string | undefined;
-  fixedSessionId?: string | undefined;
-  onOpenOtherSession?(sessionId: string): void;
+  focusRequest?: { sessionId: string; key: number } | undefined;
   snapshot: DesktopControlSnapshot;
   events: BridgeEvent[];
   apiRequest(request: LocalBridgeRequest): Promise<BridgeResponse>;
   onRefreshSnapshot(): Promise<void>;
-  onReturnToDesktop?(sessionId: string): Promise<void>;
-  onTakeoverDesktop?(sessionId: string, commandId?: string): Promise<void>;
+  activeTab?: DesktopWorkspaceTab | undefined;
+  onSelectTab?: ((tab: DesktopWorkspaceTab) => void) | undefined;
+  themeControl?: ThemeControl | undefined;
+  renderRightCanvas?: ((headerLeading: ReactNode) => ReactNode) | undefined;
 }) {
-  const openMedia = useMediaPreview();
-  const [pickedId, setPickedId] = useState(initialSessionId ?? snapshot.sessions[0]?.sessionId);
-  const selectedId = fixedSessionId ?? pickedId;
+  const controller = useDesktopConversation({
+    snapshot,
+    events,
+    apiRequest,
+    onRefreshSnapshot,
+  });
+  const conversationDrafts = useConversationDrafts(snapshot.host.hostId);
+
+  const hostId = snapshot.host.hostId;
+  const hostOnline = snapshot.connection === "connected" && !snapshot.host.version.startsWith("0.2.");
+  const hostEvents = controller.filterEvents(events, hostId);
+
+  const firstActiveId = snapshot.sessions.find((session) => !session.archivedAt)?.sessionId;
+  const storedSelectedId = controller.selectedSessionFor(hostId);
+  const selectedId = storedSelectedId !== undefined
+    ? storedSelectedId
+    : (initialSessionId ?? firstActiveId);
+
+  const {
+    search,
+    setSearch,
+    searchQuery,
+    archivedExpanded,
+    setArchivedExpanded,
+    revealedEmptySectionKey,
+    expandedEmptyProjectIds,
+    projectOrderOpen,
+    setProjectOrderOpen,
+    collapsedProjectIds,
+    setCollapsedProjectIds,
+    expandedForkParents,
+    setExpandedForkParents,
+    manualSections,
+    activeSessions,
+    projectsByActivity,
+    projectOrder,
+    grouped,
+    archivedSessions,
+    archivedFamilies,
+    placeProjects,
+    toggleProject,
+    toggleForkGroup,
+    registerCreatedSection,
+  } = useProjectSessionGroups({
+    hostId,
+    projects: snapshot.projects,
+    sessions: snapshot.sessions,
+    selectedSessionId: selectedId,
+  });
+
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [newChatTarget, setNewChatTarget] = useState<{
+    key: number;
+    initialProjectId?: string | undefined;
+    initialCwd?: string | undefined;
+  }>();
+  const [createDialogState, setCreateDialogState] = useState<NewChatDirectoryPickerRequest>();
+  const [sectionCreate, setSectionCreate] = useState<SectionCreateState>();
+  const [resetError, setResetError] = useState<string>();
+  const [rowMenuSessionId, setRowMenuSessionId] = useState<string>();
+  const [rowMoveMenuSessionId, setRowMoveMenuSessionId] = useState<string>();
+  const [rowRenameSessionId, setRowRenameSessionId] = useState<string>();
+  const [rowRenameTitle, setRowRenameTitle] = useState("");
+  const [rowDeleteSessionId, setRowDeleteSessionId] = useState<string>();
+  const [rowActionBusy, setRowActionBusy] = useState(false);
+  const [rowActionError, setRowActionError] = useState<string>();
+  const desktopProjectListRef = useRef<HTMLDivElement>(null);
+  const rowRenameDialogRef = useRef<HTMLElement>(null);
+  const handledResetEventsRef = useRef(new Set<string>());
+  const handledFocusKeyRef = useRef<number | undefined>(undefined);
+
   function setSelectedId(sessionId: string | undefined): void {
-    if (fixedSessionId) {
-      if (sessionId && sessionId !== fixedSessionId) onOpenOtherSession?.(sessionId);
-    } else setPickedId(sessionId);
+    setResetError(undefined);
+    controller.selectSession(hostId, sessionId);
   }
-  const [history, setHistory] = useState<Record<string, SessionHistoryState>>({});
-  const [promptReplies, setPromptReplies] = useState<Record<string, Record<string, string | null>>>({});
-  const [evidence, setEvidence] = useState<Record<string, SessionEvidenceState>>({});
-  const [artifactPreviews, setArtifactPreviews] = useState<Record<string, BridgeArtifactPreview>>({});
-  const [artifactTransfers, setArtifactTransfers] = useState<Record<string, number>>({});
-  const [sessionView, setSessionView] = useState<"conversation" | "evidence">("conversation");
-  const [text, setText] = useState("");
-  const [attachments, setAttachments] = useState<BridgeAttachment[]>([]);
-  const [sending, setSending] = useState(false);
-  const [stoppingSessionId, setStoppingSessionId] = useState<string>();
-  const [stopError, setStopError] = useState<string>();
-  const [createOpen, setCreateOpen] = useState(false);
-  const [configurationOpen, setConfigurationOpen] = useState(false);
-  const [rewindTarget, setRewindTarget] = useState<{ sessionId: string; messageId?: string }>();
-  const [archivedExpanded, setArchivedExpanded] = useState(false);
-  const [deleteSessionOpen, setDeleteSessionOpen] = useState(false);
-  const [sessionActionBusy, setSessionActionBusy] = useState(false);
-  const [sessionActionError, setSessionActionError] = useState<string>();
-  const [projectOrderOpen, setProjectOrderOpen] = useState(false);
-  const [prActionsOpen, setPrActionsOpen] = useState(false);
-  const projectOrderKey = `bridge-project-order:${snapshot.host.hostId}`;
-  const [placedProjects, setPlacedProjects] = useState<string[]>(() => (
-    JSON.parse(localStorage.getItem(projectOrderKey) ?? "[]") as string[]
-  ));
-  const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(() => new Set());
-  const [expandedForkParents, setExpandedForkParents] = useState<Set<string>>(() => new Set());
-  const handledCommandEvents = useRef(new Set<string>());
-  useEffect(() => {
-    for (const event of events) {
-      if ((event.type !== "session.reset" && event.type !== "session.compacted" && event.type !== "session.rewound") || handledCommandEvents.current.has(event.eventId)) continue;
-      handledCommandEvents.current.add(event.eventId);
-      if (!fixedSessionId && event.type === "session.reset" && event.data.previousSessionId === selectedId && typeof event.data.sessionId === "string") {
-        const sessionId = event.data.sessionId;
-        setHistory(current => ({ ...current, [sessionId]: { status: "ready", items: [], hasMore: false } }));
-        setText(""); setAttachments([]); setConfigurationOpen(false); setSelectedId(sessionId);
-        void onRefreshSnapshot().then(() => openSession(sessionId)).catch(reason => setStopError(reason instanceof Error ? reason.message : "新会话打开失败"));
-      } else if (event.type === "session.rewound" && event.sessionId) {
-        const sessionId = event.sessionId;
-        setHistory(current => ({ ...current, [sessionId]: { status: "loading", items: [], hasMore: false } }));
-        if (sessionId === selectedId) void openSession(sessionId);
-      } else if (event.type === "session.compacted" && event.sessionId === selectedId) {
-        void openSession(selectedId!);
-      }
+
+  function selectSessionFromSidebar(sessionId: string): void {
+    setNewChatTarget(undefined);
+    setSelectedId(sessionId);
+    if (activeTab !== "sessions") {
+      onSelectTab?.("sessions");
     }
-  }, [events]);
-  const fileRef = useRef<HTMLInputElement>(null);
-  const streamRef = useRef<HTMLDivElement>(null);
-  const selected = snapshot.sessions.find((session) => session.sessionId === selectedId);
-  function openSessionFile(filePath: string): void {
-    const kind = mediaKind(filePath);
-    if (kind && selected) openMedia({ name: filePath.split(/[\\/]/u).at(-1) || filePath, kind, sessionId: selected.sessionId, path: filePath });
   }
-  const otherNativePromptSession = snapshot.sessions.find(session => session.sessionId !== selectedId && snapshot.prompts?.some(prompt => prompt.sessionId === session.sessionId));
-  const fileUploads = useFileAttachments(selected?.sessionId, (sessionId, file, onProgress, signal) =>
-    uploadSessionFile(async (method, params) => apiRequest({ method, params }), sessionId, file, onProgress, signal));
-  const selectedRuntime = selected ? desktopRuntimeId(selected) : "claude-desktop";
-  const selectedRuntimeName = desktopRuntimeName(selectedRuntime);
-  const [commandError, setCommandError] = useState<string>();
-  const composerKey = JSON.stringify([snapshot.host.hostId, selectedId]);
-  const composerKeyRef = useRef(composerKey);
-  composerKeyRef.current = composerKey;
-  useEffect(() => {
-    setSending(false);
-    setCommandError(undefined);
-  }, [composerKey]);
-  const commands = useSessionCommands({
-    sessionId: selected?.sessionId,
-    sessionKey: composerKey,
-    enabled: selectedRuntime === "claude-desktop",
-    supported: snapshot.host.capabilities.includes("session.command.v1"),
-    onLoad: selected && selectedRuntime === "claude-desktop" && snapshot.host.capabilities.includes("session.commands.v1")
-      ? async () => unwrap<{ catalog: BridgeSlashCommandCatalog }>(await apiRequest({ method: "session.commands", params: { sessionId: selected.sessionId } })).catalog
-      : undefined,
-    onRun: async value => {
-      const result = unwrap<{ command: BridgeSessionCommandResult }>(await apiRequest({ method: "session.command", params: { sessionId: selected!.sessionId, text: value } })).command;
-      if (result.session) await onRefreshSnapshot();
-      return result;
-    },
-    onModel: () => setConfigurationOpen(true),
-    onRewind: () => setRewindTarget({ sessionId: selected!.sessionId }),
-    onSession: async sessionId => { setSelectedId(sessionId); await openSession(sessionId); },
-  });
-  const commandDraft = commands.recognizes(text.trim());
-  const canAttachImages = selected
-    ? snapshot.runtimes?.find((runtime) => runtime.id === selectedRuntime)?.capabilities.includes("attachment.image")
-      ?? selectedRuntime === "claude-desktop"
-    : false;
-  const canConfigure = Boolean(selected && canConfigureSession(selected, snapshot));
-  const rewindAvailable = selected?.transport === "claude-desktop-native" && snapshot.host.capabilities.includes("session.rewind.v1");
-  const rewindDisabled = selected?.turnState === "running" || selected?.turnState === "waiting" || Boolean(selected?.pendingCount);
-  const assistantMail = useAssistantMail();
-  const selectedEvidence = selectedId ? evidence[selectedId] : undefined;
-  const stopTarget = stoppableBridgeTask(snapshot.sessions, selected?.sessionId);
-  const canStop = Boolean(stopTarget);
-  const stopping = stopTarget?.sessionId === stoppingSessionId;
-  const stoppingBlocker = Boolean(stopTarget && stopTarget.sessionId !== selected?.sessionId);
-  const items = useMemo(() => (
-    selectedId ? conversationItems(selectedId, history[selectedId], events, [], false, promptReplies[selectedId]) : []
-  ), [events, history, promptReplies, selectedId]);
-  const fileChangesSummary = useMemo(() => aggregateFileChanges(items), [items]);
-  const timeline = useMemo(
-    () => conversationTimeline(items, selectedEvidence?.items ?? [], selectedId ? assistantMail?.cache.cards.filter(card => (card.nativeDelivery.nativeSessionId ?? snapshot.assistantMail?.binding?.nativeSessionId) === selectedId) ?? [] : []),
-    [items, selectedEvidence?.items, assistantMail?.cache.cards, snapshot.assistantMail?.binding?.nativeSessionId, selectedId],
-  );
-  const streamKeys = useMemo(() => timeline.map((entry) => (
-    entry.kind === "evidence" ? `evidence:${entry.evidence.id}` : entry.kind === "mail" ? `mail:${entry.card.mailRefId}` : entry.item.id
-  )), [timeline]);
-  const streamEntering = useStreamEntrance(selectedId, streamKeys);
-  const activity = useMemo(() => sessionActivity(selected, items), [selected, items]);
-  const projectsByActivity = useMemo(() => {
-    const latest = new Map<string, number>();
-    for (const session of snapshot.sessions) {
-      if (!session.archivedAt) latest.set(session.projectId, Math.max(latest.get(session.projectId) ?? 0, session.lastActivityAt));
-    }
-    return [...latest.keys()].sort((left, right) => latest.get(right)! - latest.get(left)!);
-  }, [snapshot.sessions]);
-  const projectOrder = useMemo(() => orderProjects(projectsByActivity, placedProjects), [placedProjects, projectsByActivity]);
-  useEffect(() => {
-    const unplaced = projectOrder.filter(projectId => !placedProjects.includes(projectId));
-    if (unplaced.length) placeProjects([...unplaced, ...placedProjects]);
-  }, [placedProjects, projectOrder]);
-  const grouped = useMemo(() => {
-    const activeParentProjects = new Map(
-      snapshot.sessions.filter((candidate) => !candidate.archivedAt).map((candidate) => [candidate.sessionId, candidate.projectId]),
-    );
-    const map = new Map<string, BridgeSessionInfo[]>();
-    for (const session of snapshot.sessions.filter((candidate) => (
-      (!candidate.archivedAt || Boolean(candidate.sidechat && candidate.parentSessionId && activeParentProjects.get(candidate.parentSessionId) === candidate.projectId))
 
-    ))) {
-      const list = map.get(session.projectId) ?? [];
-      list.push(session);
-      map.set(session.projectId, list);
-    }
-    return projectOrder.filter(projectId => map.has(projectId)).map(projectId => [projectId, map.get(projectId)!] as const);
-  }, [projectOrder, snapshot.sessions]);
-  const visibilityAvailable = snapshot.host.capabilities.includes("session.visibility.v1");
-  const archivedSessions = useMemo(() => snapshot.sessions.filter((candidate) => (
-    Boolean(candidate.archivedAt)
-  )), [snapshot.sessions]);
-  const selectedBusy = Boolean(selected && (
-    selected.turnState === "running" || selected.turnState === "queued" || selected.turnState === "waiting"
-  ));
-  const groupedProjectIds = useMemo(
-    () => grouped.map(([groupProjectId]) => groupProjectId),
-    [grouped],
-  );
-  const allProjectsCollapsed = groupedProjectIds.length > 0
-    && groupedProjectIds.every((groupProjectId) => collapsedProjectIds.has(groupProjectId));
-  const allProjectsExpanded = groupedProjectIds.length > 0
-    && groupedProjectIds.every((groupProjectId) => !collapsedProjectIds.has(groupProjectId));
-  const uncertainDeliveries = useMemo(() => {
-    if (!selectedId) return [];
-    const latest = new Map<string, BridgeEvent>();
-    for (const event of events) {
-      if (
-        event.sessionId !== selectedId ||
-        event.type !== "message.delivery" ||
-        typeof event.data.commandId !== "string"
-      ) continue;
-      const previous = latest.get(event.data.commandId);
-      if (!previous || event.seq > previous.seq) latest.set(event.data.commandId, event);
-    }
-    return [...latest.values()].filter((event) => event.data.delivery === "uncertain");
-  }, [events, selectedId]);
-
-  useEffect(() => {
-    if (!selectedId) return;
-    setSessionView("conversation");
-    setConfigurationOpen(false);
-    setPrActionsOpen(false);
-    setStopError(undefined);
-    void openSession(selectedId);
-  }, [selectedId]);
-
-  useEffect(() => {
-    const incoming = events.flatMap((event): BridgeEvidenceBundle[] => {
-      if (!event.type.startsWith("evidence.")) return [];
-      const item = event.data.evidence as Partial<BridgeEvidenceBundle> | undefined;
-      if (
-        !item ||
-        typeof item.id !== "string" ||
-        typeof item.sessionId !== "string" ||
-        !Array.isArray(item.tools) ||
-        !Array.isArray(item.artifacts)
-      ) return [];
-      return [evidenceSummary(item as BridgeEvidenceBundle)];
-    });
-    if (incoming.length === 0) return;
-    setEvidence((current) => {
-      const next = { ...current };
-      for (const item of incoming) {
-        const previous = next[item.sessionId] ?? { status: "ready", items: [], hasMore: false };
-        const merged = new Map(previous.items.map((candidate) => [candidate.id, candidate]));
-        merged.set(item.id, item);
-        next[item.sessionId] = {
-          ...previous,
-          status: "ready",
-          items: [...merged.values()].sort((left, right) => right.startedAt - left.startedAt),
-        };
-      }
-      return next;
-    });
-  }, [events]);
-
-  useEffect(() => {
-    if (fixedSessionId || (selectedId && snapshot.sessions.some((session) => session.sessionId === selectedId))) return;
-    setSelectedId(snapshot.sessions[0]?.sessionId);
-  }, [selectedId, snapshot.sessions]);
-
-  const autoExpandedForkKeysRef = useRef(new Set<string>());
-  useEffect(() => {
-    const parentsToExpand: string[] = [];
-    for (const session of snapshot.sessions) {
-      if (!session.parentSessionId) continue;
-      const isSelected = session.sessionId === selectedId;
-      const isActive = session.turnState === "running" || session.turnState === "waiting" || session.turnState === "queued";
-      const selectedKey = `selected:${session.sessionId}`;
-      if (isSelected) {
-        if (!autoExpandedForkKeysRef.current.has(selectedKey)) {
-          autoExpandedForkKeysRef.current.add(selectedKey);
-          parentsToExpand.push(...getSessionAncestorIds(snapshot.sessions, session.sessionId));
+  const handleRenameSection = useMemo(
+    () => (snapshot.host.capabilities.includes("section.rename.v1")
+      ? async (sectionId: string, name: string) => {
+          const result = unwrap<{ project?: BridgeProjectInfo; projects?: BridgeProjectInfo[]; sessions?: BridgeSessionInfo[] }>(
+            await apiRequest({ method: "section.rename", params: { sectionId, name } }),
+          );
+          await onRefreshSnapshot();
+          return result;
         }
-      } else {
-        autoExpandedForkKeysRef.current.delete(selectedKey);
-      }
-      const activeKey = `active:${session.sessionId}`;
-      if (isActive) {
-        if (!autoExpandedForkKeysRef.current.has(activeKey)) {
-          autoExpandedForkKeysRef.current.add(activeKey);
-          parentsToExpand.push(...getSessionAncestorIds(snapshot.sessions, session.sessionId));
+      : undefined),
+    [apiRequest, onRefreshSnapshot, snapshot.host.capabilities],
+  );
+
+  const handleDeleteSection = useMemo(
+    () => (snapshot.host.capabilities.includes("section.delete.v1")
+      ? async (sectionId: string) => {
+          const result = unwrap<{ projects?: BridgeProjectInfo[]; sessions?: BridgeSessionInfo[] }>(
+            await apiRequest({ method: "section.delete", params: { sectionId } }),
+          );
+          await onRefreshSnapshot();
+          return result;
         }
-      } else {
-        autoExpandedForkKeysRef.current.delete(activeKey);
+      : undefined),
+    [apiRequest, onRefreshSnapshot, snapshot.host.capabilities],
+  );
+
+  const handleBrowseDirectory = useMemo(
+    () => (snapshot.host.capabilities.includes("directory.browse.v1")
+      ? async (path?: string) => (
+          unwrap<{ listing: BridgeDirectoryListing }>(
+            await apiRequest({ method: "directory.list", params: path ? { path } : {} }),
+          ).listing
+        )
+      : undefined),
+    [apiRequest, snapshot.host.capabilities],
+  );
+
+  const handleCreateDirectory = useMemo(
+    () => (snapshot.host.capabilities.includes("directory.mkdir.v1")
+      ? async (parentPath: string, name: string) => (
+          unwrap<{ path: string }>(
+            await apiRequest({ method: "directory.mkdir", params: { parentPath, name } }),
+          ).path
+        )
+      : undefined),
+    [apiRequest, snapshot.host.capabilities],
+  );
+
+  const sectionManage = useSectionManage({
+    activeHostId: hostId,
+    desktopName: snapshot.host.name,
+    snapshot,
+    connection: "connected",
+    desktopOnline: true,
+    onRenameSection: handleRenameSection,
+    onDeleteSection: handleDeleteSection,
+  });
+
+  function startNewChat(targetProjectId?: string, targetCwd?: string): void {
+    setCreateDialogState(undefined);
+    setRowMoveMenuSessionId(undefined);
+    setRowRenameSessionId(undefined);
+    setRowMenuSessionId(undefined);
+    setNewChatTarget((previous) => ({
+      key: (previous?.key ?? 0) + 1,
+      ...(targetProjectId !== undefined ? { initialProjectId: targetProjectId } : {}),
+      ...(targetCwd !== undefined ? { initialCwd: targetCwd } : {}),
+    }));
+    if (activeTab !== "sessions") {
+      onSelectTab?.("sessions");
+    }
+  }
+
+  function openCreateDialogForProject(targetProjectId?: string): void {
+    startNewChat(targetProjectId);
+  }
+
+  function openDirectoryPickerFromCanvas(request?: NewChatDirectoryPickerRequest): void {
+    setCreateDialogState(request ?? {});
+  }
+
+  function jumpToSession(sessionId: string): void {
+    const target = snapshot.sessions.find((candidate) => candidate.sessionId === sessionId);
+    if (target) {
+      setCollapsedProjectIds((current) => expandProject(current, target.projectId));
+      if (target.archivedAt) setArchivedExpanded(true);
+      const ancestors = getSessionAncestorIds(snapshot.sessions, target.sessionId);
+      if (ancestors.length > 0) {
+        setExpandedForkParents((current) => new Set([...current, ...ancestors]));
       }
     }
-    if (parentsToExpand.length > 0) {
-      setExpandedForkParents((current) => {
-        const next = new Set(current);
-        for (const parentId of parentsToExpand) next.add(parentId);
-        return next.size === current.size ? current : next;
-      });
-    }
-  }, [selectedId, snapshot.sessions]);
+    if (search.trim()) setSearch("");
+    selectSessionFromSidebar(sessionId);
+  }
 
-  const streamScrollState = useRef<{ sessionId: string | undefined; count: number }>({
-    sessionId: undefined,
-    count: 0,
-  });
-  useEffect(() => {
-    const stream = streamRef.current;
-    if (!stream) return;
-    const previous = streamScrollState.current;
-    streamScrollState.current = { sessionId: selectedId, count: streamKeys.length };
-    const jump = () => stream.scrollTo({ top: stream.scrollHeight });
-    // Session switch or a bulk (re)load lands at the bottom instantly.
-    if (previous.sessionId !== selectedId || streamKeys.length - previous.count > 6) {
-      jump();
-      return;
-    }
-    // Live appends and streaming text growth follow smoothly only while the
-    // user is pinned to the bottom; scrolling up to read must never yank
-    // the view back down.
-    const pinnedToBottom = stream.scrollHeight - stream.scrollTop - stream.clientHeight < 120;
-    if (!pinnedToBottom) return;
-    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    stream.scrollTo({ top: stream.scrollHeight, behavior: reduced ? "auto" : "smooth" });
-  }, [streamKeys, selectedId]);
+  const supportsCreateSection = snapshot.host.capabilities.includes("section.create.v1");
+  const sectionCanCreate = Boolean(
+    supportsCreateSection
+    && sectionCreate?.name.trim()
+    && !sectionCreate.busy,
+  );
 
-  async function openSession(sessionId: string): Promise<void> {
-    setHistory((current) => ({
-      ...current,
-      [sessionId]: {
-        status: "loading",
-        items: current[sessionId]?.items ?? [],
-        hasMore: current[sessionId]?.hasMore ?? false,
-      },
+  function closeSectionCreate(): void {
+    if (!sectionCreate?.busy) setSectionCreate(undefined);
+  }
+
+  async function createSectionFromName(
+    rawName: string,
+    options?: { clearSearch?: boolean | undefined },
+  ): Promise<BridgeProjectInfo> {
+    const { project } = unwrap<{ project?: BridgeProjectInfo }>(await apiRequest({
+      method: "section.create",
+      params: { name: rawName.trim() },
     }));
-    setEvidence((current) => ({
-      ...current,
-      [sessionId]: {
-        status: "loading",
-        items: current[sessionId]?.items ?? [],
-        hasMore: current[sessionId]?.hasMore ?? false,
-      },
-    }));
-    try {
-      const [result, evidenceResult] = await Promise.all([
-        apiRequest({
-          method: "session.open",
-          params: { sessionId },
-        }).then((response) => unwrap<{ history: BridgeHistoryPage }>(response)),
-        apiRequest({
-          method: "evidence.list",
-          params: { sessionId, limit: 30 },
-        }).then((response) => response.ok
-          ? response.result as { evidence: BridgeEvidencePage }
-          : undefined)
-          .catch(() => undefined),
-      ]);
-      setHistory((current) => ({
-        ...current,
-        [sessionId]: {
-          status: "ready",
-          items: result.history.items,
-          hasMore: result.history.hasMore,
-          ...(result.history.nextCursor ? { nextCursor: result.history.nextCursor } : {}),
-        },
-      }));
-      setEvidence((current) => {
-        const merged = new Map(
-          (current[sessionId]?.items ?? []).map((item) => [item.id, item]),
-        );
-        for (const item of evidenceResult?.evidence.items ?? []) merged.set(item.id, evidenceSummary(item));
-        return {
-          ...current,
-          [sessionId]: {
-            status: evidenceResult ? "ready" : merged.size > 0 ? "ready" : "error",
-            items: [...merged.values()].sort((left, right) => right.startedAt - left.startedAt),
-            hasMore: evidenceResult?.evidence.hasMore ?? false,
-            ...(evidenceResult?.evidence.nextCursor
-              ? { nextCursor: evidenceResult.evidence.nextCursor }
-              : {}),
-          },
-        };
-      });
-    } catch {
-      setHistory((current) => ({
-        ...current,
-        [sessionId]: { status: "error", items: current[sessionId]?.items ?? [], hasMore: false },
-      }));
-      setEvidence((current) => ({
-        ...current,
-        [sessionId]: {
-          status: current[sessionId]?.items.length ? "ready" : "error",
-          items: current[sessionId]?.items ?? [],
-          hasMore: current[sessionId]?.hasMore ?? false,
-        },
-      }));
-    }
-  }
-
-  async function loadOlderEvidence(): Promise<void> {
-    if (!selectedId) return;
-    const current = evidence[selectedId];
-    if (!current?.nextCursor || current.status === "loading") return;
-    setEvidence((value) => ({
-      ...value,
-      [selectedId]: { ...current, status: "loading" },
-    }));
-    try {
-      const result = unwrap<{ evidence: BridgeEvidencePage }>(await apiRequest({
-        method: "evidence.list",
-        params: { sessionId: selectedId, cursor: current.nextCursor, limit: 30 },
-      }));
-      const merged = new Map(current.items.map((item) => [item.id, item]));
-      for (const item of result.evidence.items) merged.set(item.id, evidenceSummary(item));
-      setEvidence((value) => ({
-        ...value,
-        [selectedId]: {
-          status: "ready",
-          items: [...merged.values()].sort((left, right) => right.startedAt - left.startedAt),
-          hasMore: result.evidence.hasMore,
-          ...(result.evidence.nextCursor ? { nextCursor: result.evidence.nextCursor } : {}),
-        },
-      }));
-    } catch {
-      setEvidence((value) => ({
-        ...value,
-        [selectedId]: { ...current, status: "error" },
-      }));
-    }
-  }
-
-  async function loadEvidenceDetails(
-    evidenceId: string, kind: "tools" | "artifacts", cursor?: string,
-  ): Promise<BridgeEvidenceDetailPage> {
-    if (snapshot.host.capabilities.includes("evidence.details.v1")) {
-      return unwrap<{ page: BridgeEvidenceDetailPage }>(await apiRequest({
-        method: "evidence.details",
-        params: { evidenceId, kind, ...(cursor ? { cursor } : {}), limit: 30 },
-      })).page;
-    }
-    const bundle = unwrap<{ evidence: BridgeEvidenceBundle }>(await apiRequest({
-      method: "evidence.get", params: { evidenceId },
-    })).evidence;
-    const offset = cursor ? Number(cursor) : 0;
-    const hasMore = offset + 30 < bundle[kind].length;
-    const next = { evidenceId, hasMore, ...(hasMore ? { nextCursor: String(offset + 30) } : {}) };
-    return kind === "tools"
-      ? { ...next, kind, items: bundle.tools.slice(offset, offset + 30) }
-      : { ...next, kind, items: bundle.artifacts.slice(offset, offset + 30) };
-  }
-
-  async function previewArtifact(artifactId: string): Promise<BridgeArtifactPreview> {
-    const cached = artifactPreviews[artifactId];
-    if (cached) return cached;
-    const preview = unwrap<{ preview: BridgeArtifactPreview }>(await apiRequest({
-      method: "artifact.preview",
-      params: { artifactId },
-    })).preview;
-    setArtifactPreviews((current) => ({ ...current, [artifactId]: preview }));
-    return preview;
-  }
-
-  async function downloadArtifact(artifact: BridgeArtifactManifest): Promise<void> {
-    setArtifactTransfers((current) => ({ ...current, [artifact.id]: 0 }));
-    try {
-      await downloadBridgeArtifact(
-        artifact,
-        async (method, params) => apiRequest({ method, params }),
-        (progress) => setArtifactTransfers((current) => ({
-          ...current,
-          [artifact.id]: progress,
-        })),
-      );
-    } finally {
-      setArtifactTransfers((current) => {
-        const next = { ...current };
-        delete next[artifact.id];
-        return next;
-      });
-    }
-  }
-
-  async function send(): Promise<void> {
-    if (!selected || !canSendSession(selected, snapshot) || sending || fileUploads.uploading
-      || (!text.trim() && (!canAttachImages || attachments.length === 0) && fileUploads.files.length === 0)) return;
-    const nextText = text.trim();
-    const nextAttachments = canAttachImages ? attachments : [];
-    const nextFiles = fileUploads.files;
-    setText("");
-    setAttachments([]);
-    setSending(true);
-    setCommandError(undefined);
-    try {
-      const mailRefId = assistantMail?.referenceFor(selected.sessionId);
-      if (mailRefId && sessionCommandName(nextText)) throw new Error("请先清除邮件引用，再执行会话命令。");
-      if (await commands.execute(nextText, attachments.length > 0 || nextFiles.length > 0)) return;
-      unwrap(await apiRequest({
-        method: "turn.start",
-        params: {
-          sessionId: selected.sessionId,
-          text: appendUploadedFilePaths(nextText, nextFiles),
-          attachments: nextAttachments,
-          ...(mailRefId ? { mailRefId } : {}),
-        },
-        idempotencyKey: crypto.randomUUID(),
-      }));
-      fileUploads.clear(nextFiles);
-    } catch (error) {
-      if (composerKeyRef.current !== composerKey) return;
-      setCommandError(error instanceof Error ? error.message : "发送失败");
-      setText(current => [nextText, current].filter(Boolean).join("\n"));
-      setAttachments(current => [...nextAttachments, ...current]);
-    } finally {
-      if (composerKeyRef.current === composerKey) setSending(false);
-    }
-  }
-
-  async function sendQuickReply(promptId: string, promptText: string): Promise<void> {
-    if (!selected || !canSendSession(selected, snapshot) || sending || !promptText.trim()) return;
-    setSending(true);
-    try {
-      const mailRefId = assistantMail?.referenceFor(selected.sessionId);
-      if (mailRefId && sessionCommandName(promptText.trim())) throw new Error("请先清除邮件引用，再执行会话命令。");
-      const response = await apiRequest({
-        method: "turn.start",
-        params: {
-          sessionId: selected.sessionId,
-          text: promptText.trim(),
-          attachments: [],
-          ...(mailRefId ? { mailRefId } : {}),
-        },
-        idempotencyKey: crypto.randomUUID(),
-      });
-      unwrap(response);
-      setPromptReplies((current) => ({ ...current, [selected.sessionId]: { ...current[selected.sessionId], [promptId]: response.requestId } }));
-    } catch (error) {
-      setCommandError(error instanceof Error ? error.message : "发送失败");
-    } finally {
-      setSending(false);
-    }
-  }
-
-  async function refreshProviders(): Promise<void> {
-    unwrap<{ providers: BridgeProviderProfile[] }>(await apiRequest({
-      method: "provider.refresh",
-      params: {},
-    }));
+    if (!project) throw new Error("Section 未创建，请重试。");
+    sectionManage.revealEmptySections();
+    registerCreatedSection(project.projectId, options);
     await onRefreshSnapshot();
+    return project;
   }
 
-  async function stopCurrentTask(): Promise<void> {
-    if (!stopTarget || stoppingSessionId) return;
-    setStoppingSessionId(stopTarget.sessionId);
-    setStopError(undefined);
+  async function createSection(): Promise<void> {
+    if (!sectionCanCreate || !sectionCreate) return;
+    setSectionCreate({ ...sectionCreate, busy: true, error: "" });
     try {
-      const result = unwrap<{ interrupted: boolean }>(await apiRequest({
-        method: "turn.interrupt",
-        params: { sessionId: stopTarget.sessionId, force: true },
-      }));
-      if (!result.interrupted) throw new Error("当前没有可停止的 Bridge 任务");
-    } catch (error) {
-      setStopError(error instanceof Error ? error.message : "任务停止失败");
-    } finally {
-      setStoppingSessionId(undefined);
+      await createSectionFromName(sectionCreate.name, { clearSearch: true });
+      setSectionCreate(undefined);
+    } catch (reason) {
+      setSectionCreate({
+        ...sectionCreate,
+        busy: false,
+        error: reason instanceof Error ? reason.message : "Section 创建失败",
+      });
     }
   }
 
-  async function createSession(cwd: string, title?: string, runtimeId?: BridgeDesktopRuntimeId, projectId?: string, trustWorkspace?: boolean): Promise<BridgeSessionInfo> {
+  useEffect(() => {
+    if (!focusRequest || handledFocusKeyRef.current === focusRequest.key) return;
+    handledFocusKeyRef.current = focusRequest.key;
+    jumpToSession(focusRequest.sessionId);
+  }, [focusRequest, hostId, snapshot.sessions]);
+
+  useEffect(() => {
+    for (const event of hostEvents) {
+      if (event.type !== "session.reset") continue;
+      const eventKey = `${hostId}:${event.eventId}`;
+      if (handledResetEventsRef.current.has(eventKey)) continue;
+      handledResetEventsRef.current.add(eventKey);
+      if (event.data.previousSessionId === selectedId && typeof event.data.sessionId === "string") {
+        const nextSessionId = event.data.sessionId;
+        setResetError(undefined);
+        controller.resetSessionHistory(nextSessionId, hostId);
+        conversationDrafts.resetSession(hostId, nextSessionId);
+        setSelectedId(nextSessionId);
+        void onRefreshSnapshot()
+          .then(() => controller.openSession(nextSessionId, hostId))
+          .catch((reason) => setResetError(reason instanceof Error ? reason.message : "新会话打开失败"));
+      }
+    }
+  }, [events, hostId, selectedId]);
+
+  const selected = snapshot.sessions.find((session) => session.sessionId === selectedId);
+  const visibilityAvailable = snapshot.host.capabilities.includes("session.visibility.v1");
+  const hasActiveSessions = activeSessions.length > 0;
+
+  useEffect(() => {
+    if (selectedId && snapshot.sessions.some((session) => session.sessionId === selectedId)) return;
+    setSelectedId(activeSessions[0]?.sessionId);
+  }, [activeSessions, selectedId, snapshot.sessions]);
+
+  useEffect(() => {
+    if (!rowRenameSessionId || !rowActionBusy) return;
+    rowRenameDialogRef.current?.focus();
+  }, [rowActionBusy, rowRenameSessionId]);
+
+  async function createSession(
+    cwd: string,
+    title?: string,
+    runtimeId?: BridgeDesktopRuntimeId,
+    projectId?: string,
+    trustWorkspace?: boolean,
+  ): Promise<BridgeSessionInfo> {
     const canTrust = trustWorkspace === true && snapshot.host.capabilities.includes("workspace.trust.v1");
     const result = unwrap<{ session: BridgeSessionInfo }>(await apiRequest({
       method: "session.create",
@@ -707,595 +402,562 @@ export function DesktopSessions({
     return result.session;
   }
 
-  function placeProjects(order: string[]): void {
-    localStorage.setItem(projectOrderKey, JSON.stringify(order));
-    setPlacedProjects(order);
-  }
-
-  function toggleProject(projectId: string): void {
-    setCollapsedProjectIds((current) => toggleCollapsedProject(current, projectId));
-  }
-
-  async function addImages(files: FileList | null): Promise<void> {
-    if (!files?.length) return;
-    const candidates = [...files].filter((file) => file.size <= 4 * 1024 * 1024);
-    const next = await Promise.all(candidates.map(fileToAttachment));
-    setAttachments((current) => [...current, ...next].slice(0, 4));
-    if (fileRef.current) fileRef.current.value = "";
-  }
-
-  async function resolvePermission(
-    requestId: string,
-    decision: "allow-once" | "allow-always" | "deny",
-    message?: string,
-    updatedInput?: Record<string, unknown>,
-    mode?: BridgeNativePermissionMode,
-  ): Promise<void> {
-    unwrap(await apiRequest({
-      method: "permission.resolve",
-      params: { requestId, decision, ...(message ? { message } : {}), ...(updatedInput ? { updatedInput } : {}), ...(mode ? { mode } : {}) },
+  function deliverInitialPromptToSession(created: BridgeSessionInfo, rawPrompt: string): void {
+    const trimmed = rawPrompt.trim();
+    if (!trimmed) return;
+    const targetDraft = conversationDrafts.session(hostId, created.sessionId, controller.uploadFile);
+    targetDraft.updateDraft((current) => ({
+      ...current,
+      text: "",
+      sending: true,
+      imageError: undefined,
     }));
+    void controller.sendTurn(created.sessionId, trimmed, [])
+      .then(async () => {
+        targetDraft.updateDraft((current) => ({ ...current, sending: false }));
+        await onRefreshSnapshot();
+      })
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : "发送失败";
+        targetDraft.updateDraft((current) => ({
+          ...current,
+          sending: false,
+          imageError: message,
+          text: [trimmed, current.text].filter(Boolean).join("\n"),
+        }));
+      });
   }
 
-  async function loadConfiguration(): Promise<BridgeSessionConfiguration> {
-    if (!selected) throw new Error("Session not found");
-    return unwrap<{ configuration: BridgeSessionConfiguration }>(await apiRequest({
-      method: "session.configuration",
-      params: { sessionId: selected.sessionId },
-    })).configuration;
-  }
-
-  async function saveConfiguration(change: SessionConfigurationChange): Promise<BridgeSessionConfiguration> {
-    if (!selected) throw new Error("Session not found");
-    return unwrap<{ configuration: BridgeSessionConfiguration }>(await apiRequest({
-      method: "session.configure",
-      params: { sessionId: selected.sessionId, ...change },
-    })).configuration;
-  }
-
-  async function archiveSelected(archived: boolean): Promise<void> {
-    if (!selected || sessionActionBusy) return;
-    setSessionActionBusy(true);
-    setSessionActionError(undefined);
-    try {
-      await apiRequest({
-        method: "session.archive",
-        params: { sessionId: selected.sessionId, archived },
-      }).then(unwrap);
-    } catch (failure) {
-      setSessionActionError(failure instanceof Error ? failure.message : String(failure));
-    } finally {
-      setSessionActionBusy(false);
-    }
-  }
-
-  async function forkSelected(): Promise<void> {
-    if (!selected || sessionActionBusy) return;
-    setSessionActionBusy(true);
-    setSessionActionError(undefined);
-    try {
-      const result = unwrap<{ session: BridgeSessionInfo }>(await apiRequest({
-        method: "session.fork",
-        params: { sessionId: selected.sessionId },
-      }));
-      setExpandedForkParents((current) => new Set([
+  async function handleNewChatCreated(
+    created: BridgeSessionInfo,
+    options?: { initialPrompt?: string | undefined; configurationError?: string | undefined },
+  ): Promise<void> {
+    setNewChatTarget(undefined);
+    setCollapsedProjectIds((current) => expandProject(current, created.projectId));
+    if (search.trim()) setSearch("");
+    if (options?.configurationError) {
+      const targetDraft = conversationDrafts.session(hostId, created.sessionId, controller.uploadFile);
+      const pendingText = options.initialPrompt?.trim() ?? "";
+      targetDraft.updateDraft((current) => ({
         ...current,
-        ...getSessionAncestorIds(snapshot.sessions, selected.sessionId),
-        selected.sessionId,
-      ]));
-      await onRefreshSnapshot();
-      setSelectedId(result.session.sessionId);
-    } catch (failure) {
-      setSessionActionError(failure instanceof Error ? failure.message : String(failure));
-    } finally {
-      setSessionActionBusy(false);
+        imageError: options.configurationError,
+        text: [pendingText, current.text].filter(Boolean).join("\n"),
+      }));
+    } else if (options?.initialPrompt?.trim()) {
+      deliverInitialPromptToSession(created, options.initialPrompt);
     }
+    selectSessionFromSidebar(created.sessionId);
   }
 
-  function toggleForkGroup(parentSessionId: string): void {
-    setExpandedForkParents((current) => toggleCollapsedProject(current, parentSessionId));
-  }
-
-  async function deleteSelected(): Promise<void> {
-    if (!selected || sessionActionBusy) return;
-    setSessionActionBusy(true);
-    setSessionActionError(undefined);
+  async function moveSessionToSection(sessionId: string, sectionId: string | null): Promise<void> {
+    if (rowActionBusy || !hostOnline) return;
+    setRowActionBusy(true);
+    setRowActionError(undefined);
     try {
-      await apiRequest({
-        method: "session.delete",
-        params: { sessionId: selected.sessionId },
-      }).then(unwrap);
-      setDeleteSessionOpen(false);
-    } catch (failure) {
-      setSessionActionError(failure instanceof Error ? failure.message : String(failure));
+      const moved = await controller.moveSessionSection(sessionId, sectionId);
+      const targetProjectId = sectionId ?? moved.session?.projectId ?? CLAUDE_UNSECTIONED_PROJECT_ID;
+      setCollapsedProjectIds((current) => expandProject(current, targetProjectId));
+      setRowMoveMenuSessionId(undefined);
+      setRowMenuSessionId(undefined);
+    } catch (error) {
+      setRowActionError(error instanceof Error ? error.message : "移动分组失败");
     } finally {
-      setSessionActionBusy(false);
+      setRowActionBusy(false);
     }
   }
 
-  const prControls = {
-    supported: snapshot.host.capabilities.includes("pr.autofix.v1"),
-    online: snapshot.runtime.desktopIntegration.state === "ready",
-    onRead: async (sessionId: string, pr?: BridgePullRequest, includeChecks?: boolean) => unwrap<BridgePrAutoFixState>(await apiRequest({
-      method: "pr.autoFix.read",
-      params: { sessionId, ...(pr ? { repo: pr.repo, prNumber: pr.prNumber, ...(pr.host ? { host: pr.host } : {}) } : {}), includeChecks },
-    })),
-    onSet: async (update: BridgePrAutoFixUpdate) => {
-      const next = unwrap<BridgePrAutoFixState>(await apiRequest({ method: "pr.autoFix.set", params: update }));
-      await onRefreshSnapshot();
-      return next;
-    },
-  };
+  const sessionDrag = useSessionSectionDrag({
+    hostOnline,
+    capabilities: snapshot.host.capabilities,
+    manualSections,
+    sessions: snapshot.sessions,
+    scrollContainerRef: desktopProjectListRef,
+    onMoveSessionSection: moveSessionToSection,
+  });
+
+  function closeRowRename(): void {
+    if (rowActionBusy) return;
+    setRowRenameSessionId(undefined);
+    setRowMenuSessionId(undefined);
+  }
+
+  async function submitRowRename(): Promise<void> {
+    const target = rowRenameSessionId
+      ? snapshot.sessions.find((candidate) => candidate.sessionId === rowRenameSessionId)
+      : undefined;
+    const trimmed = rowRenameTitle.trim();
+    if (!target || !trimmed || trimmed === target.title || rowActionBusy) return;
+    setRowActionBusy(true);
+    setRowActionError(undefined);
+    try {
+      await controller.renameSession(target.sessionId, trimmed);
+      setRowRenameSessionId(undefined);
+      setRowMenuSessionId(undefined);
+    } catch (error) {
+      setRowActionError(error instanceof Error ? error.message : "重命名会话失败");
+    } finally {
+      setRowActionBusy(false);
+    }
+  }
+
+  const sidebarToggleButton = (
+    <IconButton
+      label={sidebarCollapsed ? "展开侧栏" : "收起侧栏"}
+      className="desktop-sidebar-toggle"
+      onClick={() => setSidebarCollapsed((current) => !current)}
+    >
+      <PanelLeft size={17} />
+    </IconButton>
+  );
+
+  const rowMenuSession = rowMenuSessionId
+    ? snapshot.sessions.find((candidate) => candidate.sessionId === rowMenuSessionId)
+    : undefined;
+  const rowRenameSession = rowRenameSessionId
+    ? snapshot.sessions.find((candidate) => candidate.sessionId === rowRenameSessionId)
+    : undefined;
+  const rowDeleteSession = rowDeleteSessionId
+    ? snapshot.sessions.find((candidate) => candidate.sessionId === rowDeleteSessionId)
+    : undefined;
+  const rowMoveMenuOpen = Boolean(rowMenuSession && rowMoveMenuSessionId === rowMenuSession.sessionId);
+  const rowMenuSupportsRename = Boolean(
+    rowMenuSession && (
+      (snapshot.host.capabilities.includes("session.command.v1") && desktopRuntimeId(rowMenuSession) === "claude-desktop")
+      || snapshot.host.capabilities.includes("session.rename.v1")
+    ),
+  );
+  const rowMenuSupportsMoveSection = Boolean(
+    rowMenuSession
+    && snapshot.host.capabilities.includes("section.move.v1")
+    && rowMenuSession.allowedActions?.canMoveSection,
+  );
+  const rowMenuSupportsFork = Boolean(
+    rowMenuSession && desktopRuntimeId(rowMenuSession) === "claude-desktop",
+  );
+
+  const showProjectTree = hasActiveSessions || Boolean(searchQuery);
+  const hasRenderedUnsectionedGroup = grouped.some((group) => group.projectId === CLAUDE_UNSECTIONED_PROJECT_ID);
+  const showUnsectionedDropZone = Boolean(
+    sessionDrag.dragState
+    && sessionDrag.dragState.originSectionId !== UNSECTIONED_DROP_ID
+    && !hasRenderedUnsectionedGroup,
+  );
 
   return (
-    <section className={`desktop-session-layout${fixedSessionId ? " is-fixed-session" : ""}`}>
-      {!fixedSessionId && <aside className="desktop-session-sidebar">
-        <div className="desktop-sidebar-heading">
-          <div><span>Bridge 1.0</span><h1>会话</h1></div>
-          <div className="desktop-sidebar-actions">
-            {projectOrder.length > 1 && (
-              <IconButton label="调整项目顺序" onClick={() => setProjectOrderOpen(true)}>
-                <ArrowDownUp size={17} />
+    <section className={`desktop-session-layout${sidebarCollapsed ? " is-sidebar-collapsed" : ""}`}>
+      {!sidebarCollapsed && (
+        <aside className="desktop-session-sidebar is-flat-tree">
+          <div className="desktop-sidebar-heading">
+            <div
+              className="desktop-sidebar-host"
+              title={`${snapshot.host.name} · ${connectionLabel(snapshot)}`}
+            >
+              <i className={`m-status-dot ${hostOnline ? "is-online" : ""}`} aria-hidden="true" />
+              <strong>{snapshot.host.name}</strong>
+            </div>
+            <div className="desktop-sidebar-actions">
+              <IconButton
+                label="新建会话"
+                onClick={() => openCreateDialogForProject()}
+              >
+                <SquarePen size={16} />
               </IconButton>
-            )}
-            <IconButton
-              label="全部折叠"
-              disabled={groupedProjectIds.length === 0 || allProjectsCollapsed}
-              onClick={() => setCollapsedProjectIds(collapseProjects(groupedProjectIds))}
-            >
-              <ChevronsUp size={17} />
-            </IconButton>
-            <IconButton
-              label="全部展开"
-              disabled={groupedProjectIds.length === 0 || allProjectsExpanded}
-              onClick={() => setCollapsedProjectIds(expandAllProjects())}
-            >
-              <ChevronsDown size={17} />
-            </IconButton>
-            <IconButton
-              label="新建会话"
-              onClick={() => {
-                setCreateOpen(true);
-              }}
-            ><Plus size={18} /></IconButton>
+            </div>
           </div>
-        </div>
 
-        <div className="desktop-project-list">
-          {grouped.map(([groupProjectId, sessions]) => {
-            const expanded = !collapsedProjectIds.has(groupProjectId);
-            const sessionsId = `desktop-project-${encodeURIComponent(groupProjectId)}`;
-            const families = groupProjectSessionFamilies(sessions);
-            return (
-              <section className={expanded ? "expanded" : "collapsed"} key={groupProjectId}>
-                <ProjectGroupHeader
-                  title={snapshot.projects.find(project => project.projectId === groupProjectId)?.name ?? sessions[0]!.projectName}
-                  count={families.length}
-                  expanded={expanded}
-                  controlsId={sessionsId}
-                  onToggle={() => toggleProject(groupProjectId)}
+          <div className="desktop-sidebar-top-stack">
+            {snapshot.host.capabilities.includes("plugin.assistant-mail.v1") && onSelectTab && (
+              <DesktopAssistantNavButton
+                active={activeTab === "assistant"}
+                onSelect={() => onSelectTab("assistant")}
+              />
+            )}
+            <label className="session-search">
+              <Search size={15} />
+              <input
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="搜索项目或会话"
+              />
+            </label>
+          </div>
+
+          <div className="desktop-project-list" ref={desktopProjectListRef}>
+            {!searchQuery && (supportsCreateSection || projectOrder.length > 1 || hasActiveSessions) && (
+              <div className="project-order-bar sidebar-section-bar">
+                <span className="sidebar-section-label">项目</span>
+                <div className="sidebar-section-actions">
+                  {supportsCreateSection && (
+                    <button
+                      type="button"
+                      className="sidebar-micro-action"
+                      onClick={() => setSectionCreate({ name: "", busy: false, error: "" })}
+                    >
+                      + 分组
+                    </button>
+                  )}
+                  {projectOrder.length > 1 && (
+                    <button
+                      type="button"
+                      className="sidebar-micro-action project-order-trigger"
+                      aria-label="调整顺序"
+                      onClick={() => setProjectOrderOpen(true)}
+                    >
+                      排序
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {snapshot.permissions[0] && (
+              <button
+                type="button"
+                className="host-permission-alert"
+                onClick={() => jumpToSession(snapshot.permissions[0]!.sessionId)}
+              >
+                <span className="permission-dock-icon"><AlertTriangle size={16} /></span>
+                <span>
+                  <strong>{snapshot.permissions[0].toolName === "AskUserQuestion" ? "有提问待你回答" : "有操作待你授权"}</strong>
+                  <small>{snapshot.sessions.find((session) => session.sessionId === snapshot.permissions[0]!.sessionId)?.title ?? snapshot.permissions[0]!.toolName}</small>
+                </span>
+                <b>{snapshot.permissions.length > 1 ? `${snapshot.permissions.length} 项` : "查看"}</b>
+              </button>
+            )}
+
+            {!rowMenuSession && !rowRenameSession && rowActionError && (
+              <p className="m-sheet-note is-error sidebar-action-error" role="alert">{rowActionError}</p>
+            )}
+
+            {searchQuery ? (
+              grouped.length === 0 && (
+                <EmptyState title="没有匹配的会话" description="换一个关键词试试。" />
+              )
+            ) : (
+              !hasActiveSessions && (
+                <EmptyState
+                  title={snapshot.runtime.desktopIntegration.state === "ready" ? "暂无活跃会话" : "未检测到 Claude Desktop"}
+                  {...(snapshot.projects.length > 0
+                    ? { description: `已配置 ${snapshot.projects.length} 个项目分组，开始提问后自动归入对应目录` }
+                    : {})}
+                  action={(
+                    <button
+                      type="button"
+                      className="primary-button session-catalog-empty-action"
+                      onClick={() => openCreateDialogForProject()}
+                    >
+                      <Plus size={15} />
+                      新建会话
+                    </button>
+                  )}
                 />
-                {expanded && (
-                  <div className="desktop-project-sessions" id={sessionsId}>
-                    <SessionFamilyList
-                      families={families}
-                      projects={snapshot.projects}
-                      permissions={snapshot.permissions}
-                      expandedForkParents={expandedForkParents}
-                      selectedId={selectedId}
-                      includeArchivedInline
-                      onSelectSession={setSelectedId}
-                      onToggleForkGroup={toggleForkGroup}
-                    />
+              )
+            )}
+
+            {(showProjectTree || (!searchQuery && visibilityAvailable && archivedSessions.length > 0)) && (
+              <div className="project-groups">
+                {showProjectTree && grouped.map((group) => {
+                  const { projectId: groupProjectId, project, sessions } = group;
+                  const projectName = project?.name ?? sessions[0]?.projectName ?? groupProjectId;
+                  const families = groupProjectSessionFamilies(sessions);
+                  const isEmptyGroup = families.length === 0;
+                  const expanded = Boolean(searchQuery) || (
+                    isEmptyGroup
+                      ? (groupProjectId === revealedEmptySectionKey || expandedEmptyProjectIds.has(groupProjectId))
+                      : !collapsedProjectIds.has(groupProjectId)
+                  );
+                  const sessionsId = `desktop-project-${encodeURIComponent(groupProjectId)}`;
+                  const dropSectionId = project?.kind === "desktop-group"
+                    ? groupProjectId
+                    : groupProjectId === CLAUDE_UNSECTIONED_PROJECT_ID
+                      ? UNSECTIONED_DROP_ID
+                      : undefined;
+                  const dropState = sessionDrag.dropZoneState(dropSectionId);
+                  return (
+                    <section
+                      className={`project-group ${expanded ? "expanded" : "collapsed"}${isEmptyGroup ? " is-empty-group" : ""}${dropState === "target" ? " is-drop-target" : ""}${dropState === "origin" ? " is-drop-origin" : ""}`}
+                      key={groupProjectId}
+                      {...(dropSectionId ? { "data-drop-section-id": dropSectionId } : {})}
+                    >
+                      <ProjectGroupHeader
+                        title={projectName}
+                        count={families.length}
+                        expanded={expanded}
+                        controlsId={sessionsId}
+                        onToggle={() => toggleProject(groupProjectId, isEmptyGroup)}
+                        actions={(
+                          <>
+                            <IconButton
+                              label={`新建会话：${projectName}`}
+                              className="session-row-action"
+                              onClick={() => openCreateDialogForProject(groupProjectId)}
+                            >
+                              <Plus size={16} />
+                            </IconButton>
+                            {sectionManage.canManage(project) && (
+                              <IconButton
+                                label={`管理分组：${projectName}`}
+                                className="session-row-action section-manage-trigger"
+                                onClick={() => sectionManage.openMenu(groupProjectId)}
+                              >
+                                <MoreHorizontal size={16} />
+                              </IconButton>
+                            )}
+                          </>
+                        )}
+                      />
+                      {expanded && (
+                        <div className="session-rows" id={sessionsId}>
+                          {families.length > 0 ? (
+                            <SessionFamilyList
+                              families={families}
+                              projects={snapshot.projects}
+                              permissions={snapshot.permissions}
+                              expandedForkParents={expandedForkParents}
+                              selectedId={activeTab === "sessions" ? selectedId : undefined}
+                              flat
+                              sessionDrag={sessionDrag}
+                              actionLabel={(session) => `会话操作：${session.title}`}
+                              onSelectSession={selectSessionFromSidebar}
+                              onOpenSessionActions={(targetSessionId) => {
+                                setRowActionError(undefined);
+                                setRowMoveMenuSessionId(undefined);
+                                setRowMenuSessionId(targetSessionId);
+                              }}
+                              onToggleForkGroup={toggleForkGroup}
+                            />
+                          ) : (
+                            <div className="project-group-empty">此分组暂无会话</div>
+                          )}
+                        </div>
+                      )}
+                    </section>
+                  );
+                })}
+                {showUnsectionedDropZone && (
+                  <div
+                    className={`project-group-unsectioned-dropzone${sessionDrag.dropZoneState(UNSECTIONED_DROP_ID) === "target" ? " is-drop-target" : ""}`}
+                    data-drop-section-id={UNSECTIONED_DROP_ID}
+                  >
+                    拖到这里移出分组（未分组）
                   </div>
                 )}
-              </section>
-            );
-          })}
-          {grouped.length === 0 && (
-            <EmptyState
-              title={snapshot.runtime.desktopIntegration.state === "ready" ? "暂无活跃会话" : "未检测到 Claude Desktop"}
-              action={(
-                <button type="button" className="primary-button session-catalog-empty-action" onClick={() => setCreateOpen(true)}>
-                  <Plus size={16} />
-                  新建会话
-                </button>
-              )}
-            />
-          )}
-          {visibilityAvailable && archivedSessions.length > 0 && (() => {
-            const archivedFamilies = groupProjectSessionFamilies(archivedSessions);
-            return (
-              <section className={archivedExpanded ? "expanded" : "collapsed"}>
+                {!searchQuery && visibilityAvailable && archivedSessions.length > 0 && (
+                  <section className={`project-group archived-group ${archivedExpanded ? "expanded" : "collapsed"}`}>
+                    <ProjectGroupHeader
+                      title="已归档"
+                      count={archivedFamilies.length}
+                      expanded={archivedExpanded}
+                      controlsId="desktop-archived-sessions"
+                      onToggle={() => setArchivedExpanded((current) => !current)}
+                    />
+                    {archivedExpanded && (
+                      <div id="desktop-archived-sessions">
+                        <SessionFamilyList
+                          families={archivedFamilies}
+                          projects={snapshot.projects}
+                          permissions={snapshot.permissions}
+                          expandedForkParents={expandedForkParents}
+                          selectedId={activeTab === "sessions" ? selectedId : undefined}
+                          archivedList
+                          flat
+                          actionLabel={(session) => `会话操作：${session.title}`}
+                          onSelectSession={selectSessionFromSidebar}
+                          onOpenSessionActions={(targetSessionId) => {
+                            setRowActionError(undefined);
+                            setRowMoveMenuSessionId(undefined);
+                            setRowMenuSessionId(targetSessionId);
+                          }}
+                          onToggleForkGroup={toggleForkGroup}
+                        />
+                      </div>
+                    )}
+                  </section>
+                )}
+              </div>
+            )}
+          </div>
+
+          {(onSelectTab || themeControl) && (
+            <footer className="desktop-sidebar-dock">
+              {onSelectTab && (
                 <button
                   type="button"
-                  className="desktop-project-toggle"
-                  aria-expanded={archivedExpanded}
-                  aria-controls="desktop-archived-sessions"
-                  onClick={() => setArchivedExpanded((current) => !current)}
+                  className={`desktop-dock-settings${activeTab === "settings" ? " active" : ""}`}
+                  aria-current={activeTab === "settings" ? "page" : undefined}
+                  onClick={() => onSelectTab("settings")}
                 >
-                  {archivedExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                  <strong>已归档</strong>
-                  <span>{archivedFamilies.length}</span>
+                  <Settings2 size={15} aria-hidden="true" />
+                  <span>设置</span>
                 </button>
-                {archivedExpanded && (
-                  <div className="desktop-project-sessions" id="desktop-archived-sessions">
-                    <SessionFamilyList
-                      families={archivedFamilies}
-                      projects={snapshot.projects}
-                      permissions={snapshot.permissions}
-                      expandedForkParents={expandedForkParents}
-                      selectedId={selectedId}
-                      archivedList
-                      onSelectSession={setSelectedId}
-                      onToggleForkGroup={toggleForkGroup}
-                    />
-                  </div>
-                )}
-              </section>
-            );
-          })()}
-        </div>
-      </aside>}
-
-      <section className="desktop-conversation">
-        {selected ? (
-          <>
-            <header className="desktop-conversation-heading">
-              <div>
-                <h2>{selected.title}</h2>
-                <span>{selectedRuntimeName} · {selected.projectName} · {sessionState(selected)} · {transportLabel(selected)}</span>
-              </div>
-              <div className="desktop-conversation-heading-actions">
-                {!selected.prs?.length && prControls.supported && (
-                  <IconButton label="PR Auto-fix" onClick={() => setPrActionsOpen(true)}>
-                    <GitPullRequest size={18} />
-                  </IconButton>
-                )}
-                {canConfigure ? (
-                  <button
-                    type="button"
-                    className="session-profile-trigger"
-                    aria-label="会话设置"
-                    aria-describedby="desktop-session-profile-summary"
-                    onClick={() => setConfigurationOpen(true)}
-                  >
-                    <Settings2 size={15} />
-                    <SessionProfileSummary session={selected} id="desktop-session-profile-summary" />
-                  </button>
-                ) : <span className="session-profile-trigger is-static"><SessionProfileSummary session={selected} /></span>}
-
-                {canStop && (
-                  <IconButton
-                    label={stopping ? "正在停止 Bridge 任务" : stoppingBlocker ? "停止阻塞的 Bridge 任务" : "停止当前 Bridge 任务"}
-                    className="session-stop-button"
-                    disabled={stopping}
-                    onClick={() => void stopCurrentTask()}
-                  >
-                    {stopping ? <LoaderCircle className="is-spinning" size={17} /> : <CircleStop size={17} />}
-                  </IconButton>
-                )}
-                {selectedRuntime === "claude-desktop" && (
-                  <IconButton
-                    label="Fork 分支会话"
-                    disabled={sessionActionBusy}
-                    onClick={() => void forkSelected()}
-                  >
-                    <GitFork size={16} />
-                  </IconButton>
-                )}
-                {visibilityAvailable && (
-                  <>
-                    {selected.archivedAt ? (
-                      <IconButton label="取消归档" disabled={sessionActionBusy} onClick={() => void archiveSelected(false)}>
-                        <ArchiveRestore size={16} />
-                      </IconButton>
-                    ) : (
-                      <IconButton label="归档会话" disabled={sessionActionBusy} onClick={() => void archiveSelected(true)}>
-                        <Archive size={16} />
-                      </IconButton>
-                    )}
-                    <IconButton
-                      label={selectedBusy ? "任务进行中，先停止再删除" : "删除会话"}
-                      disabled={sessionActionBusy || selectedBusy}
-                      onClick={() => setDeleteSessionOpen(true)}
-                    >
-                      <Trash2 size={16} />
-                    </IconButton>
-                  </>
-                )}
-              </div>
-            </header>
-            {selected.prs?.length ? (
-              <SessionPrBar
-                key={selected.sessionId}
-                session={selected}
-                events={events}
-                {...prControls}
-              />
-            ) : null}
-            {otherNativePromptSession && (
-              <div className="desktop-channel-banner">
-                <AlertTriangle size={18} />
-                <button type="button" className="relay-chain-link" onClick={() => setSelectedId(otherNativePromptSession.sessionId)}>另一会话待确认：{otherNativePromptSession.title}</button>
-              </div>
-            )}
-            {selected.archivedAt && (
-              <div className="desktop-channel-banner">
-                <Archive size={18} />
-                <span><strong>此会话已归档</strong>会话保留全部历史，取消归档后回到会话列表。</span>
-              </div>
-            )}
-            {sessionActionError && (
-              <div className="desktop-channel-banner danger">
-                <AlertTriangle size={18} />
-                <span><strong>会话操作失败</strong>{sessionActionError}</span>
-              </div>
-            )}
-
-
-
-            {(() => {
-              const parentSession = selected.parentSessionId
-                ? snapshot.sessions.find((candidate) => candidate.sessionId === selected.parentSessionId)
-                : undefined;
-              const childForks = snapshot.sessions.filter((candidate) => (
-                candidate.parentSessionId === selected.sessionId && (!candidate.archivedAt || Boolean(candidate.sidechat))
-              ));
-              if (!parentSession && childForks.length === 0) return null;
-              return (
-                <div className="desktop-channel-banner relay-chain-bar fork-chain-bar">
-                  {parentSession && (
-                    <button
-                      type="button"
-                      className="relay-chain-link"
-                      onClick={() => setSelectedId(parentSession.sessionId)}
-                    >
-                      <GitFork size={14} />
-                      {`主会话：${parentSession.title}`}
-                    </button>
-                  )}
-                  {childForks.map((fork) => (
-                    <button
-                      type="button"
-                      className="relay-chain-link outbound"
-                      key={fork.sessionId}
-                      onClick={() => setSelectedId(fork.sessionId)}
-                    >
-                      <GitFork size={14} />
-                      {`${fork.sidechat ? "/btw" : (fork.forkLabel || "fork")} · ${fork.title}`}
-                    </button>
-                  ))}
-                </div>
-              );
-            })()}
-            {stopError && (
-              <div className="desktop-channel-banner danger">
-                <AlertTriangle size={18} />
-                <span><strong>任务停止失败</strong>{stopError}</span>
-              </div>
-            )}
-            <nav className="session-view-switch desktop-session-view-switch" aria-label="会话视图">
-              <button
-                type="button"
-                className={sessionView === "conversation" ? "active" : ""}
-                onClick={() => setSessionView("conversation")}
-              >
-                对话
-              </button>
-              <button
-                type="button"
-                className={sessionView === "evidence" ? "active" : ""}
-                onClick={() => setSessionView("evidence")}
-              >
-                成果
-                {(selectedEvidence?.items.length ?? 0) > 0 && <b>{selectedEvidence!.items.length}</b>}
-              </button>
-            </nav>
-            {sessionView === "conversation" ? (
-            <div className="desktop-conversation-stream" ref={streamRef}>
-              {history[selected.sessionId]?.status === "loading" && items.length === 0 && <div className="desktop-conversation-empty">正在读取会话</div>}
-              {timeline.map((entry) => entry.kind === "mail" ? <MailCard key={`mail:${entry.card.mailRefId}`} card={entry.card} {...(entry.nativeMessage ? { nativeMessage: entry.nativeMessage } : {})} /> : entry.kind === "evidence" ? (
-                <EvidenceInlineSummary
-                  evidence={entry.evidence}
-                  key={`evidence:${entry.evidence.id}`}
-                  entering={streamEntering(`evidence:${entry.evidence.id}`)}
-                  onOpen={() => setSessionView("evidence")}
-                />
-              ) : entry.item.sessionNotice ? (
-                <SessionNoticeCard
-                  key={entry.item.id}
-                  itemId={entry.item.id}
-                  notice={entry.item.sessionNotice}
-                  source={entry.item.text}
-                  entering={streamEntering(entry.item.id)}
-                  onFileClick={openSessionFile}
-                />
-              ) : entry.item.subagent ? (
-                <SubagentCard
-                  item={entry.item}
-                  key={entry.item.id}
-                  entering={streamEntering(entry.item.id)}
-                />
-              ) : (
-                <article
-                  className={`conversation-item ${entry.item.role}${streamEntering(entry.item.id) ? " is-entering" : ""}`}
-                  key={entry.item.id}
-                >
-                  <div className="conversation-item-meta"><strong>{entry.item.role === "user" ? "你" : entry.item.role === "assistant" ? selectedRuntimeName : entry.item.toolName ?? "Bridge"}</strong></div>
-                  {entry.item.text && (
-                    entry.item.role === "assistant" || entry.item.role === "user" ? (
-                      <MarkdownText text={entry.item.text} collapsible={!entry.item.live} onFileClick={openSessionFile} />
-                    ) : (
-                      <div className="conversation-text">{entry.item.text}</div>
-                    )
-                  )}
-                  {entry.item.interactivePrompt && (
-                    <InteractivePromptCard
-                      prompt={entry.item.interactivePrompt}
-                      {...(entry.item.replyDelivery ? { replyDelivery: entry.item.replyDelivery } : {})}
-                      {...(entry.item.replyPending ? { replyPending: true } : {})}
-                      canSend={canSendSession(selected, snapshot)}
-                      busy={sending}
-                      onSelectOption={(replyText) => {
-                        if (entry.item.interactivePrompt?.kind === "question") {
-                          const pendingQuestion = matchingQuestionPermission(
-                            entry.item.interactivePrompt,
-                            snapshot.permissions.filter((permission) => permission.sessionId === selected.sessionId),
-                          );
-                          if (pendingQuestion) {
-                            const questions = entry.item.interactivePrompt.questions ?? [];
-                            if (questions.length === 1 && !questions[0]?.multiSelect) {
-                              void resolvePermission(
-                                pendingQuestion.requestId,
-                                "allow-once",
-                                undefined,
-                                { ...pendingQuestion.input, answers: { [questions[0]!.question]: replyText } },
-                              );
-                            }
-                            return;
-                          }
-                        }
-                        void sendQuickReply(entry.item.id, replyText);
-                      }}
-                    />
-                  )}
-                  {entry.item.attachments?.length ? (
-                    <div className="conversation-attachments">
-                      {entry.item.attachments.map((attachment) => attachment.data ? (
-                        <button type="button" className="conversation-image-preview" key={attachment.id} aria-label={`查看 ${attachment.name}`} onClick={() => openMedia({ name: attachment.name, kind: "image", dataUrl: `data:${attachment.mimeType};base64,${attachment.data}` })}><img src={`data:${attachment.mimeType};base64,${attachment.data}`} alt={attachment.name} loading="lazy" /></button>
-                      ) : (
-                        <span className="attachment-chip" key={attachment.id}>{attachment.name}</span>
-                      ))}
-                    </div>
-                  ) : null}
-                  {rewindAvailable && entry.item.role === "user" && !entry.item.id.startsWith("local:") && <div className="conversation-message-actions">
-                    <button type="button" className="message-copy-button" aria-label="回退到这条消息之前" disabled={rewindDisabled}
-                      onClick={() => setRewindTarget({ sessionId: selected.sessionId, messageId: entry.item.id })}>回退</button>
-                  </div>}
-                </article>
-              ))}
-              {snapshot.permissions
-                .filter((permission) => permission.sessionId === selected.sessionId && (isClaudeNativeRelay(snapshot) && selected.transport === "claude-desktop-native"))
-                .map((permission) => (
-                  <PermissionPrompt
-                    key={permission.requestId}
-                    permission={permission}
-                    onResolve={resolvePermission}
-                    {...(permission.canSetNativeFullAccess ? {
-                      onEnableNativeFullAccess: (requestId: string) => resolvePermission(requestId, "allow-once", undefined, undefined, "bypassPermissions"),
-                    } : {})}
-                  />
-                ))}
-              {snapshot.prompts?.filter(prompt => prompt.sessionId === selected.sessionId).map(prompt => (
-                <NativePromptCard key={prompt.promptId} prompt={prompt}
-                  online={snapshot.runtime.desktopIntegration.state === "ready"}
-                  {...(snapshot.host.capabilities.includes("prompt.native.v1") ? { onResolve: async (sessionId: string, promptId: string, choice: string) => {
-                    const response = await apiRequest({ method: "prompt.resolve", params: { sessionId, promptId, choice } });
-                    if (response.ok || response.error?.code === "ALREADY_RESOLVED") await onRefreshSnapshot();
-                    unwrap(response);
-                  } } : {})}
-                />
-              ))}
-              {uncertainDeliveries.map((event) => (
-                <article className="conversation-item system uncertain-delivery" key={event.eventId}>
-                  <div className="conversation-item-meta"><strong>发送结果待确认</strong></div>
-                  <div className="conversation-text">{typeof event.data.error === "string" ? event.data.error : "Desktop 在确认消息前断开。"}</div>
-                  <div className="uncertain-delivery-actions">
-                    <button type="button" className="secondary-button" onClick={() => void apiRequest({
-                      method: "message.delivery.resolve",
-                      params: { commandId: event.data.commandId, action: "confirm" },
-                    })}>确认已发送</button>
-                    <button type="button" className="secondary-button" onClick={() => void apiRequest({
-                      method: "message.delivery.resolve",
-                      params: { commandId: event.data.commandId, action: "retry" },
-                    })}>检查后重发</button>
-                  </div>
-                </article>
-              ))}
-            </div>
-            ) : (
-              <div className="desktop-evidence-view">
-                <MediaGallery artifacts={mediaArtifacts(selectedEvidence?.items ?? [])} />
-                {fileChangesSummary && (
-                  <FileChangesCard
-                    summary={fileChangesSummary}
-                    onPreviewFile={(filePath) => {
-                      const kind = mediaKind(filePath);
-                      if (kind) openMedia({ name: filePath.split(/[\\/]/u).at(-1) || filePath, kind, sessionId: selected.sessionId, path: filePath });
-                    }}
-                  />
-                )}
-                <EvidencePanel
-                  state={selectedEvidence}
-                  previews={artifactPreviews}
-                  transfers={artifactTransfers}
-                  online
-                  suppressEmpty={Boolean(fileChangesSummary)}
-                  onLoadMore={loadOlderEvidence}
-                  onLoadDetails={loadEvidenceDetails}
-                  onPreview={previewArtifact}
-                  onDownload={downloadArtifact}
-                />
-              </div>
-            )}
-            {sessionView === "conversation" && (
-            <>
-            <SessionActivityIndicator activity={activity} />
-            <SessionContextUsageBar usage={selected.contextUsage} />
-            <MailReference sessionId={selected.sessionId} />
-            <div className="desktop-composer">
-              {commandError && <div className="composer-error" role="alert">{commandError}</div>}
-              <FileAttachmentPicker state={fileUploads} />
-              {attachments.length > 0 && (
-                <div className="composer-attachments">
-                  {attachments.map((attachment) => <span key={attachment.id}>{attachment.name}<button type="button" onClick={() => setAttachments((current) => current.filter((item) => item.id !== attachment.id))}><X size={12} /></button></span>)}
-                </div>
               )}
-              <form
-                className="composer-form composer-form--with-attachment"
-                onSubmit={(event) => { event.preventDefault(); void send(); }}
-              >
-                <input ref={fileRef} type="file" hidden multiple accept="image/jpeg,image/png,image/gif,image/webp" onChange={(event) => void addImages(event.target.files)} />
-                <ComposerAttachmentMenu
-                  canAttachImages={canAttachImages}
-                  imageDisabled={commandDraft || !canSendSession(selected, snapshot)}
-                  onPickImages={() => fileRef.current?.click()}
-                  fileUploads={fileUploads}
-                  fileDisabled={commandDraft || !canSendSession(selected, snapshot) || sending || snapshot.connection !== "connected"}
-                />
-                <SlashCommandInput
-                  key={JSON.stringify([snapshot.host.hostId, selected.sessionId])}
-                  {...(selectedRuntime === "claude-desktop" && snapshot.host.capabilities.includes("session.commands.v1") ? {
-                    onLoad: commands.load!,
-                  } : {})}
-                  value={text}
-                  onChange={setText}
-                  disabled={!canSendSession(selected, snapshot)}
-                  placeholder={selected.allowedActions?.reason ?? (
-                    selected.source === "bridge"
-                      ? "在这个 Bridge 会话中继续"
-                      : `在这个 ${selectedRuntimeName} 会话中继续`
-                  )}
-                />
-                <button type="submit" className="send-button" aria-label="发送" disabled={!canSendSession(selected, snapshot) || sending || fileUploads.uploading || (!text.trim() && (!canAttachImages || attachments.length === 0) && fileUploads.files.length === 0)}><Send size={18} /></button>
-              </form>
-            </div>
-            </>
-            )}
-          </>
-        ) : (
-          <div className="desktop-conversation-empty"><MessageSquare size={24} /><span>{fixedSessionId ? "绑定会话暂不可用，请在助理设置中核对绑定。" : "从左侧选择会话"}</span></div>
-        )}
-      </section>
-
-      {prActionsOpen && selected && !selected.prs?.length && prControls.supported && (
-        <Sheet title="PR Auto-fix" manageFocus busy={sessionActionBusy} onClose={() => setPrActionsOpen(false)}>
-          <div className="m-group">
-            <SessionPrActions key={selected.sessionId} session={selected} events={events} showHeading={false} onWriteBusyChange={setSessionActionBusy} {...prControls} />
-          </div>
-        </Sheet>
+              {themeControl && <ThemeMenu control={themeControl} side="right" iconSize={16} />}
+            </footer>
+          )}
+        </aside>
       )}
+
+      {activeTab !== "sessions" && renderRightCanvas ? (
+        <div className="desktop-workspace-canvas">
+          {renderRightCanvas(sidebarToggleButton)}
+        </div>
+      ) : (
+        <section className="desktop-conversation">
+          {selected && !newChatTarget ? (
+            <DesktopSessionConversation
+              session={selected}
+              snapshot={snapshot}
+              events={hostEvents}
+              apiRequest={apiRequest}
+              onRefreshSnapshot={onRefreshSnapshot}
+              headerLeading={sidebarToggleButton}
+              controller={controller}
+              conversationDrafts={conversationDrafts}
+              onSelectSession={selectSessionFromSidebar}
+              onForkCreated={(parentSessionId) => {
+                setExpandedForkParents((current) => new Set([
+                  ...current,
+                  ...getSessionAncestorIds(snapshot.sessions, parentSessionId),
+                  parentSessionId,
+                ]));
+              }}
+              {...(resetError ? { externalActionError: resetError } : {})}
+            />
+          ) : (
+            <NewChatCanvas
+              key={`${hostId}:${newChatTarget?.key ?? 0}`}
+              hostId={hostId}
+              snapshot={snapshot}
+              connected={hostOnline}
+              headerLeading={sidebarToggleButton}
+              conversationDrafts={conversationDrafts}
+              {...(selected && newChatTarget ? { onCancel: () => setNewChatTarget(undefined) } : {})}
+              {...(newChatTarget?.initialProjectId !== undefined ? { initialProjectId: newChatTarget.initialProjectId } : {})}
+              {...(newChatTarget?.initialCwd !== undefined ? { initialCwd: newChatTarget.initialCwd } : {})}
+              {...(window.bridgeDesktop?.chooseDirectory
+                ? { onChooseDirectory: (path?: string) => window.bridgeDesktop!.chooseDirectory!(path) }
+                : {})}
+              onOpenDirectoryPicker={openDirectoryPickerFromCanvas}
+              {...(supportsCreateSection
+                ? {
+                    onCreateSection: (name: string) => createSectionFromName(name, { clearSearch: false }),
+                  }
+                : {})}
+              onLoadSessionConfiguration={controller.loadSessionConfiguration}
+              onConfigureSession={controller.configureSession}
+              onCreateSession={createSession}
+              onSessionCreated={handleNewChatCreated}
+            />
+          )}
+        </section>
+      )}
+
+      <SessionSectionDragGhost dragState={sessionDrag.dragState} manualSections={manualSections} />
+
+      <SessionActionSheets
+        menuSession={rowMenuSession}
+        renameSession={rowRenameSession}
+        deleteSession={rowDeleteSession}
+        moveMenuOpen={rowMoveMenuOpen}
+        manualSections={manualSections}
+        online={hostOnline}
+        busy={rowActionBusy}
+        error={rowActionError}
+        supportsRename={rowMenuSupportsRename}
+        renameDisabled={!hostOnline}
+        supportsMoveSection={rowMenuSupportsMoveSection}
+        supportsFork={rowMenuSupportsFork}
+        renameTitle={rowRenameTitle}
+        renameDialogRef={rowRenameDialogRef}
+        onCloseMenu={() => {
+          if (!rowActionBusy) {
+            setRowMoveMenuSessionId(undefined);
+            setRowMenuSessionId(undefined);
+          }
+        }}
+        onOpenMoveMenu={() => {
+          if (!rowMenuSession) return;
+          setRowActionError(undefined);
+          setRowMoveMenuSessionId(rowMenuSession.sessionId);
+        }}
+        onBackFromMoveMenu={() => {
+          setRowActionError(undefined);
+          setRowMoveMenuSessionId(undefined);
+        }}
+        onMoveToSection={(sectionId) => rowMenuSession && moveSessionToSection(rowMenuSession.sessionId, sectionId)}
+        onStartRename={() => {
+          if (!rowMenuSession) return;
+          setRowRenameTitle(rowMenuSession.title);
+          setRowActionError(undefined);
+          setRowRenameSessionId(rowMenuSession.sessionId);
+        }}
+        onChangeRenameTitle={(title) => {
+          setRowRenameTitle(title);
+          if (rowActionError) setRowActionError(undefined);
+        }}
+        onSubmitRename={submitRowRename}
+        onCloseRename={closeRowRename}
+        onFork={rowMenuSession && rowMenuSupportsFork
+          ? () => {
+              if (rowActionBusy) return;
+              const sourceId = rowMenuSession.sessionId;
+              setRowActionBusy(true);
+              setRowActionError(undefined);
+              void controller.forkSession(sourceId)
+                .then(async (created) => {
+                  setExpandedForkParents((current) => new Set([
+                    ...current,
+                    ...getSessionAncestorIds(snapshot.sessions, sourceId),
+                    sourceId,
+                  ]));
+                  await onRefreshSnapshot();
+                  setRowMenuSessionId(undefined);
+                  selectSessionFromSidebar(created.sessionId);
+                })
+                .catch((error: unknown) => {
+                  setRowActionError(error instanceof Error ? error.message : "Fork 分支创建失败");
+                })
+                .finally(() => setRowActionBusy(false));
+            }
+          : undefined}
+        onArchive={rowMenuSession && visibilityAvailable
+          ? (archived) => {
+              if (rowActionBusy) return;
+              setRowActionBusy(true);
+              setRowActionError(undefined);
+              void controller.archiveSession(rowMenuSession.sessionId, archived)
+                .then(() => setRowMenuSessionId(undefined))
+                .catch((error: unknown) => {
+                  setRowActionError(error instanceof Error ? error.message : "归档设置失败");
+                })
+                .finally(() => setRowActionBusy(false));
+            }
+          : undefined}
+        onRequestDelete={rowMenuSession && visibilityAvailable
+          ? () => setRowDeleteSessionId(rowMenuSession.sessionId)
+          : undefined}
+        onCancelDelete={() => {
+          if (!rowActionBusy) setRowDeleteSessionId(undefined);
+        }}
+        onConfirmDelete={() => {
+          if (!rowDeleteSession || rowActionBusy) return;
+          const targetId = rowDeleteSession.sessionId;
+          setRowActionBusy(true);
+          setRowActionError(undefined);
+          void controller.deleteSession(targetId)
+            .then(() => {
+              conversationDrafts.resetSession(hostId, targetId);
+              setRowDeleteSessionId(undefined);
+              setRowMenuSessionId(undefined);
+            })
+            .catch((error: unknown) => {
+              setRowDeleteSessionId(undefined);
+              setRowActionError(error instanceof Error ? error.message : "删除会话失败");
+            })
+            .finally(() => setRowActionBusy(false));
+        }}
+      />
+
       {projectOrderOpen && (
         <ProjectOrderSheet
           manageFocus
@@ -1308,71 +970,39 @@ export function DesktopSessions({
           onClose={() => setProjectOrderOpen(false)}
         />
       )}
-      {createOpen && (
+      <SectionCreateDialog
+        state={sectionCreate}
+        online={hostOnline}
+        canSubmit={sectionCanCreate}
+        onChangeName={(name) => sectionCreate && setSectionCreate({ ...sectionCreate, name, error: "" })}
+        onSubmit={createSection}
+        onClose={closeSectionCreate}
+      />
+      <SectionManageDialog controller={sectionManage} manageFocus />
+      {createDialogState && (
         <SessionCreateDialog
-          key={snapshot.host.hostId}
+          key={`${hostId}:${createDialogState.initialProjectId ?? ""}:${createDialogState.initialCwd ?? ""}:${createDialogState.onPickDirectory ? "pick" : "create"}`}
           snapshot={snapshot}
-          connected
+          connected={hostOnline}
+          {...(createDialogState.initialProjectId ? { initialProjectId: createDialogState.initialProjectId } : {})}
+          {...(createDialogState.initialCwd ? { initialCwd: createDialogState.initialCwd } : {})}
+          {...(createDialogState.onPickDirectory ? { onPickDirectory: createDialogState.onPickDirectory } : {})}
+          {...(handleBrowseDirectory ? { onBrowseDirectory: handleBrowseDirectory } : {})}
+          {...(handleCreateDirectory ? { onCreateDirectory: handleCreateDirectory } : {})}
           {...(window.bridgeDesktop?.chooseDirectory ? { onChooseDirectory: (path?: string) => window.bridgeDesktop!.chooseDirectory!(path) } : {})}
           onCreate={createSession}
           onCreated={(created) => {
+            const pendingPrompt = createDialogState.pendingPrompt;
             setCollapsedProjectIds((current) => expandProject(current, created.projectId));
-            setSelectedId(created.sessionId);
+            if (search.trim()) setSearch("");
+            if (pendingPrompt?.trim()) {
+              deliverInitialPromptToSession(created, pendingPrompt);
+            }
+            selectSessionFromSidebar(created.sessionId);
           }}
-          onClose={() => setCreateOpen(false)}
+          onClose={() => setCreateDialogState(undefined)}
         />
       )}
-      {rewindAvailable && selected && rewindTarget?.sessionId === selected.sessionId && <SessionRewindDialog
-        key={`${composerKey}:${rewindTarget.messageId ?? "latest"}`}
-        messages={items}
-        {...(rewindTarget.messageId ? { initialMessageId: rewindTarget.messageId } : {})}
-        disabled={rewindDisabled}
-        onPreview={async messageId => unwrap<{ rewind: BridgeSessionRewindPreview }>(await apiRequest({ method: "session.rewind.preview", params: { sessionId: selected.sessionId, messageId } })).rewind}
-        onRewind={async (messageId, scope) => {
-          const result = unwrap<{ rewind: BridgeSessionRewindResult }>(await apiRequest({ method: "session.rewind", params: { sessionId: selected.sessionId, messageId, scope } }));
-          return result.rewind;
-        }}
-        onComplete={result => {
-          if (result.scope !== "files") { setText(result.prefill ?? ""); setAttachments([]); fileUploads.clear(fileUploads.files); }
-          setRewindTarget(undefined);
-        }}
-        onClose={() => setRewindTarget(undefined)}
-      />}
-      {selected && <SessionCommandDialogs
-        key={selected.sessionId}
-        result={commands.dialog}
-        session={selected}
-        onClose={commands.close}
-        onOpenSession={async sessionId => { setSelectedId(sessionId); await openSession(sessionId); }}
-        onRename={async title => {
-          unwrap(await apiRequest({ method: "session.command", params: { sessionId: selected.sessionId, text: `/rename ${title}` } }));
-          await onRefreshSnapshot();
-        }}
-        onLoadPermissions={async () => unwrap<{ permissions: BridgeSessionPermissions }>(await apiRequest({ method: "session.permissions", params: { sessionId: selected.sessionId } })).permissions}
-        onSavePermissions={async (mode, rules) => unwrap<{ permissions: BridgeSessionPermissions }>(await apiRequest({ method: "session.permissions.configure", params: { sessionId: selected.sessionId, mode, rules } })).permissions}
-      />}
-      {configurationOpen && selected && canConfigure && (
-        <SessionConfigurationDialog
-          session={selected}
-          revision={events.filter((event) => ((event.type === "session.configuration" || event.type === "session.compacted") && event.sessionId === selected.sessionId) || (event.type === "permission.policy.changed" && (!event.sessionId || event.sessionId === selected.sessionId))).at(-1)?.seq ?? 0}
-          onLoad={loadConfiguration}
-          onSave={saveConfiguration}
-          onClose={() => setConfigurationOpen(false)}
-        />
-      )}
-
-      <ConfirmationDialog
-        open={deleteSessionOpen && Boolean(selected)}
-        title="删除会话"
-        description={selected?.transport === "claude-desktop-native"
-          ? `从 Claude Desktop 中删除「${selected.title}」会话及其对话记录？此操作不可恢复。`
-          : `从 Bridge 列表中删除「${selected?.title ?? ""}」？对应 Desktop 应用中的原生会话与文件不受影响；Bridge 中的会话配置、排队与授权记录会被清除，此操作不可恢复。`}
-        confirmLabel="删除会话"
-        danger
-        busy={sessionActionBusy}
-        onCancel={() => setDeleteSessionOpen(false)}
-        onConfirm={() => void deleteSelected()}
-      />
     </section>
   );
 }

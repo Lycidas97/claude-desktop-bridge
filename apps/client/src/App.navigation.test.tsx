@@ -8,6 +8,8 @@ import { MobileSettings } from "./components/mobile/MobileSettings.js";
 import { MobileWorkspace } from "./components/MobileWorkspace.js";
 import { MobileClientUpdateDialog } from "./components/updater/UpdaterSections.js";
 import { MediaPreviewProvider } from "./components/evidence/MediaPreviewProvider.js";
+import { AssistantPage } from "./components/assistant/AssistantPage.js";
+import { ConversationDraftsProvider } from "./components/conversation/ConversationDraftsProvider.js";
 import { dispatchMobileBack } from "./lib/mobile-back-navigation.js";
 
 const hooks = vi.hoisted(() => ({
@@ -132,23 +134,31 @@ describe("mobile app parent navigation", () => {
     expect(component(MobileAppShell)!.props.tab).toBe("sessions");
     expect(back()).toBe(false);
   });
-  it.each(["providers", "quota"])("returns from the %s subpage to settings, then the session directory", page => {
+  it.each(["providers", "quota"])("returns from the %s subpage to settings, then the active session canvas", page => {
     tab("settings");
     component(MobileSettings)!.props[page].onOpen(); draw();
     expect(component(MobileSettings)).toBeUndefined();
     expect(back()).toBe(true);
     expect(component(MobileAppShell)!.props.tab).toBe("settings");
     expect(component(MobileSettings)).toBeDefined();
-    const directoryRequest = component(MobileWorkspace)!.props.directoryRequest;
     expect(back()).toBe(true);
     expect(component(MobileAppShell)!.props.tab).toBe("sessions");
-    expect(component(MobileWorkspace)!.props.directoryRequest).not.toBe(directoryRequest);
     expect(back()).toBe(false);
   });
-  it("makes the sessions menu destination open the directory instead of a retained conversation", () => {
-    const initial = component(MobileWorkspace)!.props.directoryRequest;
-    tab("settings"); tab("sessions");
-    expect(component(MobileWorkspace)!.props.directoryRequest).not.toBe(initial);
+  it("passes paired hosts, quick host switcher callbacks, and tab navigation into MobileWorkspace", async () => {
+    const workspace = component(MobileWorkspace)!;
+    const initialDirReq = workspace.props.directoryRequest;
+    expect(workspace.props.hosts).toBe(hooks.mobile.state.hosts);
+    expect(typeof workspace.props.onSelectHost).toBe("function");
+    expect(typeof workspace.props.onAddHost).toBe("function");
+    expect(workspace.props.activeTab).toBe("sessions");
+    workspace.props.onSelectTab("settings");
+    draw();
+    expect(component(MobileAppShell)!.props.tab).toBe("settings");
+    await component(MobileWorkspace)!.props.onSelectHost("host");
+    draw();
+    expect(component(MobileAppShell)!.props.tab).toBe("sessions");
+    expect(component(MobileWorkspace)!.props.directoryRequest).not.toBe(initialDirReq);
   });
   it("opens active computer connection details directly from workspace inspection callback", () => {
     component(MobileWorkspace)!.props.onInspectConnection(); draw();
@@ -162,5 +172,34 @@ describe("mobile app parent navigation", () => {
     expect(back()).toBe(false);
     hooks.mobile.state.pairingSync = { stage: "syncing" }; draw();
     expect(back()).toBe(true);
+  });
+  it("clears conversation drafts for a forgotten computer on both list and detail removal", async () => {
+    hooks.mobile.forgetHost = vi.fn().mockResolvedValue(undefined);
+    tab("computers");
+    const clearHost = vi.fn();
+    component(ConversationDraftsProvider)!.props.controllerRef.clearHost = clearHost;
+    await component(HostBrowser)!.props.onRemove("host");
+    expect(hooks.mobile.forgetHost).toHaveBeenCalledWith("host");
+    expect(clearHost).toHaveBeenCalledWith("host");
+  });
+  it("mounts sibling mobile tab pages for sessions and assistant without fixedSessionId coupling", () => {
+    const tabPages = elements(tree).filter((element) => element.type === "div" && element.props.className === "mobile-tab-page");
+    expect(tabPages).toHaveLength(2);
+    expect(tabPages.map((page) => page.props.hidden)).toEqual([false, true]);
+    expect(component(MobileWorkspace)!.props.visible).toBe(true);
+    expect("fixedSessionId" in component(MobileWorkspace)!.props).toBe(false);
+    expect(component(AssistantPage)!.props.active).toBe(false);
+    expect(typeof component(AssistantPage)!.props.renderConversation).toBe("function");
+    const beforeBackDirReq = component(MobileWorkspace)!.props.directoryRequest;
+    component(MobileAppShell)!.props.onTabChange("assistant");
+    draw();
+    const switchedPages = elements(tree).filter((element) => element.type === "div" && element.props.className === "mobile-tab-page");
+    expect(switchedPages.map((page) => page.props.hidden)).toEqual([true, false]);
+    expect(component(MobileWorkspace)!.props.visible).toBe(false);
+    expect(component(AssistantPage)!.props.active).toBe(true);
+    component(MobileAppShell)!.props.onTabChange("sessions");
+    draw();
+    expect(component(MobileAppShell)!.props.tab).toBe("sessions");
+    expect(component(MobileWorkspace)!.props.directoryRequest).toBe(beforeBackDirReq + 1);
   });
 });

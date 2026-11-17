@@ -47,8 +47,14 @@ const history = { sessionId: session.sessionId, items: [{ id: "question", role: 
 const snapshot = { host: { hostId: "qa", pairingEpoch: 1, name: "Preview Mac", relayUrl: "ws://127.0.0.1:8788/ws", online: true, lastSeenAt: now, version: "1.0.2", capabilities: ["evidence.v1", "artifact.preview.v1", "artifact.transfer.v1", "artifact.transfer.stat.v1"] }, projects: [{ projectId: session.projectId, name: "Reports", cwd: session.cwd, sessionCount: 1, runningCount: 0, pendingCount: 0, lastActivityAt: now }], sessions: [session], devices: [], permissions: [], providers: [], runtime: { state: "ready", detail: "Ready", activeTurns: 0, pendingTurns: 0 }, latestSeq: 0, connection: "connected", launchAtLogin: false, managedDesktopEnabled: false, claudeDesktop: { state: "running", canLaunch: false, canQuit: true, detail: "Running" } };
 const packaged = process.argv.includes("--electron");
 const mobile = process.argv.includes("--mobile");
-const mobileModule = mobile ? await (await fetch("http://127.0.0.1:5188/src/components/MobileWorkspace.tsx")).text() : "";
-const providerModule = mobileModule.match(/from "([^"]*MediaPreviewProvider\.tsx[^"]*)"/u)?.[1] ?? "/src/components/evidence/MediaPreviewProvider.tsx";
+const mobileSourceUrl = "http://127.0.0.1:5188/src/components/conversation/ConversationView.tsx";
+const mobileModule = mobile
+  ? await (await fetch(mobileSourceUrl)).text()
+  : "";
+const rawProviderModule = mobileModule.match(/from "([^"]*MediaPreviewProvider\.tsx[^"]*)"/u)?.[1];
+const providerModule = rawProviderModule
+  ? (() => { const url = new URL(rawProviderModule, mobileSourceUrl); return `${url.pathname}${url.search}`; })()
+  : "/src/components/evidence/MediaPreviewProvider.tsx";
 const browser = packaged
   ? await _electron.launch({ ...(process.env.BRIDGE_ELECTRON_PATH ? { executablePath: process.env.BRIDGE_ELECTRON_PATH } : {}), args: [resolve(output, "electron-media-main.cjs")] })
   : await chromium.launch({ channel: "chrome", headless: true });
@@ -127,6 +133,7 @@ try {
           supportsFileStat: snapshot.host.capabilities.includes("artifact.transfer.stat.v1"),
         }, React.createElement(MobileWorkspace, {
           activeHostId: "qa", desktopName: "Preview Mac", connection: "connected", desktopOnline: true,
+          focusSessionId: "media-session",
           snapshot, permissions: [], histories: { "media-session": { ...history, status: "ready" } },
           evidence: { "media-session": { ...evidence, status: "ready" } }, artifactPreviews: {}, artifactTransfers: {},
           events: [], localTurns: [], pendingOutbound: 0,
@@ -134,8 +141,7 @@ try {
           onOpenSession: noop, onLoadOlderHistory: noop, onLoadOlderEvidence: noop, onDownloadSessionFile: noop,
           onPreviewArtifact: noop, onDownloadArtifact: noop, onSendTurn: noop, onInterruptTurn: noop,
           onResolveUncertain: noop, onResolvePermission: noop, onCreateSession: noop, onLoadSessionConfiguration: noop,
-          onConfigureSession: noop, onPreviewProviderSwitch: noop, onCommitProviderSwitch: noop,
-          onCancelProviderSwitch: noop, onRefreshProviders: noop,
+          onConfigureSession: noop,
           onDesktopAppAction: noop, onRefresh: async () => true, onBackToHosts: noop, onRetry: noop,
         })));
       ` }));
@@ -197,10 +203,9 @@ try {
     await page.locator(".media-viewer").waitFor({ state: "detached" });
     if (mobile) {
       await page.getByRole("button", { name: /^成果/u }).click();
-      const first = await page.locator(".mobile-evidence-view > :first-child").getAttribute("class");
-      if (!first?.includes("media-gallery")) throw new Error("Media gallery is not first in mobile outputs");
+      await page.locator(".mobile-evidence-view .evidence-panel").waitFor();
       await page.screenshot({ path: `${output}/mobile-media-gallery.png` });
-      await page.locator(".mobile-evidence-view .media-file.pdf").click();
+      await page.locator(".mobile-evidence-view .evidence-file-row").filter({ hasText: "Research report.pdf" }).getByRole("button", { name: /预览/u }).click();
       await page.getByRole("button", { name: "下载并预览", exact: true }).click();
       await page.waitForFunction(() => !document.querySelector(".media-viewer-status") && document.querySelector(".media-viewer canvas")?.width > 0);
       await page.evaluate(() => window.__mobileBack());

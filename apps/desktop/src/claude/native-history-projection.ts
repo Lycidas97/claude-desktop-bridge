@@ -52,13 +52,22 @@ export function nativeHistoryItems(sessionId: string, messages: unknown[], proje
       const status = message.subtype === "task_notification" ? message.status : "running";
       const state: BridgeSubagentSummary["state"] = status === "completed" || status === "failed" || status === "stopped" || status === "running" ? status : "unknown";
       const toolUseId = typeof message.tool_use_id === "string" ? message.tool_use_id : previous?.toolUseId;
+      const sameTool = !message.tool_use_id || !previous?.toolUseId || message.tool_use_id === previous.toolUseId;
+      const summary = typeof message.summary === "string" ? message.summary : undefined;
+      const reportText = state !== "running"
+        ? (sameTool && previous?.reportText && (!summary || previous.reportText.length > summary.length) ? previous.reportText : summary)
+        : undefined;
       const task: BridgeSubagentSummary = {
         agentId: message.task_id, ...(toolUseId ? { toolUseId } : {}), state,
         ...(previous?.model ? { model: previous.model } : {}),
+        ...(sameTool && previous?.agentType ? { agentType: previous.agentType } : {}),
+        ...(sameTool && previous?.recentTools?.length ? { recentTools: previous.recentTools } : {}),
+        ...(sameTool && previous?.durationMs !== undefined ? { durationMs: previous.durationMs } : {}),
         description: typeof message.description === "string" ? message.description : previous?.description ?? "Agent",
         startedAt: previous?.startedAt ?? createdAt, updatedAt: createdAt,
         toolCount: typeof record(message.usage).tool_uses === "number" ? Number(record(message.usage).tool_uses) : previous?.toolCount ?? 0,
-        ...(typeof message.summary === "string" ? { latestText: message.summary, ...(state !== "running" ? { reportText: message.summary } : {}) } : {}),
+        ...(summary ? { latestText: summary } : sameTool && previous?.latestText ? { latestText: previous.latestText } : {}),
+        ...(reportText ? { reportText } : {}),
       };
       tasks.set(task.agentId, task);
       const id = toolUseId ?? task.agentId;
@@ -136,10 +145,41 @@ export function enrichNativeSubagentItems(
   if (!subagents?.length) return;
   for (const item of items) {
     if (!item.subagent && item.toolName !== "Agent" && item.toolName !== "Task") continue;
-    const child = subagents.find(agent => agent.toolUseId === item.id || agent.agentId === item.subagent?.agentId);
-    if (child?.model) {
-      if (item.subagent) item.subagent.model = child.model;
-      else item.subagent = child;
+    const itemToolUseId = item.subagent?.toolUseId ?? (item.id !== item.subagent?.agentId ? item.id : undefined);
+    const exact = itemToolUseId
+      ? subagents.find(agent => agent.toolUseId === itemToolUseId)
+      : undefined;
+    const child = exact ?? (
+      item.subagent?.agentId
+        ? subagents.filter(agent => (
+            agent.agentId === item.subagent!.agentId
+            && (!agent.toolUseId || !itemToolUseId || agent.toolUseId === itemToolUseId)
+          )).at(-1)
+        : undefined
+    );
+    if (!child) {
+      const modelDonor = item.subagent?.agentId && !item.subagent.model
+        ? subagents.filter(agent => agent.agentId === item.subagent!.agentId && Boolean(agent.model)).at(-1)
+        : undefined;
+      if (modelDonor?.model && item.subagent) item.subagent.model = modelDonor.model;
+      continue;
+    }
+    if (!item.subagent) {
+      item.subagent = { ...child };
+      continue;
+    }
+    if (child.model) item.subagent.model = child.model;
+    if (child.agentType && !item.subagent.agentType) item.subagent.agentType = child.agentType;
+    if (child.recentTools?.length) item.subagent.recentTools = child.recentTools;
+    if (child.toolCount > item.subagent.toolCount) item.subagent.toolCount = child.toolCount;
+    if (child.durationMs !== undefined && (item.subagent.durationMs === undefined || child.durationMs > item.subagent.durationMs)) {
+      item.subagent.durationMs = child.durationMs;
+    }
+    if (item.subagent.state !== "running" && child.reportText && (!item.subagent.reportText || child.reportText.length > item.subagent.reportText.length)) {
+      item.subagent.reportText = child.reportText;
+    }
+    if (!item.subagent.latestText && child.latestText) {
+      item.subagent.latestText = child.latestText;
     }
   }
 }

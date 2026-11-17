@@ -20,7 +20,7 @@ import {
   type BridgeEvent,
   type BridgeHostSnapshot,
   type BridgePayload,
-  type BridgePermissionInfo,
+  type BridgePendingPrompt,
   type BridgeRequest,
   type BridgeResponse,
   type BridgeSessionInfo,
@@ -37,34 +37,42 @@ import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import { diagLog, setDiagBridgeStateSummary } from "../../lib/diagnostics.js";
 import { isReplayableMobileEnvelope } from "../../lib/outbox.js";
 import { nativePushRegistration } from "../../lib/push-wake.js";
-import { ensureSessionNotificationPermission, showSessionNotification } from "../../lib/session-notifications.js";
+import {
+  ensureSessionNotificationPermission,
+  isActivelyViewingSession,
+  isSessionNotificationsEnabled,
+  showBrowserDesktopOrWebNotification,
+  showSessionNotification,
+} from "../../lib/session-notifications.js";
 import { bridgeVault } from "../../lib/vault.js";
 import type { BridgeSendRequest } from "./bridge-artifacts.js";
 import {
   HOME_LEARN_FRESHNESS_MS,
   LOCAL_EVIDENCE_CACHE_TTL_MS,
   advancePairingSync,
+  applyEvidenceEventToPages,
+  applyEvidencePageResult,
   applyEventToSnapshot,
   applyEventToTurns,
-  applyEventsToSnapshot,
+  applyIncomingEventsToState,
   applyPermissionEvent,
-  applyUnseenPermissionEvents,
+  applyResponseToTurns,
+  applySessionResultToState,
+  beginHostSessionState,
+  clearActiveHostState,
   confirmedPairingSnapshot,
-  evidenceFromEvent,
   evidencePageFromResponse,
   hostSummary,
-  hostWithRuntimeState,
+  hydrateStoredHostState,
   isBridgeResponse,
   isClaudeNativeRelay,
   isLoopbackRelay,
-  mergeAcceptedDelivery,
   mergeBridgeEvents,
-  mergeEvidence,
   permissionFromEvent,
   previewFromResponse,
-  rebaseSnapshot,
   relayIssue,
   relayLinkAllowsSend,
+  replaceActiveHostSnapshot,
   shouldExtendLocalEvidenceCache,
   shouldPersistIncomingMessage,
   snapshotWithPermissions,
@@ -73,6 +81,7 @@ import {
   type PairingConnectionPhase,
   type PendingResponse,
   type SessionEvidenceState,
+  type StoredHostSnapshotInput,
 } from "./bridge-reducers.js";
 
 const LAST_ACTIVE_HOST_KEY = "bridge.mobile.last-active-host.v1";
@@ -130,16 +139,7 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export interface StoredHostState {
-  snapshot?: BridgeHostSnapshot;
-  snapshotSeq: number;
-  permissions: BridgePermissionInfo[];
-  events: BridgeEvent[];
-  evidence: Record<string, SessionEvidenceState>;
-  artifactPreviews: Record<string, BridgeArtifactPreview>;
-  localTurns: LocalTurn[];
-  latestSeq: number;
-}
+export type StoredHostState = StoredHostSnapshotInput;
 
 export async function readStoredHostState(
   crypto: BridgeCrypto,
@@ -203,48 +203,11 @@ export async function readStoredHostState(
   for (const event of events) appliedTurns = applyEventToTurns(appliedTurns, event);
   for (const message of messages) {
     if (!isBridgeResponse(message.payload)) continue;
-    const response = message.payload;
-    const turnIndex = appliedTurns.findIndex((turn) => turn.requestId === response.requestId);
-    if (turnIndex < 0) continue;
-    const turn = appliedTurns[turnIndex]!;
-    if (response.ok) {
-      const result = response.result as { commandId?: unknown; state?: unknown } | undefined;
-      const terminalDelivery: BridgeDeliveryState | undefined = result?.state === "completed"
-        ? "completed"
-        : result?.state === "failed"
-          ? "failed"
-          : result?.state === "cancelled"
-            ? "cancelled"
-            : undefined;
-      appliedTurns[turnIndex] = {
-        ...turn,
-        delivery: terminalDelivery ?? (result?.state === "submitted" ? mergeAcceptedDelivery(turn.delivery, "submitted")
-          : turn.delivery === "local-saved" ? "host-received" : turn.delivery),
-        ...(typeof result?.commandId === "string" ? { commandId: result.commandId } : {}),
-      };
-    } else {
-      appliedTurns[turnIndex] = {
-        ...turn,
-        delivery: "failed",
-        error: response.error?.message ?? "请求失败",
-      };
-    }
+    appliedTurns = applyResponseToTurns(appliedTurns, message.payload);
   }
   const storedSnapshot = snapshotWithPermissions(replayedSnapshot, permissions);
-  const evidence = events.reduce<Record<string, SessionEvidenceState>>((result, event) => {
-    const item = evidenceFromEvent(event);
-    if (!item) return result;
-    const current = result[item.sessionId] ?? {
-      status: "ready" as const,
-      items: [],
-      hasMore: false,
-    };
-    result[item.sessionId] = {
-      ...current,
-      items: mergeEvidence(current.items, [item]),
-    };
-    return result;
-  }, {});
+  let evidence: Record<string, SessionEvidenceState> = {};
+  for (const event of events) evidence = applyEvidenceEventToPages(evidence, event);
   const artifactPreviews: Record<string, BridgeArtifactPreview> = {};
   for (const message of messages) {
     if (!isBridgeResponse(message.payload)) continue;
@@ -252,17 +215,7 @@ export async function readStoredHostState(
     if (preview) artifactPreviews[preview.artifactId] = preview;
     const page = evidencePageFromResponse(message.payload);
     if (!page) continue;
-    const current = evidence[page.sessionId] ?? {
-      status: "ready" as const,
-      items: [],
-      hasMore: page.hasMore,
-    };
-    evidence[page.sessionId] = {
-      status: "ready",
-      items: mergeEvidence(current.items, page.items),
-      hasMore: current.hasMore || page.hasMore,
-      ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
-    };
+    evidence = applyEvidencePageResult(evidence, page.sessionId, page, { mergeHasMore: true });
   }
   return {
     ...(storedSnapshot ? { snapshot: storedSnapshot } : {}),
@@ -341,18 +294,89 @@ export interface BridgeTransportRefs {
   pendingCompletionNotificationsRef: MutableRefObject<Set<string>>;
 }
 
-export function updateBridgeHostCache(
-  setState: Dispatch<SetStateAction<MobileBridgeState>>,
-  roomId: string,
-  snapshot: BridgeHostSnapshot,
-  permissions: BridgePermissionInfo[] = snapshot.permissions,
+export type ActiveTransportTeardownRefs = Pick<
+  BridgeTransportRefs,
+  | "cryptoRef"
+  | "socketRef"
+  | "connectionTimerRef"
+  | "pairingSyncTimerRef"
+  | "pendingResponsesRef"
+  | "envelopeRequestsRef"
+  | "desktopHomeRef"
+  | "linkGateRef"
+  | "sendAttemptedAtRef"
+  | "nativeRelayCapabilityRef"
+  | "payloadDeflateRef"
+  | "pendingCompletionNotificationsRef"
+>;
+
+export interface ActiveTransportTeardownOptions {
+  /** Reject pending RPC waiters with this message instead of leaving callers blocked until timeout. */
+  rejectPendingReason?: string;
+  /** Only clear active transport refs when `socketRef.current` still points to this socket instance. */
+  onlyIfSocket?: BridgeTransport;
+  /** Also clear the pairing sync dismissal timer (omit when transitioning to a new provisional pairing). */
+  clearPairingSyncTimer?: boolean;
+  /** Install the replacement crypto identity atomically after closing the old transport. */
+  nextCrypto?: BridgeCrypto;
+  /** Leave `cryptoRef.current` intact (used on hook unmount cleanup). */
+  preserveCrypto?: boolean;
+}
+
+/** Close the active transport socket, cancel timers, and reset ephemeral link refs in one place. */
+export function teardownActiveTransport(
+  refs: ActiveTransportTeardownRefs,
+  options: ActiveTransportTeardownOptions = {},
 ): void {
-  setState((current) => ({
-    ...current,
-    hosts: current.hosts.map((host) => host.roomId === roomId
-      ? hostWithRuntimeState(host, snapshot, permissions)
-      : host),
-  }));
+  const {
+    cryptoRef,
+    socketRef,
+    connectionTimerRef,
+    pairingSyncTimerRef,
+    pendingResponsesRef,
+    envelopeRequestsRef,
+    desktopHomeRef,
+    linkGateRef,
+    sendAttemptedAtRef,
+    nativeRelayCapabilityRef,
+    payloadDeflateRef,
+    pendingCompletionNotificationsRef,
+  } = refs;
+  const activeSocket = socketRef.current;
+  if (options.onlyIfSocket && activeSocket !== options.onlyIfSocket) {
+    options.onlyIfSocket.close();
+    return;
+  }
+  if (connectionTimerRef.current) {
+    clearTimeout(connectionTimerRef.current);
+    connectionTimerRef.current = undefined;
+  }
+  if (options.clearPairingSyncTimer && pairingSyncTimerRef.current) {
+    clearTimeout(pairingSyncTimerRef.current);
+    pairingSyncTimerRef.current = undefined;
+  }
+  const rejectionError = options.rejectPendingReason
+    ? new Error(options.rejectPendingReason)
+    : undefined;
+  for (const pending of pendingResponsesRef.current.values()) {
+    clearTimeout(pending.timer);
+    if (rejectionError) pending.reject(rejectionError);
+  }
+  pendingResponsesRef.current.clear();
+  envelopeRequestsRef.current.clear();
+  pendingCompletionNotificationsRef.current.clear();
+  desktopHomeRef.current = undefined;
+  sendAttemptedAtRef.current = undefined;
+  nativeRelayCapabilityRef.current = undefined;
+  payloadDeflateRef.current = false;
+  linkGateRef.current = () => true;
+  activeSocket?.close();
+  socketRef.current = undefined;
+  if (options.nextCrypto !== undefined) {
+    cryptoRef.current = options.nextCrypto;
+  } else if (!options.preserveCrypto) {
+    cryptoRef.current = undefined;
+  }
 }
 
 export function applyBridgeLanRelayAdvertisement(roomId: string, snapshot: BridgeHostSnapshot): void {
@@ -379,21 +403,7 @@ export function handleBridgePayload(
     })));
     // Receiving it already marked the desktop online. Its host.online can be stale: a restarting
     // desktop builds the snapshot before its relay state reads "connected" and sends it after.
-    setState((current) => {
-      if (payload.snapshot.latestSeq < current.snapshotSeq) return current;
-      const rebased = rebaseSnapshot(payload.snapshot, current.events, current.permissions);
-      return {
-        ...current,
-        snapshot: rebased.snapshot,
-        snapshotSeq: payload.snapshot.latestSeq,
-        permissions: rebased.permissions,
-        desktopName: rebased.snapshot.host.name,
-        latestSeq: rebased.latestSeq,
-        hosts: current.hosts.map((host) => host.roomId === crypto.identity.roomId
-          ? hostWithRuntimeState(host, rebased.snapshot, rebased.permissions)
-          : host),
-      };
-    });
+    setState((current) => replaceActiveHostSnapshot(current, crypto.identity.roomId, payload.snapshot));
     applyLanRelayAdvertisement(crypto.identity.roomId, payload.snapshot);
     return;
   }
@@ -407,68 +417,15 @@ export function handleBridgePayload(
         sessionId: event.sessionId,
       }, dropped);
     }
-    setState((current) => {
-      const permissions = applyUnseenPermissionEvents(current.permissions, [event], current.events, current.snapshotSeq);
-      const snapshot = snapshotWithPermissions(applyEventToSnapshot(current.snapshot, event, permissions), permissions);
-      const evidenceItem = evidenceFromEvent(payload.event);
-      const evidence = evidenceItem ? {
-        ...current.evidence,
-        [evidenceItem.sessionId]: {
-          status: "ready" as const,
-          items: mergeEvidence(
-            current.evidence[evidenceItem.sessionId]?.items ?? [],
-            [evidenceItem],
-          ),
-          hasMore: current.evidence[evidenceItem.sessionId]?.hasMore ?? false,
-          ...(current.evidence[evidenceItem.sessionId]?.nextCursor
-            ? { nextCursor: current.evidence[evidenceItem.sessionId]!.nextCursor }
-            : {}),
-        },
-      } : current.evidence;
-      return {
-        ...current,
-        snapshot,
-        permissions,
-        events: mergeBridgeEvents(current.events, [payload.event]),
-        evidence,
-        localTurns: applyEventToTurns(current.localTurns, payload.event),
-        latestSeq: Math.max(current.latestSeq, payload.event.seq),
-        hosts: current.hosts.map((host) => host.roomId === crypto.identity.roomId
-          ? hostWithRuntimeState(host, snapshot, permissions)
-          : host),
-      };
-    });
+    setState((current) => applyIncomingEventsToState(current, [payload.event], {
+      roomId: crypto.identity.roomId,
+    }));
     return;
   }
   if (payload.kind !== "response") return;
   setState((current) => {
-    const index = current.localTurns.findIndex((turn) => turn.requestId === payload.requestId);
-    if (index < 0) return current;
-    const localTurns = [...current.localTurns];
-    const turn = localTurns[index]!;
-    if (payload.ok) {
-      const result = payload.result as { commandId?: unknown; state?: unknown } | undefined;
-      const terminalDelivery: BridgeDeliveryState | undefined = result?.state === "completed"
-        ? "completed"
-        : result?.state === "failed"
-          ? "failed"
-          : result?.state === "cancelled"
-            ? "cancelled"
-            : undefined;
-      localTurns[index] = {
-        ...turn,
-        delivery: terminalDelivery ?? (result?.state === "submitted" ? mergeAcceptedDelivery(turn.delivery, "submitted")
-          : turn.delivery === "local-saved" || turn.delivery === "relay-received" ? "host-received" : turn.delivery),
-        ...(typeof result?.commandId === "string" ? { commandId: result.commandId } : {}),
-      };
-    } else {
-      localTurns[index] = {
-        ...turn,
-        delivery: "failed",
-        error: payload.error?.message ?? "请求失败",
-      };
-    }
-    return { ...current, localTurns };
+    const localTurns = applyResponseToTurns(current.localTurns, payload);
+    return localTurns === current.localTurns ? current : { ...current, localTurns };
   });
   const pending = pendingResponsesRef.current.get(payload.requestId);
   if (pending) {
@@ -565,6 +522,10 @@ export async function sendBridgeRequest(
     const session = stateRef.current.snapshot?.sessions.find(candidate => candidate.sessionId === params.sessionId);
     if ((!session?.runtimeId || session.runtimeId === "claude-desktop") && nativeRelayCapabilityRef.current !== true) return undefined;
   }
+  if (cryptoRef.current !== crypto || socketRef.current !== socket) {
+    if (options.wait) throw new Error("连接已重置");
+    return undefined;
+  }
   if (!socket || socket.state !== "connected") {
     return undefined;
   }
@@ -590,8 +551,10 @@ export async function sendBridgeRequest(
       pendingResponsesRef.current.delete(request.requestId);
       reject(new Error("电脑响应超时"));
     }, options.timeoutMs ?? 20_000);
-    pendingResponsesRef.current.set(request.requestId, { resolve, reject, timer });
+    pendingResponsesRef.current.set(request.requestId, { resolve, reject, timer, startedAt: Date.now() });
   }) : undefined;
+  // Prevent Node/Vitest unhandledRejection if teardown rejects while `sendEnvelope` is still yielding.
+  responsePromise?.catch(() => undefined);
   try {
     sendAttemptedAtRef.current = Date.now();
     await socket.sendEnvelope(envelope);
@@ -608,33 +571,110 @@ export async function sendBridgeRequest(
   return responsePromise;
 }
 
+export interface NotifyCompletedTurnsOptions {
+  fromResume?: boolean | undefined;
+  bootstrap?: boolean | undefined;
+}
+
+const NOTIFICATION_MAX_AGE_MS = 30 * 60_000;
+const EPOCH_MS_FLOOR = 1_000_000_000_000;
+
+function singleLineNotificationPreview(raw: unknown, maxChars = 60): string {
+  if (typeof raw !== "string") return "";
+  const compact = raw.replace(/\s+/gu, " ").trim();
+  if (!compact) return "";
+  const chars = Array.from(compact);
+  return chars.length > maxChars ? `${chars.slice(0, maxChars).join("")}…` : compact;
+}
+
+function isEventNotificationStale(event: BridgeEvent): boolean {
+  const rawEventTime = typeof event.data?.createdAt === "number" ? event.data.createdAt : event.timestamp;
+  return (
+    typeof rawEventTime === "number"
+    && rawEventTime >= EPOCH_MS_FLOOR
+    && Date.now() - rawEventTime > NOTIFICATION_MAX_AGE_MS
+  );
+}
+
+function extractCompletedTurnAssistantPreview(
+  event: BridgeEvent,
+  batchEvents: readonly BridgeEvent[],
+  stateEvents: readonly BridgeEvent[],
+): string {
+  const direct = singleLineNotificationPreview(event.data?.text, 60);
+  if (direct) return direct;
+  if (!event.sessionId) return "";
+  const combined = [...(stateEvents ?? []), ...batchEvents]
+    .filter((candidate) => candidate.sessionId === event.sessionId && candidate.seq <= event.seq)
+    .sort((left, right) => left.seq - right.seq);
+  for (let i = combined.length - 1; i >= 0; i -= 1) {
+    const candidate = combined[i]!;
+    if (candidate.eventId === event.eventId) continue;
+    if (
+      candidate.type === "turn.completed"
+      || candidate.type === "turn.failed"
+      || candidate.type === "turn.interrupted"
+    ) {
+      break;
+    }
+    if (event.turnId && candidate.turnId && candidate.turnId !== event.turnId) {
+      continue;
+    }
+    if (candidate.type === "assistant.completed") {
+      const preview = singleLineNotificationPreview(candidate.data?.text, 60);
+      if (preview) return preview;
+    }
+  }
+  return "";
+}
+
+function formatCompletedTurnBody(
+  event: BridgeEvent,
+  batchEvents: readonly BridgeEvent[],
+  stateEvents: readonly BridgeEvent[],
+): string {
+  if (event.type === "turn.completed") {
+    const preview = extractCompletedTurnAssistantPreview(event, batchEvents, stateEvents);
+    return preview || "任务已完成，点击查看结果";
+  }
+  const errorPreview = singleLineNotificationPreview(event.data?.error ?? event.data?.message, 60);
+  return errorPreview ? `任务失败：${errorPreview}` : "任务执行失败，点击查看详情";
+}
+
 export function notifyBridgeCompletedTurns(
   refs: Pick<BridgeTransportRefs, "stateRef" | "pendingCompletionNotificationsRef">,
   events: BridgeEvent[],
   crypto: BridgeCrypto,
+  options: NotifyCompletedTurnsOptions = {},
 ): void {
+  if (typeof window !== "undefined" && window.bridgeDesktop) return;
   const completed = events.filter((event) => event.type === "turn.completed" || event.type === "turn.failed");
   if (completed.length === 0) return;
-  const seen = new Set(refs.stateRef.current.events.map((event) => event.eventId));
+  const stateEvents = refs.stateRef.current.events ?? [];
+  const seen = new Set(stateEvents.map((event) => event.eventId));
   const pending = refs.pendingCompletionNotificationsRef.current;
   // The state event list owns committed IDs. Keep only IDs awaiting a React
   // commit so queued delivery and resume cannot notify twice in the same batch.
   for (const id of pending) if (seen.has(id)) pending.delete(id);
+  const notificationsEnabled = isSessionNotificationsEnabled();
+  const isVisible = typeof document !== "undefined" && document.visibilityState === "visible";
   for (const event of completed) {
     if (seen.has(event.eventId) || pending.has(event.eventId)) continue;
     pending.add(event.eventId);
-    if (document.visibilityState === "visible") continue;
+    if (options.bootstrap || !notificationsEnabled) continue;
+    if (isEventNotificationStale(event)) continue;
+    if (isVisible && isActivelyViewingSession(crypto.identity.roomId, event.sessionId)) continue;
     const title = refs.stateRef.current.snapshot?.sessions.find((session) => session.sessionId === event.sessionId)?.title
       ?? crypto.identity.desktopName;
-    const body = event.type === "turn.completed" ? "任务已完成" : "任务失败";
+    const body = formatCompletedTurnBody(event, events, stateEvents);
     if (Capacitor.isNativePlatform()) {
       void showSessionNotification(
         { hostId: crypto.identity.roomId, ...(event.sessionId ? { sessionId: event.sessionId } : {}) },
         title,
         body,
       );
-    } else if (typeof Notification !== "undefined" && Notification.permission === "granted") {
-      new Notification(title, { body, icon: "/icon-192.png", tag: event.eventId });
+    } else {
+      showBrowserDesktopOrWebNotification(title, body, event.eventId);
     }
   }
 }
@@ -642,7 +682,7 @@ export function notifyBridgeCompletedTurns(
 export async function resumeBridgeEvents(
   refs: Pick<BridgeTransportRefs, "setState" | "stateRef" | "cryptoRef" | "socketRef">,
   sendRequest: BridgeSendRequest,
-  notifyCompletedTurns: (events: BridgeEvent[], crypto: BridgeCrypto) => void,
+  notifyCompletedTurns: (events: BridgeEvent[], crypto: BridgeCrypto, options?: NotifyCompletedTurnsOptions) => void,
   bootstrap = false,
   fromSeq?: number,
 ): Promise<void> {
@@ -678,44 +718,10 @@ export async function resumeBridgeEvents(
       const latestSeq = typeof result.latestSeq === "number" ? result.latestSeq : cursor;
       if (result.hasMore !== true || cursor >= latestSeq) break;
     }
-    if (crypto) notifyCompletedTurns(events, crypto);
-    setState((current) => {
-      if (!isCurrent()) return current;
-      let turns = current.localTurns;
-      let evidence = current.evidence;
-      for (const event of events) {
-        turns = applyEventToTurns(turns, event);
-        const item = evidenceFromEvent(event);
-        if (item) {
-          evidence = {
-            ...evidence,
-            [item.sessionId]: {
-              status: "ready",
-              items: mergeEvidence(evidence[item.sessionId]?.items ?? [], [item]),
-              hasMore: evidence[item.sessionId]?.hasMore ?? false,
-              ...(evidence[item.sessionId]?.nextCursor
-                ? { nextCursor: evidence[item.sessionId]!.nextCursor }
-                : {}),
-            },
-          };
-        }
-      }
-      const applied = applyEventsToSnapshot(current.snapshot, events, current.permissions);
-      const permissions = applyUnseenPermissionEvents(current.permissions, events, current.events, current.snapshotSeq);
-      const snapshot = snapshotWithPermissions(applied.snapshot, permissions);
-      return {
-        ...current,
-        snapshot,
-        permissions,
-        events: mergeBridgeEvents(current.events, events),
-        evidence,
-        localTurns: turns,
-        latestSeq: Math.max(current.latestSeq, cursor),
-        hosts: current.hosts.map((host) => host.roomId === current.activeHostId
-          ? hostWithRuntimeState(host, snapshot, permissions)
-          : host),
-      };
-    });
+    if (crypto) notifyCompletedTurns(events, crypto, { fromResume: true, bootstrap });
+    setState((current) => isCurrent()
+      ? applyIncomingEventsToState(current, events, { cursor })
+      : current);
   } catch {
     // The next reconnect retries from the same cursor.
   }
@@ -736,10 +742,9 @@ export async function refreshBridgeSessionList(
   if (!isCurrent() || !response?.ok) return false;
   const result = response.result as { sessions?: BridgeSessionInfo[] };
   if (!result.sessions) return false;
-  setState((current) => isCurrent() && current.snapshot ? {
-    ...current,
-    snapshot: { ...current.snapshot, sessions: result.sessions! },
-  } : current);
+  setState((current) => isCurrent()
+    ? applySessionResultToState(current, undefined, { sessions: result.sessions })
+    : current);
   return true;
 }
 
@@ -780,33 +785,21 @@ export async function refreshBridgeSnapshot(
   await bridgeVault.saveMessage(cachedEnvelope);
   if (!isCurrent()) return false;
   applyLanRelayAdvertisement(roomId, verifiedSnapshot);
-  setState((current) => {
-    if (!isCurrent() || verifiedSnapshot!.latestSeq < current.snapshotSeq) return current;
-    const rebased = rebaseSnapshot(verifiedSnapshot!, current.events, current.permissions);
-    return {
-      ...current,
-      snapshot: rebased.snapshot,
-      snapshotSeq: verifiedSnapshot!.latestSeq,
-      permissions: rebased.permissions,
-      desktopName: rebased.snapshot.host.name,
+  setState((current) => (
+    isCurrent()
       // The answer itself shows the desktop online; its host.online can be stale (see handlePayload).
-      latestSeq: rebased.latestSeq,
-      error: undefined,
-      hosts: current.hosts.map((host) => host.roomId === roomId
-        ? hostWithRuntimeState(host, rebased.snapshot, rebased.permissions)
-        : host),
-    };
-  });
+      ? replaceActiveHostSnapshot(current, roomId, verifiedSnapshot!, { clearError: true })
+      : current
+  ));
   return true;
 }
 
 export interface StartBridgeCallbacks {
   handlePayload: (payload: BridgePayload, encrypted: EncryptedEnvelope, crypto: BridgeCrypto) => void;
-  notifyCompletedTurns: (events: BridgeEvent[], crypto: BridgeCrypto) => void;
+  notifyCompletedTurns: (events: BridgeEvent[], crypto: BridgeCrypto, options?: NotifyCompletedTurnsOptions) => void;
   refreshSessionList: () => Promise<boolean>;
   refreshSnapshot: (verifiedSnapshot?: BridgeHostSnapshot) => Promise<boolean>;
   resumeEvents: (bootstrap?: boolean, fromSeq?: number) => Promise<void>;
-  updateHostCache: (roomId: string, snapshot: BridgeHostSnapshot, permissions?: BridgePermissionInfo[]) => void;
 }
 
 export async function startBridgeConnection(
@@ -833,7 +826,6 @@ export async function startBridgeConnection(
     sendAttemptedAtRef,
     nativeRelayCapabilityRef,
     payloadDeflateRef,
-    pendingCompletionNotificationsRef,
   } = refs;
   const {
     handlePayload,
@@ -841,17 +833,12 @@ export async function startBridgeConnection(
     refreshSessionList,
     refreshSnapshot,
     resumeEvents,
-    updateHostCache,
   } = callbacks;
 
-  if (connectionTimerRef.current) clearTimeout(connectionTimerRef.current);
-  socketRef.current?.close();
-  socketRef.current = undefined;
-  cryptoRef.current = crypto;
-  pendingCompletionNotificationsRef.current.clear();
-  linkGateRef.current = () => true;
-  desktopHomeRef.current = undefined;
-  sendAttemptedAtRef.current = undefined;
+  teardownActiveTransport(refs, {
+    nextCrypto: crypto,
+    rejectPendingReason: "连接已重置",
+  });
   const roomId = crypto.identity.roomId;
   if (!provisionalPairing) writeLastActiveHost(roomId);
   const storedHost = await bridgeVault.getHost(roomId);
@@ -867,28 +854,10 @@ export async function startBridgeConnection(
     storedDesktopRelayUrl: storedHost?.desktopRelayUrl,
     relayEndpoints,
   });
-  setState((current) => ({
-    ...current,
-    loading: false,
-    activeHostId: roomId,
-    desktopName: crypto.identity.desktopName,
-    connection: "connecting",
-    desktopOnline: false,
-    snapshot: undefined,
-    snapshotSeq: 0,
-    permissions: [],
+  setState((current) => beginHostSessionState(current, roomId, crypto.identity.desktopName, {
     focusSessionId,
-    histories: {},
-    evidence: {},
-    artifactPreviews: {},
-    artifactTransfers: {},
-    events: [],
-    localTurns: [],
-    latestSeq: 0,
-    connectionIssue: undefined,
-    transportMetrics: undefined,
-    pendingOutbound: 0,
-    error: undefined,
+    preserveCurrentHost: !provisionalPairing,
+    loading: false,
   }));
 
   const stored = restored ?? await readStoredHostState(crypto, provisionalPairing ? [] : undefined);
@@ -911,28 +880,10 @@ export async function startBridgeConnection(
   if (rejectedOutbox.length > 0) await bridgeVault.removeOutbox(rejectedOutbox.map((envelope) => envelope.id));
   const pendingOutbound = replayableOutbox.length;
   if (cryptoRef.current !== crypto) return;
-  setState((current) => ({
-    ...current,
-    snapshot: stored.snapshot,
-    snapshotSeq: stored.snapshotSeq,
-    permissions: stored.permissions,
-    events: stored.events,
-    evidence: stored.evidence,
-    artifactPreviews: stored.artifactPreviews,
-    localTurns: stored.localTurns.map((turn) => (
-      rejectedRequestIds.has(turn.requestId) &&
-      (turn.delivery === "local-saved" || turn.delivery === "relay-received")
-        ? {
-            ...turn,
-            delivery: "uncertain",
-            error: "这条消息未能送达当前连接，请确认后重试。",
-          }
-        : turn
-    )),
-    latestSeq: stored.latestSeq,
+  setState((current) => hydrateStoredHostState(current, roomId, stored, {
+    rejectedRequestIds,
     pendingOutbound,
   }));
-  if (stored.snapshot) updateHostCache(roomId, stored.snapshot, stored.permissions);
 
   if (
     Capacitor.isNativePlatform() &&
@@ -1281,37 +1232,14 @@ export async function startBridgeConnection(
         return;
       }
       if (issue.code === "pairing-invalid" || issue.code === "revoked") {
-        for (const pending of pendingResponsesRef.current.values()) {
-          clearTimeout(pending.timer);
-          pending.reject(new Error(issue.message));
-        }
-        pendingResponsesRef.current.clear();
-        if (socketRef.current === socket) {
-          socketRef.current = undefined;
-          cryptoRef.current = undefined;
-        }
+        teardownActiveTransport(refs, {
+          onlyIfSocket: socket,
+          rejectPendingReason: issue.message,
+          clearPairingSyncTimer: true,
+        });
         if (!isProvisionalPairing()) writeLastActiveHost();
-        socket.close();
-        setState((current) => ({
-          ...current,
-          activeHostId: undefined,
-          desktopName: undefined,
+        setState((current) => clearActiveHostState(current, {
           connection: "closed",
-          desktopOnline: false,
-          snapshot: undefined,
-          snapshotSeq: 0,
-          permissions: [],
-          focusSessionId: undefined,
-          histories: {},
-          evidence: {},
-          artifactPreviews: {},
-          artifactTransfers: {},
-          events: [],
-          localTurns: [],
-          latestSeq: 0,
-          connectionIssue: undefined,
-          transportMetrics: undefined,
-          pendingOutbound: 0,
           pairingSync: undefined,
           error: issue.message,
           hosts: isProvisionalPairing()
@@ -1349,10 +1277,40 @@ export async function startBridgeConnection(
       : message.payload.kind === "response" && message.payload.ok
         ? (message.payload.result as { snapshot?: BridgeHostSnapshot } | undefined)?.snapshot
         : undefined;
-    const requestedPermission = event ? permissionFromEvent(event) : undefined;
+    const currentState = stateRef.current;
+    const currentEvents = currentState.events ?? [];
+    const isFreshActionableEvent = Boolean(
+      event
+      && !isEventNotificationStale(event)
+      && event.seq > (currentState.snapshotSeq ?? 0)
+      && !currentEvents.some((seenEvent) => seenEvent.eventId === event.eventId),
+    );
+    const candidatePermission = isFreshActionableEvent && event ? permissionFromEvent(event) : undefined;
+    const requestedPermission = candidatePermission && !currentEvents.some((seenEvent) => (
+      (seenEvent.type === "permission.resolved" || seenEvent.type === "question.resolved")
+      && seenEvent.data.requestId === candidatePermission.requestId
+    ))
+      ? candidatePermission
+      : undefined;
     const newPermissions = (incomingSnapshot?.permissions ?? (requestedPermission ? [requestedPermission] : []))
-      .filter((permission) => !stateRef.current.permissions.some((current) => current.requestId === permission.requestId));
+      .filter((permission) => !(currentState.permissions ?? []).some((current) => current.requestId === permission.requestId));
+    const candidatePrompt = isFreshActionableEvent && event?.type === "prompt.requested" && typeof event.data.promptId === "string"
+      ? (event.data as unknown as BridgePendingPrompt)
+      : undefined;
+    const requestedPrompt = candidatePrompt && !currentEvents.some((seenEvent) => (
+      seenEvent.type === "prompt.resolved"
+      && seenEvent.sessionId === candidatePrompt.sessionId
+      && seenEvent.data.promptId === candidatePrompt.promptId
+    ))
+      ? candidatePrompt
+      : undefined;
+    const existingPrompts = currentState.snapshot?.prompts ?? [];
+    const newPrompts = (incomingSnapshot?.prompts ?? (requestedPrompt ? [requestedPrompt] : []))
+      .filter((prompt) => !existingPrompts.some(
+        (current) => current.promptId === prompt.promptId && current.sessionId === prompt.sessionId,
+      ));
     const isNewPermission = newPermissions.length > 0;
+    const isNewPrompt = newPrompts.length > 0;
     // Drop stale queued RPC responses (>60s old with no active waiter) before
     // they trigger redundant state Churn on reconnect.
     if (message.payload.kind === "response" && Date.now() - message.header.sentAt > 60_000) {
@@ -1377,33 +1335,54 @@ export async function startBridgeConnection(
       payloadDeflateRef.current = message.payload.snapshot.host.capabilities.includes(PAYLOAD_DEFLATE_CAPABILITY);
       void flushOutbox();
     }
-    if (event) notifyCompletedTurns([event], crypto);
+    if (event) notifyCompletedTurns([event], crypto, { bootstrap: isProvisionalPairing() });
     handlePayload(message.payload, encrypted, crypto);
-    if (isNewPermission && document.visibilityState === "visible") {
+    const isVisible = typeof document !== "undefined" && document.visibilityState === "visible";
+    if ((isNewPermission || isNewPrompt) && isVisible) {
       navigator.vibrate?.([120, 60, 120]);
     }
-    if (Capacitor.isNativePlatform()) {
-      if (document.visibilityState !== "visible") {
+    const isDesktopApp = typeof window !== "undefined" && Boolean(window.bridgeDesktop);
+    if (!isDesktopApp && !isProvisionalPairing() && isSessionNotificationsEnabled()) {
+      const sourceSessions = (incomingSnapshot ?? stateRef.current.snapshot)?.sessions;
+      if (Capacitor.isNativePlatform()) {
         for (const permission of newPermissions) {
+          if (isVisible && isActivelyViewingSession(roomId, permission.sessionId)) continue;
           void showSessionNotification(
             { hostId: roomId, sessionId: permission.sessionId },
-            (incomingSnapshot ?? stateRef.current.snapshot)?.sessions.find((session) => session.sessionId === permission.sessionId)?.title
+            sourceSessions?.find((session) => session.sessionId === permission.sessionId)?.title
               ?? crypto.identity.desktopName,
             "Claude 正在等待你处理",
           );
         }
+        for (const prompt of newPrompts) {
+          if (isVisible && isActivelyViewingSession(roomId, prompt.sessionId)) continue;
+          void showSessionNotification(
+            { hostId: roomId, sessionId: prompt.sessionId },
+            sourceSessions?.find((session) => session.sessionId === prompt.sessionId)?.title
+              ?? crypto.identity.desktopName,
+            "Claude 正在等待你确认",
+          );
+        }
+      } else {
+        for (const permission of newPermissions) {
+          if (isVisible && isActivelyViewingSession(roomId, permission.sessionId)) continue;
+          showBrowserDesktopOrWebNotification(
+            sourceSessions?.find((session) => session.sessionId === permission.sessionId)?.title
+              ?? crypto.identity.desktopName,
+            "Claude 正在等待你处理",
+            `perm:${permission.requestId}`,
+          );
+        }
+        for (const prompt of newPrompts) {
+          if (isVisible && isActivelyViewingSession(roomId, prompt.sessionId)) continue;
+          showBrowserDesktopOrWebNotification(
+            sourceSessions?.find((session) => session.sessionId === prompt.sessionId)?.title
+              ?? crypto.identity.desktopName,
+            "Claude 正在等待你确认",
+            `prompt:${prompt.promptId}`,
+          );
+        }
       }
-    } else if (
-      document.visibilityState !== "visible" &&
-      typeof Notification !== "undefined" &&
-      Notification.permission === "granted" &&
-      event && (event.type === "permission.requested" || event.type === "question.requested")
-    ) {
-      new Notification(crypto.identity.desktopName, {
-        body: "Claude 正在等待你处理",
-        icon: "/icon-192.png",
-        tag: encrypted.id,
-      });
     }
     // Avoid flooding IndexedDB with stale catch-up events during a queued
     // replay burst; refreshSnapshot() + resumeEvents() persists the rebased
@@ -1412,7 +1391,8 @@ export async function startBridgeConnection(
       message.payload.kind === "event" &&
       Date.now() - message.header.sentAt > 60_000 &&
       message.payload.event.type !== "permission.requested" &&
-      message.payload.event.type !== "question.requested"
+      message.payload.event.type !== "question.requested" &&
+      message.payload.event.type !== "prompt.requested"
     );
     if (
       !isStaleReplayEvent &&
@@ -1495,24 +1475,12 @@ export type StartBridgeFn = (
 ) => Promise<void>;
 
 export function bootstrapStoredBridgeHosts(
-  refs: Pick<
-    BridgeTransportRefs,
-    | "setState"
-    | "cryptoByRoomRef"
-    | "socketRef"
-    | "connectionTimerRef"
-    | "pairingSyncTimerRef"
-    | "pendingResponsesRef"
-  >,
+  refs: ActiveTransportTeardownRefs & Pick<BridgeTransportRefs, "setState" | "cryptoByRoomRef">,
   start: StartBridgeFn,
 ): () => void {
   const {
     setState,
     cryptoByRoomRef,
-    socketRef,
-    connectionTimerRef,
-    pairingSyncTimerRef,
-    pendingResponsesRef,
   } = refs;
   let active = true;
   void (async () => {
@@ -1554,11 +1522,10 @@ export function bootstrapStoredBridgeHosts(
   });
   return () => {
     active = false;
-    if (connectionTimerRef.current) clearTimeout(connectionTimerRef.current);
-    if (pairingSyncTimerRef.current) clearTimeout(pairingSyncTimerRef.current);
-    socketRef.current?.close();
-    for (const pending of pendingResponsesRef.current.values()) clearTimeout(pending.timer);
-    pendingResponsesRef.current.clear();
+    teardownActiveTransport(refs, {
+      clearPairingSyncTimer: true,
+      preserveCrypto: true,
+    });
   };
 }
 
@@ -1625,14 +1592,9 @@ export function subscribeCapacitorAppWake(
 }
 
 export async function pairBridgeHost(
-  refs: Pick<
+  refs: ActiveTransportTeardownRefs & Pick<
     BridgeTransportRefs,
-    | "setState"
-    | "stateRef"
-    | "cryptoRef"
-    | "cryptoByRoomRef"
-    | "socketRef"
-    | "pairingSyncTimerRef"
+    "setState" | "stateRef" | "cryptoByRoomRef"
   >,
   actions: {
     start: StartBridgeFn;
@@ -1696,7 +1658,6 @@ export async function pairBridgeHost(
     clearPendingPairingInstanceId(pairing.roomId, pairing.deviceId);
     cryptoByRoomRef.current.set(crypto.identity.roomId, crypto);
     pairingPhase.provisional = false;
-    const verifiedState = rebaseSnapshot(verifiedSnapshot, stateRef.current.events, stateRef.current.permissions);
     const nextHost = hostSummary({
       hostId: pairing.hostId,
       pairingEpoch: pairing.pairingEpoch,
@@ -1710,23 +1671,17 @@ export async function pairBridgeHost(
       updatedAt: Date.now(),
       needsRepair: false,
       crypto,
-    }, verifiedState.snapshot, verifiedState.permissions);
-    setState((current) => ({
-      ...current,
+    }, verifiedSnapshot, verifiedSnapshot.permissions);
+    setState((current) => replaceActiveHostSnapshot(current, crypto.identity.roomId, verifiedSnapshot, {
       loading: false,
+      desktopOnline: true,
       hosts: [
-        hostWithRuntimeState(nextHost, verifiedState.snapshot, verifiedState.permissions),
+        nextHost,
         ...current.hosts.filter((host) => host.hostId !== nextHost.hostId),
       ],
-      snapshot: verifiedState.snapshot,
-      snapshotSeq: verifiedSnapshot.latestSeq,
-      permissions: verifiedState.permissions,
-      desktopName: verifiedState.snapshot.host.name,
-      desktopOnline: true,
-      latestSeq: verifiedState.latestSeq,
-      pairingSync: current.pairingSync?.roomId === crypto.identity.roomId
-        ? { ...current.pairingSync, stage: "syncing", progress: 66 }
-        : current.pairingSync,
+      ...(current.pairingSync?.roomId === crypto.identity.roomId
+        ? { pairingSync: { ...current.pairingSync, stage: "syncing", progress: 66 } }
+        : {}),
     }));
     writeLastActiveHost(crypto.identity.roomId);
     setState((current) => advancePairingSync(current, crypto.identity.roomId, "syncing", 72));
@@ -1749,10 +1704,19 @@ export async function pairBridgeHost(
     }, 650);
     return true;
   } catch (error) {
-    if (preparedCrypto && cryptoRef.current === preparedCrypto) {
-      socketRef.current?.close();
-      socketRef.current = undefined;
-      cryptoRef.current = undefined;
+    const message = error instanceof Error ? error.message : "";
+    const userError = /expired/iu.test(message)
+      ? "二维码已超过十分钟，请在电脑端重新生成"
+      : /prepared pairing|identity|身份/iu.test(message)
+        ? "二维码身份校验失败，请在电脑端重新生成"
+        : "未能与电脑完成加密配对，请在电脑端重新生成二维码后重试。";
+    const stillOwnsActiveTransport = !preparedCrypto || !cryptoRef.current || cryptoRef.current === preparedCrypto;
+    if (stillOwnsActiveTransport) {
+      teardownActiveTransport(refs, {
+        rejectPendingReason: message || "配对失败",
+        clearPairingSyncTimer: true,
+      });
+      writeLastActiveHost(previousLastActiveHost);
     }
     if (preparedCrypto) {
       await bridgeVault.removeDeviceArtifacts(
@@ -1760,27 +1724,21 @@ export async function pairBridgeHost(
         preparedCrypto.identity.deviceId,
       ).catch(() => undefined);
     }
-    writeLastActiveHost(previousLastActiveHost);
-    const message = error instanceof Error ? error.message : "";
-    setState((current) => ({
-      ...current,
-      loading: false,
-      pairingSync: undefined,
-      activeHostId: undefined,
-      desktopName: undefined,
-      connection: "closed",
-      desktopOnline: false,
-      snapshot: undefined,
-      snapshotSeq: 0,
-      permissions: [],
-      connectionIssue: undefined,
-      transportMetrics: undefined,
-      error: /expired/iu.test(message)
-        ? "二维码已超过十分钟，请在电脑端重新生成"
-        : /prepared pairing|identity|身份/iu.test(message)
-          ? "二维码身份校验失败，请在电脑端重新生成"
-          : "未能与电脑完成加密配对，请在电脑端重新生成二维码后重试。",
-    }));
+    setState((current) => (
+      stillOwnsActiveTransport || (preparedCrypto && current.activeHostId === preparedCrypto.identity.roomId)
+        ? clearActiveHostState(current, {
+            loading: false,
+            connection: "closed",
+            pairingSync: undefined,
+            error: userError,
+          })
+        : {
+            ...current,
+            loading: false,
+            ...(current.pairingSync?.roomId === pairing.roomId ? { pairingSync: undefined } : {}),
+            error: userError,
+          }
+    ));
     return false;
   }
 }
@@ -1812,35 +1770,15 @@ export async function selectBridgeHost(
 }
 
 export function backToBridgeHosts(
-  refs: Pick<BridgeTransportRefs, "setState" | "cryptoRef" | "socketRef" | "connectionTimerRef">,
+  refs: ActiveTransportTeardownRefs & Pick<BridgeTransportRefs, "setState">,
 ): void {
-  const { setState, cryptoRef, socketRef, connectionTimerRef } = refs;
-  if (connectionTimerRef.current) clearTimeout(connectionTimerRef.current);
-  socketRef.current?.close();
-  socketRef.current = undefined;
-  cryptoRef.current = undefined;
+  const { setState } = refs;
+  teardownActiveTransport(refs, {
+    rejectPendingReason: "已返回主机列表",
+    clearPairingSyncTimer: true,
+  });
   writeLastActiveHost();
-  setState((current) => ({
-    ...current,
-    activeHostId: undefined,
-    desktopName: undefined,
-    connection: "idle",
-    desktopOnline: false,
-    snapshot: undefined,
-    snapshotSeq: 0,
-    permissions: [],
-    focusSessionId: undefined,
-    histories: {},
-    evidence: {},
-    artifactPreviews: {},
-    artifactTransfers: {},
-    events: [],
-    localTurns: [],
-    latestSeq: 0,
-    connectionIssue: undefined,
-    pairingSync: undefined,
-    error: undefined,
-  }));
+  setState((current) => clearActiveHostState(current));
 }
 
 export async function refreshBridgeHostState(
@@ -1898,7 +1836,7 @@ export async function refreshBridgeHostState(
 }
 
 export async function forgetBridgeHost(
-  refs: Pick<BridgeTransportRefs, "setState" | "cryptoRef" | "cryptoByRoomRef" | "socketRef">,
+  refs: ActiveTransportTeardownRefs & Pick<BridgeTransportRefs, "setState" | "cryptoByRoomRef">,
   sendRequest: BridgeSendRequest,
   roomId: string,
 ): Promise<void> {
@@ -1911,38 +1849,20 @@ export async function forgetBridgeHost(
     await revokeRemoteDevice(crypto).catch(() => undefined);
   }
   if (active) {
-    socketRef.current?.close();
-    socketRef.current = undefined;
-    cryptoRef.current = undefined;
+    teardownActiveTransport(refs, {
+      rejectPendingReason: "已移除该电脑配对",
+      clearPairingSyncTimer: true,
+    });
   }
   if (readLastActiveHost() === roomId) writeLastActiveHost();
   await bridgeVault.removeHost(roomId);
   cryptoByRoomRef.current.delete(roomId);
-  setState((current) => ({
-    ...current,
-    hosts: current.hosts.filter((host) => host.roomId !== roomId),
-    ...(active ? {
-      activeHostId: undefined,
-      desktopName: undefined,
-      connection: "idle" as const,
-      desktopOnline: false,
-      snapshot: undefined,
-      snapshotSeq: 0,
-      permissions: [],
-      focusSessionId: undefined,
-      histories: {},
-      evidence: {},
-      artifactPreviews: {},
-      artifactTransfers: {},
-      events: [],
-      localTurns: [],
-      latestSeq: 0,
-      connectionIssue: undefined,
-      transportMetrics: undefined,
-      pendingOutbound: 0,
-      pairingSync: undefined,
-    } : {}),
-  }));
+  setState((current) => {
+    const hosts = current.hosts.filter((host) => host.roomId !== roomId);
+    return active
+      ? clearActiveHostState(current, { hosts })
+      : { ...current, hosts };
+  });
 }
 
 export async function setBridgeRelayUrl(

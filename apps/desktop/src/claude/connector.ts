@@ -89,6 +89,14 @@ export async function readClaudeModelOptions(settingsPath: string): Promise<Brid
   return models.length ? models : undefined;
 }
 
+/** Read the top-level default model from settings.json without exposing any other fields. */
+export async function readClaudeDefaultModel(settingsPath: string): Promise<string | undefined> {
+  const settings = await readJson(settingsPath);
+  if (!isRecord(settings) || typeof settings.model !== "string") return undefined;
+  const trimmed = settings.model.trim();
+  return trimmed && trimmed.toLowerCase() !== "default" ? trimmed : undefined;
+}
+
 export async function removeLegacyConnector(paths: ConnectorPaths): Promise<boolean> {
   let changed = false;
   for (const path of [...paths.claudeDesktop, paths.claudeCode]) {

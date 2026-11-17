@@ -1,6 +1,7 @@
 import type { BridgeProjectInfo, BridgeSessionInfo } from "@bridge/protocol";
 import { createElement, type ReactElement, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SelectMenu } from "../common/SelectMenu.js";
 import { ProjectOrderSheet, type ProjectOrderSheetProps } from "./ProjectOrderSheet.js";
 
 interface HookStore {
@@ -236,7 +237,7 @@ describe("ProjectOrderSheet", () => {
     expect(scrollBody.scrollTop).toBe(0);
     expect(props.onPlaceProjects).not.toHaveBeenCalled();
     expect(frames.size).toBe(0);
-    expect(elements(tree).find(el => el.type === "select")!.props.value).toBe(4);
+    expect(elements(tree).find(el => el.type === SelectMenu)!.props.value).toBe("4");
   });
 
   it("updates a stationary drag's insertion position after external scrolling", () => {
@@ -465,10 +466,10 @@ describe("ProjectOrderSheet", () => {
     expect(handleFor("Alpha").props.onClick).toBeTypeOf("function");
     handleFor("Alpha").props.onClick({ detail: 0 });
     draw();
-    const select = elements(tree).find((el) => el.type === "select")!;
-    expect(select.props["aria-label"]).toBe("移动「Alpha」到");
-    expect(select.props.value).toBe(0);
-    select.props.onChange({ target: { value: "2" } });
+    const select = elements(tree).find((el) => el.type === SelectMenu)!;
+    expect(select.props.ariaLabel).toBe("移动「Alpha」到");
+    expect(select.props.value).toBe("0");
+    select.props.onChange("2");
     draw();
     expect(renderedIds()).toEqual(["p-beta", "p-gamma", "p-alpha"]);
     expect(props.onPlaceProjects).toHaveBeenCalledExactlyOnceWith(["p-beta", "p-gamma", "p-alpha"]);

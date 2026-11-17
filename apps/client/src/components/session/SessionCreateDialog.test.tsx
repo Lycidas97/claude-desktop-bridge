@@ -2,6 +2,7 @@ import type { BridgeDirectoryListing, BridgeHostSnapshot, BridgeProjectInfo, Bri
 import type { ReactElement, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { dispatchMobileBack, registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
+import { SelectMenu } from "../common/SelectMenu.js";
 import { SessionCreateDialog, type SessionCreateDialogProps } from "./SessionCreateDialog.js";
 
 // Exercise public controls and effect cleanup using the existing client harness.
@@ -41,15 +42,23 @@ function elements(node: ReactNode): ReactElement<Record<string, any>>[] {
 function text(node: ReactNode): string {
   if (typeof node === "string" || typeof node === "number") return String(node);
   if (Array.isArray(node)) return node.map(text).join("");
-  return node && typeof node === "object" && "props" in node ? text((node as ReactElement<{ children?: ReactNode }>).props.children) : "";
+  if (node && typeof node === "object" && "props" in node) {
+    const el = node as ReactElement<Record<string, any>>;
+    if (el.type === SelectMenu) return (el.props.options as Array<{ label: string }>).map((opt) => opt.label).join("");
+    return text(el.props.children);
+  }
+  return "";
 }
 function field(tree: ReactElement, name: string): ReactElement<Record<string, any>> {
-  return elements(tree).find((element) => element.props["aria-label"] === name)!;
+  return elements(tree).find((element) => element.props["aria-label"] === name || element.props.ariaLabel === name)!;
 }
 function button(tree: ReactElement, name: string): ReactElement<Record<string, any>> {
   return elements(tree).find((element) => element.type === "button" && (element.props["aria-label"] === name || text(element.props.children).trim() === name))!;
 }
-function change(tree: ReactElement, name: string, value: string): void { field(tree, name).props.onChange({ target: { value } }); }
+function change(tree: ReactElement, name: string, value: string): void {
+  const el = field(tree, name);
+  el.props.onChange(el.type === SelectMenu ? value : { target: { value } });
+}
 function submit(tree: ReactElement): void { elements(tree).find((element) => element.type === "form")!.props.onSubmit({ preventDefault: vi.fn() }); }
 async function settle(): Promise<void> { for (let i = 0; i < 8; i += 1) await Promise.resolve(); }
 async function click(input: SessionCreateDialogProps, name: string): Promise<ReactElement> {

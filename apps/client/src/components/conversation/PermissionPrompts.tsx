@@ -197,8 +197,9 @@ function inputText(input: Record<string, unknown>, ...keys: string[]): string | 
 }
 
 function truncate(value: string, max: number): string {
-  if (value.length <= max) return value;
-  return `${value.slice(0, max)}\n… 已省略 ${value.length - max} 个字符`;
+  const chars = Array.from(value);
+  if (chars.length <= max) return value;
+  return `${chars.slice(0, max).join("")}\n… 已省略 ${chars.length - max} 个字符`;
 }
 
 export function permissionPresentation(permission: BridgePermissionInfo): PermissionPresentation {
@@ -260,9 +261,11 @@ export function permissionPresentation(permission: BridgePermissionInfo): Permis
 
 export function QuestionPrompt({
   permission,
+  streamKey,
   onResolve,
 }: {
   permission: BridgePermissionInfo;
+  streamKey?: string | undefined;
   onResolve(
     requestId: string,
     decision: "allow-once" | "allow-always" | "deny",
@@ -298,7 +301,7 @@ export function QuestionPrompt({
     }
   }
   return (
-    <section className="permission-prompt question-prompt">
+    <section className="permission-prompt question-prompt" {...(streamKey ? { "data-stream-key": streamKey } : {})}>
       <div className="permission-title">
         <strong>{permission.title || "当前任务需要你的选择"}</strong>
         <span>任一已授权设备的首次回答生效</span>
@@ -378,10 +381,12 @@ export const NATIVE_MODE_LABELS: Record<BridgeSDKPermissionMode, string> = {
 
 export function ToolPermissionPrompt({
   permission,
+  streamKey,
   onResolve,
   onEnableNativeFullAccess,
 }: {
   permission: BridgePermissionInfo;
+  streamKey?: string | undefined;
   onResolve(
     requestId: string,
     decision: "allow-once" | "allow-always" | "deny",
@@ -444,7 +449,7 @@ export function ToolPermissionPrompt({
   const spinner = busy && <LoaderCircle className="is-spinning" size={15} />;
   return (
     <>
-    <section className="permission-prompt">
+    <section className="permission-prompt" {...(streamKey ? { "data-stream-key": streamKey } : {})}>
       <div className="permission-title">
         <strong>{permission.title || (plan !== undefined ? "计划待确认" : `${permission.toolName} 请求权限`)}</strong>
         {plan === undefined && <span>{presentation.summary}</span>}
@@ -553,10 +558,12 @@ export function ToolPermissionPrompt({
 
 export function PermissionPrompt({
   permission,
+  streamKey,
   onResolve,
   onEnableNativeFullAccess,
 }: {
   permission: BridgePermissionInfo;
+  streamKey?: string | undefined;
   onResolve(
     requestId: string,
     decision: "allow-once" | "allow-always" | "deny",
@@ -567,10 +574,11 @@ export function PermissionPrompt({
   onEnableNativeFullAccess?(requestId: string): Promise<void>;
 }) {
   return permission.toolName === "AskUserQuestion"
-    ? <QuestionPrompt permission={permission} onResolve={onResolve} />
+    ? <QuestionPrompt permission={permission} {...(streamKey ? { streamKey } : {})} onResolve={onResolve} />
     : (
       <ToolPermissionPrompt
         permission={permission}
+        {...(streamKey ? { streamKey } : {})}
         onResolve={onResolve}
         {...(onEnableNativeFullAccess ? { onEnableNativeFullAccess } : {})}
       />

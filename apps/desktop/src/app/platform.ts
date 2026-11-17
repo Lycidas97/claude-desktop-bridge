@@ -173,10 +173,32 @@ export async function setLaunchAtLogin(app: App, enabled: boolean, platform = pr
   ].join("\n"), "utf8");
 }
 
-export async function isLaunchAtLoginEnabled(app: App, platform = process.platform): Promise<boolean> {
-  if (platform === "darwin" || platform === "win32") return app.getLoginItemSettings(
+export function isLaunchAtLoginEnabled(app: App, platform = process.platform): Promise<boolean> {
+  if (platform === "darwin" || platform === "win32") return Promise.resolve(app.getLoginItemSettings(
     platform === "win32" ? { path: process.execPath, args: ["--hidden"] } : undefined,
-  ).openAtLogin;
+  ).openAtLogin);
   const desktopFile = join(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "autostart", "claude-bridge.desktop");
   return access(desktopFile).then(() => true, () => false);
+}
+
+export function parseWindowThemeColor(
+  rawColor: string | null | undefined,
+): { backgroundColor: string; themeSource: "dark" | "light" } | undefined {
+  if (typeof rawColor !== "string") return undefined;
+  const trimmed = rawColor.trim();
+  const shortMatch = /^#([0-9a-f]{3})$/iu.exec(trimmed);
+  const hex = shortMatch
+    ? `#${shortMatch[1]![0]}${shortMatch[1]![0]}${shortMatch[1]![1]}${shortMatch[1]![1]}${shortMatch[1]![2]}${shortMatch[1]![2]}`.toLowerCase()
+    : /^#[0-9a-f]{6}$/iu.test(trimmed)
+      ? trimmed.toLowerCase()
+      : undefined;
+  if (!hex) return undefined;
+  const r = Number.parseInt(hex.slice(1, 3), 16) / 255;
+  const g = Number.parseInt(hex.slice(3, 5), 16) / 255;
+  const b = Number.parseInt(hex.slice(5, 7), 16) / 255;
+  const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
+  return {
+    backgroundColor: hex,
+    themeSource: luminance < 0.5 ? "dark" : "light",
+  };
 }

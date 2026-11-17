@@ -2,6 +2,7 @@ import type { BridgeHostSnapshot, BridgeMagpieConnectionInput, BridgeMagpieConne
 import type { ComponentProps, ReactElement, ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DesktopSettings } from "../desktop/DesktopSettings.js";
+import { SelectMenu } from "../common/SelectMenu.js";
 import { ProviderSettings } from "./ProviderSettings.js";
 
 // Match the existing settings tests: drive hooks and public controls without a DOM dependency.
@@ -63,7 +64,11 @@ function text(node: ReactNode = tree): string {
 }
 function field(id: string) { return elements().find((element) => element.props.id === id)!; }
 function button(label: string) { return elements().find((element) => element.type === "button" && text(element.props.children) === label)!; }
-function edit(id: string, value: string) { field(id).props.onChange({ target: { value } }); draw(); }
+function edit(id: string, value: string) {
+  const el = field(id);
+  el.props.onChange(el.type === SelectMenu ? value : { target: { value } });
+  draw();
+}
 function click(label: string) {
   expect(button(label).props.disabled).not.toBe(true);
   button(label).props.onClick(); draw();
@@ -74,7 +79,6 @@ beforeEach(() => {
   hooks.slots = []; hooks.effects = []; hooks.pending = [];
   props = {
     snapshot: { ...host }, desktopLocal: true, onRefresh: vi.fn(),
-    onSetApiKey: vi.fn(), onRemoveApiKey: vi.fn(),
     onTestMagpieConnection: vi.fn().mockResolvedValue(ready),
     onSaveMagpieConnection: vi.fn(async (input: BridgeMagpieConnectionInput) => {
       const magpie: BridgeHostSnapshot["magpie"] = input.mode === "manual"
@@ -160,7 +164,6 @@ describe("Magpie connection settings", () => {
     expect(text()).toContain("保存后用于 Magpie 额度查询");
     expect(text()).not.toContain("下次启动 Bridge 执行器");
     expect(button("保存 Magpie 配置").props.disabled).toBe(true);
-    expect(props.onSetApiKey).not.toHaveBeenCalled();
   });
 
   it("restores the automatic source and sends no manual credentials", async () => {

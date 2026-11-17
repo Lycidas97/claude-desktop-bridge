@@ -19,8 +19,8 @@ import {
 import { uploadSessionFile, type UploadFileHandler } from "../../lib/file-upload.js";
 import {
   HISTORY_PAGE_SIZE,
-  applySessionToSnapshot,
-  mergeEvidence,
+  applyEvidencePageResult,
+  applySessionResultToState,
   mergeHistoryPages,
   type MobileBridgeState,
 } from "./bridge-reducers.js";
@@ -95,19 +95,11 @@ export async function openBridgeSession(
       if (!response?.ok) throw new Error(response?.error?.message ?? "会话打开失败");
       const result = response.result as { history?: BridgeHistoryPage; session?: BridgeSessionInfo };
       if (!result.history) throw new Error("电脑未返回会话历史");
-      setState((current) => isCurrent() ? {
-        ...current,
-        snapshot: applySessionToSnapshot(current.snapshot, result.session),
-        histories: {
-          ...current.histories,
-          [sessionId]: {
-            status: "ready",
-            items: result.history!.items,
-            hasMore: result.history!.hasMore,
-            ...(result.history!.nextCursor ? { nextCursor: result.history!.nextCursor } : {}),
-          },
-        },
-      } : current);
+      setState((current) => isCurrent()
+        ? applySessionResultToState(current, result.session, {
+            history: { sessionId, page: result.history! },
+          })
+        : current);
       void sendRequest("evidence.list", { sessionId, limit: 12 }, {
         wait: true,
         timeoutMs: 30_000,
@@ -118,36 +110,16 @@ export async function openBridgeSession(
           : undefined;
         setState((current) => isCurrent() ? {
           ...current,
-          evidence: {
-            ...current.evidence,
-            [sessionId]: evidenceResult?.evidence ? {
-              status: "ready",
-              items: mergeEvidence(
-                current.evidence[sessionId]?.items ?? [],
-                evidenceResult.evidence.items,
-              ),
-              hasMore: evidenceResult.evidence.hasMore,
-              ...(evidenceResult.evidence.nextCursor
-                ? { nextCursor: evidenceResult.evidence.nextCursor }
-                : {}),
-            } : {
-              status: current.evidence[sessionId]?.items.length ? "ready" : "error",
-              items: current.evidence[sessionId]?.items ?? [],
-              hasMore: false,
-            },
-          },
+          evidence: applyEvidencePageResult(current.evidence, sessionId, evidenceResult?.evidence, {
+            hasMoreOnError: false,
+          }),
         } : current);
       }).catch(() => {
         setState((current) => isCurrent() ? {
           ...current,
-          evidence: {
-            ...current.evidence,
-            [sessionId]: {
-              status: current.evidence[sessionId]?.items.length ? "ready" : "error",
-              items: current.evidence[sessionId]?.items ?? [],
-              hasMore: current.evidence[sessionId]?.hasMore ?? false,
-            },
-          },
+          evidence: applyEvidencePageResult(current.evidence, sessionId, undefined, {
+            error: true,
+          }),
         } : current);
       });
     } catch (error) {
@@ -162,14 +134,9 @@ export async function openBridgeSession(
             error: error instanceof Error ? error.message : "会话打开失败",
           },
         },
-        evidence: {
-          ...current.evidence,
-          [sessionId]: {
-            status: current.evidence[sessionId]?.items.length ? "ready" : "error",
-            items: current.evidence[sessionId]?.items ?? [],
-            hasMore: current.evidence[sessionId]?.hasMore ?? false,
-          },
-        },
+        evidence: applyEvidencePageResult(current.evidence, sessionId, undefined, {
+          error: true,
+        }),
         error: error instanceof Error ? error.message : "会话打开失败",
       } : current);
     }
@@ -235,23 +202,16 @@ export async function loadOlderBridgeEvidence(
     const page = result.evidence;
     setState((stateValue) => ({
       ...stateValue,
-      evidence: {
-        ...stateValue.evidence,
-        [sessionId]: {
-          status: "ready",
-          items: mergeEvidence(current.items, page.items),
-          hasMore: page.hasMore,
-          ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
-        },
-      },
+      evidence: applyEvidencePageResult(stateValue.evidence, sessionId, page),
     }));
   } catch (error) {
     setState((stateValue) => ({
       ...stateValue,
-      evidence: {
-        ...stateValue.evidence,
-        [sessionId]: { ...current, status: "error" },
-      },
+      evidence: applyEvidencePageResult(stateValue.evidence, sessionId, undefined, {
+        error: true,
+        forceErrorStatus: true,
+        preserveCursorOnError: true,
+      }),
       error: error instanceof Error ? error.message : "成果加载失败",
     }));
   }
@@ -436,7 +396,28 @@ export async function loadOlderBridgeHistory(
   }
 }
 
-export const uploadBridgeSessionFile = (
+export const uploadBridgeSessionFile = async (
+  cryptoRef: MutableRefObject<BridgeCrypto | undefined>,
   sendRequest: BridgeSendRequest,
   ...args: Parameters<UploadFileHandler>
-): ReturnType<UploadFileHandler> => uploadSessionFile(sendRequest, ...args);
+): ReturnType<UploadFileHandler> => {
+  const startingCrypto = cryptoRef.current;
+  const ensureSameHost = () => {
+    if (!startingCrypto || cryptoRef.current !== startingCrypto) {
+      throw new Error("已切换电脑，上传已中断");
+    }
+  };
+  try {
+    const uploaded = await uploadSessionFile(async (method, params, options) => {
+      ensureSameHost();
+      const response = await sendRequest(method, params, options);
+      ensureSameHost();
+      return response;
+    }, ...args);
+    ensureSameHost();
+    return uploaded;
+  } catch (error) {
+    ensureSameHost();
+    throw error;
+  }
+};

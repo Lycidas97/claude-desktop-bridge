@@ -11,6 +11,7 @@ import {
 import { createPortal } from "react-dom";
 import { moveProject } from "../../lib/project-groups.js";
 import { IconButton } from "../common/IconButton.js";
+import { SelectMenu } from "../common/SelectMenu.js";
 import { Sheet } from "../common/Sheet.js";
 
 const LONG_PRESS_MS = 220;
@@ -334,19 +335,18 @@ export function ProjectOrderSheet({
                   <strong>{name}</strong>
                   <small>{projectSessions.length} 个会话</small>
                   {positionProjectId === projectId && (
-                    <select
-                      aria-label={`移动「${name}」到`}
+                    <SelectMenu
+                      ariaLabel={`移动「${name}」到`}
                       autoFocus
-                      value={index}
-                      onPointerDown={(event) => event.stopPropagation()}
-                      onChange={(event) => {
-                        onPlaceProjects(moveProject(projectOrder, projectId, Number(event.target.value)));
+                      value={String(index)}
+                      options={projectOrder.map((_id, position) => ({
+                        value: String(position),
+                        label: `第 ${position + 1} 位`,
+                      }))}
+                      onChange={(nextPosition) => {
+                        onPlaceProjects(moveProject(projectOrder, projectId, Number(nextPosition)));
                       }}
-                    >
-                      {projectOrder.map((id, position) => (
-                        <option key={id} value={position}>第 {position + 1} 位</option>
-                      ))}
-                    </select>
+                    />
                   )}
                 </span>
                 <IconButton

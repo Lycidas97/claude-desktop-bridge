@@ -33,6 +33,12 @@ export const CLAUDE_DESKTOP_APP: DesktopAppDefinition = {
   id: "claude-desktop",
   displayName: "Claude Desktop",
   darwinBundle: "/Applications/Claude.app",
+  darwinBundleCandidates: ["/Applications/Claude-3p.app"],
+  darwinPathCandidates: (home) => [
+    posix.join(home, "Applications", "Claude.app"),
+    posix.join(home, "Applications", "Claude-3p.app"),
+  ],
+  darwinExecutableCandidates: ["Claude", "Claude-3p"],
   win32ExecutableName: "Claude.exe",
   envPathOverride: "BRIDGE_CLAUDE_DESKTOP_PATH",
   win32PathCandidates: (environment, home) => {
@@ -41,10 +47,16 @@ export const CLAUDE_DESKTOP_APP: DesktopAppDefinition = {
       environment.BRIDGE_CLAUDE_DESKTOP_PATH,
       windowsPath.join(localAppData, "Programs", "Claude", "Claude.exe"),
       windowsPath.join(localAppData, "Claude", "Claude.exe"),
+      windowsPath.join(localAppData, "Programs", "Claude-3p", "Claude.exe"),
+      windowsPath.join(localAppData, "Claude-3p", "Claude.exe"),
+      windowsPath.join(localAppData, "Programs", "Claude-3p", "Claude-3p.exe"),
+      windowsPath.join(localAppData, "Claude-3p", "Claude-3p.exe"),
       windowsPath.join(localAppData, "AnthropicClaude", "Claude.exe"),
       windowsPath.join(localAppData, "Microsoft", "WindowsApps", "claude-desktop.exe"),
       windowsPath.join(localAppData, "Microsoft", "WindowsApps", "Claude.exe"),
       ...programFiles.map((root) => windowsPath.join(root, "Claude", "Claude.exe")),
+      ...programFiles.map((root) => windowsPath.join(root, "Claude-3p", "Claude.exe")),
+      ...programFiles.map((root) => windowsPath.join(root, "Claude-3p", "Claude-3p.exe")),
     ]);
   },
 };

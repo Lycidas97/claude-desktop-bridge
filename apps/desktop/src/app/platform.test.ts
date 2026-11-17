@@ -9,6 +9,7 @@ import {
   connectorPaths,
   firstNonEmpty,
   isLaunchAtLoginEnabled,
+  parseWindowThemeColor,
   setLaunchAtLogin,
   supportsClaudeDesktop,
 } from "./platform.js";
@@ -102,5 +103,16 @@ describe("Windows Claude paths", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("window theme color synchronization", () => {
+  it("classifies Bridge dark and light canvas hex colors accurately", () => {
+    expect(parseWindowThemeColor("#191816")).toEqual({ backgroundColor: "#191816", themeSource: "dark" });
+    expect(parseWindowThemeColor("#1c1c1e")).toEqual({ backgroundColor: "#1c1c1e", themeSource: "dark" });
+    expect(parseWindowThemeColor(" #FAF9F5 ")).toEqual({ backgroundColor: "#faf9f5", themeSource: "light" });
+    expect(parseWindowThemeColor("#fff")).toEqual({ backgroundColor: "#ffffff", themeSource: "light" });
+    expect(parseWindowThemeColor(null)).toBeUndefined();
+    expect(parseWindowThemeColor("rgb(25, 24, 22)")).toBeUndefined();
   });
 });

@@ -1,4 +1,8 @@
-export const PROJECT_PREVIEW_SESSION_LIMIT = 3;
+export {
+  CLAUDE_UNSECTIONED_PROJECT_ID,
+  CLAUDE_UNSECTIONED_PROJECT_NAME,
+  DEFAULT_CONFIGURATION_SESSION_ID,
+} from "@bridge/protocol";
 
 export function toggleCollapsedProject(
   current: Set<string>,
@@ -18,14 +22,6 @@ export function expandProject(
   const next = new Set(current);
   next.delete(projectId);
   return next;
-}
-
-export function collapseProjects(projectIds: Iterable<string>): Set<string> {
-  return new Set(projectIds);
-}
-
-export function expandAllProjects(): Set<string> {
-  return new Set();
 }
 
 /** Activity timestamp used to order sessions and their fork families. */
@@ -51,28 +47,44 @@ export function orderProjects(projectIds: readonly string[], placed: readonly st
   ];
 }
 
+export function readStoredProjectOrder(storageKey: string): string[] {
+  try {
+    if (typeof localStorage === "undefined" || typeof localStorage.getItem !== "function") {
+      return [];
+    }
+    const raw = localStorage.getItem(storageKey);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const seen = new Set<string>();
+    const valid: string[] = [];
+    for (const item of parsed) {
+      if (typeof item === "string" && item.length > 0 && !seen.has(item)) {
+        seen.add(item);
+        valid.push(item);
+      }
+    }
+    return valid;
+  } catch {
+    return [];
+  }
+}
+
+export function writeStoredProjectOrder(storageKey: string, order: readonly string[]): void {
+  try {
+    if (typeof localStorage === "undefined" || typeof localStorage.setItem !== "function") {
+      return;
+    }
+    localStorage.setItem(storageKey, JSON.stringify(order));
+  } catch {
+    // Ignore storage quota or private-mode restrictions so ordering never crashes rendering.
+  }
+}
+
 export function moveProject(order: readonly string[], projectId: string, index: number): string[] {
   const next = order.filter((candidate) => candidate !== projectId);
   next.splice(index, 0, projectId);
   return next;
-}
-
-export function previewProjectSessions<T extends { lastActivityAt: number }>(
-  sessions: readonly T[],
-  limit = PROJECT_PREVIEW_SESSION_LIMIT,
-): {
-  preview: T[];
-  totalCount: number;
-  hiddenCount: number;
-} {
-  const sorted = sortProjectSessionsByRecent(sessions);
-  const safeLimit = Math.max(0, limit);
-  const preview = sorted.slice(0, safeLimit);
-  return {
-    preview,
-    totalCount: sorted.length,
-    hiddenCount: Math.max(0, sorted.length - preview.length),
-  };
 }
 
 export interface SessionFamily<T> {
@@ -126,28 +138,4 @@ export function groupProjectSessionFamilies<T extends {
     return families.sort((left, right) => right.lastActivityAt - left.lastActivityAt);
   }
   return sortFamilies(roots);
-}
-
-export function previewProjectSessionFamilies<T extends {
-  sessionId: string;
-  parentSessionId?: string;
-  lastActivityAt: number;
-  archivedAt?: number;
-}>(
-  sessions: readonly T[],
-  limit = PROJECT_PREVIEW_SESSION_LIMIT,
-  recency: SessionRecency<T> = lastActivity,
-): {
-  preview: SessionFamily<T>[];
-  totalCount: number;
-  hiddenCount: number;
-} {
-  const families = groupProjectSessionFamilies(sessions, recency);
-  const safeLimit = Math.max(0, limit);
-  const preview = families.slice(0, safeLimit);
-  return {
-    preview,
-    totalCount: families.length,
-    hiddenCount: Math.max(0, families.length - preview.length),
-  };
 }

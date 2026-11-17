@@ -2,10 +2,13 @@ import { createRequire } from "node:module";
 import { mkdtemp, rm as recycle, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { BridgeProjectInfo, BridgeRequest, BridgeSessionInfo } from "@bridge/protocol";
+import type { BridgeProjectInfo, BridgeRequest, BridgeSessionConfiguration, BridgeSessionInfo } from "@bridge/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { DesktopController } from "./controller.js";
-import { WorkspaceTrustRequiredError } from "../claude/claude-desktop-bridge.js";
+import { ClaudeDesktopBridge, DEFAULT_CONFIGURATION_SESSION_ID, WorkspaceTrustRequiredError } from "../claude/claude-desktop-bridge.js";
+import { ConversationStateStore } from "./conversation-state-store.js";
+import { SessionEventLog } from "./session-event-log.js";
+import { EventEmitter } from "node:events";
 
 // Reuse the repository's Trash-only cleanup on all CI platforms.
 createRequire(import.meta.url)("../../../../scripts/recycle-cleanup.cjs");
@@ -286,6 +289,143 @@ describe("directory.mkdir", () => {
       await symlink(realSub.path, join(root, "linked-dir"));
       await expect(controller.handleRequest(request(root, "linked-dir"), "mobile")).rejects.toThrow("非目录项");
     } finally {
+      await recycle(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("session.configuration __default__", () => {
+  const request = (sessionId = DEFAULT_CONFIGURATION_SESSION_ID, includeBackgroundTasks?: boolean): BridgeRequest => ({
+    kind: "request",
+    method: "session.configuration",
+    requestId: "default-config",
+    idempotencyKey: "default-config",
+    params: { sessionId, ...(includeBackgroundTasks !== undefined ? { includeBackgroundTasks } : {}) },
+  });
+
+  it("dispatches __default__ via Object.create(DesktopController.prototype) without touching session-specific methods", async () => {
+    const expected: BridgeSessionConfiguration = {
+      sessionId: DEFAULT_CONFIGURATION_SESSION_ID,
+      model: "claude-opus-4-6",
+      modelDisplayName: "Claude Opus 4.6",
+      effort: "high",
+      nativePermissionMode: "default",
+      modelSource: "claude-desktop",
+      effortSource: "claude-desktop",
+      availableModels: [{ value: "claude-opus-4-6", displayName: "Claude Opus 4.6" }],
+      availableEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+      modelsComplete: true,
+      appliesAfterTurn: false,
+    };
+    const defaultConfiguration = vi.fn().mockResolvedValue(expected);
+    const configuration = vi.fn();
+    const backgroundTaskDetails = vi.fn();
+    const controller = Object.assign(Object.create(DesktopController.prototype), {
+      broker: { defaultConfiguration, configuration, backgroundTaskDetails },
+    }) as { handleRequest(req: BridgeRequest, origin: "mobile"): Promise<unknown> };
+
+    await expect(controller.handleRequest(request(DEFAULT_CONFIGURATION_SESSION_ID, true), "mobile")).resolves.toEqual({ configuration: expected });
+    expect(defaultConfiguration).toHaveBeenCalledOnce();
+    expect(configuration).not.toHaveBeenCalled();
+    expect(backgroundTaskDetails).not.toHaveBeenCalled();
+  });
+
+  it("returns host defaults through ClaudeDesktopBridge both when zero sessions exist and when sessions exist", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-default-config-"));
+    const state = new ConversationStateStore({
+      databasePath: join(root, "state.sqlite"),
+      sessionsPath: join(root, "sessions.json"),
+      queuePath: join(root, "queue.json"),
+      masterSecret: Buffer.alloc(32, 9).toString("base64url"),
+    });
+    await state.initialize();
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"));
+    await eventLog.initialize();
+    const settingsPath = join(root, "settings.json");
+    await writeFile(settingsPath, JSON.stringify({
+      modelPicker: {
+        options: [
+          { model: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
+          { model: "claude-opus-4-6[1m]", label: "Claude Opus 4.6 · 1M" },
+        ],
+      },
+    }));
+    const sessions: Array<Record<string, unknown>> = [];
+    const inspector = Object.assign(new EventEmitter(), {
+      ready: true,
+      supports: () => true,
+      connect: async () => undefined,
+      close: async () => undefined,
+      availableCodeModels: async () => [],
+      call: async (method: string, args: unknown[] = []) => {
+        if (method === "getAll") return structuredClone(sessions);
+        if (method === "getSession") return structuredClone(sessions.find(item => item.sessionId === args[0]));
+        return undefined;
+      },
+    });
+    const broker = new ClaudeDesktopBridge({
+      settingsPath,
+      eventLog,
+      conversationState: state,
+      inspector,
+      scanCatalog: async () => ({ projects: [], sessions: [], observedAt: 0 }),
+      refreshIntervalMs: 60_000,
+    });
+    await broker.initialize();
+    try {
+      const controller = Object.assign(Object.create(DesktopController.prototype), { broker }) as {
+        handleRequest(req: BridgeRequest, origin: "mobile"): Promise<{ configuration: BridgeSessionConfiguration }>;
+      };
+
+      const zeroSessions = await controller.handleRequest(request(), "mobile");
+      expect(zeroSessions).toEqual({
+        configuration: {
+          sessionId: DEFAULT_CONFIGURATION_SESSION_ID,
+          model: "claude-sonnet-4-6",
+          modelDisplayName: "Claude Sonnet 4.6",
+          effort: "high",
+          nativePermissionMode: "default",
+          modelSource: "claude-desktop",
+          effortSource: "claude-desktop",
+          availableModels: [
+            { value: "claude-sonnet-4-6", displayName: "Claude Sonnet 4.6" },
+            { value: "claude-opus-4-6[1m]", displayName: "Claude Opus 4.6 · 1M" },
+          ],
+          availableEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+          modelsComplete: true,
+          appliesAfterTurn: false,
+        },
+      });
+
+      sessions.push(
+        { sessionId: "s-old", cwd: root, model: "claude-sonnet-4-6", effort: "low", permissionMode: "default", lastActivityAt: 10, turnRunning: false },
+        { sessionId: "s-recent", cwd: root, model: "claude-opus-4-6[1m]", effort: "xhigh", permissionMode: "plan", lastActivityAt: 50, turnRunning: true },
+      );
+      await broker.refreshRuntime();
+
+      const withSessions = await controller.handleRequest(request(), "mobile");
+      expect(withSessions).toEqual({
+        configuration: {
+          sessionId: DEFAULT_CONFIGURATION_SESSION_ID,
+          model: "claude-opus-4-6[1m]",
+          modelDisplayName: "Claude Opus 4.6 · 1M",
+          effort: "xhigh",
+          nativePermissionMode: "plan",
+          modelSource: "claude-desktop",
+          effortSource: "claude-desktop",
+          availableModels: [
+            { value: "claude-sonnet-4-6", displayName: "Claude Sonnet 4.6" },
+            { value: "claude-opus-4-6[1m]", displayName: "Claude Opus 4.6 · 1M" },
+          ],
+          availableEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+          modelsComplete: true,
+          appliesAfterTurn: false,
+        },
+      });
+    } finally {
+      await broker.close();
+      await eventLog.close();
+      state.close();
       await recycle(root, { recursive: true, force: true });
     }
   });

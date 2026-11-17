@@ -1,6 +1,4 @@
 import type {
-  BridgeDesktopRuntimeId,
-  BridgeDirectoryListing,
   BridgeHostSnapshot,
   BridgePermissionInfo,
   BridgeProjectInfo,
@@ -10,53 +8,86 @@ import type {
 } from "@bridge/protocol";
 import {
   AlertTriangle,
-  Archive,
-  ArrowUpDown,
-  Check,
-  ChevronRight,
-  ChevronsDown,
-  ChevronsUp,
-  FolderPlus,
+  ChevronDown,
   LoaderCircle,
+  Mail,
   MoreHorizontal,
   Plus,
-  RefreshCw,
   Search,
+  SquarePen,
 } from "lucide-react";
 import type { ReactNode, RefObject } from "react";
-import type { MobileConnectionIssue } from "../../hooks/useMobileBridge.js";
-import { mobileConnectionLabel } from "../../lib/conversation-timeline.js";
+import type { MobileConnectionIssue, PairedHost } from "../../hooks/useMobileBridge.js";
+import type { ThemeControl } from "../../hooks/useTheme.js";
 import {
-  PROJECT_PREVIEW_SESSION_LIMIT,
-  collapseProjects,
-  expandAllProjects,
-  expandProject,
+  CLAUDE_UNSECTIONED_PROJECT_ID,
   groupProjectSessionFamilies,
-  previewProjectSessionFamilies,
-  sortProjectSessionsByRecent,
+  type SessionFamily,
 } from "../../lib/project-groups.js";
-import { desktopRuntimeId, desktopRuntimeName } from "../../lib/runtime-labels.js";
 import { EmptyState } from "../common/EmptyState.js";
 import { IconButton } from "../common/IconButton.js";
+import { ThemeMenu } from "../common/ThemeMenu.js";
 import { ProjectGroupHeader } from "../session/ProjectGroupHeader.js";
+import { SectionCreateDialog, type SectionCreateState } from "../session/SectionCreateDialog.js";
 import { SectionManageDialog, type SectionManageController } from "../session/SectionManageDialog.js";
-import { SessionCreateDialog } from "../session/SessionCreateDialog.js";
 import { SessionFamilyList } from "../session/SessionFamilyList.js";
-import { MobilePageHeader } from "./MobilePageHeader.js";
-import { Sheet, SheetAction } from "../common/Sheet.js";
+import {
+  SessionSectionDragGhost,
+  UNSECTIONED_DROP_ID,
+  type SessionSectionDragController,
+} from "../session/useSessionSectionDrag.js";
+import type { MobileTab } from "./MobileAppShell.js";
+import { MobileInspectorCallout } from "./MobileInspectorCallout.js";
 import { ProjectOrderSheet } from "./ProjectOrderSheet.js";
 
+function hostQuickMeta(
+  host: PairedHost,
+  isCurrent: boolean,
+  desktopOnline: boolean,
+  transportMetrics: BridgeTransportMetrics | undefined,
+): string {
+  if (host.needsRepair) return "需重配";
+  if (isCurrent) {
+    if (!desktopOnline) return "离线";
+    if (transportMetrics?.path === "direct") return "直连";
+    if (transportMetrics?.path === "lan-relay") return "局域网";
+    if (transportMetrics?.path === "public-relay") return "安全中继";
+    return "在线";
+  }
+  if (host.status === "offline") return "离线";
+  if (host.status === "running") return `${host.activeTurns} 运行中`;
+  if (host.status === "attention") return "待处理";
+  return "在线";
+}
+
 export interface MobileSessionCatalogProps {
+  open?: boolean | undefined;
+  onClose?: (() => void) | undefined;
+  hosts?: readonly PairedHost[] | undefined;
+  activeHostId?: string | undefined;
+  onSelectHost?: ((hostId: string) => Promise<void> | void) | undefined;
+  onAddHost?: (() => void) | undefined;
+  hostSwitcherOpen?: boolean | undefined;
+  onToggleHostSwitcher?: (() => void) | undefined;
+  activeTab?: MobileTab | undefined;
+  onSelectTab?: ((tab: MobileTab) => void) | undefined;
+  assistantAvailable?: boolean | undefined;
+  assistantUnreadCount?: number | undefined;
+  themeControl?: ThemeControl | undefined;
+  onStartNewChat?: ((targetProjectId?: string, targetCwd?: string) => void) | undefined;
+  selectedSessionId?: string | undefined;
+  archivedExpanded?: boolean | undefined;
+  onToggleArchived?: (() => void) | undefined;
+  expandedEmptyProjectIds?: ReadonlySet<string> | undefined;
+  revealedEmptySectionKey?: string | undefined;
   desktopName: string;
   connection: SocketState;
   desktopOnline: boolean;
   snapshot: BridgeHostSnapshot | undefined;
   sessions: BridgeSessionInfo[];
   archivedSessions: BridgeSessionInfo[];
-  activeParentProjects: Map<string, string>;
+  archivedFamilies?: readonly SessionFamily<BridgeSessionInfo>[] | undefined;
   grouped: Array<{ project: BridgeProjectInfo | undefined; sessions: BridgeSessionInfo[] }>;
-  groupedProjectIds: string[];
-  allProjectsCollapsed: boolean;
   collapsedProjectIds: Set<string>;
   expandedForkParents: Set<string>;
   projectOrder: string[];
@@ -65,65 +96,61 @@ export interface MobileSessionCatalogProps {
   connectionIssue: MobileConnectionIssue | undefined;
   onInspectConnection?: (() => void) | undefined;
   transportMetrics: BridgeTransportMetrics | undefined;
-  pendingOutbound: number;
-  activeProjectId: string | undefined;
   search: string;
-  projectSearch: string;
   directoryRef: RefObject<HTMLElement | null>;
   directoryScrollPositions: RefObject<Map<string, number>>;
-  directoryMenuOpen: boolean;
   projectOrderOpen: boolean;
-  refreshing: boolean;
-  syncFlash: boolean;
-  sectionCreate: { name: string; busy: boolean; error: string } | undefined;
+  sectionCreate: SectionCreateState | undefined;
   sectionCanCreate: boolean;
   sectionManage: SectionManageController;
-  createOpen: boolean;
-  createProjectId: string;
   sessionOverlays: ReactNode;
   onBackToHosts(): void;
   onRetry(): Promise<void>;
-  onRefresh(sessionId?: string): Promise<boolean>;
   onCreateSection: ((name: string) => Promise<BridgeProjectInfo | undefined>) | undefined;
-  onBrowseDirectory: ((path?: string) => Promise<BridgeDirectoryListing>) | undefined;
-  onCreateDirectory: ((parentPath: string, name: string) => Promise<string>) | undefined;
-  onCreateSession(
-    cwd: string,
-    title?: string,
-    runtimeId?: BridgeDesktopRuntimeId,
-    projectId?: string,
-  ): Promise<BridgeSessionInfo | undefined>;
   selectSession(sessionId: string): Promise<void>;
   setSearch(value: string): void;
-  setProjectSearch(value: string): void;
-  setDirectoryMenuOpen(open: boolean): void;
   setProjectOrderOpen(open: boolean): void;
-  setCollapsedProjectIds(value: Set<string> | ((current: Set<string>) => Set<string>)): void;
-  setSectionCreate(value: { name: string; busy: boolean; error: string } | undefined): void;
-  setCreateOpen(open: boolean): void;
+  setSectionCreate(value: SectionCreateState | undefined): void;
   onOpenSessionActions(sessionId: string): void;
-  toggleProject(projectId: string): void;
+  toggleProject(projectId: string, isEmptyManualGroup?: boolean): void;
   toggleForkGroup(parentSessionId: string): void;
-  openProjectGroup(projectId: string): void;
-  closeProjectGroup(): void;
   openCreateDialogForProject(targetProjectId?: string): void;
   placeProjects(order: string[]): void;
-  runRefresh(sessionId?: string): Promise<void>;
   closeSectionCreate(): void;
   createSection(): Promise<void>;
+  sessionDrag?: SessionSectionDragController | undefined;
+  manualSections?: readonly BridgeProjectInfo[] | undefined;
+  sessionActionError?: string | undefined;
+  onActivateClaude?: (() => Promise<void>) | undefined;
 }
 
 export function MobileSessionCatalog({
+  onClose,
+  hosts,
+  activeHostId,
+  onSelectHost,
+  onAddHost,
+  hostSwitcherOpen = false,
+  onToggleHostSwitcher,
+  activeTab = "sessions",
+  onSelectTab,
+  assistantAvailable = false,
+  assistantUnreadCount = 0,
+  themeControl,
+  onStartNewChat,
+  selectedSessionId,
+  archivedExpanded = false,
+  onToggleArchived,
+  expandedEmptyProjectIds,
+  revealedEmptySectionKey,
   desktopName,
   connection,
   desktopOnline,
   snapshot,
   sessions,
   archivedSessions,
-  activeParentProjects,
+  archivedFamilies,
   grouped,
-  groupedProjectIds,
-  allProjectsCollapsed,
   collapsedProjectIds,
   expandedForkParents,
   projectOrder,
@@ -132,380 +159,496 @@ export function MobileSessionCatalog({
   connectionIssue,
   onInspectConnection,
   transportMetrics,
-  pendingOutbound,
-  activeProjectId,
   search,
-  projectSearch,
   directoryRef,
   directoryScrollPositions,
-  directoryMenuOpen,
   projectOrderOpen,
-  refreshing,
-  syncFlash,
   sectionCreate,
   sectionCanCreate,
   sectionManage,
-  createOpen,
-  createProjectId,
   sessionOverlays,
   onBackToHosts,
   onRetry,
-  onRefresh,
   onCreateSection,
-  onBrowseDirectory,
-  onCreateDirectory,
-  onCreateSession,
   selectSession,
   setSearch,
-  setProjectSearch,
-  setDirectoryMenuOpen,
   setProjectOrderOpen,
-  setCollapsedProjectIds,
   setSectionCreate,
-  setCreateOpen,
   onOpenSessionActions,
   toggleProject,
   toggleForkGroup,
-  openProjectGroup,
-  closeProjectGroup,
   openCreateDialogForProject,
   placeProjects,
-  runRefresh,
   closeSectionCreate,
   createSection,
+  sessionDrag,
+  manualSections = [],
+  sessionActionError,
+  onActivateClaude,
 }: MobileSessionCatalogProps) {
-  const isArchivedGroupPage = activeProjectId === "__archived__";
-  const activeGroupProject = activeProjectId && !isArchivedGroupPage
-    ? snapshot?.projects.find((project) => project.projectId === activeProjectId)
-    : undefined;
-  const activeGroupSessionsAll = activeProjectId
-    ? isArchivedGroupPage
-      ? archivedSessions
-      : sortProjectSessionsByRecent(sessions.filter((session) => (
-          (!session.archivedAt || Boolean(session.sidechat && session.parentSessionId && activeParentProjects.get(session.parentSessionId) === session.projectId))
-          && session.projectId === activeProjectId
-        )))
-    : [];
-  const activeGroupQuery = projectSearch.trim().toLocaleLowerCase();
-  const activeGroupMatches = activeGroupQuery
-    ? activeGroupSessionsAll.filter((session) => (
-        `${session.title}\n${session.currentSummary ?? ""}\n${session.cwd}\n${desktopRuntimeName(desktopRuntimeId(session))}`
-          .toLocaleLowerCase()
-          .includes(activeGroupQuery)
-      ))
-    : activeGroupSessionsAll;
-  const matchingActiveParents = new Map(activeGroupMatches.filter((session) => !session.archivedAt).map((session) => [session.sessionId, session.projectId]));
-  const activeGroupSessions = activeGroupMatches.filter((session) => (
-    isArchivedGroupPage || !session.archivedAt || Boolean(session.parentSessionId && matchingActiveParents.get(session.parentSessionId) === session.projectId)
-  ));
-  const activeGroupName = isArchivedGroupPage
-    ? "已归档会话"
-    : activeGroupProject?.name
-      ?? activeGroupSessionsAll[0]?.projectName
-      ?? sessions.find((session) => session.projectId === activeProjectId)?.projectName
-      ?? "项目分组";
-  const activeGroupCwd = isArchivedGroupPage
-    ? "归档会话保留历史，可随时恢复"
-    : activeGroupProject?.cwd
-      ?? activeGroupSessionsAll[0]?.cwd
-      ?? sessions.find((session) => session.projectId === activeProjectId)?.cwd
-      ?? "";
-
-  const activeGroupFamilies = groupProjectSessionFamilies(activeGroupSessions);
-  const hostStatusText = desktopOnline
-    ? (pendingOutbound > 0 ? `在线 · ${pendingOutbound} 条待发` : mobileConnectionLabel(connection, desktopOnline, transportMetrics, snapshot?.host.version))
-    : connection === "connecting" || connection === "reconnecting"
-      ? "正在连接"
-      : (pendingOutbound > 0 ? `离线 · ${pendingOutbound} 条待发` : "离线");
+  const searchQuery = search.trim().toLocaleLowerCase();
+  const online = connection === "connected" && desktopOnline;
+  const supportsCreateSection = Boolean(onCreateSection && snapshot?.host.capabilities.includes("section.create.v1"));
+  const hasActiveSessions = sessions.some((candidate) => !candidate.archivedAt);
+  const totalArchivedFamilies = archivedFamilies ?? groupProjectSessionFamilies(archivedSessions);
+  const visibleArchivedFamilies = searchQuery
+    ? groupProjectSessionFamilies(
+        archivedSessions.filter((candidate) => (
+          `${candidate.title}\n${candidate.currentSummary ?? ""}\n${candidate.projectName}\n${candidate.cwd}`
+            .toLocaleLowerCase()
+            .includes(searchQuery)
+        )),
+      )
+    : totalArchivedFamilies;
+  const hasRenderedUnsectionedGroup = grouped.some(
+    (group) => (group.project?.projectId ?? group.sessions[0]?.projectId) === CLAUDE_UNSECTIONED_PROJECT_ID,
+  );
+  const showUnsectionedDropZone = Boolean(
+    sessionDrag?.dragState
+    && sessionDrag.dragState.originSectionId !== UNSECTIONED_DROP_ID
+    && !hasRenderedUnsectionedGroup,
+  );
 
   return (
-    <main className="mobile-workspace host-detail-workspace">
-      <MobilePageHeader
-        title={activeProjectId ? activeGroupName : "会话"}
-        titleHidden={!activeProjectId}
-        subtitle={activeProjectId ? activeGroupCwd : (
-          <button type="button" className="m-host-chip" onClick={onBackToHosts} aria-label={`当前电脑：${desktopName}，查看电脑`}>
-            <i className={`m-status-dot${desktopOnline ? " is-online" : ""}`} />
+    <>
+      <div
+        className="mobile-home-catalog is-flat-tree"
+        aria-label="会话列表"
+      >
+        <div className="mobile-drawer-topbar">
+          <button
+            type="button"
+            className="m-host-chip drawer-host-switcher"
+            aria-expanded={hosts ? hostSwitcherOpen : undefined}
+            aria-label={`当前电脑：${desktopName}，切换电脑`}
+            onClick={() => {
+              if (hosts && onToggleHostSwitcher) onToggleHostSwitcher();
+              else {
+                onClose?.();
+                onBackToHosts();
+              }
+            }}
+          >
+            <i className={`m-status-dot${desktopOnline ? " is-online" : ""}`} aria-hidden="true" />
             <span className="m-host-name">{desktopName}</span>
-            <span className="m-host-status">· {hostStatusText}</span>
-            <ChevronRight size={14} />
+            <ChevronDown size={14} aria-hidden="true" />
           </button>
-        )}
-        {...(activeProjectId ? { onBack: closeProjectGroup, backLabel: "返回会话目录" } : {})}
-        actions={(
-          <>
-            {!isArchivedGroupPage && (
-              <IconButton
-                label="新建会话"
-                disabled={!snapshot || connection !== "connected" || !desktopOnline}
-                onClick={() => openCreateDialogForProject(activeProjectId)}
-              >
-                <Plus size={22} />
-              </IconButton>
-            )}
-            <IconButton label="目录选项" onClick={() => setDirectoryMenuOpen(true)}><MoreHorizontal size={22} /></IconButton>
-          </>
-        )}
-      />
-
-      {activeProjectId ? (
-        <section className="host-detail project-detail-view" ref={directoryRef} onScroll={(event) => directoryScrollPositions.current.set(activeProjectId, event.currentTarget.scrollTop)}>
-          <label className="session-search">
-            <Search size={17} />
-            <input
-              value={projectSearch}
-              onChange={(event) => setProjectSearch(event.target.value)}
-              placeholder={`搜索「${activeGroupName}」`}
-            />
-          </label>
-          {activeGroupFamilies.length === 0 ? (
-            <EmptyState
-              title={projectSearch ? "没有匹配的会话" : isArchivedGroupPage ? "暂无已归档会话" : "此分组暂无会话"}
-              description={projectSearch ? "换一个关键词试试。" : isArchivedGroupPage ? "归档后的会话会显示在这里，可返回会话目录继续查看。" : "可点击右上角新建会话，或返回查看其它项目。"}
-            />
-          ) : (
-            <div className="session-rows project-detail-rows">
-              <SessionFamilyList
-                families={activeGroupFamilies}
-                projects={snapshot?.projects}
-                permissions={permissions}
-                expandedForkParents={expandedForkParents}
-                archivedList={isArchivedGroupPage}
-                onSelectSession={selectSession}
-                onOpenSessionActions={onOpenSessionActions}
-                onToggleForkGroup={toggleForkGroup}
-              />
-            </div>
+          {assistantAvailable && onSelectTab && (
+            <button
+              type="button"
+              className={`drawer-assistant-capsule${activeTab === "assistant" ? " active" : ""}`}
+              aria-label={assistantUnreadCount > 0 ? `助理，${assistantUnreadCount} 条未读` : "助理"}
+              aria-current={activeTab === "assistant" ? "page" : undefined}
+              onClick={() => {
+                onSelectTab("assistant");
+                onClose?.();
+              }}
+            >
+              <Mail size={15} className="drawer-assistant-icon" aria-hidden="true" />
+              <span className="drawer-assistant-title">助理</span>
+              {assistantUnreadCount > 0 && (
+                <span className="drawer-assistant-unread" aria-hidden="true">
+                  <i className="sidebar-unread-dot" />
+                  <b className="desktop-nav-badge">{assistantUnreadCount > 99 ? "99+" : assistantUnreadCount}</b>
+                </span>
+              )}
+              <span className="drawer-assistant-slot" aria-hidden="true" />
+            </button>
           )}
-        </section>
-      ) : (
-      <section className="host-detail" ref={directoryRef} onScroll={(event) => directoryScrollPositions.current.set("", event.currentTarget.scrollTop)}>
-        <label className="session-search">
-          <Search size={17} />
-          <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索项目或会话" />
-        </label>
-        {!search && projectOrder.length > 1 && (
-          <div className="project-order-bar">
-            <span>项目顺序已固定</span>
-            <button type="button" onClick={() => setProjectOrderOpen(true)}><ArrowUpDown size={15} />调整顺序</button>
-          </div>
-        )}
-        {permissions[0] && (
-          <button type="button" className="host-permission-alert" onClick={() => void selectSession(permissions[0]!.sessionId)}>
-            <span className="permission-dock-icon"><AlertTriangle size={18} /></span>
-            <span>
-              <strong>{permissions[0].toolName === "AskUserQuestion" ? "有提问待你回答" : "有操作待你授权"}</strong>
-              <small>{sessions.find((session) => session.sessionId === permissions[0]!.sessionId)?.title ?? permissions[0]!.toolName}</small>
-            </span>
-            <b>{permissions.length > 1 ? `${permissions.length} 项` : "查看"}</b>
-          </button>
-        )}
-        {connectionIssue && (
-          <button type="button" className="host-connection-issue" onClick={() => void onRetry()}>
-            {connectionIssue.message}
-          </button>
-        )}
-        {!snapshot && connection === "connected" && desktopOnline && (
-          <EmptyState
-            icon={<LoaderCircle className="is-spinning" size={20} />}
-            title="正在同步主机状态"
-            description="已保存的会话会在连接恢复后自动出现。"
-          />
-        )}
-        {(snapshot ? grouped.length === 0 : connection !== "connected" || !desktopOnline) && (() => {
-          const claudeRuntime = snapshot?.runtimes?.find((candidate) => candidate.id === "claude-desktop");
-          const claudeDesktopReady = claudeRuntime
-            ? claudeRuntime.state === "ready"
-            : snapshot?.runtime.state === "ready" || snapshot?.runtime.state === "working";
-          if (search.trim()) {
-            return (
-              <EmptyState title="没有匹配的会话" description="换一个关键词试试。" />
-            );
-          }
-          if (connection === "connected" && desktopOnline && claudeDesktopReady) {
-            const canCreate = snapshot?.runtimes
-              ? claudeRuntime?.state === "ready" && claudeRuntime.capabilities.includes("session.create")
-              : claudeDesktopReady;
-            return (
-              <EmptyState
-                title={archivedSessions.length > 0 ? "暂无活跃会话" : "暂无会话"}
-                description={archivedSessions.length > 0
-                  ? canCreate ? "当前会话均已归档，可开始新对话或查看下方已归档会话。" : "当前会话均已归档，可查看下方已归档会话。"
-                  : canCreate ? "当前电脑上尚未创建会话，可随时开始新的对话。" : "当前电脑上尚未创建会话，请在 Claude Desktop 中创建会话。"}
-                action={canCreate && (
+          <IconButton
+            label="新建会话"
+            className="drawer-compose-button"
+            disabled={!snapshot || !online}
+            onClick={() => {
+              if (onStartNewChat) {
+                onStartNewChat();
+              } else {
+                openCreateDialogForProject();
+              }
+            }}
+          >
+            <SquarePen size={17} />
+          </IconButton>
+        </div>
+
+        {hosts && hostSwitcherOpen && (
+          <div className="drawer-host-menu" role="region" aria-label="快捷切换电脑">
+            <div className="drawer-host-options">
+              {hosts.map((host) => {
+                const isCurrent = host.roomId === activeHostId;
+                const isOnline = isCurrent ? desktopOnline : host.status !== "offline" && !host.needsRepair;
+                return (
                   <button
                     type="button"
-                    className="primary-button session-catalog-empty-action"
-                    onClick={() => openCreateDialogForProject()}
+                    key={host.roomId}
+                    className={`drawer-host-option${isCurrent ? " active" : ""}`}
+                    aria-current={isCurrent ? "true" : undefined}
+                    onClick={() => {
+                      onToggleHostSwitcher?.();
+                      onClose?.();
+                      void onSelectHost?.(host.roomId);
+                    }}
                   >
-                    <Plus size={16} />
-                    新建会话
+                    <i className={`m-status-dot${isOnline ? " is-online" : ""}`} aria-hidden="true" />
+                    <span className="drawer-host-option-name">{host.desktopName}</span>
+                    <span className="drawer-host-option-meta">
+                      {hostQuickMeta(host, isCurrent, desktopOnline, transportMetrics)}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            {onAddHost && (
+              <button
+                type="button"
+                className="drawer-host-add"
+                onClick={() => {
+                  onToggleHostSwitcher?.();
+                  onClose?.();
+                  onAddHost();
+                }}
+              >
+                <Plus size={14} aria-hidden="true" />
+                <span>扫码添加新电脑</span>
+              </button>
+            )}
+          </div>
+        )}
+
+        <div className="drawer-top-stack">
+          <label className="session-search">
+            <Search size={15} />
+            <input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="搜索项目或会话"
+            />
+          </label>
+        </div>
+
+        <section
+          className="drawer-project-list host-detail"
+          ref={directoryRef}
+          onScroll={(event) => directoryScrollPositions.current.set("", event.currentTarget.scrollTop)}
+        >
+          {!searchQuery && (supportsCreateSection || projectOrder.length > 1 || hasActiveSessions) && (
+            <div className="project-order-bar sidebar-section-bar">
+              <span className="sidebar-section-label">项目</span>
+              <div className="sidebar-section-actions">
+                {supportsCreateSection && (
+                  <button
+                    type="button"
+                    className="sidebar-micro-action"
+                    disabled={!online}
+                    onClick={() => setSectionCreate({ name: "", busy: false, error: "" })}
+                  >
+                    + 分组
                   </button>
                 )}
-              />
-            );
-          }
-          if (connection === "connected" && desktopOnline) {
+                {projectOrder.length > 1 && (
+                  <button
+                    type="button"
+                    className="sidebar-micro-action project-order-trigger"
+                    aria-label="调整顺序"
+                    onClick={() => setProjectOrderOpen(true)}
+                  >
+                    排序
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
+          {permissions[0] && (
+            <button
+              type="button"
+              className="host-permission-alert"
+              onClick={() => {
+                onClose?.();
+                void selectSession(permissions[0]!.sessionId);
+              }}
+            >
+              <span className="permission-dock-icon"><AlertTriangle size={16} /></span>
+              <span>
+                <strong>{permissions[0].toolName === "AskUserQuestion" ? "有提问待你回答" : "有操作待你授权"}</strong>
+                <small>{sessions.find((session) => session.sessionId === permissions[0]!.sessionId)?.title ?? permissions[0]!.toolName}</small>
+              </span>
+              <b>{permissions.length > 1 ? `${permissions.length} 项` : "查看"}</b>
+            </button>
+          )}
+
+          {connectionIssue && (
+            <button type="button" className="host-connection-issue" onClick={() => void onRetry()}>
+              {connectionIssue.message}
+            </button>
+          )}
+
+          {onActivateClaude && (
+            <MobileInspectorCallout
+              snapshot={snapshot}
+              connected={online}
+              onActivate={onActivateClaude}
+            />
+          )}
+
+          {sessionActionError && (
+            <p className="m-sheet-note is-error sidebar-action-error" role="alert">{sessionActionError}</p>
+          )}
+
+          {!snapshot && online && (
+            <EmptyState
+              icon={<LoaderCircle className="is-spinning" size={20} />}
+              title="正在同步主机状态"
+              description="已保存的会话会在连接恢复后自动出现。"
+            />
+          )}
+
+          {(snapshot ? (!hasActiveSessions && grouped.length === 0) || (Boolean(searchQuery) && grouped.length === 0) : !online) && (() => {
+            const claudeRuntime = snapshot?.runtimes?.find((candidate) => candidate.id === "claude-desktop");
+            const claudeDesktopReady = claudeRuntime
+              ? claudeRuntime.state === "ready"
+              : snapshot?.runtime.state === "ready" || snapshot?.runtime.state === "working";
+            if (searchQuery) {
+              return (
+                <EmptyState title="没有匹配的会话" description="换一个关键词试试。" />
+              );
+            }
+            if (online && claudeDesktopReady) {
+              const canCreate = snapshot?.runtimes
+                ? claudeRuntime?.state === "ready" && claudeRuntime.capabilities.includes("session.create")
+                : claudeDesktopReady;
+              return (
+                <EmptyState
+                  title={archivedSessions.length > 0 ? "暂无活跃会话" : "暂无会话"}
+                  description={archivedSessions.length > 0
+                    ? canCreate ? "当前会话均已归档，可开始新对话或查看下方已归档会话。" : "当前会话均已归档，可查看下方已归档会话。"
+                    : canCreate ? "当前电脑上尚未创建会话，可随时开始新的对话。" : "当前电脑上尚未创建会话，请在 Claude Desktop 中创建会话。"}
+                  action={canCreate && (
+                    <button
+                      type="button"
+                      className="primary-button session-catalog-empty-action"
+                      onClick={() => {
+                        if (onStartNewChat) onStartNewChat();
+                        else openCreateDialogForProject();
+                      }}
+                    >
+                      <Plus size={16} />
+                      新建会话
+                    </button>
+                  )}
+                />
+              );
+            }
+            if (online) {
+              return (
+                <EmptyState
+                  title="未检测到 Claude Desktop"
+                  description="请在电脑端打开 Claude Desktop。启动后 Bridge 将自动建立连接。"
+                  action={(
+                    <button
+                      type="button"
+                      className="secondary-button session-catalog-empty-action"
+                      onClick={() => {
+                        onClose?.();
+                        (onInspectConnection ?? onBackToHosts)();
+                      }}
+                    >
+                      检查连接
+                    </button>
+                  )}
+                />
+              );
+            }
+            const connecting = connection === "connecting" || connection === "reconnecting";
             return (
               <EmptyState
-                title="未检测到 Claude Desktop"
-                description="请在电脑端打开 Claude Desktop。启动后 Bridge 将自动建立连接。"
+                icon={connecting && <LoaderCircle className="is-spinning" size={20} />}
+                title={connecting ? "正在连接电脑" : connection === "connected" ? "电脑端 Bridge 离线" : "当前未连接电脑"}
+                description={connecting ? "连接恢复后将自动同步会话列表。" : connection === "connected" ? "请确认电脑端 Bridge 正在运行并已连接网络。" : "请检查网络或连接设置，连接恢复后将自动同步。"}
                 action={(
                   <button
                     type="button"
                     className="secondary-button session-catalog-empty-action"
-                    onClick={onInspectConnection ?? onBackToHosts}
+                    onClick={() => {
+                      onClose?.();
+                      (onInspectConnection ?? onBackToHosts)();
+                    }}
                   >
                     检查连接
                   </button>
                 )}
               />
             );
-          }
-          const connecting = connection === "connecting" || connection === "reconnecting";
-          return (
-            <EmptyState
-              icon={connecting && <LoaderCircle className="is-spinning" size={20} />}
-              title={connecting ? "正在连接电脑" : connection === "connected" ? "电脑端 Bridge 离线" : "当前未连接电脑"}
-              description={connecting ? "连接恢复后将自动同步会话列表。" : connection === "connected" ? "请确认电脑端 Bridge 正在运行并已连接网络。" : "请检查网络或连接设置，连接恢复后将自动同步。"}
-              action={(
-                <button
-                  type="button"
-                  className="secondary-button session-catalog-empty-action"
-                  onClick={onInspectConnection ?? onBackToHosts}
-                >
-                  检查连接
-                </button>
-              )}
-            />
-          );
-        })()}
-        <div className="project-groups">
-          {grouped.map((group) => {
-            const projectId = group.project?.projectId ?? group.sessions[0]!.projectId;
-            const projectName = group.project?.name ?? group.sessions[0]!.projectName;
-            const expanded = !collapsedProjectIds.has(projectId);
-            const sessionsId = `mobile-project-${encodeURIComponent(projectId)}`;
-            const { preview, totalCount, hiddenCount } = previewProjectSessionFamilies(
-              group.sessions,
-              PROJECT_PREVIEW_SESSION_LIMIT,
-            );
-            return (
-              <section className={`project-group ${expanded ? "expanded" : "collapsed"}`} key={projectId}>
-                <ProjectGroupHeader
-                  title={projectName}
-                  count={totalCount}
-                  expanded={expanded}
-                  controlsId={sessionsId}
-                  onToggle={() => toggleProject(projectId)}
-                  actions={(
-                    <>
-                      <IconButton
-                        label={`新建会话：${projectName}`}
-                        className="session-row-action"
-                        disabled={!snapshot || connection !== "connected" || !desktopOnline}
-                        onClick={() => openCreateDialogForProject(projectId)}
-                      >
-                        <Plus size={20} />
-                      </IconButton>
-                      {sectionManage.canManage(group.project) && (
-                        <IconButton
-                          label={`管理分组：${projectName}`}
-                          className="session-row-action section-manage-trigger"
-                          onClick={() => sectionManage.openMenu(group.project!.projectId)}
-                        >
-                          <MoreHorizontal size={18} />
-                        </IconButton>
+          })()}
+
+          {(grouped.length > 0 || archivedSessions.length > 0) && (
+            <div className="project-groups">
+              {grouped.map((group) => {
+                const projectId = group.project?.projectId ?? group.sessions[0]!.projectId;
+                const projectName = group.project?.name ?? group.sessions[0]!.projectName;
+                const families = groupProjectSessionFamilies(group.sessions);
+                const totalCount = families.length;
+                const isEmptyManualGroup = group.project?.kind === "desktop-group" && totalCount === 0;
+                const expanded = searchQuery
+                  ? true
+                  : isEmptyManualGroup
+                    ? (projectId === revealedEmptySectionKey || Boolean(expandedEmptyProjectIds?.has(projectId)))
+                    : !collapsedProjectIds.has(projectId);
+                const sessionsId = `mobile-project-${encodeURIComponent(projectId)}`;
+                const dropSectionId = group.project?.kind === "desktop-group"
+                  ? projectId
+                  : projectId === CLAUDE_UNSECTIONED_PROJECT_ID
+                    ? UNSECTIONED_DROP_ID
+                    : undefined;
+                const dropState = sessionDrag?.dropZoneState(dropSectionId);
+                return (
+                  <section
+                    className={`project-group ${expanded ? "expanded" : "collapsed"}${isEmptyManualGroup ? " is-empty-group" : ""}${dropState === "target" ? " is-drop-target" : ""}${dropState === "origin" ? " is-drop-origin" : ""}`}
+                    key={projectId}
+                    {...(dropSectionId ? { "data-drop-section-id": dropSectionId } : {})}
+                  >
+                    <ProjectGroupHeader
+                      title={projectName}
+                      count={totalCount}
+                      expanded={expanded}
+                      controlsId={sessionsId}
+                      onToggle={() => toggleProject(projectId, isEmptyManualGroup)}
+                      actions={(
+                        <>
+                          <IconButton
+                            label={`新建会话：${projectName}`}
+                            className="session-row-action"
+                            disabled={!snapshot || !online}
+                            onClick={() => {
+                              if (onStartNewChat) onStartNewChat(projectId);
+                              else openCreateDialogForProject(projectId);
+                            }}
+                          >
+                            <Plus size={16} />
+                          </IconButton>
+                          {sectionManage.canManage(group.project) && (
+                            <IconButton
+                              label={`管理分组：${projectName}`}
+                              className="session-row-action section-manage-trigger"
+                              onClick={() => sectionManage.openMenu(group.project!.projectId)}
+                            >
+                              <MoreHorizontal size={16} />
+                            </IconButton>
+                          )}
+                        </>
                       )}
-                    </>
-                  )}
-                />
-                {expanded && (
-                  <div className="session-rows" id={sessionsId}>
-                    <SessionFamilyList
-                      families={preview}
-                      projects={snapshot?.projects}
-                      permissions={permissions}
-                      expandedForkParents={expandedForkParents}
-                      onSelectSession={selectSession}
-                      onOpenSessionActions={onOpenSessionActions}
-                      onToggleForkGroup={toggleForkGroup}
                     />
-                    {hiddenCount > 0 && (
-                      <button
-                        type="button"
-                        className="project-group-more-button"
-                        onClick={() => openProjectGroup(projectId)}
-                      >
-                        <span>查看全部 {totalCount} 个会话</span>
-                        <ChevronRight size={15} />
-                      </button>
+                    {expanded && (
+                      <div className="session-rows" id={sessionsId}>
+                        {families.length === 0 ? (
+                          <p className="empty-section-hint">暂无会话</p>
+                        ) : (
+                          <SessionFamilyList
+                            families={families}
+                            projects={snapshot?.projects}
+                            permissions={permissions}
+                            expandedForkParents={expandedForkParents}
+                            flat
+                            sessionDrag={sessionDrag}
+                            selectedId={selectedSessionId}
+                            onSelectSession={(targetSessionId) => {
+                              onClose?.();
+                              return selectSession(targetSessionId);
+                            }}
+                            onOpenSessionActions={onOpenSessionActions}
+                            onToggleForkGroup={toggleForkGroup}
+                          />
+                        )}
+                      </div>
                     )}
-                  </div>
-                )}
-              </section>
-            );
-          })}
-          {archivedSessions.length > 0 && (
-            <section className="project-group archived-group">
-              <button type="button" className="project-group-open" onClick={() => openProjectGroup("__archived__")}>
-                <span className="project-group-toggle-copy"><span><Archive size={16} /><strong>已归档会话</strong><b className="project-count-pill">{archivedSessions.length}</b></span></span>
-                <ChevronRight size={16} />
-              </button>
-            </section>
+                  </section>
+                );
+              })}
+
+              {showUnsectionedDropZone && (
+                <div
+                  className={`project-group-unsectioned-dropzone${sessionDrag?.dropZoneState(UNSECTIONED_DROP_ID) === "target" ? " is-drop-target" : ""}`}
+                  data-drop-section-id={UNSECTIONED_DROP_ID}
+                >
+                  拖到这里移出分组（未分组）
+                </div>
+              )}
+
+              {archivedSessions.length > 0 && (
+                <section className={`project-group archived-group ${archivedExpanded ? "expanded" : "collapsed"}`}>
+                  <ProjectGroupHeader
+                    title="已归档"
+                    count={totalArchivedFamilies.length}
+                    expanded={archivedExpanded}
+                    controlsId="mobile-archived-sessions"
+                    onToggle={() => onToggleArchived?.()}
+                  />
+                  {archivedExpanded && (
+                    <div id="mobile-archived-sessions" className="session-rows">
+                      {visibleArchivedFamilies.length === 0 ? (
+                        <p className="empty-section-hint">没有匹配的已归档会话</p>
+                      ) : (
+                        <SessionFamilyList
+                          families={visibleArchivedFamilies}
+                          projects={snapshot?.projects}
+                          permissions={permissions}
+                          expandedForkParents={expandedForkParents}
+                          archivedList
+                          flat
+                          selectedId={selectedSessionId}
+                          onSelectSession={(targetSessionId) => {
+                            onClose?.();
+                            return selectSession(targetSessionId);
+                          }}
+                          onOpenSessionActions={onOpenSessionActions}
+                          onToggleForkGroup={toggleForkGroup}
+                        />
+                      )}
+                    </div>
+                  )}
+                </section>
+              )}
+            </div>
           )}
-        </div>
+        </section>
 
-      </section>
-      )}
+        <footer className="mobile-drawer-dock">
+          <nav className="mobile-drawer-dock-nav" aria-label="主要导航">
+            <button
+              type="button"
+              className={`mobile-dock-link${activeTab === "computers" ? " active" : ""}`}
+              aria-current={activeTab === "computers" ? "page" : undefined}
+              onClick={() => {
+                if (onSelectTab) onSelectTab("computers");
+                else onBackToHosts();
+                onClose?.();
+              }}
+            >
+              电脑
+            </button>
+            {onSelectTab && (
+              <button
+                type="button"
+                className={`mobile-dock-link${activeTab === "settings" ? " active" : ""}`}
+                aria-current={activeTab === "settings" ? "page" : undefined}
+                onClick={() => {
+                  onSelectTab("settings");
+                  onClose?.();
+                }}
+              >
+                设置
+              </button>
+            )}
+          </nav>
+          {themeControl && <ThemeMenu control={themeControl} side="right" iconSize={16} />}
+        </footer>
+      </div>
 
+      <SessionSectionDragGhost dragState={sessionDrag?.dragState} manualSections={manualSections} />
       {sessionOverlays}
-      {directoryMenuOpen && (
-        <Sheet eyebrow={desktopName} title={activeProjectId ? activeGroupName : "会话目录"} onClose={() => setDirectoryMenuOpen(false)}>
-          <div className="m-group">
-            {onCreateSection && snapshot?.host.capabilities.includes("section.create.v1") && (
-              <SheetAction icon={<FolderPlus size={19} />} label="新建 Section" disabled={connection !== "connected" || !desktopOnline} onClick={() => {
-                setDirectoryMenuOpen(false);
-                setSectionCreate({ name: "", busy: false, error: "" });
-              }} />
-            )}
-            {sectionManage.renderDirectoryActions({
-              activeGroupProject,
-              closeDirectoryMenu: () => setDirectoryMenuOpen(false),
-            })}
-            <SheetAction
-              icon={refreshing ? <LoaderCircle className="is-spinning" size={19} /> : syncFlash ? <Check size={19} /> : <RefreshCw size={19} />}
-              label={refreshing ? "正在同步" : syncFlash ? "已同步" : "同步当前电脑"}
-              detail="重新读取项目、会话与运行状态"
-              disabled={refreshing}
-              onClick={() => void runRefresh()}
-            />
-            {!activeProjectId && projectOrder.length > 1 && (
-              <SheetAction
-                icon={<ArrowUpDown size={19} />}
-                label="调整项目顺序"
-                detail="项目顺序固定，可长按或拖动调整"
-                onClick={() => {
-                  setDirectoryMenuOpen(false);
-                  setProjectOrderOpen(true);
-                }}
-              />
-            )}
-            {!activeProjectId && groupedProjectIds.length > 1 && (
-              <SheetAction
-                icon={allProjectsCollapsed ? <ChevronsDown size={19} /> : <ChevronsUp size={19} />}
-                label={allProjectsCollapsed ? "展开全部项目" : "折叠全部项目"}
-                onClick={() => {
-                  setCollapsedProjectIds(allProjectsCollapsed ? expandAllProjects() : collapseProjects(groupedProjectIds));
-                  setDirectoryMenuOpen(false);
-                }}
-              />
-            )}
-          </div>
-        </Sheet>
-      )}
       {projectOrderOpen && (
         <ProjectOrderSheet
+          manageFocus
           desktopName={desktopName}
           projectOrder={projectOrder}
           projectsByActivity={projectsByActivity}
@@ -515,44 +658,15 @@ export function MobileSessionCatalog({
           onClose={() => setProjectOrderOpen(false)}
         />
       )}
-      {sectionCreate && (
-        <div className="modal-backdrop session-create-backdrop" role="presentation"
-          onMouseDown={event => { if (event.target === event.currentTarget) closeSectionCreate(); }}
-          onKeyDown={event => { if (event.key === "Escape") { event.stopPropagation(); closeSectionCreate(); } }}>
-          <section className="create-session-dialog session-create-dialog section-create-dialog" role="dialog" aria-modal="true" aria-label="新建 Section">
-            <header className="session-create-header"><h2>新建 Section</h2></header>
-            <form onSubmit={event => { event.preventDefault(); void createSection(); }}>
-              <div className="session-create-body">
-                <label><span>Section 名称</span><input aria-label="Section 名称" value={sectionCreate.name} autoFocus required maxLength={200} disabled={sectionCreate.busy}
-                  onChange={event => setSectionCreate({ ...sectionCreate, name: event.target.value, error: "" })} /></label>
-                {sectionCreate.error && <p className="session-create-error" role="alert">{sectionCreate.error}</p>}
-                {(connection !== "connected" || !desktopOnline) && <p className="session-create-status" role="status">电脑已离线，连接后可创建 Section。</p>}
-              </div>
-              <footer className="dialog-actions session-create-actions">
-                <button type="button" className="secondary-button" disabled={sectionCreate.busy} onClick={closeSectionCreate}>取消</button>
-                <button type="submit" className="primary-button" disabled={!sectionCanCreate}>{sectionCreate.busy ? "正在创建…" : "创建 Section"}</button>
-              </footer>
-            </form>
-          </section>
-        </div>
-      )}
+      <SectionCreateDialog
+        state={sectionCreate}
+        online={online}
+        canSubmit={sectionCanCreate}
+        onChangeName={(name) => sectionCreate && setSectionCreate({ ...sectionCreate, name, error: "" })}
+        onSubmit={createSection}
+        onClose={closeSectionCreate}
+      />
       <SectionManageDialog controller={sectionManage} />
-      {createOpen && snapshot && (
-        <SessionCreateDialog
-          key={snapshot.host.hostId}
-          snapshot={snapshot}
-          connected={connection === "connected" && desktopOnline}
-          initialProjectId={createProjectId}
-          {...(onBrowseDirectory ? { onBrowseDirectory } : {})}
-          {...(onCreateDirectory ? { onCreateDirectory } : {})}
-          onCreate={onCreateSession}
-          onCreated={(created) => {
-            setCollapsedProjectIds((current) => expandProject(current, created.projectId));
-            void onRefresh().then(() => selectSession(created.sessionId));
-          }}
-          onClose={() => setCreateOpen(false)}
-        />
-      )}
-    </main>
+    </>
   );
 }

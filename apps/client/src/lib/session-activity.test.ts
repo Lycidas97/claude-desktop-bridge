@@ -1,6 +1,12 @@
 import type { BridgeBackgroundTask } from "@bridge/protocol";
-import { describe, expect, it } from "vitest";
-import { formatContextPercentage, formatContextTokens, SessionContextUsageBar } from "../components/conversation/SessionActivityIndicator.js";
+import { describe, expect, it, vi } from "vitest";
+import {
+  formatCompactElapsed,
+  formatContextPercentage,
+  formatContextTokens,
+  resolveContextTokenBreakdown,
+  SessionContextUsageBar,
+} from "../components/conversation/SessionActivityIndicator.js";
 import { backgroundSubagentBadge, formatElapsed, sessionActivity, sessionQueueLabel, subagentStalledSeconds } from "./session-activity.js";
 
 describe("sessionActivity", () => {
@@ -203,7 +209,7 @@ describe("background subagent badge", () => {
 });
 
 describe("SessionContextUsageBar", () => {
-  it("formats compact token and percentage labels without rounding 999.6K to 1000K or positive ratios to 0%", () => {
+  it("formats compact token, percentage, and elapsed labels cleanly", () => {
     expect(formatContextTokens(450)).toBe("450");
     expect(formatContextTokens(4_250)).toBe("4.3K");
     expect(formatContextTokens(42_100)).toBe("42K");
@@ -212,23 +218,51 @@ describe("SessionContextUsageBar", () => {
     expect(formatContextTokens(1_000_000)).toBe("1M");
     expect(formatContextPercentage(0.4)).toBe("<1%");
     expect(formatContextPercentage(18.6)).toBe("19%");
+    expect(formatCompactElapsed(38)).toBe("38s");
+    expect(formatCompactElapsed(125)).toBe("2m 5s");
+    expect(formatCompactElapsed(3_600)).toBe("1h");
   });
 
-  it("hides empty usage, renders progress bar for known windows, and omits denominator for unknown custom models", () => {
+  it("hides empty usage, renders clickable pill, and expands the context window detail popover", () => {
     expect(SessionContextUsageBar({ usage: undefined })).toBeNull();
     expect(SessionContextUsageBar({ usage: { totalTokens: 0, maxTokens: 200_000, percentage: 0, estimated: true } })).toBeNull();
 
-    const known = SessionContextUsageBar({
+    const closedKnown = SessionContextUsageBar({
       usage: { totalTokens: 184_000, maxTokens: 200_000, percentage: 92, model: "claude-sonnet-4-5", estimated: false },
     })!;
-    expect(known.props.className).toContain("is-critical");
-    expect(JSON.stringify(known)).toContain("184K");
-    expect(JSON.stringify(known)).toContain("200K");
-    expect(JSON.stringify(known)).toContain("92%");
-    expect(JSON.stringify(known)).toContain("progressbar");
+    expect(closedKnown.props.className).toContain("is-critical");
+    expect(JSON.stringify(closedKnown)).toContain("92%");
+    expect(JSON.stringify(closedKnown)).not.toContain('"role":"dialog"');
+
+    const onCompact = vi.fn();
+    const openKnown = SessionContextUsageBar({
+      usage: { totalTokens: 58_400, maxTokens: 200_000, percentage: 29.2, model: "claude-opus-4-6", estimated: false },
+      turnUsage: { inputTokens: 41_200, cacheReadTokens: 14_100, outputTokens: 3_100 },
+      open: true,
+      onCompact,
+    })!;
+    const openSerialized = JSON.stringify(openKnown);
+    expect(openSerialized).toContain('"role":"dialog"');
+    expect(openSerialized).toContain('"aria-label":"上下文窗口"');
+    expect(openSerialized).toContain("progressbar");
+    expect(openSerialized).toContain("58K");
+    expect(openSerialized).toContain("200K tokens");
+    expect(openSerialized).toContain("输入提示");
+    expect(openSerialized).toContain("缓存命中");
+    expect(openSerialized).toContain("模型输出");
+    expect(openSerialized).toContain("压缩上下文 (/compact)");
+    expect(resolveContextTokenBreakdown(
+      { totalTokens: 58_400, maxTokens: 200_000, percentage: 29.2, estimated: false },
+      { inputTokens: 41_200, cacheReadTokens: 14_100, outputTokens: 3_100 },
+    )).toEqual({
+      inputTokens: 41_200,
+      cacheTokens: 14_100,
+      outputTokens: 3_100,
+    });
 
     const unknown = SessionContextUsageBar({
       usage: { totalTokens: 38_400, model: "antigravity/gemini-3-pro", estimated: true },
+      open: true,
     })!;
     const serialized = JSON.stringify(unknown);
     expect(serialized).toContain("38K");

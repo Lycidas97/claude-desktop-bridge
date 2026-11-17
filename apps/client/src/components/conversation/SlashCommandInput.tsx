@@ -3,6 +3,7 @@ import { type RefObject, useEffect, useId, useLayoutEffect, useRef, useState } f
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
 
 export function SlashCommandInput({
+  sessionKey,
   value,
   onChange,
   onLoad,
@@ -11,6 +12,7 @@ export function SlashCommandInput({
   placeholder,
   "aria-label": ariaLabel,
 }: {
+  sessionKey?: string | undefined;
   value: string;
   onChange(value: string): void;
   onLoad?: (() => Promise<BridgeSlashCommandCatalog>) | undefined;
@@ -24,6 +26,14 @@ export function SlashCommandInput({
   const containerRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const composing = useRef(false);
+  const composingKeyRef = useRef<string | undefined>(undefined);
+  const lastSessionKeyRef = useRef(sessionKey);
+  const unmounted = useRef(false);
+  if (lastSessionKeyRef.current !== sessionKey) {
+    lastSessionKeyRef.current = sessionKey;
+    composing.current = false;
+    composingKeyRef.current = undefined;
+  }
   const pendingCaret = useRef<number | undefined>(undefined);
   const id = useId();
   const [focused, setFocused] = useState(false);
@@ -60,6 +70,15 @@ export function SlashCommandInput({
   }, [open]);
 
   useEffect(() => { setActive(0); }, [prefix]);
+
+  useEffect(() => {
+    unmounted.current = false;
+    return () => {
+      unmounted.current = true;
+      composing.current = false;
+      composingKeyRef.current = undefined;
+    };
+  }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -139,6 +158,7 @@ export function SlashCommandInput({
           setDismissed(false);
         }}
         onChange={(event) => {
+          if (unmounted.current) return;
           setSelection({ start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd });
           setDismissed(false);
           onChange(event.currentTarget.value);
@@ -150,8 +170,20 @@ export function SlashCommandInput({
             setDismissed(false);
           }
         }}
-        onCompositionStart={() => { composing.current = true; }}
-        onCompositionEnd={() => { composing.current = false; }}
+        onCompositionStart={() => {
+          composing.current = true;
+          composingKeyRef.current = sessionKey;
+        }}
+        onCompositionEnd={(event) => {
+          const wasComposing = composing.current && composingKeyRef.current === sessionKey;
+          composing.current = false;
+          composingKeyRef.current = undefined;
+          if (!wasComposing || unmounted.current) return;
+          const nextValue = event?.currentTarget?.value;
+          if (typeof nextValue === "string" && nextValue !== value) {
+            onChange(nextValue);
+          }
+        }}
         onKeyDown={(event) => {
           if (!open || composing.current || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
           if (!["Escape", "ArrowDown", "ArrowUp", "Enter", "Tab"].includes(event.key)) return;

@@ -1,11 +1,11 @@
 import { BridgeCrypto, PROTOCOL_VERSION, type BridgeHostSnapshot, type BridgeRequest, type ClientFrame, type EncryptedEnvelope, type PairingBundle, type ServerFrame } from "@bridge/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bridgeVault } from "../lib/vault.js";
-import { useMobileBridge } from "./useMobileBridge.js";
+import { useMobileBridge, type BridgeMutableStore } from "./useMobileBridge.js";
 
 const harness = vi.hoisted(() => ({
   state: undefined as any,
-  refs: [] as Array<{ current: any }>,
+  refs: [] as Array<{ current: BridgeMutableStore | undefined }>,
   effects: [] as Array<() => void | (() => void)>,
   cleanups: [] as Array<() => void>,
   hosts: [] as any[],
@@ -20,7 +20,7 @@ vi.mock("react", async original => ({
     harness.state = initial;
     return [initial, (update: any) => {
       harness.state = typeof update === "function" ? update(harness.state) : update;
-      if (harness.refs[0]) harness.refs[0].current = harness.state;
+      if (harness.refs[0]?.current) harness.refs[0].current.stateRef.current = harness.state;
     }];
   },
   useRef(initial: any) { const ref = { current: initial }; harness.refs.push(ref); return ref; },
@@ -31,8 +31,10 @@ vi.mock("@capacitor/core", async original => {
   const value = await original<typeof import("@capacitor/core")>();
   return { ...value, Capacitor: { ...value.Capacitor, isNativePlatform: () => harness.native } };
 });
-vi.mock("../lib/session-notifications.js", () => ({
-  ensureSessionNotificationPermission: vi.fn().mockResolvedValue(true), showSessionNotification: vi.fn(),
+vi.mock("../lib/session-notifications.js", async (original) => ({
+  ...await original<typeof import("../lib/session-notifications.js")>(),
+  ensureSessionNotificationPermission: vi.fn().mockResolvedValue(true),
+  showSessionNotification: vi.fn(),
 }));
 vi.mock("../lib/vault.js", () => ({ bridgeVault: {
   listHosts: vi.fn(async () => harness.hosts),

@@ -53,14 +53,6 @@ it.each([
   expect(rewindSession).not.toHaveBeenCalled();
 });
 
-it.each(["session.rewind.preview", "session.rewind"])("rejects external runtime rewind through %s", async method => {
-  const previewRewind = vi.fn(), rewindSession = vi.fn();
-  const controller = Object.assign(Object.create(DesktopController.prototype), { broker: { previewRewind, rewindSession } });
-  await expect(controller.handleRequest({ kind: "request", method, requestId: "rewind", idempotencyKey: "rewind", params: { sessionId: "codex-desktop:saved", messageId: "raw", scope: "both" } }, "mobile")).rejects.toMatchObject({ code: "UNSUPPORTED" });
-  expect(previewRewind).not.toHaveBeenCalled();
-  expect(rewindSession).not.toHaveBeenCalled();
-});
-
 it.each([false, true])("advertises native rewind only when the broker supports it (%s)", async available => {
   const controller = Object.assign(Object.create(DesktopController.prototype), {
     config: { devices: [], relayEndpoints: [], hostDeviceId: "host", desktopName: "test", relayUrl: "ws://localhost:1" },
@@ -69,16 +61,6 @@ it.each([false, true])("advertises native rewind only when the broker supports i
     eventLog: { latestSeq: () => 0 }, claudeDesktop: { status: async () => ({}) }, desktopAppStatuses: async () => [],
   });
   expect((await controller.snapshot()).host.capabilities.includes("session.rewind.v1")).toBe(available);
-});
-
-it("never substitutes Claude commands for an external runtime", async () => {
-  const commands = vi.fn();
-  const controller = Object.assign(Object.create(DesktopController.prototype), {
-    broker: { commands },
-  });
-  await expect(controller.handleRequest({ kind: "request", method: "session.commands", requestId: "external", idempotencyKey: "external",
-    params: { sessionId: "hermes-desktop:saved" } }, "mobile")).rejects.toMatchObject({ code: "UNSUPPORTED" });
-  expect(commands).not.toHaveBeenCalled();
 });
 
 it("routes explicit command execution with its original request identity", async () => {
@@ -149,17 +131,6 @@ it("does not apply the old host full-access default to Claude", async () => {
   expect(save).not.toHaveBeenCalled();
 });
 
-it.each([
-  ["runtime.handoff.preview", { sessionId: "native-claude", targetRuntimeId: "codex-desktop" }],
-  ["runtime.handoff.preview", { sessionId: "runtime:codex-desktop:session", targetRuntimeId: "claude-desktop" }],
-  ["runtime.goal.pause", { sessionId: "native-claude" }],
-  ["runtime.goal.resume", { sessionId: "native-claude" }],
-])("rejects Claude auto-execution through %s", async (method, params) => {
-  const controller = Object.create(DesktopController.prototype);
-  await expect(controller.handleRequest({ kind: "request", method, requestId: "legacy", idempotencyKey: "legacy", params }, "mobile"))
-    .rejects.toMatchObject({ code: "UNSUPPORTED" });
-});
-
 it.each(["default", "acceptEdits", "bypassPermissions", "plan", "dontAsk", "auto"])("routes native session permission mode %s without applying a Bridge policy", async permissionMode => {
   const configuration = { nativePermissionMode: permissionMode };
   const configureSession = vi.fn(async () => configuration);
@@ -177,18 +148,4 @@ it.each(["full-access", "unknown", "", null, 1])("rejects invalid native session
   await expect(controller.handleRequest({ kind: "request", method: "session.configure", requestId: "configure", idempotencyKey: "configure",
     params: { sessionId: "native", permissionMode } }, "mobile")).rejects.toThrow();
   expect(configureSession).not.toHaveBeenCalled();
-});
-
-it("rejects retired host permission defaults without changing saved values", async () => {
-  const setHostPermissionMode = vi.fn(async () => 2), publish = vi.fn(async () => undefined);
-  const config = { runtimePermissionModes: {}, devices: [], defaultPermissionMode: "standard" };
-  const controller = Object.assign(Object.create(DesktopController.prototype), {
-    config, repository: { save: vi.fn(async () => undefined) }, eventLog: { append: vi.fn(async () => undefined) },
-    runtimeSessions: { setHostPermissionMode }, publish,
-  });
-  await expect(controller.handleRequest({ kind: "request", method: "permission.policy.configure", requestId: "policy", idempotencyKey: "policy",
-    params: { scope: "host", runtimeId: "codex-desktop", mode: "full-access" } }, "mobile")).rejects.toMatchObject({ code: "UNSUPPORTED" });
-  expect(setHostPermissionMode).not.toHaveBeenCalled();
-  expect(config.runtimePermissionModes).toEqual({});
-  expect(config.defaultPermissionMode).toBe("standard");
 });

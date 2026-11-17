@@ -3,6 +3,7 @@ import type { ReactElement, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { dispatchMobileBack, registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
 import { ConfirmationDialog } from "../common/ConfirmationDialog.js";
+import { SelectMenu } from "../common/SelectMenu.js";
 import { SessionConfigurationDialog } from "../session/SessionConfigurationDialog.js";
 import { SessionRewindDialog } from "./SessionRewindDialog.js";
 import { MagpieModelQuota } from "../../../../../plugins/magpie-quota/client.js";
@@ -62,7 +63,13 @@ function textContent(node: ReactNode): string {
   if (typeof node === "string" || typeof node === "number") return String(node);
   if (Array.isArray(node)) return node.map(textContent).join("");
   if (node && typeof node === "object" && "props" in node) {
-    return textContent((node as ReactElement<{ children?: ReactNode }>).props.children);
+    const el = node as ReactElement<Record<string, any>>;
+    if (el.type === SelectMenu) {
+      return (el.props.options as Array<{ label: string; meta?: string }>)
+        .map((opt) => [opt.label, opt.meta].filter(Boolean).join(" "))
+        .join(" ");
+    }
+    return textContent(el.props.children);
   }
   return "";
 }
@@ -131,8 +138,8 @@ describe("session effort", () => {
     await settle();
     expect(props.onSave).toHaveBeenCalledWith({ model: "gemini[1m]", reasoningEffort: "high" });
 
-    elements(tree).find((element) => element.type === "select" && element.props.value === "gemini[1m]")!
-      .props.onChange({ target: { value: "claude" } });
+    elements(tree).find((element) => element.type === SelectMenu && element.props.value === "gemini[1m]")!
+      .props.onChange("claude");
     tree = draw();
     expect(button(tree, "极高").props["aria-pressed"], "a model that supports it gets it back").toBe(true);
   });
@@ -166,8 +173,8 @@ describe("native Claude session configuration", () => {
     const draw = () => render(() => <SessionConfigurationDialog {...props} />);
     draw(); await settle();
     let tree = draw();
-    const select = elements(tree).find(element => element.props["aria-label"] === "Desktop 授权模式")!;
-    select.props.onChange({ target: { value: "bypassPermissions" } }); tree = draw();
+    const select = elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "Desktop 授权模式")!;
+    select.props.onChange("bypassPermissions"); tree = draw();
     button(tree, "保存配置").props.onClick(); tree = draw();
     expect(confirmation(tree).props.open).toBe(true);
     expect(props.onSave).not.toHaveBeenCalled();
@@ -184,8 +191,8 @@ describe("native Claude session configuration", () => {
       const draw = () => render(() => <SessionConfigurationDialog {...props} />);
       draw(); await settle();
       let tree = draw();
-      elements(tree).find(element => element.props["aria-label"] === "Desktop 授权模式")!
-        .props.onChange({ target: { value: "bypassPermissions" } });
+      elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "Desktop 授权模式")!
+        .props.onChange("bypassPermissions");
       tree = draw();
       button(tree, "保存配置").props.onClick();
       tree = draw();
@@ -194,7 +201,7 @@ describe("native Claude session configuration", () => {
       expect(workspaceBack).not.toHaveBeenCalled();
       tree = draw();
       expect(confirmation(tree).props.open).toBe(false);
-      expect(elements(tree).find(element => element.props["aria-label"] === "Desktop 授权模式")!.props.value).toBe("bypassPermissions");
+      expect(elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "Desktop 授权模式")!.props.value).toBe("bypassPermissions");
       expect(props.onSave).not.toHaveBeenCalled();
       expect(props.onClose).not.toHaveBeenCalled();
       expect(dispatchMobileBack()).toBe(true);
@@ -213,8 +220,8 @@ describe("native Claude session configuration", () => {
     const draw = () => render(() => <SessionConfigurationDialog {...props} />);
     draw(); await settle();
     const tree = draw();
-    expect(elements(tree).some(element => element.props["aria-label"] === "授权等级")).toBe(false);
-    expect(elements(tree).some(element => element.type === "select")).toBe(false);
+    expect(elements(tree).some(element => element.props.ariaLabel === "授权等级")).toBe(false);
+    expect(elements(tree).some(element => element.type === SelectMenu)).toBe(false);
     expect(button(tree, "保存配置").props.disabled).toBe(true);
     expect(textContent(tree)).not.toContain("Host");
     expect(elements(tree).some(element => element.type === MagpieModelQuota)).toBe(false);
@@ -233,7 +240,7 @@ describe("session rewind confirmation", () => {
     draw(); await settle(); let tree = draw();
     expect(props.onPreview).toHaveBeenCalledExactlyOnceWith("user-uuid");
     expect(props.onRewind).not.toHaveBeenCalled();
-    elements(tree).find(element => element.props["aria-label"] === "回退范围")!.props.onChange({ target: { value: "both" } });
+    elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "回退范围")!.props.onChange("both");
     tree = draw();
     expect(textContent(tree)).toContain("src/app.ts");
     expect(textContent(tree)).toContain("附件需重新添加");
@@ -246,8 +253,9 @@ describe("session rewind confirmation", () => {
     const props = { messages, disabled: false, onPreview: vi.fn().mockResolvedValue({ ...preview, canRewindConversation: false }), onRewind: vi.fn(), onComplete: vi.fn(), onClose: vi.fn() };
     const draw = () => render(() => <SessionRewindDialog {...props} />);
     draw(); await settle(); const tree = draw();
-    expect(elements(tree).find(element => element.props["aria-label"] === "回退范围")?.props.value).toBe("files");
-    expect(elements(tree).find(element => element.type === "option" && element.props.value === "conversation")?.props.disabled).toBe(true);
+    const scopeMenu = elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "回退范围")!;
+    expect(scopeMenu.props.value).toBe("files");
+    expect(scopeMenu.props.options.find((opt: { value: string; disabled?: boolean }) => opt.value === "conversation")?.disabled).toBe(true);
     expect(button(tree, "确认回退").props.disabled).toBe(false);
     button(tree, "取消").props.onClick();
     expect(props.onClose).toHaveBeenCalledOnce();
@@ -263,11 +271,11 @@ describe("session rewind confirmation", () => {
       onRewind: vi.fn().mockResolvedValue({ sessionId: "session-1", messageId: next.id, scope: "conversation" }), onComplete: vi.fn(), onClose: vi.fn() };
     const draw = () => render(() => <SessionRewindDialog {...props} />);
     draw();
-    elements(draw()).find(element => element.props["aria-label"] === "回退目标消息")!.props.onChange({ target: { value: next.id } });
+    elements(draw()).find(element => element.type === SelectMenu && element.props.ariaLabel === "回退目标消息")!.props.onChange(next.id);
     draw(); await settle();
     finishFirst({ ...preview, canRewindConversation: false }); await settle();
     const tree = draw();
-    expect(elements(tree).find(element => element.props["aria-label"] === "回退范围")!.props.value).toBe("conversation");
+    expect(elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "回退范围")!.props.value).toBe("conversation");
     expect(button(tree, "确认回退").props.disabled).toBe(false);
     button(tree, "确认回退").props.onClick(); await settle();
     expect(props.onRewind).toHaveBeenCalledExactlyOnceWith(next.id, "conversation");
@@ -309,7 +317,7 @@ describe("session rewind confirmation", () => {
     draw(); await settle(); button(draw(), "确认回退").props.onClick();
     const tree = draw();
     expect(button(tree, "正在回退").props.disabled).toBe(true);
-    expect(elements(tree).filter(element => element.type === "select").every(element => element.props.disabled)).toBe(true);
+    expect(elements(tree).filter(element => element.type === SelectMenu).every(element => element.props.disabled)).toBe(true);
     button(tree, "正在回退").props.onClick();
     expect(dispatchMobileBack()).toBe(true);
     expect(props.onClose).not.toHaveBeenCalled(); expect(props.onRewind).toHaveBeenCalledTimes(1);

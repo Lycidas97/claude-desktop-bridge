@@ -31,7 +31,7 @@ try {
   await page.waitForFunction(async () => (
     (await window.bridgeDesktop.getSnapshot()).connection === "connected"
   ));
-  await page.getByRole("button", { name: "会话", exact: true }).waitFor();
+  await page.locator(".desktop-session-sidebar").waitFor();
   const snapshot = await page.evaluate(() => window.bridgeDesktop.getSnapshot());
   assert.equal(snapshot.host.version, desktopPackage.version);
   assert.ok(Number.isInteger(snapshot.host.pairingEpoch) && snapshot.host.pairingEpoch >= 1);
@@ -151,10 +151,10 @@ try {
     await page.getByText(snapshot.runtime.desktopIntegration.state === "ready" ? "暂无活跃会话" : "未检测到 Claude Desktop", { exact: true }).waitFor();
     await page.locator(".session-catalog-empty-action").getByText("新建会话", { exact: true }).waitFor();
   }
-  await page.getByRole("button", { name: "设备", exact: true }).click();
-  await page.getByRole("heading", { name: "设备", exact: true }).waitFor();
-  await page.getByRole("button", { name: "添加手机", exact: true }).waitFor();
   await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("heading", { name: "设置", exact: true }).waitFor();
+  await page.getByRole("button", { name: "手机配对与设备", exact: true }).click();
+  await page.getByRole("button", { name: "添加手机", exact: true }).waitFor();
   await page.getByRole("button", { name: "Claude 接入", exact: true }).click();
   const inspector = page.getByRole("region", { name: "调试连接监测", exact: true });
   await inspector.waitFor();

@@ -1,6 +1,6 @@
 .file-attachment-picker {
   margin-bottom: 8px;
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
 }
 
 .file-upload-list {
@@ -31,8 +31,7 @@
   transform: rotate(45deg);
 }
 
-.mobile-composer,
-.desktop-composer {
+.mobile-composer {
   position: relative;
   z-index: 20;
 }
@@ -97,14 +96,14 @@
 }
 
 .composer-attach-option-text strong {
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale));
   font-weight: 600;
   line-height: 1.25;
 }
 
 .composer-attach-option-text small {
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   line-height: 1.3;
 }
 
@@ -139,7 +138,7 @@
 
 .file-upload-status {
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   overflow-wrap: anywhere;
 }
 

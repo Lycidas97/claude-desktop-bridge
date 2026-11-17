@@ -4,10 +4,12 @@ import { useState } from "react";
 
 export function NativePromptCard({
   prompt,
+  streamKey,
   online = true,
   onResolve,
 }: {
   prompt: BridgePendingPrompt;
+  streamKey?: string | undefined;
   online?: boolean;
   onResolve?(sessionId: string, promptId: string, choice: string): Promise<void>;
 }) {
@@ -27,7 +29,7 @@ export function NativePromptCard({
   }
 
   return (
-    <section className="permission-prompt native-prompt" aria-label={prompt.title}>
+    <section className="permission-prompt native-prompt" aria-label={prompt.title} {...(streamKey ? { "data-stream-key": streamKey } : {})}>
       <div className="permission-title"><strong>{prompt.title}</strong></div>
       {prompt.message && <p>{prompt.message}</p>}
       {prompt.kind === "cwd-trust" && (

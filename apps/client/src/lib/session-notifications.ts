@@ -6,8 +6,104 @@ export interface SessionNotificationTarget {
   sessionId?: string;
 }
 
+export type SessionNotificationPermissionState = "granted" | "prompt" | "denied" | "unsupported";
+
+export const SESSION_NOTIFICATIONS_PREF_KEY = "bridge-mobile-notifications:v1";
+
 const CHANNEL_ID = "bridge-sessions";
 let permissionPromise: Promise<boolean> | undefined;
+let activeViewedSession: { hostId: string; sessionId: string } | undefined;
+
+export function isSessionNotificationsEnabled(): boolean {
+  try {
+    if (typeof localStorage === "undefined") return true;
+    const raw = localStorage.getItem(SESSION_NOTIFICATIONS_PREF_KEY);
+    return raw !== "0" && raw !== "false";
+  } catch {
+    return true;
+  }
+}
+
+export function setSessionNotificationsEnabled(enabled: boolean): void {
+  try {
+    if (typeof localStorage === "undefined") return;
+    localStorage.setItem(SESSION_NOTIFICATIONS_PREF_KEY, enabled ? "1" : "0");
+  } catch {
+    // Ignore storage write failures in restricted WebViews.
+  }
+}
+
+export function setActiveViewedSession(
+  target: { hostId: string; sessionId: string } | undefined,
+): () => void {
+  if (!target || !target.hostId || !target.sessionId) {
+    activeViewedSession = undefined;
+    return () => undefined;
+  }
+  const current = { hostId: target.hostId, sessionId: target.sessionId };
+  activeViewedSession = current;
+  return () => {
+    if (activeViewedSession === current) {
+      activeViewedSession = undefined;
+    }
+  };
+}
+
+export function isActivelyViewingSession(hostId: string, sessionId?: string): boolean {
+  if (!activeViewedSession || !sessionId) return false;
+  return activeViewedSession.hostId === hostId && activeViewedSession.sessionId === sessionId;
+}
+
+export async function getSessionNotificationPermissionState(): Promise<SessionNotificationPermissionState> {
+  if (Capacitor.isNativePlatform()) {
+    try {
+      const status = await LocalNotifications.checkPermissions();
+      if (status.display === "granted") return "granted";
+      if (status.display === "denied") return "denied";
+      return "prompt";
+    } catch {
+      return "unsupported";
+    }
+  }
+  if (typeof window !== "undefined" && window.bridgeDesktop) return "unsupported";
+  if (typeof Notification === "undefined") return "unsupported";
+  if (Notification.permission === "granted") return "granted";
+  if (Notification.permission === "denied") return "denied";
+  return "prompt";
+}
+
+export async function requestSessionNotificationPermission(): Promise<"granted" | "denied" | "unsupported"> {
+  if (Capacitor.isNativePlatform()) {
+    try {
+      let status = await LocalNotifications.checkPermissions();
+      if (status.display !== "granted") {
+        status = await LocalNotifications.requestPermissions();
+      }
+      if (status.display !== "granted") {
+        permissionPromise = undefined;
+        return "denied";
+      }
+      if (Capacitor.getPlatform() === "android") {
+        await LocalNotifications.createChannel({ id: CHANNEL_ID, name: "会话动态", importance: 4 });
+      }
+      permissionPromise = Promise.resolve(true);
+      return "granted";
+    } catch {
+      permissionPromise = undefined;
+      return "unsupported";
+    }
+  }
+  if (typeof window !== "undefined" && window.bridgeDesktop) return "unsupported";
+  if (typeof Notification === "undefined" || typeof Notification.requestPermission !== "function") {
+    return "unsupported";
+  }
+  try {
+    const result = await Notification.requestPermission();
+    return result === "granted" ? "granted" : "denied";
+  } catch {
+    return "denied";
+  }
+}
 
 /**
  * Requests permission in the foreground and reuses a successful grant/channel.
@@ -16,20 +112,43 @@ let permissionPromise: Promise<boolean> | undefined;
 export function ensureSessionNotificationPermission(): Promise<boolean> {
   if (!Capacitor.isNativePlatform()) return Promise.resolve(false);
   permissionPromise ??= (async () => {
-    let status = await LocalNotifications.checkPermissions();
-    if (document.visibilityState === "visible" && (status.display === "prompt" || status.display === "prompt-with-rationale")) {
-      status = await LocalNotifications.requestPermissions();
-    }
-    if (status.display !== "granted") {
+    try {
+      let status = await LocalNotifications.checkPermissions();
+      if (
+        typeof document !== "undefined"
+        && document.visibilityState === "visible"
+        && (status.display === "prompt" || status.display === "prompt-with-rationale")
+      ) {
+        status = await LocalNotifications.requestPermissions();
+      }
+      if (status.display !== "granted") {
+        permissionPromise = undefined;
+        return false;
+      }
+      if (Capacitor.getPlatform() === "android") {
+        await LocalNotifications.createChannel({ id: CHANNEL_ID, name: "会话动态", importance: 4 });
+      }
+      return true;
+    } catch {
       permissionPromise = undefined;
       return false;
     }
-    if (Capacitor.getPlatform() === "android") {
-      await LocalNotifications.createChannel({ id: CHANNEL_ID, name: "会话动态", importance: 4 });
-    }
-    return true;
   })();
   return permissionPromise;
+}
+
+export function showBrowserDesktopOrWebNotification(
+  title: string,
+  body: string,
+  tag: string,
+): void {
+  if (typeof window !== "undefined" && window.bridgeDesktop) return;
+  if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+  try {
+    new Notification(title, { body, icon: "/icon-192.png", tag });
+  } catch {
+    // Android Chrome / restricted WebViews throw Illegal constructor on direct Notification().
+  }
 }
 
 export async function showSessionNotification(
@@ -37,27 +156,44 @@ export async function showSessionNotification(
   title: string,
   body: string,
 ): Promise<void> {
-  if (!await ensureSessionNotificationPermission()) return;
-  // One notification per session: a newer event replaces the previous one.
-  let id = 0;
-  for (const char of `${target.hostId}:${target.sessionId ?? ""}`) id = (Math.imul(id, 31) + char.charCodeAt(0)) | 0;
-  await LocalNotifications.schedule({
-    notifications: [{
-      id: id & 0x7fffffff,
-      title,
-      body,
-      channelId: CHANNEL_ID,
-      isExactNotification: false,
-      autoCancel: true,
-      extra: target,
-    }],
-  });
+  if (!isSessionNotificationsEnabled()) return;
+  if (Capacitor.isNativePlatform()) {
+    try {
+      if (!await ensureSessionNotificationPermission()) return;
+      // One notification per session: a newer event replaces the previous one.
+      let hash = 0;
+      for (const char of `${target.hostId}:${target.sessionId ?? ""}`) {
+        hash = (Math.imul(hash, 31) + char.charCodeAt(0)) | 0;
+      }
+      const id = (hash & 0x7fffffff) || 1;
+      await LocalNotifications.schedule({
+        notifications: [{
+          id,
+          title,
+          body,
+          channelId: CHANNEL_ID,
+          isExactNotification: false,
+          autoCancel: true,
+          extra: target,
+        }],
+      });
+    } catch {
+      // Never leak unhandled rejections when Android notification scheduling fails.
+    }
+    return;
+  }
+  showBrowserDesktopOrWebNotification(title, body, `${target.hostId}:${target.sessionId ?? ""}`);
 }
 
 export function onSessionNotificationTap(listener: (target: SessionNotificationTarget) => void): () => void {
   if (!Capacitor.isNativePlatform()) return () => undefined;
   const handle = LocalNotifications.addListener("localNotificationActionPerformed", ({ notification }) => {
-    listener(notification.extra as SessionNotificationTarget);
-  });
-  return () => void handle.then((registered) => registered.remove());
+    const extra = notification?.extra as Partial<SessionNotificationTarget> | undefined;
+    if (!extra || typeof extra !== "object" || typeof extra.hostId !== "string" || !extra.hostId) return;
+    listener({
+      hostId: extra.hostId,
+      ...(typeof extra.sessionId === "string" && extra.sessionId ? { sessionId: extra.sessionId } : {}),
+    });
+  }).catch(() => undefined);
+  return () => void handle.then((registered) => registered?.remove());
 }

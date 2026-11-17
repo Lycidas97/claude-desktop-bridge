@@ -1,12 +1,22 @@
+import { createReadStream } from "node:fs";
 import { appendFile, mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   getClaudeSubagentsMtimeMs,
   readClaudeTranscriptBackgroundTasks,
+  readClaudeTranscriptBranch,
   readClaudeTranscriptSubagents,
 } from "./claude-history.js";
+
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return {
+    ...actual,
+    createReadStream: vi.fn(actual.createReadStream),
+  };
+});
 
 // Shapes mirror real Claude Code 2.1 session directories: the parent JSONL carries the
 // Workflow / Bash launch results and <task-notification> records, `subagents/workflows/wf_*`
@@ -303,5 +313,32 @@ describe("background shells and agents", () => {
       ["agent-call", "subagent", "running"],
       ["bash-call", "bash", "running"],
     ]);
+  });
+
+  it("coalesces concurrent parent/child transcript stream reads and caches unchanged branch DAGs", async () => {
+    const run = await session(workflowLaunch);
+    await writeWorkflowAgents(run.runDir);
+    vi.mocked(createReadStream).mockClear();
+
+    const concurrent = await Promise.all(Array.from({ length: 6 }, async () => {
+      const subagents = await readClaudeTranscriptSubagents(run.transcript, 0);
+      return readClaudeTranscriptBackgroundTasks(run.transcript, subagents, 0);
+    }));
+    for (const batch of concurrent) {
+      expect(batch).toHaveLength(1);
+      expect(batch[0]?.workflow?.agents).toHaveLength(3);
+    }
+    const readPaths = vi.mocked(createReadStream).mock.calls.map((call) => String(call[0]));
+    const parentReads = readPaths.filter((path) => path === run.transcript).length;
+    const childA1Reads = readPaths.filter((path) => path.endsWith("agent-a1.jsonl")).length;
+    const childA2Reads = readPaths.filter((path) => path.endsWith("agent-a2.jsonl")).length;
+    expect(parentReads).toBeLessThanOrEqual(2);
+    expect(childA1Reads).toBe(1);
+    expect(childA2Reads).toBe(1);
+
+    vi.mocked(createReadStream).mockClear();
+    const cachedBranch = await readClaudeTranscriptBranch(run.transcript);
+    expect(cachedBranch.uuids).toHaveLength(3);
+    expect(vi.mocked(createReadStream)).not.toHaveBeenCalled();
   });
 });

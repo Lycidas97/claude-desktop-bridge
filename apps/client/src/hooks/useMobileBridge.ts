@@ -14,13 +14,11 @@ import {
   type BridgeMailCache,
   type BridgeNativePermissionMode,
   type BridgePayload,
-  type BridgePermissionInfo,
   type BridgePermissionRules,
   type BridgeProjectInfo,
   type BridgePrAutoFixState,
   type BridgePrAutoFixUpdate,
   type BridgePullRequest,
-  type BridgeProviderProfile,
   type BridgeRequest,
   type BridgeResponse,
   type BridgeSDKPermissionMode,
@@ -37,9 +35,15 @@ import {
   type EncryptedEnvelope,
   type PairingBundle,
 } from "@bridge/protocol";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { diagLog } from "../lib/diagnostics.js";
+import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
+import { getActiveArtifactDownloadGauges } from "../lib/artifact-download.js";
+import {
+  diagLog,
+  estimateArtifactPreviewBytes,
+  registerDiagnosticsStateProvider,
+} from "../lib/diagnostics.js";
 import type { UploadFileHandler } from "../lib/file-upload.js";
+import { getActiveMediaTransferGauges } from "../lib/media-preview.js";
 import { onNativePushWake } from "../lib/push-wake.js";
 import { bridgeVault } from "../lib/vault.js";
 import {
@@ -56,11 +60,12 @@ import {
 import {
   INITIAL_STATE,
   applyPrAutoFixToSnapshot,
-  applySessionToSnapshot,
-  hostWithRuntimeState,
+  applyProjectCatalogPatchToState,
+  applySessionResultToState,
+  dismissResolvedPermissionInState,
   isClaudeNativeRelay,
   snapshotWithClaudeDesktop,
-  snapshotWithPermissions,
+  syncActiveHostRuntimeSummary,
   type MobileBridgeState,
   type PairingConnectionPhase,
   type PendingResponse,
@@ -72,6 +77,7 @@ import {
   forgetBridgeHost,
   handleBridgePayload,
   notifyBridgeCompletedTurns,
+  type NotifyCompletedTurnsOptions,
   pairBridgeHost,
   reconnectAndResumeBridge,
   refreshBridgeHostState,
@@ -85,74 +91,104 @@ import {
   subscribeCapacitorAppWake,
   subscribeNetworkAndVisibilityWake,
   syncBridgeDiagnostics,
-  updateBridgeHostCache,
   type BridgeTransportRefs,
   type StoredHostState,
 } from "./bridge/bridge-transport.js";
 
 export {
+  EMPTY_ACTIVE_HOST_STATE,
+  INITIAL_STATE,
+  applyEvidenceEventToPages,
+  applyEvidencePageResult,
   applyEventsToSnapshot,
   applyEventToSnapshot,
   applyEventToTurns,
+  applyIncomingEventsToState,
   applyPermissionEvent,
+  applyProjectCatalogPatchToState,
+  applyResponseToTurns,
+  applySessionResultToState,
   applySessionToSnapshot,
+  beginHostSessionState,
+  clearActiveHostState,
   confirmedPairingSnapshot,
+  dismissResolvedPermissionInState,
+  freshActiveHostState,
+  hydrateStoredHostState,
   isClaudeNativeRelay,
   mergeAcceptedDelivery,
   mergeBridgeEvents,
   rebaseSnapshot,
   relayLinkAllowsSend,
-  snapshotWithClaudeDesktop,
+  replaceActiveHostSnapshot,
+  syncActiveHostRuntimeSummary,
+  type ActiveHostState,
+  type ApplyEvidencePageOptions,
+  type ApplyIncomingEventsOptions,
+  type ApplySessionResultOptions,
+  type BeginHostSessionOptions,
+  type ClearActiveHostOverrides,
+  type HydrateStoredHostOptions,
   type LocalTurn,
+  type MobileBridgeState,
   type MobileConnectionIssue,
   type PairedHost,
   type PairingSyncStage,
   type PairingSyncState,
+  type ProjectCatalogPatch,
+  type ReplaceActiveHostSnapshotOptions,
   type SessionEvidenceState,
   type SessionHistoryState,
+  type StoredHostSnapshotInput,
 } from "./bridge/bridge-reducers.js";
+
+export interface BridgeMutableStore extends BridgeTransportRefs {
+  openedSessionRef: MutableRefObject<string | undefined>;
+  handledCommandEvents: MutableRefObject<Set<string>>;
+  openingSessionsRef: MutableRefObject<Map<string, { socket: BridgeTransport | undefined; task: Promise<void> }>>;
+  loadingHistoryRef: MutableRefObject<Map<string, BridgeTransport | undefined>>;
+  transferGaugesRef: MutableRefObject<{ activeUploads: number; activeDownloads: number }>;
+}
 
 export function useMobileBridge() {
   const [state, setState] = useState<MobileBridgeState>(INITIAL_STATE);
-  const stateRef = useRef(state);
-  stateRef.current = state;
-  const cryptoRef = useRef<BridgeCrypto | undefined>(undefined);
-  const cryptoByRoomRef = useRef(new Map<string, BridgeCrypto>());
-  const socketRef = useRef<BridgeTransport | undefined>(undefined);
-  const connectionTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const pairingSyncTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const pendingResponsesRef = useRef(new Map<string, PendingResponse>());
-  const envelopeRequestsRef = useRef(new Map<string, string>());
-  const desktopHomeRef = useRef<string | undefined>(undefined);
-  const linkGateRef = useRef<() => boolean>(() => true);
-  const sendAttemptedAtRef = useRef<number | undefined>(undefined);
-  const nativeRelayCapabilityRef = useRef<boolean | undefined>(undefined);
-  const payloadDeflateRef = useRef(false);
-  const pendingCompletionNotificationsRef = useRef(new Set<string>());
-
-  const transportRefs: BridgeTransportRefs = {
+  const storeRef = useRef<BridgeMutableStore | undefined>(undefined);
+  storeRef.current ??= {
     setState,
+    stateRef: { current: state },
+    cryptoRef: { current: undefined },
+    cryptoByRoomRef: { current: new Map() },
+    socketRef: { current: undefined },
+    connectionTimerRef: { current: undefined },
+    pairingSyncTimerRef: { current: undefined },
+    pendingResponsesRef: { current: new Map() },
+    envelopeRequestsRef: { current: new Map() },
+    desktopHomeRef: { current: undefined },
+    linkGateRef: { current: () => true },
+    sendAttemptedAtRef: { current: undefined },
+    nativeRelayCapabilityRef: { current: undefined },
+    payloadDeflateRef: { current: false },
+    pendingCompletionNotificationsRef: { current: new Set() },
+    openedSessionRef: { current: undefined },
+    handledCommandEvents: { current: new Set() },
+    openingSessionsRef: { current: new Map() },
+    loadingHistoryRef: { current: new Map() },
+    transferGaugesRef: { current: { activeUploads: 0, activeDownloads: 0 } },
+  };
+  const transportRefs = storeRef.current;
+  transportRefs.setState = setState;
+  transportRefs.stateRef.current = state;
+  const {
     stateRef,
     cryptoRef,
-    cryptoByRoomRef,
     socketRef,
-    connectionTimerRef,
-    pairingSyncTimerRef,
     pendingResponsesRef,
-    envelopeRequestsRef,
-    desktopHomeRef,
-    linkGateRef,
-    sendAttemptedAtRef,
-    nativeRelayCapabilityRef,
-    payloadDeflateRef,
-    pendingCompletionNotificationsRef,
-  };
-
-  const updateHostCache = useCallback((
-    roomId: string,
-    snapshot: BridgeHostSnapshot,
-    permissions: BridgePermissionInfo[] = snapshot.permissions,
-  ) => updateBridgeHostCache(setState, roomId, snapshot, permissions), []);
+    openedSessionRef,
+    handledCommandEvents,
+    openingSessionsRef,
+    loadingHistoryRef,
+    transferGaugesRef,
+  } = transportRefs;
 
   const applyLanRelayAdvertisement = useCallback(
     (roomId: string, snapshot: BridgeHostSnapshot) => applyBridgeLanRelayAdvertisement(roomId, snapshot),
@@ -172,7 +208,8 @@ export function useMobileBridge() {
   ) => sendBridgeRequest(transportRefs, method, params, options), []);
 
   const notifyCompletedTurns = useCallback(
-    (events: BridgeEvent[], crypto: BridgeCrypto) => notifyBridgeCompletedTurns(transportRefs, events, crypto),
+    (events: BridgeEvent[], crypto: BridgeCrypto, options?: NotifyCompletedTurnsOptions) =>
+      notifyBridgeCompletedTurns(transportRefs, events, crypto, options),
     [],
   );
 
@@ -200,14 +237,14 @@ export function useMobileBridge() {
     restored?: StoredHostState,
   ) => startBridgeConnection(
     transportRefs,
-    { handlePayload, notifyCompletedTurns, refreshSessionList, refreshSnapshot, resumeEvents, updateHostCache },
+    { handlePayload, notifyCompletedTurns, refreshSessionList, refreshSnapshot, resumeEvents },
     crypto,
     bootstrap,
     focusSessionId,
     provisionalPairing,
     pairingPhase,
     restored,
-  ), [handlePayload, notifyCompletedTurns, refreshSessionList, refreshSnapshot, resumeEvents, updateHostCache]);
+  ), [handlePayload, notifyCompletedTurns, refreshSessionList, refreshSnapshot, resumeEvents]);
 
   useEffect(() => {
     syncBridgeDiagnostics(state);
@@ -254,10 +291,6 @@ export function useMobileBridge() {
 
   const backToHosts = useCallback(() => backToBridgeHosts(transportRefs), []);
 
-  const openedSessionRef = useRef<string | undefined>(undefined);
-  const handledCommandEvents = useRef(new Set<string>());
-  const openingSessionsRef = useRef(new Map<string, { socket: BridgeTransport | undefined; task: Promise<void> }>());
-
   const artifactCtx = { setState, stateRef, cryptoRef, socketRef, sendRequest };
 
   const openSession = useCallback(
@@ -294,20 +327,103 @@ export function useMobileBridge() {
   );
 
   const downloadArtifact = useCallback(
-    (artifact: BridgeArtifactManifest) => downloadBridgeSessionArtifact(artifactCtx, artifact),
+    async (artifact: BridgeArtifactManifest) => {
+      transferGaugesRef.current.activeDownloads += 1;
+      try {
+        await downloadBridgeSessionArtifact(artifactCtx, artifact);
+      } finally {
+        transferGaugesRef.current.activeDownloads = Math.max(0, transferGaugesRef.current.activeDownloads - 1);
+      }
+    },
     [sendRequest],
   );
 
   const downloadSessionFile = useCallback(
-    (sessionId: string, filePath: string) => downloadBridgeSessionPathFile(artifactCtx, sessionId, filePath),
+    async (sessionId: string, filePath: string) => {
+      transferGaugesRef.current.activeDownloads += 1;
+      try {
+        await downloadBridgeSessionPathFile(artifactCtx, sessionId, filePath);
+      } finally {
+        transferGaugesRef.current.activeDownloads = Math.max(0, transferGaugesRef.current.activeDownloads - 1);
+      }
+    },
     [sendRequest],
   );
 
-  const loadingHistoryRef = useRef(new Map<string, BridgeTransport | undefined>());
   const loadOlderHistory = useCallback(
     (sessionId: string) => loadOlderBridgeHistory({ ...artifactCtx, loadingHistoryRef }, sessionId),
     [sendRequest],
   );
+
+  useEffect(() => registerDiagnosticsStateProvider("bridgeState", () => {
+    const current = stateRef.current;
+    const historyStates = Object.values(current.histories);
+    let historyTotalItems = 0;
+    let historyLoadingSessions = 0;
+    for (const history of historyStates) {
+      historyTotalItems += history.items.length;
+      if (history.status === "loading") historyLoadingSessions += 1;
+    }
+    let evidenceBundlesCached = 0;
+    let evidenceTotalArtifacts = 0;
+    for (const sessionEvidence of Object.values(current.evidence)) {
+      evidenceBundlesCached += sessionEvidence.items.length;
+      for (const bundle of sessionEvidence.items) {
+        evidenceTotalArtifacts += Math.max(bundle.artifactCount ?? 0, bundle.artifacts.length);
+      }
+    }
+    const previews = Object.values(current.artifactPreviews);
+    let estimatedDataUrlBytes = 0;
+    for (const preview of previews) {
+      estimatedDataUrlBytes += estimateArtifactPreviewBytes(preview);
+    }
+    const stateTransfers = Object.values(current.artifactTransfers);
+    const downloadGauges = getActiveArtifactDownloadGauges();
+    const mediaGauges = getActiveMediaTransferGauges();
+    const now = Date.now();
+    let oldestPendingRpcMs = 0;
+    for (const pending of pendingResponsesRef.current.values()) {
+      if (typeof pending.startedAt === "number") {
+        oldestPendingRpcMs = Math.max(oldestPendingRpcMs, Math.max(0, now - pending.startedAt));
+      }
+    }
+    return {
+      hostsCount: current.hosts.length,
+      hasActiveHost: Boolean(current.activeHostId),
+      connection: current.connection,
+      desktopOnline: current.desktopOnline,
+      latestSeq: current.latestSeq,
+      pendingOutbound: current.pendingOutbound,
+      sessionsCount: current.snapshot?.sessions.length ?? 0,
+      projectsCount: current.snapshot?.projects.length ?? 0,
+      permissionsCount: current.permissions.length,
+      promptsCount: current.snapshot?.prompts?.length ?? 0,
+      histories: {
+        sessionsCached: historyStates.length,
+        totalItems: historyTotalItems,
+        loadingSessions: historyLoadingSessions,
+      },
+      eventsCount: current.events.length,
+      localTurnsCount: current.localTurns.length,
+      evidence: {
+        bundlesCached: evidenceBundlesCached,
+        totalArtifacts: evidenceTotalArtifacts,
+      },
+      artifactPreviews: {
+        cachedCount: previews.length,
+        estimatedDataUrlBytes,
+      },
+      artifactTransfers: {
+        count: Math.max(stateTransfers.length, downloadGauges.activeCount) + mediaGauges.activeCount,
+        activeCount: stateTransfers.filter((progress) => progress < 1).length + mediaGauges.activeCount,
+        totalCachedBytes: downloadGauges.cachedBytes + mediaGauges.cachedBytes,
+      },
+      pendingRpcCount: pendingResponsesRef.current.size,
+      oldestPendingRpcMs,
+      activeUploads: transferGaugesRef.current.activeUploads,
+      activeDownloads: Math.max(transferGaugesRef.current.activeDownloads, downloadGauges.activeCount),
+    };
+  }), []);
 
   const sendTurn = useCallback(async (
     sessionId: string,
@@ -388,34 +504,12 @@ export function useMobileBridge() {
     if (!response?.ok) {
       diagLog("error", "permission", `resolve ${requestId} 失败`, response?.error ?? "no response", true);
       if (response?.error?.code === "ALREADY_RESOLVED") {
-        setState((current) => {
-          const permissions = current.permissions.filter((permission) => permission.requestId !== requestId);
-          const snapshot = snapshotWithPermissions(current.snapshot, permissions);
-          return {
-            ...current,
-            snapshot,
-            permissions,
-            hosts: current.hosts.map((host) => host.roomId === current.activeHostId
-              ? hostWithRuntimeState(host, snapshot, permissions)
-              : host),
-          };
-        });
+        setState((current) => dismissResolvedPermissionInState(current, requestId));
         await resumeEvents();
       }
       throw new Error(response?.error?.message ?? "授权处理失败");
     }
-    setState((current) => {
-      const permissions = current.permissions.filter((permission) => permission.requestId !== requestId);
-      const snapshot = snapshotWithPermissions(current.snapshot, permissions);
-      return {
-        ...current,
-        snapshot,
-        permissions,
-        hosts: current.hosts.map((host) => host.roomId === current.activeHostId
-          ? hostWithRuntimeState(host, snapshot, permissions)
-          : host),
-      };
-    });
+    setState((current) => dismissResolvedPermissionInState(current, requestId));
   }, [resumeEvents, sendRequest]);
 
   const resolvePrompt = useCallback(async (sessionId: string, promptId: string, choice: string): Promise<void> => {
@@ -447,9 +541,7 @@ export function useMobileBridge() {
     const response = await sendRequest("section.create", { name }, { allowOffline: false, wait: true });
     if (!response?.ok) throw new Error(response?.error?.message ?? "Section 创建失败");
     const { project } = response.result as { project?: BridgeProjectInfo };
-    if (project) setState(current => current.snapshot ? {
-      ...current, snapshot: { ...current.snapshot, projects: [project, ...current.snapshot.projects.filter(item => item.projectId !== project.projectId)] },
-    } : current);
+    if (project) setState((current) => applyProjectCatalogPatchToState(current, { upsertProject: project }));
     return project;
   }, [sendRequest]);
 
@@ -460,18 +552,7 @@ export function useMobileBridge() {
     const response = await sendRequest("section.move", { sessionId, sectionId }, { allowOffline: false, wait: true });
     if (!response?.ok) throw new Error(response?.error?.message ?? "移动分组失败");
     const result = response.result as { session?: BridgeSessionInfo; projects?: BridgeProjectInfo[] };
-    setState((current) => {
-      if (!current.snapshot) return current;
-      const withSession = applySessionToSnapshot(current.snapshot, result.session)!;
-      const snapshot = Array.isArray(result.projects) ? { ...withSession, projects: result.projects } : withSession;
-      return {
-        ...current,
-        snapshot,
-        hosts: current.hosts.map((host) => host.roomId === current.activeHostId
-          ? hostWithRuntimeState(host, snapshot, current.permissions)
-          : host),
-      };
-    });
+    setState((current) => applyProjectCatalogPatchToState(current, result));
     return result;
   }, [sendRequest]);
 
@@ -482,23 +563,7 @@ export function useMobileBridge() {
     const response = await sendRequest("section.rename", { sectionId, name }, { allowOffline: false, wait: true });
     if (!response?.ok) throw new Error(response?.error?.message ?? "重命名分组失败");
     const result = response.result as { project?: BridgeProjectInfo; projects?: BridgeProjectInfo[]; sessions?: BridgeSessionInfo[] };
-    setState((current) => {
-      if (!current.snapshot) return current;
-      const projects = Array.isArray(result.projects)
-        ? result.projects
-        : result.project
-          ? current.snapshot.projects.map((item) => item.projectId === result.project!.projectId ? result.project! : item)
-          : current.snapshot.projects;
-      const sessions = Array.isArray(result.sessions) ? result.sessions : current.snapshot.sessions;
-      const snapshot = { ...current.snapshot, projects, sessions };
-      return {
-        ...current,
-        snapshot,
-        hosts: current.hosts.map((host) => host.roomId === current.activeHostId
-          ? hostWithRuntimeState(host, snapshot, current.permissions)
-          : host),
-      };
-    });
+    setState((current) => applyProjectCatalogPatchToState(current, result));
     return result;
   }, [sendRequest]);
 
@@ -508,21 +573,10 @@ export function useMobileBridge() {
     const response = await sendRequest("section.delete", { sectionId }, { allowOffline: false, wait: true });
     if (!response?.ok) throw new Error(response?.error?.message ?? "删除分组失败");
     const result = response.result as { projects?: BridgeProjectInfo[]; sessions?: BridgeSessionInfo[] };
-    setState((current) => {
-      if (!current.snapshot) return current;
-      const projects = Array.isArray(result.projects)
-        ? result.projects
-        : current.snapshot.projects.filter((item) => item.projectId !== sectionId);
-      const sessions = Array.isArray(result.sessions) ? result.sessions : current.snapshot.sessions;
-      const snapshot = { ...current.snapshot, projects, sessions };
-      return {
-        ...current,
-        snapshot,
-        hosts: current.hosts.map((host) => host.roomId === current.activeHostId
-          ? hostWithRuntimeState(host, snapshot, current.permissions)
-          : host),
-      };
-    });
+    setState((current) => applyProjectCatalogPatchToState(current, {
+      ...result,
+      deletedProjectId: sectionId,
+    }));
     return result;
   }, [sendRequest]);
 
@@ -550,7 +604,7 @@ export function useMobileBridge() {
     }
     const result = response.result as { session?: BridgeSessionInfo };
     if (result.session) {
-      setState((current) => ({ ...current, snapshot: applySessionToSnapshot(current.snapshot, result.session) }));
+      setState((current) => applySessionResultToState(current, result.session));
     }
     return result.session;
   }, [sendRequest]);
@@ -566,28 +620,10 @@ export function useMobileBridge() {
     if (!response?.ok) throw new Error(response?.error?.message ?? "Fork 分支创建失败");
     const result = response.result as { session?: BridgeSessionInfo };
     if (result.session) {
-      const created = result.session;
-      setState((current) => current.snapshot ? {
-        ...current,
-        snapshot: {
-          ...current.snapshot,
-          sessions: [
-            created,
-            ...current.snapshot.sessions.filter((candidate) => candidate.sessionId !== created.sessionId),
-          ],
-        },
-      } : current);
+      setState((current) => applySessionResultToState(current, result.session, { prepend: true }));
     }
     return result.session;
   }, [sendRequest]);
-
-  const returnToDesktop = useCallback(async (_sessionId: string): Promise<void> => {
-    throw new Error("Claude 已由 Desktop 原生执行，无需交还。");
-  }, []);
-
-  const takeoverDesktop = useCallback(async (_sessionId: string, _commandId?: string): Promise<void> => {
-    throw new Error("Claude 已由 Desktop 原生执行，不再支持 Bridge 接管。");
-  }, []);
 
   const loadSessionCommands = useCallback(async (sessionId: string): Promise<BridgeSlashCommandCatalog> => {
     const response = await sendRequest("session.commands", { sessionId }, { allowOffline: false, wait: true });
@@ -602,7 +638,7 @@ export function useMobileBridge() {
     if (!response?.ok) throw new Error(response?.error?.message ?? "命令执行失败");
     const result = (response.result as { command: BridgeSessionCommandResult }).command;
     if (result.session && cryptoRef.current === crypto && socketRef.current === socket) {
-      setState(current => ({ ...current, snapshot: applySessionToSnapshot(current.snapshot, result.session) }));
+      setState((current) => applySessionResultToState(current, result.session));
     }
     return result;
   }, [sendRequest]);
@@ -628,7 +664,7 @@ export function useMobileBridge() {
     const result = response.result as { configuration?: BridgeSessionConfiguration; session?: BridgeSessionInfo };
     if (!result.configuration) throw new Error("电脑未返回会话配置");
     if (result.session) {
-      setState((current) => ({ ...current, snapshot: applySessionToSnapshot(current.snapshot, result.session) }));
+      setState((current) => applySessionResultToState(current, result.session));
     }
     return result.configuration;
   }, [sendRequest]);
@@ -639,7 +675,7 @@ export function useMobileBridge() {
     const session = (response.result as { session?: BridgeSessionInfo }).session;
     if (!session) return [];
     const { backgroundTasks = [], ...sessionInfo } = session;
-    setState((current) => ({ ...current, snapshot: applySessionToSnapshot(current.snapshot, sessionInfo) }));
+    setState((current) => applySessionResultToState(current, sessionInfo));
     return backgroundTasks;
   }, [sendRequest]);
 
@@ -653,7 +689,7 @@ export function useMobileBridge() {
     const response = await sendRequest("session.rewind", { sessionId, messageId, scope }, { wait: true, timeoutMs: 45_000 });
     if (!response?.ok) throw new Error(response?.error?.message ?? "回退失败");
     const result = response.result as { rewind: BridgeSessionRewindResult; session?: BridgeSessionInfo };
-    setState(current => ({ ...current, snapshot: applySessionToSnapshot(current.snapshot, result.session) }));
+    setState((current) => applySessionResultToState(current, result.session));
     return result.rewind;
   }, [sendRequest]);
 
@@ -679,22 +715,10 @@ export function useMobileBridge() {
     };
     if (!result.configuration) throw new Error("电脑未返回会话配置");
     if (result.session) {
-      setState((current) => ({ ...current, snapshot: applySessionToSnapshot(current.snapshot, result.session) }));
+      setState((current) => applySessionResultToState(current, result.session));
     }
     return result.configuration;
   }, [sendRequest]);
-
-  const previewProviderSwitch = useCallback(async (_sessionId: string, _targetProviderProfileId: string, _model?: string): Promise<never> => {
-    throw new Error("Claude 提供方由 Desktop 管理。");
-  }, []);
-
-  const commitProviderSwitch = useCallback(async (_handoffId: string, _targetNativeSessionId?: string, _model?: string): Promise<never> => {
-    throw new Error("Claude 提供方由 Desktop 管理。");
-  }, []);
-
-  const cancelProviderSwitch = useCallback(async (_handoffId: string): Promise<void> => {
-    throw new Error("Claude 提供方由 Desktop 管理。");
-  }, []);
 
   const browseDirectory = useCallback(async (path?: string): Promise<BridgeDirectoryListing> => {
     const response = await sendRequest("directory.list", path ? { path } : {}, { wait: true, allowOffline: false });
@@ -715,22 +739,9 @@ export function useMobileBridge() {
     if (cryptoRef.current !== crypto || socketRef.current !== socket) throw new Error("已切换电脑，请重新检测当前电脑");
     if (!response?.ok) throw new Error(response?.error?.message ?? "检测失败");
     const result = response.result as Pick<BridgeHostSnapshot, "runtime" | "runtimes" | "providers">;
-    setState((current) => current.snapshot ? { ...current, snapshot: { ...current.snapshot, ...result } } : current);
-  }, [sendRequest]);
-
-  const refreshProviders = useCallback(async (): Promise<void> => {
-    const response = await sendRequest("provider.refresh", {}, {
-      wait: true,
-      timeoutMs: 45_000,
-    });
-    if (!response?.ok) throw new Error(response?.error?.message ?? "提供方状态刷新失败");
-    const result = response.result as { providers?: BridgeProviderProfile[] };
-    const providers = result.providers;
-    if (!providers) throw new Error("电脑未返回提供方状态");
-    setState((current) => current.snapshot ? {
-      ...current,
-      snapshot: { ...current.snapshot, providers },
-    } : current);
+    setState((current) => current.snapshot
+      ? syncActiveHostRuntimeSummary({ ...current, snapshot: { ...current.snapshot, ...result } })
+      : current);
   }, [sendRequest]);
 
   const controlClaudeDesktop = useCallback(async (
@@ -833,23 +844,20 @@ export function useMobileBridge() {
     if (!response?.ok) throw new Error(response?.error?.message ?? "归档设置失败");
   }, [sendRequest]);
 
-  const uploadFile = useCallback<UploadFileHandler>((sessionId, file, onProgress, signal) => (
-    uploadBridgeSessionFile(sendRequest, sessionId, file, onProgress, signal)
-  ), [sendRequest]);
+  const uploadFile = useCallback<UploadFileHandler>(async (sessionId, file, onProgress, signal) => {
+    transferGaugesRef.current.activeUploads += 1;
+    try {
+      return await uploadBridgeSessionFile(cryptoRef, sendRequest, sessionId, file, onProgress, signal);
+    } finally {
+      transferGaugesRef.current.activeUploads = Math.max(0, transferGaugesRef.current.activeUploads - 1);
+    }
+  }, [sendRequest]);
 
   const renameSession = useCallback(async (sessionId: string, title: string): Promise<void> => {
     const response = await sendRequest("session.rename", { sessionId, title }, { wait: true });
     if (!response?.ok) throw new Error(response?.error?.message ?? "重命名会话失败");
     const result = response.result as { session: BridgeSessionInfo };
-    setState((current) => ({
-      ...current,
-      snapshot: current.snapshot && {
-        ...current.snapshot,
-        sessions: current.snapshot.sessions.map((session) => session.sessionId === result.session.sessionId
-          ? { ...session, title: result.session.title }
-          : session),
-      },
-    }));
+    setState((current) => applySessionResultToState(current, result.session, { titleOnly: true }));
   }, [sendRequest]);
 
   const deleteSession = useCallback(async (sessionId: string) => {
@@ -903,8 +911,6 @@ export function useMobileBridge() {
     renameSection,
     deleteSection,
     forkSession,
-    returnToDesktop,
-    takeoverDesktop,
     loadBackgroundTasks,
     loadSessionConfiguration,
     loadSessionCommands,
@@ -914,13 +920,9 @@ export function useMobileBridge() {
     previewRewind,
     rewindSession,
     configureSession,
-    previewProviderSwitch,
-    commitProviderSwitch,
-    cancelProviderSwitch,
     archiveSession,
     renameSession,
     deleteSession,
-    refreshProviders,
     launchClaudeDesktop,
     controlDesktopApp,
     quitClaudeDesktop,

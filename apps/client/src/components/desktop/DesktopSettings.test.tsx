@@ -1,9 +1,17 @@
 import type { DesktopControlSnapshot } from "@bridge/protocol";
 import type { ComponentProps, ReactElement, ReactNode } from "react";
 import { beforeEach, expect, it, vi } from "vitest";
+import { registerDiagnosticsStateProvider } from "../../lib/diagnostics.js";
 import { DesktopSettings } from "./DesktopSettings.js";
 
-const hooks = vi.hoisted(() => ({ slots: [] as any[], index: 0, dirty: false, effects: [] as unknown[][], effectIndex: 0, pending: [] as Array<() => void> }));
+const hooks = vi.hoisted(() => ({
+  slots: [] as any[],
+  index: 0,
+  dirty: false,
+  effects: [] as Array<{ deps: unknown[]; cleanup?: (() => void) | undefined }>,
+  effectIndex: 0,
+  pending: [] as Array<() => void>,
+}));
 vi.mock("react", async (original) => ({
   ...await original<typeof import("react")>(),
   useState(initial: any) {
@@ -15,10 +23,19 @@ vi.mock("react", async (original) => ({
       hooks.slots[index] = next;
     }];
   },
-  useEffect(effect: () => void, deps: unknown[]) {
+  useRef(initial: unknown) {
+    const index = hooks.index++;
+    hooks.slots[index] ??= { current: initial };
+    return hooks.slots[index];
+  },
+  useId: () => "settings-test-id",
+  useEffect(effect: () => (() => void) | void, deps: unknown[]) {
     const index = hooks.effectIndex++;
-    if (hooks.effects[index]?.every((value, i) => Object.is(value, deps[i]))) return;
-    hooks.pending.push(() => { hooks.effects[index] = deps; effect(); });
+    if (hooks.effects[index]?.deps.every((value, i) => Object.is(value, deps[i]))) return;
+    hooks.pending.push(() => {
+      hooks.effects[index]?.cleanup?.();
+      hooks.effects[index] = { deps, cleanup: effect() || undefined };
+    });
   },
 }));
 vi.mock("../../../../../plugins/magpie-quota/client.js", () => ({
@@ -172,31 +189,120 @@ it("keeps a known selected profile actionable after a later check fails", async 
   expect(button("一键开启").props.disabled).toBe(false);
 });
 
-it("renders desktop updater controls and OS silent-restart boundary in about section", async () => {
+it("renders desktop updater controls and GitHub release download link in about section", async () => {
   props.snapshot = {
     ...props.snapshot,
-    host: { name: "Fixture", version: "1.3.2", capabilities: ["claude.native-relay.v1", "system.update.v1"] },
+    host: { name: "Fixture", version: "1.3.4", capabilities: ["claude.native-relay.v1", "system.update.v1"] },
     permissions: [],
     latestSeq: 0,
     runtimes: [{ id: "claude-desktop", state: "ready", capabilities: ["session.list", "session.history"] }],
     updater: {
       platform: "darwin",
       arch: "arm64",
-      currentVersion: "1.3.2",
+      currentVersion: "1.3.4",
       channel: "stable",
       autoCheck: true,
       applyMode: "prompt",
       canAutoRestart: false,
-      phase: "ready",
-      latestVersion: "1.3.3",
+      phase: "available",
+      latestVersion: "1.3.5",
+      releaseUrl: "https://github.com/Lycidas97/claude-desktop-bridge/releases/tag/v1.3.5",
     },
   } as unknown as DesktopControlSnapshot;
   draw();
   button("诊断与关于").props.onClick();
   draw();
-  expect(text()).toContain("已就绪");
+  expect(text()).toContain("发现 v1.3.5");
   expect(text()).toContain("版本更新");
-  expect(text()).toContain("macOS 未公证/DMG 包不支持后台静默覆盖系统目录");
-  expect(button("空闲静默重启").props.disabled).toBe(true);
-  expect(text()).toContain("打开安装包 (v1.3.3)");
+  expect(text()).toContain("前往下载 v1.3.5");
+  expect(text()).not.toContain("空闲静默重启");
+});
+
+it("passes the collected renderer diagnostics snapshot to exportDiagnostics while preserving diagnostic labels", async () => {
+  const dispose = registerDiagnosticsStateProvider("desktopConversations", () => ({
+    trackedHosts: 1,
+    totalBufferedEvents: 7,
+  }));
+  vi.stubGlobal("performance", {
+    memory: {
+      usedJSHeapSize: 10_000_000,
+      totalJSHeapSize: 20_000_000,
+      jsHeapSizeLimit: 500_000_000,
+    },
+  });
+  props.api.exportDiagnostics = vi.fn().mockResolvedValue({ saved: true, path: "/tmp/diag.json" });
+  try {
+    button("诊断与关于").props.onClick();
+    draw();
+    expect(text()).toContain("后台诊断记录");
+    expect(button("连接诊断与日志")).toBeDefined();
+    expect(button("导出诊断")).toBeDefined();
+
+    button("导出诊断").props.onClick();
+    await settle();
+    expect(props.api.exportDiagnostics).toHaveBeenCalledOnce();
+    const payload = vi.mocked(props.api.exportDiagnostics).mock.calls[0]![0]!;
+    expect(payload).toMatchObject({
+      schemaVersion: 1,
+      rendererMemory: {
+        usedJSHeapSize: 10_000_000,
+        totalJSHeapSize: 20_000_000,
+        jsHeapSizeLimit: 500_000_000,
+      },
+      stateGauges: expect.objectContaining({
+        desktopConversations: {
+          trackedHosts: 1,
+          totalBufferedEvents: 7,
+        },
+      }),
+    });
+
+    vi.mocked(props.api.exportDiagnostics).mockRejectedValueOnce(new Error("磁盘写入权限不足"));
+    button("导出诊断").props.onClick();
+    await settle();
+    expect(text()).toContain("磁盘写入权限不足");
+  } finally {
+    dispose();
+    vi.unstubAllGlobals();
+  }
+});
+
+it("surfaces launchAtLogin errors cleanly inside connections group", async () => {
+  props.api.setLaunchAtLogin = vi.fn().mockRejectedValueOnce(new Error("登录项写入被系统拒绝"));
+  button("连接与启动").props.onClick();
+  draw();
+  const checkbox = elements().find(element => element.type === "input" && element.props.type === "checkbox")!;
+  checkbox.props.onChange({ target: { checked: true } });
+  await settle();
+  expect(props.api.setLaunchAtLogin).toHaveBeenCalledWith(true);
+  expect(text()).toContain("登录项写入被系统拒绝");
+});
+
+it("folds phone pairing and paired devices into 手机配对与设备 without outer card groups", async () => {
+  props.api.createPairing = vi.fn().mockResolvedValue({
+    ...props.snapshot,
+    pairingUrl: "bridge://pair/settings-test",
+    pairingExpiresAt: Date.now() + 600_000,
+    devices: [{
+      deviceId: "iphone-1",
+      name: "Lycidas 的 iPhone",
+      platform: "ios",
+      pairedAt: 1,
+      lastSeenAt: Date.now(),
+      online: true,
+    }],
+  });
+  button("手机配对与设备").props.onClick();
+  draw();
+  expect(text()).toContain("手机配对与端到端加密通道");
+  expect(text()).toContain("还没有配对手机");
+  expect(elements().some((element) => String(element.props.className ?? "").includes("m-group"))).toBe(false);
+
+  elements().find((element) => element.type === "button" && text(element.props.children).includes("添加手机"))!.props.onClick();
+  await settle();
+  expect(props.api.createPairing).toHaveBeenCalledOnce();
+  props.snapshot = vi.mocked(props.onSnapshot).mock.calls.at(-1)![0];
+  draw();
+  expect(text()).toContain("使用手机 Bridge 扫描");
+  expect(text()).toContain("Lycidas 的 iPhone");
 });

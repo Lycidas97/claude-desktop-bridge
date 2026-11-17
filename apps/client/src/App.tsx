@@ -1,4 +1,4 @@
-import type { BridgeSystemUpdateParams, BridgeUpdaterSnapshot } from "@bridge/protocol";
+import type { BridgeHostSnapshot, BridgeSessionInfo, BridgeSystemUpdateParams, BridgeUpdaterSnapshot } from "@bridge/protocol";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { claudeSnapshot } from "./lib/claude-snapshot.js";
 import { useClientUpdater } from "./lib/client-updater.js";
@@ -8,7 +8,7 @@ import {
   installMobileBackNavigation,
   registerMobileBackHandler,
 } from "./lib/mobile-back-navigation.js";
-import { onSessionNotificationTap } from "./lib/session-notifications.js";
+import { onSessionNotificationTap, setActiveViewedSession } from "./lib/session-notifications.js";
 import { DesktopDashboard } from "./components/DesktopDashboard.js";
 import { DiagnosticFloatingEntry } from "./components/common/DiagnosticLogDialog.js";
 import { HostBrowser } from "./components/pairing/HostBrowser.js";
@@ -19,14 +19,148 @@ import { MediaPreviewProvider } from "./components/evidence/MediaPreviewProvider
 import { MobileAppShell, type MobileTab } from "./components/mobile/MobileAppShell.js";
 import { MobileHostDetails } from "./components/pairing/MobileHostDetails.js";
 import { MobilePageHeader } from "./components/mobile/MobilePageHeader.js";
-import { MobileQuotaPage } from "./components/mobile/MobileQuotaPage.js";
+import {
+  clearInitialRefreshedQuotaHost,
+  MobileQuotaPage,
+  shouldFallbackAutoQuotaRefresh,
+} from "./components/mobile/MobileQuotaPage.js";
 import { MobileSettings } from "./components/mobile/MobileSettings.js";
 import { ProviderSettings } from "./components/session/ProviderSettings.js";
 import { MobileClientUpdateDialog, type RemoteDesktopUpdateControl } from "./components/updater/UpdaterSections.js";
 import { MAGPIE_QUOTA_METHOD, type QuotaLoader, type QuotaSnapshot } from "../../../plugins/magpie-quota/contract.js";
 import { MagpieQuotaProvider } from "../../../plugins/magpie-quota/client.js";
-import { AssistantMailProvider, type AssistantRequest } from "./components/assistant/AssistantMailProvider.js";
+import { AssistantMailProvider, useAssistantMail, type AssistantRequest } from "./components/assistant/AssistantMailProvider.js";
 import { AssistantPage } from "./components/assistant/AssistantPage.js";
+import { MailReference } from "./components/assistant/MailReference.js";
+import { ConversationDraftsProvider, type ConversationDraftsHandle } from "./components/conversation/ConversationDraftsProvider.js";
+import { ConversationView } from "./components/conversation/ConversationView.js";
+import { desktopRuntimeId } from "./lib/runtime-labels.js";
+
+function MobileAssistantConversation({
+  activeHostId,
+  session,
+  snapshot,
+  visible,
+  mobile,
+  onNavigateToSession,
+}: {
+  activeHostId: string;
+  session: BridgeSessionInfo;
+  snapshot: BridgeHostSnapshot | undefined;
+  visible: boolean;
+  mobile: ReturnType<typeof useMobileBridge>;
+  onNavigateToSession(sessionId: string): void;
+}) {
+  const assistantMail = useAssistantMail();
+  const sessions = snapshot?.sessions ?? [];
+  const mailCards = useMemo(() => (
+    assistantMail?.cache.cards.filter((card) => (
+      (card.nativeDelivery.nativeSessionId ?? snapshot?.assistantMail?.binding?.nativeSessionId) === session.sessionId
+    )) ?? []
+  ), [assistantMail?.cache.cards, session.sessionId, snapshot?.assistantMail?.binding?.nativeSessionId]);
+  const [refreshing, setRefreshing] = useState(false);
+  useEffect(() => {
+    if (!visible) return;
+    return setActiveViewedSession({ hostId: activeHostId, sessionId: session.sessionId });
+  }, [activeHostId, session.sessionId, visible]);
+  async function handleRefresh(targetSessionId?: string): Promise<boolean> {
+    if (refreshing) return false;
+    setRefreshing(true);
+    try {
+      return await mobile.refresh(targetSessionId);
+    } finally {
+      setRefreshing(false);
+    }
+  }
+  const canCommand = Boolean(snapshot?.host.capabilities.includes("session.command.v1"));
+  const canRename = Boolean(snapshot?.host.capabilities.includes("session.rename.v1"));
+  return (
+    <ConversationView
+      variant="mobile"
+      hostId={activeHostId}
+      session={session}
+      sessions={sessions}
+      snapshot={snapshot}
+      connection={mobile.state.connection}
+      desktopOnline={mobile.state.desktopOnline}
+      visible={visible}
+      navigation={false}
+      onSelectSession={(nextSessionId) => {
+        if (nextSessionId !== session.sessionId) onNavigateToSession(nextSessionId);
+      }}
+      refreshing={refreshing}
+      onRefresh={handleRefresh}
+      onRetry={mobile.retryConnection}
+      history={mobile.state.histories[session.sessionId]}
+      evidence={mobile.state.evidence[session.sessionId]}
+      artifactPreviews={mobile.state.artifactPreviews}
+      artifactTransfers={mobile.state.artifactTransfers}
+      permissions={mobile.state.permissions.filter((permission) => sessions.some((candidate) => candidate.sessionId === permission.sessionId))}
+      events={mobile.state.events}
+      localTurns={mobile.state.localTurns}
+      connectionIssue={mobile.state.connectionIssue}
+      mailCards={mailCards}
+      composerBanner={<MailReference sessionId={session.sessionId} />}
+      resolveMailRefId={() => assistantMail?.referenceFor(session.sessionId)}
+      onOpenSession={mobile.openSession}
+      onLoadOlderHistory={mobile.loadOlderHistory}
+      onLoadOlderEvidence={mobile.loadOlderEvidence}
+      onLoadEvidenceDetails={mobile.loadEvidenceDetails}
+      onPreviewArtifact={mobile.previewArtifact}
+      onDownloadArtifact={mobile.downloadArtifact}
+      onDownloadSessionFile={mobile.downloadSessionFile}
+      onUploadFile={mobile.uploadFile}
+      onSendTurn={mobile.sendTurn}
+      onInterruptTurn={mobile.interruptTurn}
+      {...(mobile.state.snapshot?.host.capabilities.includes("turn.queue.steer.v1")
+        ? { onSteerQueuedTurn: mobile.steerQueuedTurn }
+        : {})}
+      {...(mobile.state.snapshot?.host.capabilities.includes("turn.queue.cancel.v1")
+        ? { onCancelQueuedTurn: mobile.cancelQueuedTurn }
+        : {})}
+      {...(mobile.state.snapshot?.host.capabilities.includes("subagent.stop.v1")
+        ? { onStopSubagent: mobile.stopSubagent }
+        : {})}
+      onResolveUncertain={mobile.resolveUncertainDelivery}
+      onResolvePermission={mobile.resolvePermission}
+      onResolvePrompt={mobile.resolvePrompt}
+      onReadPrAutoFix={mobile.readPrAutoFix}
+      onSetPrAutoFix={mobile.setPrAutoFix}
+      {...(snapshot?.host.capabilities.includes("claude.native-relay.v1") ? { onLoadBackgroundTasks: mobile.loadBackgroundTasks } : {})}
+      onLoadSessionConfiguration={mobile.loadSessionConfiguration}
+      onConfigureSession={mobile.configureSession}
+      {...(snapshot?.host.capabilities.includes("session.commands.v1")
+        ? { onLoadSessionCommands: mobile.loadSessionCommands }
+        : {})}
+      {...(canCommand ? {
+        onRunSessionCommand: mobile.runSessionCommand,
+        onLoadSessionPermissions: mobile.loadSessionPermissions,
+        onSaveSessionPermissions: mobile.saveSessionPermissions,
+      } : {})}
+      {...(canCommand || canRename ? {
+        onRenameSession: async (targetSessionId, title) => {
+          if (canCommand && desktopRuntimeId(session) === "claude-desktop") {
+            await mobile.runSessionCommand(targetSessionId, `/rename ${title.trim()}`);
+          } else if (canRename) {
+            await mobile.renameSession(targetSessionId, title.trim());
+          }
+        },
+      } : {})}
+      onPreviewRewind={mobile.previewRewind}
+      onRewindSession={mobile.rewindSession}
+      onForkSession={mobile.forkSession}
+      {...(snapshot?.host.capabilities.includes("section.move.v1")
+        ? { onMoveSessionSection: mobile.moveSessionSection }
+        : {})}
+      {...(snapshot?.host.capabilities.includes("session.visibility.v1")
+        ? {
+            onArchiveSession: mobile.archiveSession,
+            onDeleteSession: mobile.deleteSession,
+          }
+        : {})}
+    />
+  );
+}
 
 export function App() {
   const themeControl = useTheme();
@@ -42,21 +176,44 @@ export function App() {
   const [providersOpen, setProvidersOpen] = useState(false);
   const [focusRequest, setFocusRequest] = useState<{ sessionId: string; key: number }>();
   const [directoryRequest, setDirectoryRequest] = useState(0);
+  const [draftsHandle] = useState<ConversationDraftsHandle>(() => ({}));
+  const [autoQuotaRefreshPending] = useState(() => ({ current: false }));
+  const markAutoQuotaRefresh = useCallback(() => {
+    autoQuotaRefreshPending.current = true;
+  }, [autoQuotaRefreshPending]);
   const handleFocusHandled = useCallback(() => setFocusRequest(undefined), []);
+  const forgetHost = useCallback(async (roomId: string) => {
+    await mobile.forgetHost(roomId);
+    draftsHandle.clearHost?.(roomId);
+    clearInitialRefreshedQuotaHost(roomId);
+  }, [draftsHandle, mobile.forgetHost]);
   // requestMedia is the hook's plain request function; its identity never changes.
   const request = mobile.requestMedia;
   const mailRequest = useCallback<AssistantRequest>((method, params) => request(method, params, { wait: true, allowOffline: false }), [request]);
   const loadMagpieQuota = useCallback<QuotaLoader>(async (options) => {
+    const requestedRefresh = options?.refresh ?? false;
+    const isAutoRefresh = requestedRefresh && autoQuotaRefreshPending.current;
+    if (requestedRefresh) autoQuotaRefreshPending.current = false;
     // Manual refresh has a shared 60 s desktop budget; ordinary reads still use 15 s.
-    const response = await request(MAGPIE_QUOTA_METHOD, { refresh: options?.refresh ?? false }, {
-      wait: true, allowOffline: false, timeoutMs: options?.refresh ? 75_000 : 30_000,
+    const response = await request(MAGPIE_QUOTA_METHOD, { refresh: requestedRefresh }, {
+      wait: true, allowOffline: false, timeoutMs: requestedRefresh ? 75_000 : 30_000,
     });
-    if (!response?.ok) throw new Error(response?.error?.message ?? "Magpie 额度读取失败");
+    if (!response?.ok) {
+      const message = response?.error?.message ?? "Magpie 额度读取失败";
+      if (isAutoRefresh && shouldFallbackAutoQuotaRefresh(message)) {
+        const fallback = await request(MAGPIE_QUOTA_METHOD, { refresh: false }, {
+          wait: true, allowOffline: false, timeoutMs: 30_000,
+        });
+        if (fallback?.ok) return fallback.result as QuotaSnapshot;
+      }
+      throw new Error(message);
+    }
     return response.result as QuotaSnapshot;
   }, [request]);
   // A computer without the plugin answers its method with an error, so ask only one that declares it.
   const quotaDeclared = Boolean(mobile.state.snapshot?.host.capabilities.includes("plugin.magpie-quota.v1"));
   const quotaEnabled = mobile.state.connection === "connected" && mobile.state.desktopOnline && quotaDeclared;
+  const quotaSourceKey = `${snapshot?.magpie?.mode ?? ""}|${snapshot?.magpie?.baseUrl ?? ""}|${snapshot?.magpie?.authScheme ?? ""}|${snapshot?.magpie?.keyConfigured ? 1 : 0}`;
   const closeQuota = useCallback(() => setQuotaOpen(false), []);
   const invokeRemoteUpdate = useCallback(async (params: BridgeSystemUpdateParams): Promise<BridgeUpdaterSnapshot> => {
     const response = await request("system.update", params as unknown as Record<string, unknown>, {
@@ -88,7 +245,7 @@ export function App() {
   async function openComputer(hostId: string, sessionId?: string): Promise<void> {
     if (hostId !== mobile.state.activeHostId) await mobile.selectHost(hostId);
     if (sessionId) setFocusRequest({ sessionId, key: Date.now() });
-    else setDirectoryRequest(value => value + 1);
+    else setDirectoryRequest((value) => value + 1);
     setComputerDetailsHostId(undefined);
     setTab("sessions");
   }
@@ -121,7 +278,7 @@ export function App() {
     if (tab !== "sessions") {
       setComputerDetailsHostId(undefined);
       setQuotaOpen(false);
-      setDirectoryRequest(value => value + 1);
+      setDirectoryRequest((value) => value + 1);
       setTab("sessions");
       return true;
     }
@@ -137,44 +294,37 @@ export function App() {
   ]);
 
   if (window.bridgeDesktop) return <DesktopDashboard themeControl={themeControl} />;
-  if (mobile.state.pairingSync) {
-    return (
-      <>
-        <PairingSyncScreen sync={mobile.state.pairingSync} />
-        <MobileClientUpdateDialog updater={clientUpdater} />
-        <DiagnosticFloatingEntry />
-      </>
-    );
-  }
-  if (mobile.state.loading && mobile.state.hosts.length === 0 && !pairingOpen) {
-    return (
-      <>
-        <main className="mobile-loading"><span className="spinner" /><span>正在读取已配对电脑</span></main>
-        <MobileClientUpdateDialog updater={clientUpdater} />
-        <DiagnosticFloatingEntry />
-      </>
-    );
-  }
-  if (pairingOpen || mobile.state.hosts.length === 0) {
-    return (
-      <>
-        <PairingScreen
-          loading={mobile.state.loading}
-          error={mobile.state.error}
-          onPair={async (pairing) => {
-            if (await mobile.pair(pairing)) {
-              setPairingOpen(false);
-              setTab("sessions");
-            }
-          }}
-          {...(mobile.state.hosts.length > 0 ? { onCancel: () => setPairingOpen(false) } : {})}
-        />
-        <MobileClientUpdateDialog updater={clientUpdater} />
-        <DiagnosticFloatingEntry />
-      </>
-    );
-  }
   return (
+    <ConversationDraftsProvider activeHostId={mobile.state.activeHostId} controllerRef={draftsHandle}>
+      {mobile.state.pairingSync ? (
+        <>
+          <PairingSyncScreen sync={mobile.state.pairingSync} />
+          <MobileClientUpdateDialog updater={clientUpdater} />
+          <DiagnosticFloatingEntry />
+        </>
+      ) : mobile.state.loading && mobile.state.hosts.length === 0 && !pairingOpen ? (
+        <>
+          <main className="mobile-loading"><span className="spinner" /><span>正在读取已配对电脑</span></main>
+          <MobileClientUpdateDialog updater={clientUpdater} />
+          <DiagnosticFloatingEntry />
+        </>
+      ) : pairingOpen || mobile.state.hosts.length === 0 ? (
+        <>
+          <PairingScreen
+            loading={mobile.state.loading}
+            error={mobile.state.error}
+            onPair={async (pairing) => {
+              if (await mobile.pair(pairing)) {
+                setPairingOpen(false);
+                setTab("sessions");
+              }
+            }}
+            {...(mobile.state.hosts.length > 0 ? { onCancel: () => setPairingOpen(false) } : {})}
+          />
+          <MobileClientUpdateDialog updater={clientUpdater} />
+          <DiagnosticFloatingEntry />
+        </>
+      ) : (
     <AssistantMailProvider key={mobile.state.activeHostId ?? ""} snapshot={snapshot} online={mobile.state.connection === "connected" && mobile.state.desktopOnline} request={mailRequest} loadCache={mobile.loadMailCache} saveCache={mobile.saveMailCache} onDiscuss={() => setTab("assistant")}>
     <MobileAppShell
       tab={tab}
@@ -182,25 +332,32 @@ export function App() {
         setComputerDetailsHostId(undefined);
         setQuotaOpen(false);
         setProvidersOpen(false);
-        if (next === "sessions") setDirectoryRequest(value => value + 1);
+        if (next === "sessions") setDirectoryRequest((value) => value + 1);
         setTab(next);
       }}
     >
       {/* One quota snapshot per computer, shared by the session form and the settings dashboard. */}
-      <MagpieQuotaProvider key={mobile.state.activeHostId ?? ""} loader={loadMagpieQuota} enabled={quotaEnabled} sourceKey={snapshot?.runtime.detection?.refreshedAt ?? 0}>
+      <MagpieQuotaProvider key={mobile.state.activeHostId ?? ""} loader={loadMagpieQuota} enabled={quotaEnabled} sourceKey={quotaSourceKey}>
       {mobile.state.activeHostId ? (
-        <div className="mobile-tab-page" hidden={tab !== "sessions" && tab !== "assistant"}>
-          <MediaPreviewProvider key={mobile.state.activeHostId} request={mobile.requestMedia} supportsFileStat={snapshot?.host.capabilities.includes("artifact.transfer.stat.v1") ?? false}>
-            <AssistantPage snapshot={snapshot} mobile active={tab === "assistant"} onOpenSession={sessionId => { setFocusRequest({ sessionId, key: Date.now() }); setTab("sessions"); }}>
+        <MediaPreviewProvider key={mobile.state.activeHostId} request={mobile.requestMedia} supportsFileStat={snapshot?.host.capabilities.includes("artifact.transfer.stat.v1") ?? false}>
+          <div className="mobile-tab-page" hidden={tab !== "sessions"}>
             <MobileWorkspace
-              fixedSessionId={tab === "assistant" ? snapshot?.assistantMail?.binding?.nativeSessionId ?? undefined : undefined}
-              onOpenOtherSession={sessionId => { setFocusRequest({ sessionId, key: Date.now() }); setTab("sessions"); }}
-              visible={tab === "sessions" || tab === "assistant"}
+              visible={tab === "sessions"}
               {...(focusRequest ? { focusRequest } : {})}
               onFocusHandled={handleFocusHandled}
               directoryRequest={directoryRequest}
               key={mobile.state.activeHostId}
               activeHostId={mobile.state.activeHostId}
+              hosts={mobile.state.hosts}
+              onSelectHost={(hostId) => openComputer(hostId)}
+              onAddHost={() => setPairingOpen(true)}
+              activeTab={tab}
+              onSelectTab={(nextTab) => {
+                setComputerDetailsHostId(undefined);
+                setQuotaOpen(false);
+                setProvidersOpen(false);
+                setTab(nextTab);
+              }}
               desktopName={mobile.state.desktopName ?? "我的电脑"}
               connection={mobile.state.connection}
               desktopOnline={mobile.state.desktopOnline}
@@ -256,8 +413,6 @@ export function App() {
               {...(snapshot?.host.capabilities.includes("session.rename.v1")
                 ? { onRenameSession: mobile.renameSession }
                 : {})}
-              onReturnToDesktop={mobile.returnToDesktop}
-              onTakeoverDesktop={mobile.takeoverDesktop}
               onLoadSessionConfiguration={mobile.loadSessionConfiguration}
               {...(snapshot?.host.capabilities.includes("claude.native-relay.v1") ? { onLoadBackgroundTasks: mobile.loadBackgroundTasks } : {})}
               {...(snapshot?.host.capabilities.includes("session.commands.v1")
@@ -271,16 +426,12 @@ export function App() {
               onConfigureSession={mobile.configureSession}
               onPreviewRewind={mobile.previewRewind}
               onRewindSession={mobile.rewindSession}
-              onPreviewProviderSwitch={mobile.previewProviderSwitch}
-              onCommitProviderSwitch={mobile.commitProviderSwitch}
-              onCancelProviderSwitch={mobile.cancelProviderSwitch}
               {...(mobile.state.snapshot?.host.capabilities.includes("session.visibility.v1")
                 ? {
                     onArchiveSession: mobile.archiveSession,
                     onDeleteSession: mobile.deleteSession,
                   }
                 : {})}
-              onRefreshProviders={mobile.refreshProviders}
               onDesktopAppAction={mobile.controlDesktopApp}
               onRefresh={mobile.refresh}
               onBackToHosts={() => {
@@ -289,9 +440,37 @@ export function App() {
               }}
               onRetry={mobile.retryConnection}
             />
-            </AssistantPage>
-          </MediaPreviewProvider>
-        </div>
+          </div>
+          <div className="mobile-tab-page" hidden={tab !== "assistant"}>
+            <AssistantPage
+              snapshot={snapshot}
+              mobile
+              active={tab === "assistant"}
+              onOpenSession={(sessionId) => {
+                setFocusRequest({ sessionId, key: Date.now() });
+                setTab("sessions");
+              }}
+              renderConversation={(sessionId) => {
+                const boundSession = snapshot?.sessions.find((candidate) => candidate.sessionId === sessionId);
+                return boundSession ? (
+                  <MobileAssistantConversation
+                    activeHostId={mobile.state.activeHostId!}
+                    session={boundSession}
+                    snapshot={snapshot}
+                    visible={tab === "assistant"}
+                    mobile={mobile}
+                    onNavigateToSession={(otherSessionId) => {
+                      setFocusRequest({ sessionId: otherSessionId, key: Date.now() });
+                      setTab("sessions");
+                    }}
+                  />
+                ) : (
+                  <main className="mobile-workspace"><p role="status">绑定会话暂不可用，请在助理设置中核对绑定。</p></main>
+                );
+              }}
+            />
+          </div>
+        </MediaPreviewProvider>
       ) : tab === "sessions" ? (
         <main className="mobile-settings-page">
           <MobilePageHeader title="会话" />
@@ -321,7 +500,7 @@ export function App() {
           onDesktopAppAction={mobile.controlDesktopApp}
           remoteUpdate={remoteDesktopUpdate}
           onRemove={async () => {
-            await mobile.forgetHost(mobile.state.activeHostId!);
+            await forgetHost(mobile.state.activeHostId!);
             setComputerDetailsHostId(undefined);
           }}
           onBack={() => setComputerDetailsHostId(undefined)}
@@ -336,7 +515,7 @@ export function App() {
             setComputerDetailsHostId(hostId);
             if (hostId !== mobile.state.activeHostId) void mobile.selectHost(hostId);
           }}
-          onRemove={mobile.forgetHost}
+          onRemove={forgetHost}
           onAdd={() => setPairingOpen(true)}
           onRepair={() => setPairingOpen(true)}
         />
@@ -347,13 +526,29 @@ export function App() {
           <div className="mobile-settings-content"><section className="mobile-settings-group mobile-provider-settings"><ProviderSettings key={mobile.state.activeHostId} {...(snapshot ? { snapshot } : {})} connected={mobile.state.connection === "connected" && mobile.state.desktopOnline} onRefresh={mobile.redetectProviders} /></section></div>
         </main>
       ) : quotaOpen && quotaDeclared ? (
-        <MobileQuotaPage desktopName={mobile.state.desktopName ?? "我的电脑"} onBack={closeQuota} />
+        <MobileQuotaPage
+          hostId={mobile.state.activeHostId}
+          desktopName={mobile.state.desktopName ?? "我的电脑"}
+          onBeforeAutoRefresh={markAutoQuotaRefresh}
+          onBack={closeQuota}
+        />
       ) : (
         <MobileSettings
           themeControl={themeControl}
           remoteDesktop={remoteDesktopUpdate}
           clientUpdater={clientUpdater}
-          {...(mobile.state.activeHostId ? { providers: { desktopName: mobile.state.desktopName ?? "我的电脑", onOpen: () => setProvidersOpen(true) } } : {})}
+          {...(mobile.state.activeHostId ? {
+            providers: { desktopName: mobile.state.desktopName ?? "我的电脑", onOpen: () => setProvidersOpen(true) },
+            claudeRuntime: {
+              desktopName: mobile.state.desktopName ?? "我的电脑",
+              snapshot,
+              connected: mobile.state.connection === "connected" && mobile.state.desktopOnline,
+              onActivate: async () => {
+                await mobile.controlDesktopApp("claude-desktop", "launch");
+                await mobile.refresh();
+              },
+            },
+          } : {})}
           {...(quotaDeclared ? { quota: { desktopName: mobile.state.desktopName ?? "我的电脑", onOpen: () => setQuotaOpen(true) } } : {})}
         />
       ))}
@@ -362,5 +557,7 @@ export function App() {
       <DiagnosticFloatingEntry />
     </MobileAppShell>
     </AssistantMailProvider>
+      )}
+    </ConversationDraftsProvider>
   );
 }

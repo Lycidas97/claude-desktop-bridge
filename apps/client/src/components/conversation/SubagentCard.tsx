@@ -72,7 +72,7 @@ export function SubagentCard({
   );
   return (
     <article
-      className={`conversation-subagent-card ${isRunning ? "is-running" : isUnknown ? "is-unknown" : `is-completed is-${subagent.state}`}${entering ? " is-entering" : ""}`}
+      className={`conversation-subagent-card ${isRunning ? "is-running" : isUnknown ? "is-unknown" : `is-completed is-${subagent.state}`}${collapsible ? "" : " is-static"}${entering ? " is-entering" : ""}`}
       data-stream-key={item.id}
     >
       <div className="subagent-card-header">

@@ -47,8 +47,8 @@ contextBridge.exposeInMainWorld("bridgeDesktop", {
     ipcRenderer.invoke("bridge:enable-claude-developer-settings", profile)
   ),
   openAccessibilitySettings: () => ipcRenderer.invoke("bridge:open-accessibility-settings") as Promise<void>,
-  exportDiagnostics: () => (
-    ipcRenderer.invoke("bridge:export-diagnostics") as Promise<{ saved: boolean; path?: string }>
+  exportDiagnostics: (rendererDiagnostics?: Record<string, unknown>) => (
+    ipcRenderer.invoke("bridge:export-diagnostics", rendererDiagnostics) as Promise<{ saved: boolean; path?: string }>
   ),
   onSnapshot: (listener: (snapshot: DesktopControlSnapshot) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, snapshot: DesktopControlSnapshot) => listener(snapshot);

@@ -465,6 +465,7 @@ async function dispatchControllerRequestInner(
       }
       input.permissionMode = mode as BridgeSDKPermissionMode;
     }
+    if ("outputStyle" in params) input.outputStyle = stringParam(params, "outputStyle")!;
     const configuration = await host.broker.configureSession(input);
     return { configuration, session: host.broker.session(sessionId) };
   }

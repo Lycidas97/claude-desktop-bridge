@@ -96,6 +96,7 @@ export type BridgeRuntimeCapability =
   | "session.fork"
   | "session.history"
   | "session.configure"
+  | "session.output-style"
   | "session.rewind"
   | "turn.start"
   | "turn.steer"
@@ -209,6 +210,7 @@ export type BridgeCapability =
   | "session.commands.v1"
   | "session.command.v1"
   | "session.rewind.v1"
+  | "session.output-style.v1"
   | "session.remote-execution.v1"
   | "subagent.stop.v1"
   | "turn.queue.steer.v1"
@@ -658,6 +660,7 @@ export interface BridgeSessionInfo {
   reasoningEffort?: string;
   /** Native runtime fast/priority mode for Codex/Hermes. */
   fast?: boolean;
+  outputStyle?: string;
   configurationPending?: boolean;
   /** Current main-session context window watermark, when observed. */
   contextUsage?: BridgeSessionContextUsage;
@@ -801,6 +804,8 @@ export interface BridgeSessionConfiguration {
   modelDisplayName?: string;
   /** Native Desktop mode, independent of Bridge's policy for other runtimes. */
   nativePermissionMode?: BridgeSDKPermissionMode;
+  outputStyle?: string;
+  availableOutputStyles?: string[];
   /** Native runtime provider; distinct from BridgeProviderProfile. */
   provider?: string;
   model?: string;

@@ -52,6 +52,7 @@ export interface SessionConfigurationChange {
   effort?: string | null;
   reasoningEffort?: string | null;
   permissionMode?: BridgeSDKPermissionMode | undefined;
+  outputStyle?: string;
 }
 
 export function SessionConfigurationDialog({
@@ -71,6 +72,7 @@ export function SessionConfigurationDialog({
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("medium");
   const [nativePermissionMode, setNativePermissionMode] = useState<BridgeSDKPermissionMode>();
+  const [outputStyle, setOutputStyle] = useState<string>();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [confirmFullAccess, setConfirmFullAccess] = useState(false);
@@ -92,6 +94,7 @@ export function SessionConfigurationDialog({
         setModel(next.model ?? next.availableModels[0]?.value ?? "");
         setEffort(next.reasoningEffort ?? next.effort ?? next.availableReasoningEfforts?.[0] ?? next.availableEffortLevels[0] ?? "medium");
         setNativePermissionMode(next.nativePermissionMode);
+        setOutputStyle(next.outputStyle);
         setError(undefined);
       })
       .catch((reason: unknown) => {
@@ -114,6 +117,7 @@ export function SessionConfigurationDialog({
   }, [confirmFullAccess, saving]);
 
   const modelOptions = configuration?.availableModels ?? [];
+  const outputStyles = configuration?.availableOutputStyles ?? [];
   const selectedModel = useMemo(
     () => modelOptions.find((candidate) => candidate.value === model),
     [model, modelOptions],
@@ -136,6 +140,7 @@ export function SessionConfigurationDialog({
       setModel(next.model ?? next.availableModels[0]?.value ?? "");
       setEffort(next.reasoningEffort ?? next.effort ?? next.availableReasoningEfforts?.[0] ?? next.availableEffortLevels[0] ?? "medium");
       setNativePermissionMode(next.nativePermissionMode);
+      setOutputStyle(next.outputStyle);
       if (change.model !== null) onClose();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "会话配置保存失败");
@@ -147,6 +152,7 @@ export function SessionConfigurationDialog({
   function saveSelectedConfiguration(): Promise<void> {
     return save({
       ...(modelOptions.length ? { model } : {}),
+      ...(outputStyle && outputStyle !== configuration?.outputStyle ? { outputStyle } : {}),
       ...(nativeRuntime ? {
         ...(effortLevels.length && selectedModel?.supportsEffort !== false ? { reasoningEffort: shownEffort } : {}),
         ...(claudeSession && nativePermissionMode ? { permissionMode: nativePermissionMode } : {}),
@@ -242,6 +248,22 @@ export function SessionConfigurationDialog({
               </div>
             )}
 
+            {(outputStyles.length > 0 || outputStyle) && (
+              <div className="session-model-field">
+                <span>输出风格</span>
+                {outputStyles.length > 0 ? (
+                  <SelectMenu
+                    ariaLabel="输出风格"
+                    value={outputStyle ?? ""}
+                    placeholder={outputStyle ?? "默认"}
+                    options={outputStyles.map((style) => ({ value: style, label: style === "default" ? "默认" : style }))}
+                    disabled={saving}
+                    onChange={setOutputStyle}
+                  />
+                ) : <div>{outputStyle === "default" ? "默认" : outputStyle}</div>}
+              </div>
+            )}
+
             {configuration?.context && configuration.context.totalTokens > 0 && (() => {
               const context = configuration.context;
               const hasCapacity = typeof context.maxTokens === "number" && context.maxTokens > 0
@@ -285,7 +307,7 @@ export function SessionConfigurationDialog({
               <button
                 type="button"
                 className="primary-button"
-                disabled={saving || (!modelOptions.length && !effortLevels.length && !configuration?.nativePermissionMode)}
+                disabled={saving || (!modelOptions.length && !effortLevels.length && !configuration?.nativePermissionMode && !outputStyles.length)}
                 onClick={() => {
                   if (claudeSession && nativePermissionMode === "bypassPermissions" && configuration?.nativePermissionMode !== "bypassPermissions") setConfirmFullAccess(true);
                   else void saveSelectedConfiguration();

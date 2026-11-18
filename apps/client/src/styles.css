@@ -3896,6 +3896,17 @@ button:disabled {
   white-space: nowrap;
 }
 
+.session-profile-summary .session-profile-line.is-meta-line:has(.is-output-style) {
+  flex: 0 1 auto;
+  max-width: 100%;
+}
+
+.session-profile-summary .is-output-style {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .desktop-conversation-stream {
   flex: 1 1 0;
   min-height: 0;

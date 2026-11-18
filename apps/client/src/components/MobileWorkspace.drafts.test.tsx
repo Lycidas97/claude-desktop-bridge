@@ -982,7 +982,7 @@ describe("mobile session creation", () => {
     expect(picker.props.initialProjectId).toBeUndefined();
   });
 
-  it("unifies project + and header compose into NewChatCanvas, applies Model/Effort/Permission before turn.start, and persists __new__ draft across Back", async () => {
+  it("unifies project + and header compose into NewChatCanvas, applies model, effort, permission and output style before turn.start, and persists the draft across Back", async () => {
     const callOrder: string[] = [];
     const createdSession: BridgeSessionInfo = {
       ...props.snapshot!.sessions[0]!,
@@ -1009,6 +1009,7 @@ describe("mobile session creation", () => {
         effortSource: "claude-desktop",
         availableEffortLevels: ["low", "medium", "high", "xhigh", "max"],
         nativePermissionMode: "default",
+        availableOutputStyles: ["Learning", "Personal notes"],
         modelsComplete: true,
         appliesAfterTurn: false,
       })),
@@ -1017,7 +1018,7 @@ describe("mobile session creation", () => {
         return createdSession;
       }),
       onConfigureSession: vi.fn().mockImplementation(async (sid: string, change: Record<string, unknown>) => {
-        callOrder.push(`configure:${sid}:${String(change.model)}:${String(change.effort)}:${String(change.permissionMode)}`);
+        callOrder.push(`configure:${sid}:${String(change.model)}:${String(change.effort)}:${String(change.permissionMode)}:${String(change.outputStyle)}`);
         return {
           sessionId: sid,
           model: String(change.model ?? "claude-opus-4-7"),
@@ -1037,6 +1038,7 @@ describe("mobile session creation", () => {
       }),
       snapshot: {
         ...props.snapshot!,
+        host: { ...props.snapshot!.host, capabilities: [...props.snapshot!.host.capabilities, "session.output-style.v1"] },
         projects: [
           { ...props.snapshot!.projects[0]!, projectId: "project-1", name: "First project", cwd: "/tmp/project-1", kind: "desktop-group", sessionCount: 1 },
           { ...props.snapshot!.projects[0]!, projectId: "project-2", name: "Second project", cwd: "/tmp/project-2", kind: "desktop-group", sessionCount: 1 },
@@ -1106,6 +1108,7 @@ describe("mobile session creation", () => {
     draw();
     expect(dispatchMobileBack()).toBe(true); draw();
     elements(tree).find(element => element.type === IconButton && element.props.label === "新建会话")!.props.onClick();
+    draw();
     await settle();
     expect(newChatTextarea().props.value).toBe("跨入口保留的新建草稿");
 
@@ -1124,6 +1127,8 @@ describe("mobile session creation", () => {
     expect(permissionMenu().props.value).toBe("default");
     permissionMenu().props.onChange("plan"); draw();
     expect(permissionMenu().props.value).toBe("plan");
+    elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "输出风格")!.props.onChange("Personal notes");
+    draw();
 
     await form().props.onSubmit({ preventDefault() {} });
     await settle();
@@ -1131,7 +1136,7 @@ describe("mobile session creation", () => {
     expect(props.onCreateSession).toHaveBeenCalledWith("/tmp/project-2", undefined, "claude-desktop", "project-2");
     expect(callOrder).toEqual([
       "create:/tmp/project-2:project-2",
-      "configure:created-1:claude-opus-4-7:xhigh:plan",
+      "configure:created-1:claude-opus-4-7:xhigh:plan:Personal notes",
       "send:created-1:跨入口保留的新建草稿",
     ]);
   });

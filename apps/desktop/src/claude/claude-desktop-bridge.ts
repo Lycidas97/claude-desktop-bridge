@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { EventEmitter } from "node:events";
+import { EventEmitter, on } from "node:events";
 import { basename, isAbsolute } from "node:path";
 import {
   CLAUDE_UNSECTIONED_PROJECT_ID,
@@ -96,6 +96,8 @@ interface NativeSession extends NativePromptSession {
   model?: string;
   effort?: BridgeEffort;
   permissionMode?: BridgeSDKPermissionMode;
+  outputStyle?: string;
+  availableOutputStyles?: string[];
   isRunning?: boolean;
   turnRunning?: boolean;
   isArchived?: boolean;
@@ -155,7 +157,16 @@ function record(value: unknown): Record<string, unknown> {
 function nativeSession(value: unknown): NativeSession {
   const session = record(value);
   if (typeof session.sessionId !== "string" || typeof session.cwd !== "string") throw new NativeCallError("Desktop returned an invalid session");
-  return { ...session, prs: nativePullRequests(session.prs) } as unknown as NativeSession;
+  return {
+    ...session,
+    outputStyle: typeof session.outputStyle === "string" ? session.outputStyle : undefined,
+    availableOutputStyles: Array.isArray(session.availableOutputStyles) ? outputStyleNames(session.availableOutputStyles) : undefined,
+    prs: nativePullRequests(session.prs),
+  } as unknown as NativeSession;
+}
+
+function outputStyleNames(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((name): name is string => typeof name === "string" && name !== "") : [];
 }
 
 function modelOptionHash(value: string): string {
@@ -381,6 +392,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
     const methods: Array<[string, BridgeRuntimeCapability]> = [
       ["start", "session.create"], ["saveTrust", "workspace.trust"], ["forkSession", "session.fork"], ["sendMessage", "turn.start"],
       ["sendMessage", "turn.steer"], ["interrupt", "turn.interrupt"], ["setModel", "session.configure"],
+      ["applyFlagSettings", "session.output-style"],
       ["respondToToolPermission", "permission.resolve"], ["sendMessage", "attachment.image"],
     ];
     for (const [method, capability] of methods) if (this.inspector.supports(method)) capabilities.push(capability);
@@ -675,6 +687,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
         ...(lastCompletedTurnId ? { lastCompletedTurnId } : {}),
         ...(resolvedModel.sessionModel ? { model: resolvedModel.sessionModel, ...(resolvedModel.modelDisplayName ? { modelDisplayName: resolvedModel.modelDisplayName } : {}) } : {}), ...(native.effort ? { effort: native.effort } : {}),
         ...(native.permissionMode ? { nativePermissionMode: native.permissionMode } : {}),
+        ...(native.outputStyle ? { outputStyle: native.outputStyle } : {}),
         ...(contextUsage ? { contextUsage } : {}),
         ...(running && this.compactingSessions.has(sessionId) ? { isCompacting: true } : {}),
         prs: native.prs ?? [],
@@ -1218,11 +1231,15 @@ export class ClaudeDesktopBridge extends EventEmitter {
       : resolved.configModel ? [{ value: resolved.configModel, displayName: fallbackLabel }] : [];
     const defaultModel = resolved.configModel ?? availableModels[0]?.value;
     const defaultDisplayName = resolved.modelDisplayName ?? (resolved.configModel ? undefined : availableModels[0]?.displayName);
+    const styleCatalog = this.inspector.supports("applyFlagSettings") && this.inspector.supports("listGlobalOutputStyles")
+      ? record(await this.inspector.call("listGlobalOutputStyles")) : {};
+    const styles = [...new Set([...outputStyleNames(styleCatalog.builtIns), ...outputStyleNames(styleCatalog.customs)])];
     return {
       sessionId: DEFAULT_CONFIGURATION_SESSION_ID,
       ...(defaultModel ? { model: defaultModel, ...(defaultDisplayName ? { modelDisplayName: defaultDisplayName } : {}) } : {}),
       effort: reference?.effort ?? "high",
       nativePermissionMode: reference?.permissionMode ?? "default",
+      ...(styles.length ? { availableOutputStyles: styles } : {}),
       modelSource: "claude-desktop", effortSource: "claude-desktop",
       availableModels,
       availableEffortLevels: ["low", "medium", "high", "xhigh", "max"],
@@ -1263,6 +1280,9 @@ export class ClaudeDesktopBridge extends EventEmitter {
       ...(resolved.configModel ? { model: resolved.configModel, ...(resolved.modelDisplayName ? { modelDisplayName: resolved.modelDisplayName } : {}) } : {}),
       ...(native.effort ? { effort: native.effort } : {}),
       ...(native.permissionMode ? { nativePermissionMode: native.permissionMode } : {}),
+      ...(native.outputStyle ? { outputStyle: native.outputStyle } : {}),
+      ...(this.inspector.supports("applyFlagSettings") && native.availableOutputStyles?.length
+        ? { availableOutputStyles: native.availableOutputStyles } : {}),
       modelSource: "claude-desktop", effortSource: "claude-desktop",
       availableModels: this.models
         ? [
@@ -1276,7 +1296,39 @@ export class ClaudeDesktopBridge extends EventEmitter {
     };
   }
 
-  async configureSession(input: { sessionId: string; model?: string | null; effort?: BridgeEffort | null; permissionMode?: BridgeSDKPermissionMode }): Promise<BridgeSessionConfiguration> {
+  private async selectOutputStyle(id: string, requested: string): Promise<string> {
+    const deadline = AbortSignal.timeout(10_000);
+    // An empty Native start returns before Claude Code reports its style catalog.
+    const changes = on(this, "changed", { signal: deadline });
+    let styles: string[] | undefined;
+    try {
+      const observed = nativeSession(await this.inspector.call("getSession", [id]));
+      styles = observed.availableOutputStyles ?? this.native.get(id)?.availableOutputStyles;
+      if (!styles) {
+        for await (const _ of changes) {
+          styles = this.native.get(id)?.availableOutputStyles;
+          if (styles) break;
+        }
+      }
+    } catch (error) {
+      if (!(error instanceof Error && error.name === "AbortError" && error.cause === deadline.reason)) throw error;
+    } finally {
+      await changes.return?.();
+    }
+    if (!styles) throw new NativeCallError("Claude Desktop 尚未加载此会话的输出风格。");
+    const style = styles.find(name => name === requested) ?? styles.find(name => name.toLowerCase() === requested.toLowerCase());
+    if (!style) throw new NativeCallError(`此会话不提供输出风格「${requested}」。`);
+    await this.inspector.call("applyFlagSettings", [id, { outputStyle: style }]);
+    return style;
+  }
+
+  async configureSession(input: {
+    sessionId: string;
+    model?: string | null;
+    effort?: BridgeEffort | null;
+    permissionMode?: BridgeSDKPermissionMode;
+    outputStyle?: string;
+  }): Promise<BridgeSessionConfiguration> {
     const id = this.desktopId(input.sessionId);
     if (input.model !== undefined) {
       let nativeModel = input.model;
@@ -1313,8 +1365,12 @@ export class ClaudeDesktopBridge extends EventEmitter {
     }
     if (input.effort !== undefined) await this.inspector.call("setEffort", [id, input.effort]);
     if (input.permissionMode !== undefined) await this.inspector.call("setPermissionMode", [id, input.permissionMode]);
+    const outputStyle = input.outputStyle === undefined ? undefined : await this.selectOutputStyle(id, input.outputStyle);
     await this.refreshRuntime();
     const configuration = await this.configuration(input.sessionId);
+    if (outputStyle !== undefined && configuration.outputStyle !== outputStyle) {
+      throw new NativeCallError(`Claude Desktop 未应用输出风格「${outputStyle}」。`);
+    }
     const observedNativeModel = this.native.get(input.sessionId)?.model?.trim();
     const observedResolvedModel = observedNativeModel && observedNativeModel.toLowerCase() !== "default"
       ? (this.savedModel(observedNativeModel)?.value ?? observedNativeModel)

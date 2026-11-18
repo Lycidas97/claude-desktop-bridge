@@ -237,6 +237,7 @@ export function NewChatCanvas({
   const [permissionMode, setPermissionMode] = useState<BridgeSDKPermissionMode>(
     () => referenceSession?.nativePermissionMode ?? "default",
   );
+  const [outputStyle, setOutputStyle] = useState("");
   const [pendingBypassConfirm, setPendingBypassConfirm] = useState(false);
   const [quotaRequested, setQuotaRequested] = useState(false);
 
@@ -383,6 +384,10 @@ export function NewChatCanvas({
         : DEFAULT_EFFORT_LEVELS;
 
   const shownEffort = supportedEffort(effort, effortLevels);
+  const outputStyles = onConfigureSession && canConfigureRuntime
+    && snapshot?.host.capabilities.includes("session.output-style.v1")
+    && configuration?.sessionId === DEFAULT_CONFIGURATION_SESSION_ID
+    ? configuration.availableOutputStyles ?? [] : [];
 
   const groupUnavailable = Boolean(
     selectedProjectId && !manualGroups.some((project) => project.projectId === selectedProjectId),
@@ -511,8 +516,9 @@ export function NewChatCanvas({
       desiredEffort && (createdEffort ? desiredEffort !== createdEffort : userTouchedRef.current.effort),
     );
     const needsPermission = Boolean(permissionMode && permissionMode !== createdPermission);
+    const needsOutputStyle = outputStyle && outputStyle !== created.outputStyle;
 
-    if (!needsModel && !needsEffort && !needsPermission) {
+    if (!needsModel && !needsEffort && !needsPermission && !needsOutputStyle) {
       return undefined;
     }
 
@@ -520,6 +526,7 @@ export function NewChatCanvas({
       ...(needsModel ? { model } : {}),
       ...(needsEffort && desiredEffort ? { effort: desiredEffort } : {}),
       ...(needsPermission ? { permissionMode } : {}),
+      ...(needsOutputStyle ? { outputStyle } : {}),
     };
   }
 
@@ -787,6 +794,22 @@ export function NewChatCanvas({
                     </button>
                   ))}
                 </div>
+              </div>
+            )}
+
+            {outputStyles.length > 0 && (
+              <div className="new-chat-config-row">
+                <span className="new-chat-config-label">输出风格</span>
+                <SelectMenu
+                  ariaLabel="输出风格"
+                  value={outputStyle}
+                  disabled={!connected || locked}
+                  options={[
+                    { value: "", label: "跟随 Claude Desktop" },
+                    ...outputStyles.map((style) => ({ value: style, label: style === "default" ? "默认" : style })),
+                  ]}
+                  onChange={setOutputStyle}
+                />
               </div>
             )}
 

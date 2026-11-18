@@ -856,6 +856,9 @@ function useDesktopConversationController(input: DesktopConversationInput): Desk
       })).configuration;
     },
     async configureSession(sessionId, change) {
+      if (change.outputStyle !== undefined && !latestRef.current.snapshot.host.capabilities.includes("session.output-style.v1")) {
+        throw new Error("当前电脑不支持设置输出风格。");
+      }
       return unwrap<{ configuration: BridgeSessionConfiguration }>(await latestRef.current.apiRequest({
         method: "session.configure",
         params: { sessionId, ...change },

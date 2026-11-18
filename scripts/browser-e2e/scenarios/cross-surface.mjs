@@ -93,6 +93,8 @@ export async function verifyRound4Boundaries(page, host, steps, directory, viewp
   assert.equal(await mobileTitleInput.getAttribute("placeholder"), "留空自动生成");
   await selectCustomOption(page, mobileNewChat.getByRole("combobox", { name: "所属分组", exact: true }), coreSectionId);
   await mobileTitleInput.fill("端到端可选自定义标题");
+  const mobileStyle = mobileNewChat.getByRole("combobox", { name: "输出风格", exact: true });
+  await selectCustomOption(page, mobileStyle, "Fixture personal style");
   await saveShot(page, "04a-new-chat-title-mobile.png");
   if (proofDir) {
     await page.screenshot({ path: resolve(proofDir, "04-new-chat-title-mobile-desktop.png"), fullPage: false });
@@ -114,6 +116,10 @@ export async function verifyRound4Boundaries(page, host, steps, directory, viewp
     "NewChatCanvas optional title persists onto newly created session in selected section",
   );
   await page.getByRole("heading", { name: "端到端可选自定义标题", exact: true }).waitFor();
+  const created = host.snapshot.sessions.find(s => s.title === "端到端可选自定义标题");
+  assert.deepEqual(host.nativeApproval.calls.filter(call => call.method === "applyFlagSettings").at(-1).args,
+    [created.sessionId, { outputStyle: "Fixture personal style" }]);
+  assert.equal(created.outputStyle, "Fixture personal style");
   await openMobileDrawer(page);
   steps.push("Mobile NewChatCanvas renders optional 会话标题 input and creates an explicitly titled session in selected section");
 
@@ -262,6 +268,7 @@ export async function verifyRound4Boundaries(page, host, steps, directory, viewp
   const desktopNewChat = desktop.locator(".new-chat-canvas.is-desktop");
   await desktopNewChat.waitFor();
   assert.equal(await desktopNewChat.getByLabel("会话标题", { exact: true }).getAttribute("placeholder"), "留空自动生成");
+  await selectCustomOption(desktop, desktopNewChat.getByRole("combobox", { name: "输出风格", exact: true }), "Explanatory");
   await saveShot(desktop, "04b-new-chat-title-desktop.png");
 
   // Desktop sidebar ... menu -> hover row to reveal action button, verify 重命名 + 移动到分组, capture 01-desktop-sidebar-menu-move-rename.png!

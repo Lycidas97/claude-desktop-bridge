@@ -1134,6 +1134,8 @@ describe("mobile session creation", () => {
     styleMenu.props.onChange("default");
     draw();
 
+    // A Native session still on "default" can project the selected picker ID as its fallback label.
+    createdSession.model = "claude-opus-4-7";
     await form().props.onSubmit({ preventDefault() {} });
     await settle();
 
@@ -1143,6 +1145,29 @@ describe("mobile session creation", () => {
       "configure:created-1:claude-opus-4-7:xhigh:plan:default",
       "send:created-1:跨入口保留的新建草稿",
     ]);
+  });
+
+  it("keeps the first prompt as a draft when configuration fails without an error message", async () => {
+    const created = { ...props.snapshot!.sessions[0]!, sessionId: "created-config-error" };
+    props = {
+      ...props,
+      snapshot: { ...props.snapshot!, sessions: [...props.snapshot!.sessions, created] },
+      onCreateSession: vi.fn().mockResolvedValue(created),
+      onConfigureSession: vi.fn().mockRejectedValue(new Error()),
+    };
+    draw();
+    startNewChatFromDrawer();
+    elements(tree).find(element => element.type === "textarea" && element.props["aria-label"] === "给 Claude 发指令")!
+      .props.onChange({ target: { value: "待配置后发送的首条消息" } });
+    elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "授权模式")!.props.onChange("plan");
+    draw();
+    await form().props.onSubmit({ preventDefault() {} });
+    await settle();
+
+    expect(props.onConfigureSession).toHaveBeenCalledWith(created.sessionId, { permissionMode: "plan" });
+    expect(props.onSendTurn).not.toHaveBeenCalled();
+    expect(input().props.value).toBe("待配置后发送的首条消息");
+    expect(elements(tree).some(element => element.props.role === "alert" && element.props.children === "首条消息未发送。会话配置应用失败。")).toBe(true);
   });
 
   it("halts automatic prompt send when requested permissionMode is not applied, and requires explicit 信任并创建 for WorkspaceTrustError", async () => {

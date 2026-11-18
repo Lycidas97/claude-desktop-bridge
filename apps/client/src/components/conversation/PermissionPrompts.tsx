@@ -279,11 +279,11 @@ export function QuestionPrompt({
       ))
     : [];
   const [answers, setAnswers] = useState<Record<string, string | string[]>>({});
-  const [customAnswers, setCustomAnswers] = useState<Record<string, string>>({});
+  const [customAnswers, setCustomAnswers] = useState<Partial<Record<string, string>>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const complete = questions.every((question) => (
-    typeof question.question === "string" && Boolean(answers[question.question]?.length || customAnswers[question.question]?.trim())
+    typeof question.question === "string" && Boolean(customAnswers[question.question]?.trim() ?? answers[question.question]?.length)
   ));
   async function resolveQuestion(
     decision: "allow-once" | "deny",
@@ -304,7 +304,6 @@ export function QuestionPrompt({
     <section className="permission-prompt question-prompt" {...(streamKey ? { "data-stream-key": streamKey } : {})}>
       <div className="permission-title">
         <strong>{permission.title || "当前任务需要你的选择"}</strong>
-        <span>任一已授权设备的首次回答生效</span>
       </div>
       {error && <div className="permission-error" role="alert">{error}</div>}
       {questions.map((question, index) => {
@@ -312,6 +311,10 @@ export function QuestionPrompt({
         const options = Array.isArray(question.options)
           ? question.options.filter((option): option is Record<string, unknown> => Boolean(option) && typeof option === "object")
           : [];
+        const multiSelect = question.multiSelect === true;
+        const choiceType = multiSelect ? "checkbox" : "radio";
+        const choiceName = `${permission.requestId}:${index}`;
+        const customSelected = customAnswers[prompt] !== undefined;
         return (
           <fieldset key={prompt}>
             <legend>{prompt}</legend>
@@ -320,13 +323,13 @@ export function QuestionPrompt({
               return (
                 <label key={label} className="question-option">
                   <input
-                    type={question.multiSelect === true ? "checkbox" : "radio"}
-                    name={`${permission.requestId}:${index}`}
-                    checked={question.multiSelect === true ? answers[prompt]?.includes(label) ?? false : answers[prompt] === label}
+                    type={choiceType}
+                    name={choiceName}
+                    checked={multiSelect ? answers[prompt]?.includes(label) ?? false : answers[prompt] === label}
                     onChange={() => {
-                      if (question.multiSelect !== true) setCustomAnswers(current => ({ ...current, [prompt]: "" }));
+                      if (!multiSelect) setCustomAnswers(current => ({ ...current, [prompt]: undefined }));
                       setAnswers((current) => {
-                        if (question.multiSelect !== true) return { ...current, [prompt]: label };
+                        if (!multiSelect) return { ...current, [prompt]: label };
                         const selected = Array.isArray(current[prompt]) ? current[prompt] : [];
                         return { ...current, [prompt]: selected.includes(label) ? selected.filter((value) => value !== label) : [...selected, label] };
                       });
@@ -336,19 +339,32 @@ export function QuestionPrompt({
                 </label>
               );
             })}
-            <label className="question-freeform">
-              <span>{options.length ? "其他回答" : "你的回答"}</span>
-              <input
-                type="text"
-                aria-label={`${prompt}：${options.length ? "其他回答" : "你的回答"}`}
-                value={customAnswers[prompt] ?? ""}
-                disabled={busy}
-                onChange={event => {
-                  setCustomAnswers(current => ({ ...current, [prompt]: event.target.value }));
-                  if (question.multiSelect !== true) setAnswers(current => ({ ...current, [prompt]: "" }));
-                }}
-              />
-            </label>
+            {options.length > 0 && (
+              <label className="question-option">
+                <input
+                  type={choiceType}
+                  name={choiceName}
+                  checked={customSelected}
+                  onChange={() => {
+                    if (!multiSelect) setAnswers(current => ({ ...current, [prompt]: [] }));
+                    setCustomAnswers(current => ({ ...current, [prompt]: multiSelect && current[prompt] !== undefined ? undefined : "" }));
+                  }}
+                />
+                <span><strong>其他</strong></span>
+              </label>
+            )}
+            {(!options.length || customSelected) && (
+              <label className="question-freeform">
+                {!options.length && <span>你的回答</span>}
+                <input
+                  type="text"
+                  aria-label={`${prompt}：${options.length ? "其他回答" : "你的回答"}`}
+                  value={customAnswers[prompt] ?? ""}
+                  disabled={busy}
+                  onChange={event => setCustomAnswers(current => ({ ...current, [prompt]: event.target.value }))}
+                />
+              </label>
+            )}
           </fieldset>
         );
       })}

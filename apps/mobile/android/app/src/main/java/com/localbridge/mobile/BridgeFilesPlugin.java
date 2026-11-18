@@ -36,7 +36,8 @@ public class BridgeFilesPlugin extends Plugin {
             Intent view = new Intent(Intent.ACTION_VIEW)
                 .setDataAndType(uri, context.getContentResolver().getType(uri))
                 .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            getActivity().startActivity(Intent.createChooser(view, "选择打开方式"));
+            getActivity().startActivity(Intent.createChooser(view, "选择打开方式")
+                .putExtra(Intent.EXTRA_AUTO_LAUNCH_SINGLE_CHOICE, false));
             call.resolve();
         } catch (IOException | ActivityNotFoundException error) {
             call.reject("无法打开下载文件", error);

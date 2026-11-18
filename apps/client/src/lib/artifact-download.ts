@@ -38,9 +38,17 @@ function base64Bytes(value: string): Uint8Array {
   return bytes;
 }
 
-function safeFilename(value: string): string {
+function safeFilename(value: string, preserveExtension: boolean): string {
   const normalized = value.replace(/[\\/:*?"<>|\u0000-\u001f]/gu, "_").trim();
-  return normalized.slice(0, 160) || "Bridge-artifact";
+  const maxLength = 160;
+  if (preserveExtension && normalized.length > maxLength) {
+    const dot = normalized.lastIndexOf(".");
+    if (dot > 0 && normalized.length - dot < maxLength) {
+      const extension = normalized.slice(dot);
+      return normalized.slice(0, maxLength - extension.length) + extension;
+    }
+  }
+  return normalized.slice(0, maxLength) || "Bridge-artifact";
 }
 
 function delay(ms: number): Promise<void> {
@@ -96,7 +104,7 @@ async function runArtifactTransfer(
   const transfer = opened.transfer;
   const chunks: Uint8Array[] = [];
   const native = Capacitor.getPlatform() === "android";
-  const filename = safeFilename(transfer.name);
+  const filename = safeFilename(transfer.name, native);
   const nativePath = `bridge-evidence/${transfer.transferId}/${filename}`;
   let nativeFileCreated = false;
   let transferCompleted = false;

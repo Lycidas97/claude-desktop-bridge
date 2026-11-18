@@ -31,11 +31,11 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-function downloadRequest() {
+function downloadRequest(name = "report.docx") {
   const transfer: BridgeArtifactTransferInfo = {
     transferId: "lease",
     artifactId: "report",
-    name: "report.docx",
+    name,
     mimeType: "application/octet-stream",
     size: 3,
     sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
@@ -51,16 +51,18 @@ function downloadRequest() {
   });
 }
 
-it("opens the completed Android cache download in the file chooser", async () => {
+it.each([
+  ["short filename", "report.docx", "report.docx"],
+  ["long filename", `${"x".repeat(160)}.DOCX`, `${"x".repeat(155)}.DOCX`],
+])("opens an Android download with a %s and preserves the extension", async (_label, name, cacheName) => {
   native.platform = "android";
-  const request = downloadRequest();
-  await downloadBridgeSessionFile("session", "report.docx", request, vi.fn());
+  const request = downloadRequest(name);
+  await downloadBridgeSessionFile("session", name, request, vi.fn());
 
+  const path = `bridge-evidence/lease/${cacheName}`;
   expect(native.share).not.toHaveBeenCalled();
-  expect(native.writeFile).toHaveBeenCalledWith({
-    path: "bridge-evidence/lease/report.docx", directory: "CACHE", data: "YWJj", recursive: true,
-  });
-  expect(native.openFile).toHaveBeenCalledExactlyOnceWith({ path: "bridge-evidence/lease/report.docx" });
+  expect(native.writeFile).toHaveBeenCalledWith({ path, directory: "CACHE", data: "YWJj", recursive: true });
+  expect(native.openFile).toHaveBeenCalledExactlyOnceWith({ path });
   expect(native.openFile).toHaveBeenCalledAfter(native.writeFile);
   expect(request).toHaveBeenLastCalledWith("artifact.transfer.close", { transferId: "lease" }, expect.anything());
 });

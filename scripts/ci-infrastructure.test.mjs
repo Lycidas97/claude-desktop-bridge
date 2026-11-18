@@ -741,7 +741,7 @@ test('local CI cancels a running Windows leg and preserves a completed leg’s f
     const remoteStarted = join(directory, 'remote-started');
     await mkdir(join(repoDir, 'scripts'), { recursive: true });
     await mkdir(binDir);
-    for (const name of ['local-ci.mjs', 'recycle-cleanup.cjs', 'win-ci-recycle.cs']) {
+    for (const name of ['local-ci.mjs', 'recycle-cleanup.cjs']) {
       await copyFile(new URL(`./${name}`, import.meta.url), join(repoDir, 'scripts', name));
     }
     await writeFile(join(repoDir, 'scripts', 'win-local-ci.ps1'), '# fixture\n');
@@ -749,7 +749,7 @@ test('local CI cancels a running Windows leg and preserves a completed leg’s f
     runGit('init', '-q');
     runGit('add', '.');
     runGit('-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-q', '-m', 'fixture');
-    await writeFile(join(binDir, 'ssh'), `#!/bin/sh\nprintf '%s\\n' "$*" >> "${sshLog}"\ncase "$*" in *-File*)\n  if [ "$BRIDGE_FIXTURE_WIN_EXIT" ]; then\n    printf 'Recycle failed for Windows run directory\\n' >&2\n    exit "$BRIDGE_FIXTURE_WIN_EXIT"\n  fi\n  touch "${remoteStarted}"; exec sleep 30;;\nesac\n`);
+    await writeFile(join(binDir, 'ssh'), `#!/bin/sh\nprintf '%s\\n' "$*" >> "${sshLog}"\ncase "$*" in *-File*)\n  if [ "$BRIDGE_FIXTURE_WIN_EXIT" ]; then\n    printf 'Cleanup failed for Windows run directory\\n' >&2\n    exit "$BRIDGE_FIXTURE_WIN_EXIT"\n  fi\n  touch "${remoteStarted}"; exec sleep 30;;\nesac\n`);
     await writeFile(join(binDir, 'scp'), '#!/bin/sh\nexit "${BRIDGE_FIXTURE_SCP_EXIT:-0}"\n');
     await writeFile(join(binDir, 'npm'), `#!/bin/sh\nwhile [ ! -f "${remoteStarted}" ]; do sleep 0.05; done\nexit 1\n`);
     for (const name of ['ssh', 'scp', 'npm']) await chmod(join(binDir, name), 0o755);
@@ -763,11 +763,15 @@ test('local CI cancels a running Windows leg and preserves a completed leg’s f
     assert.notEqual(result.status, 0, result.stdout + result.stderr);
     assert.equal(result.signal, null, 'local-ci must not hang on the blocked Windows leg');
     const calls = (await readFile(sshLog, 'utf8')).trim().split('\n');
-    const runId = /win-local-ci-([\w-]+)\.ps1/u.exec(calls.find(call => call.includes('-File')))[1];
+    const run = calls.find(call => call.includes('-File'));
+    const runId = /win-local-ci-([\w-]+)\.ps1/u.exec(run)[1];
+    const runRoot = `D:\\work\\cache\\temp\\bridge-ci-${runId}`;
+    const removeRoot = `Remove-Item -LiteralPath '${runRoot}' -Recurse -Force`;
+    assert.ok(run.includes(`finally { if (Test-Path -LiteralPath '${runRoot}') { ${removeRoot} } }`), run);
     const stop = calls.find(call => call.includes('taskkill') && call.includes(`win-local-ci-${runId}.ps1`));
     assert.ok(stop, `No remote stop for win-local-ci-${runId}.ps1:\n${calls.join('\n')}`);
     assert.match(stop, /win-fixture/u);
-    assert.ok(stop.includes(`bridge-ci-${runId}`) && stop.includes('[WindowsCiRecycle]::Recycle'), stop);
+    assert.ok(stop.indexOf(removeRoot) > stop.indexOf('taskkill.exe'), stop);
     const logDir = join(repoDir, '.git', 'local-ci', 'logs');
     const [logName] = await readdir(logDir);
     assert.match(await readFile(join(logDir, logName), 'utf8'), /\[MAC\] npm run test:infra exited with code 1/u);
@@ -780,7 +784,7 @@ test('local CI cancels a running Windows leg and preserves a completed leg’s f
       timeout: 20_000,
     });
     assert.equal(failedCleanup.status, 1, failedCleanup.stdout + failedCleanup.stderr);
-    assert.match(failedCleanup.stderr, /Recycle failed for Windows run directory/u);
+    assert.match(failedCleanup.stderr, /Cleanup failed for Windows run directory/u);
     assert.doesNotMatch(await readFile(sshLog, 'utf8'), /taskkill/u, 'A completed remote leg must leave its failed cleanup path alone');
 
     await writeFile(sshLog, '');
@@ -794,8 +798,8 @@ test('local CI cancels a running Windows leg and preserves a completed leg’s f
     assert.match(failedUpload.stderr, /scp .*exited with code 71/u);
     const uploadCalls = (await readFile(sshLog, 'utf8')).trim().split('\n');
     assert.equal(uploadCalls.length, 2, 'Only root creation and cancellation run when the bundle upload fails');
-    const cleanupSource = /FromBase64String\('([^']+)'\)/u.exec(uploadCalls[1])?.[1];
-    assert.equal(cleanupSource, (await readFile(new URL('./win-ci-recycle.cs', import.meta.url))).toString('base64'));
+    const uploadRoot = /New-Item -ItemType Directory -Path "([^"]+)"/u.exec(uploadCalls[0])[1];
+    assert.ok(uploadCalls[1].includes(`Remove-Item -LiteralPath '${uploadRoot}' -Recurse -Force`), uploadCalls[1]);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

@@ -4176,6 +4176,39 @@ describe("Claude native relay", () => {
     } finally { await f.close(); }
   });
 
+  it.each([
+    { hasMore: false, count: 1, limit: 50 },
+    { hasMore: true, count: 20, limit: 30 },
+  ])("skips a model tail already covered by the requested page ($count messages, hasMore=$hasMore)", async ({ hasMore, count, limit }) => {
+    const f = await fixture();
+    try {
+      f.native.sessions[0]!.model = "default";
+      f.native.sessions[0]!.turnRunning = true;
+      f.native.contextUsage = { totalTokens: 98_000, rawMaxTokens: 196_000 };
+      await f.bridge.refreshRuntime();
+      await f.message(planMessage("live-wrap", { recap: "Done" }, 20, "mcp__ccd_turn__wrap_up"));
+      f.native.page = { hasMore, messages: Array.from({ length: count }, (_, index) => ({
+        type: "user", uuid: `request-${index}`, message: { content: `Request ${index}` },
+      })) };
+      const controller = createControllerFixture({ broker: f.bridge, eventLog: f.eventLog });
+      f.native.calls.length = 0;
+
+      const opened = await controller.handleRequest({
+        kind: "request", requestId: "open", idempotencyKey: "open", method: "session.open", params: { sessionId: "local-native", limit },
+      }, "mobile", "phone");
+
+      expect(opened).toMatchObject({
+        history: { hasMore, ...(hasMore ? { nextCursor: "request-0" } : {}) },
+        session: { contextUsage: { totalTokens: 98_000, maxTokens: 196_000, percentage: 50, estimated: false } },
+      });
+      expect(opened).toHaveProperty("history.items.length", count);
+      expect(f.native.calls.filter(call => ["getTranscriptPage", "getContextUsage"].includes(call.method))).toEqual([
+        { method: "getTranscriptPage", args: ["local-native", "", limit, { window: "accept" }] },
+        { method: "getContextUsage", args: ["local-native"] },
+      ]);
+    } finally { await f.close(); }
+  });
+
   it.each(["available", "unavailable"])("only checks the model tail after opening a page without model hints (%s tail)", async tail => {
     const f = await fixture();
     try {

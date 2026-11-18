@@ -116,6 +116,29 @@ async function fixture() {
 }
 
 describe("native Desktop inspector", () => {
+  it("requires a drained, idle native input queue before retiring acknowledgement controls", async () => {
+    const f = await fixture();
+    try {
+      await f.inspector.connect();
+      expect(await f.inspector.inputQueueDrained("local-native")).toBe(false);
+      const raw = { isRunning: true, undelivered: false, sendsHeldAfterError: [] as unknown[] };
+      Object.assign(f.preferences, { "local-native": raw });
+      Object.assign(f.cache.manager!.exports.claudeCodeSessionManager as object, {
+        heldInputChecks: { hasInputThatDiesWithQuery: (session: typeof raw) => session.undelivered },
+      });
+      expect(await f.inspector.inputQueueDrained("local-native")).toBe(false);
+      raw.isRunning = false;
+      raw.undelivered = true;
+      expect(await f.inspector.inputQueueDrained("local-native")).toBe(false);
+      raw.undelivered = false;
+      raw.sendsHeldAfterError.push({});
+      expect(await f.inspector.inputQueueDrained("local-native")).toBe(false);
+      raw.sendsHeldAfterError.pop();
+      expect(await f.inspector.inputQueueDrained("local-native")).toBe(true);
+      expect(await f.inspector.inputQueueDrained("absent")).toBe(false);
+    } finally { await f.close(); }
+  });
+
   it("reads only Native PR preference booleans and reflects Native changes", async () => {
     const f = await fixture();
     try {

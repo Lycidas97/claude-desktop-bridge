@@ -1,15 +1,10 @@
 import type { BridgeHostSnapshot, BridgePermissionInfo, BridgeProjectInfo, BridgeRequest, BridgeSessionInfo, BridgeSlashCommandCatalog } from "@bridge/protocol";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { useMobileBridge, type BridgeMutableStore } from "./useMobileBridge.js";
-import { captureBridgeStoreRef } from "./useMobileBridge.test-harness.js";
-
-type HarnessStore = {
-  [K in keyof BridgeMutableStore]: K extends "setState" ? BridgeMutableStore[K] : { current: any };
-};
+import { useMobileBridge } from "./useMobileBridge.js";
+import { createBridgeTestStore, type HarnessStore } from "./useMobileBridge.test-harness.js";
 
 const harness = vi.hoisted(() => ({
   state: undefined as any,
-  stateReady: false,
   store: undefined as HarnessStore | undefined,
   requests: [] as BridgeRequest[],
   response: {} as Record<string, unknown>,
@@ -18,21 +13,14 @@ const harness = vi.hoisted(() => ({
 }));
 vi.mock("react", async (original) => ({
   ...await original<typeof import("react")>(),
-  useState: (initial: unknown) => {
-    if (!harness.stateReady) {
-      harness.state = initial;
-      harness.stateReady = true;
-    }
-    return [
-      harness.state,
-      (updater: unknown) => {
-        harness.state = typeof updater === "function" ? (updater as (prev: unknown) => unknown)(harness.state) : updater;
-        if (harness.store) harness.store.stateRef.current = harness.state;
-      },
-    ];
-  },
-  useRef: (initial: unknown) => captureBridgeStoreRef(initial, (store: HarnessStore) => {
-    harness.store = store;
+  useCallback: (callback: unknown) => callback,
+  useEffect: () => undefined,
+}));
+vi.mock("./bridge/useMobileBridgeStore.js", async (original) => ({
+  ...await original<typeof import("./bridge/useMobileBridgeStore.js")>(),
+  useMobileBridgeStore() {
+    const fixture = createBridgeTestStore(harness);
+    const store: HarnessStore = harness.store = fixture.store;
     store.cryptoRef.current = { encrypt: harness.encrypt, identity: { roomId: "room-a" } };
     store.socketRef.current = {
       state: "connected",
@@ -46,13 +34,12 @@ vi.mock("react", async (original) => ({
         });
       },
     };
-  }),
-  useCallback: (callback: unknown) => callback,
-  useEffect: () => undefined,
+    return fixture;
+  },
 }));
 
 beforeEach(() => {
-  harness.state = undefined; harness.stateReady = false;
+  harness.state = undefined;
   harness.store = undefined; harness.requests = []; harness.response = {}; harness.error = undefined;
   harness.encrypt.mockReset().mockImplementation(async (request: BridgeRequest) => ({ id: request.requestId, sentAt: 1, request }));
 });

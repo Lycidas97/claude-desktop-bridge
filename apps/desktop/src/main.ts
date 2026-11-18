@@ -251,8 +251,6 @@ async function desktopMain(): Promise<void> {
     handle("bridge:set-relay-url", (url: string) => controller.call("setRelayUrl", url));
     handle("bridge:test-magpie-connection", (input: unknown) => controller.call("testMagpieConnection", input));
     handle("bridge:save-magpie-connection", (input: unknown) => controller.call("saveMagpieConnection", input));
-    handle("bridge:set-anthropic-api-key", (value: string) => controller.call("setAnthropicApiKey", value));
-    handle("bridge:remove-anthropic-api-key", () => controller.call("removeAnthropicApiKey"));
     handle("bridge:launch-claude-desktop", () => controller.call("launchClaudeDesktop"));
     handle("bridge:quit-claude-desktop", () => quitDesktopAppWithConfirmation("claude-desktop"));
     handle("bridge:launch-desktop-app", (runtimeId: string) => {

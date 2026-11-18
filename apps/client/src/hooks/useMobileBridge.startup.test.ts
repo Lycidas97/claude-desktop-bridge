@@ -1,12 +1,11 @@
 import { BridgeCrypto, PROTOCOL_VERSION, type BridgeHostSnapshot, type BridgeRequest, type ClientFrame, type EncryptedEnvelope, type PairingBundle, type ServerFrame } from "@bridge/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bridgeVault } from "../lib/vault.js";
-import { useMobileBridge, type BridgeMutableStore } from "./useMobileBridge.js";
-import { captureBridgeStoreRef } from "./useMobileBridge.test-harness.js";
+import { useMobileBridge } from "./useMobileBridge.js";
+import { createBridgeTestStore } from "./useMobileBridge.test-harness.js";
 
 const harness = vi.hoisted(() => ({
   state: undefined as any,
-  store: undefined as BridgeMutableStore | undefined,
   effects: [] as Array<() => void | (() => void)>,
   cleanups: [] as Array<() => void>,
   hosts: [] as any[],
@@ -17,16 +16,12 @@ const harness = vi.hoisted(() => ({
 }));
 vi.mock("react", async original => ({
   ...await original<typeof import("react")>(),
-  useState(initial: any) {
-    harness.state = initial;
-    return [initial, (update: any) => {
-      harness.state = typeof update === "function" ? update(harness.state) : update;
-      if (harness.store) harness.store.stateRef.current = harness.state;
-    }];
-  },
-  useRef: (initial: unknown) => captureBridgeStoreRef(initial, store => { harness.store = store; }),
   useCallback: (callback: unknown) => callback,
   useEffect(effect: () => void | (() => void)) { harness.effects.push(effect); },
+}));
+vi.mock("./bridge/useMobileBridgeStore.js", async original => ({
+  ...await original<typeof import("./bridge/useMobileBridgeStore.js")>(),
+  useMobileBridgeStore: () => createBridgeTestStore(harness),
 }));
 vi.mock("@capacitor/core", async original => {
   const value = await original<typeof import("@capacitor/core")>();
@@ -117,7 +112,7 @@ function mount() {
 
 beforeEach(async () => {
   vi.useFakeTimers();
-  harness.state = undefined; harness.store = undefined; harness.effects = []; harness.cleanups = [];
+  harness.state = undefined; harness.effects = []; harness.cleanups = [];
   harness.hosts = []; harness.messages = []; harness.outbox = []; harness.requests = []; harness.native = false;
   vi.clearAllMocks(); LocalWebSocket.instances = [];
   const host = await BridgeCrypto.createHost("wss://synthetic.example/ws", "Synthetic desktop");

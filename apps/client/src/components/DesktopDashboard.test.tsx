@@ -127,6 +127,14 @@ function elements(node: ReactNode): ReactElement<Record<string, any>>[] {
   return [element, ...elements(children)];
 }
 const stores: HookStore[] = [];
+function StandaloneDesktopSessions(props: ComponentProps<typeof DesktopSessions>) {
+  return (
+    <DesktopConversationProvider {...props}>
+      <DesktopSessions {...props} />
+    </DesktopConversationProvider>
+  );
+}
+
 function renderer(
   component: (props: any) => ReactNode,
   initialProps: any,
@@ -139,6 +147,7 @@ function renderer(
     if (type === DesktopSessionConversation || type === ConversationView || type === NewChatCanvas) return true;
     if (typeof type === "function" && type.name === "DesktopAssistantNavButton") return true;
     if (options?.expandMailProvider && type === AssistantMailProvider) return true;
+    if (component === StandaloneDesktopSessions) return type === DesktopConversationProvider || type === DesktopSessions;
     if (!options?.expandDashboard) return false;
     return (
       type === ConversationDraftsProvider
@@ -277,7 +286,7 @@ async function openSessions() {
   dashboard.draw(); await settle();
   const child = elements(dashboard.draw()).find((element) => typeof element.type === "function" && element.type.name === "DesktopSessions")!;
   sessionsProps = child.props;
-  sessions = renderer(child.type as (props: any) => ReactNode, sessionsProps);
+  sessions = renderer(StandaloneDesktopSessions, sessionsProps);
   sessions.draw(); await settle(); tree = sessions.draw();
   apiRequest.mockClear();
 }
@@ -413,9 +422,12 @@ describe("desktop session menu mutations", () => {
   function openConversationMenu(onSelectSession = vi.fn(), onRefreshSnapshot = vi.fn().mockResolvedValue(undefined)) {
     snapshot.host.capabilities = ["session.visibility.v1"];
     snapshot.runtime.desktopIntegration.state = "ready";
-    const conversation = renderer(DesktopSessionConversation, {
-      session: snapshot.sessions[0]!, snapshot, events: [], apiRequest, onRefreshSnapshot, onSelectSession,
-    });
+    const events: BridgeEvent[] = [];
+    const conversation = renderer(() => (
+      <DesktopConversationProvider snapshot={snapshot} events={events} apiRequest={apiRequest} onRefreshSnapshot={onRefreshSnapshot}>
+        <DesktopSessionConversation session={snapshot.sessions[0]!} snapshot={snapshot} events={events} onSelectSession={onSelectSession} />
+      </DesktopConversationProvider>
+    ), undefined, { expandDashboard: true });
     elements(conversation.draw()).find(element => element.type === IconButton && element.props.label === "会话操作")!.props.onClick();
     return conversation;
   }
@@ -843,18 +855,37 @@ describe("desktop common commands", () => {
     expect(apiRequest.mock.calls[1]![0].params).toEqual({ sessionId: "A", text: "/help" });
     expect(elements(tree).find(element => element.type === SessionCommandDialogs)!.props.result).toEqual({ action: "help", catalog });
   });
-  it("refreshes compacted history and switches reset sessions through real open requests", async () => {
+  it("refreshes compacted history", async () => {
     await openSessions();
     const event = { eventId: "compact", sessionId: "A", seq: 1, timestamp: 1, origin: "claude-host", type: "session.compacted", data: {} };
-    tree = sessions.draw({ ...sessionsProps, events: [event] }); await settle(); tree = sessions.draw();
+    sessions.draw({ ...sessionsProps, events: [event] });
+    await settle();
     expect(apiRequest).toHaveBeenCalledWith(expect.objectContaining({ method: "session.open", params: expect.objectContaining({ sessionId: "A" }) }));
-    apiRequest.mockClear();
+  });
+
+  it.each([
+    { timing: "already in the snapshot", present: true },
+    { timing: "published by the refreshed snapshot", present: false },
+  ])("opens the reset session once and shows its history when it is $timing", async ({ present }) => {
+    await openSessions();
     const next = { ...snapshot.sessions[0]!, sessionId: "new-A", title: "New context", nativeSessionId: "new-native" };
-    snapshot = { ...snapshot, sessions: [...snapshot.sessions, next] };
-    const reset = { ...event, eventId: "reset", seq: 2, type: "session.reset", data: { sessionId: "new-A", previousSessionId: "A", nativeSessionId: "new-native" } };
-    tree = sessions.draw({ ...sessionsProps, snapshot, events: [event, reset] }); await settle(); tree = sessions.draw();
-    expect(apiRequest).toHaveBeenCalledWith(expect.objectContaining({ method: "session.open", params: expect.objectContaining({ sessionId: "new-A" }) }));
+    const refreshed = { ...snapshot, sessions: [...snapshot.sessions, next] };
+    const reset: BridgeEvent = {
+      eventId: "reset", sessionId: "A", seq: 1, timestamp: 1, origin: "claude-host", type: "session.reset",
+      data: { sessionId: "new-A", previousSessionId: "A", nativeSessionId: "new-native" },
+    };
+    history = [{ id: "new-message", sessionId: "new-A", role: "assistant", text: "New context history", createdAt: 2, origin: "claude-desktop" }];
+    sessions.draw({ ...sessionsProps, snapshot: present ? refreshed : snapshot, events: [reset] });
+    snapshot = refreshed;
+    await settle();
+    sessions.draw({ ...sessionsProps, snapshot, events: [reset] });
+    await settle();
+    tree = sessions.draw();
+
     expect(elements(tree).find(element => element.type === SessionCommandDialogs)!.props.session.sessionId).toBe("new-A");
+    expect(apiRequest.mock.calls.filter(([req]) => req.method === "session.open" && req.params.sessionId === "new-A")).toHaveLength(1);
+    expect(elements(tree).filter((element) => element.type === ConversationMessageItem).map((element) => element.props.item.text))
+      .toEqual(["New context history"]);
   });
 });
 
@@ -926,7 +957,7 @@ describe("desktop conversation parity", () => {
     dashboard.draw(); await settle();
     const child = elements(dashboard.draw()).find((element) => typeof element.type === "function" && element.type.name === "DesktopSessions")!;
     sessionsProps = child.props;
-    sessions = renderer(child.type as (props: any) => ReactNode, sessionsProps);
+    sessions = renderer(StandaloneDesktopSessions, sessionsProps);
     sessions.draw(); await settle(); tree = sessions.draw();
     expect(apiRequest).toHaveBeenCalledWith({ method: "evidence.list", params: { sessionId: "A", limit: 30 } });
     expect(apiRequest).toHaveBeenCalledWith({ method: "session.open", params: { sessionId: "A", limit: 50 } });
@@ -1268,13 +1299,15 @@ describe("desktop conversation parity", () => {
     }));
     await openSessions();
     elements(tree).find((element) => element.type === "button" && textContent(element) === "成果")!.props.onClick();
-    const page = () => elements(tree).find((element) => element.type === EvidencePanel)!.props.state;
+    tree = sessions.draw();
+    const panel = () => elements(tree).find((element) => element.type === EvidencePanel)!.props;
+    expect(panel().state).toEqual({ status: "ready", items: [expect.objectContaining(bundle)], hasMore: true, nextCursor: "older" });
     const update: BridgeEvent = {
       eventId: "update-while-opening", seq: 1, timestamp: 11, sessionId: "A", origin: "claude-host", type: "evidence.updated",
       data: { evidence: { ...bundle, artifactCount: 1 } },
     };
     tree = sessions.draw({ ...sessionsProps, events: [update] });
-    expect(page().items[0].artifactCount).toBe(1);
+    expect(panel().state.items[0].artifactCount).toBe(1);
 
     finishHistory({ kind: "response", requestId: "history", ok: true, result: { history: { items: [
       { id: "m-1", sessionId: "A", turnId: "t-1", role: "assistant", text: "Finished", createdAt: 10, origin: "claude-desktop" },
@@ -1285,7 +1318,19 @@ describe("desktop conversation parity", () => {
       itemId: "assistant", data: { text: "Still writing" },
     };
     tree = sessions.draw({ ...sessionsProps, events: [update, delta] });
-    expect(page()).toMatchObject({ items: [expect.objectContaining({ artifactCount: 1 })], hasMore: true, nextCursor: "older" });
+    expect(panel().state).toMatchObject({ items: [expect.objectContaining({ artifactCount: 1 })], hasMore: true, nextCursor: "older" });
+
+    const earlier = { ...bundle, id: "earlier", turnId: "t-0", startedAt: 1 };
+    apiRequest.mockResolvedValueOnce({
+      kind: "response", requestId: "older-evidence", ok: true,
+      result: { evidence: { items: [earlier], hasMore: false } },
+    });
+    await panel().onLoadMore();
+    tree = sessions.draw();
+    expect(apiRequest).toHaveBeenLastCalledWith({ method: "evidence.list", params: { sessionId: "A", cursor: "older", limit: 30 } });
+    expect(panel().state).toEqual({
+      status: "ready", items: [expect.objectContaining({ id: "bundle", artifactCount: 1 }), expect.objectContaining(earlier)], hasMore: false,
+    });
 
     elements(tree).find((element) => element.type === "button" && textContent(element) === "对话")!.props.onClick();
     tree = sessions.draw();
@@ -1485,7 +1530,7 @@ describe("desktop conversation parity", () => {
 });
 
 describe("unified desktop and assistant conversation composition", () => {
-  it("shares drafts and conversation history across 会话 and 助理 tabs and subviews without mounting a sidebar in AssistantPage", async () => {
+  it("shares drafts, history and live evidence across desktop tabs and stops reopening unmounted conversations", async () => {
     snapshot.host.capabilities.push("plugin.assistant-mail.v1");
     snapshot.sessions = [
       snapshot.sessions[0]!,
@@ -1517,6 +1562,11 @@ describe("unified desktop and assistant conversation composition", () => {
     history = [
       { id: "msg-shared-1", sessionId: "A", role: "assistant", text: "Shared native reply", createdAt: 10, origin: "claude-desktop" },
     ];
+    let pushEvent!: (event: BridgeEvent) => void;
+    window.bridgeDesktop!.onEvent = (listener) => {
+      pushEvent = listener;
+      return () => undefined;
+    };
 
     const fullDashboard = renderer(
       DesktopDashboard,
@@ -1565,12 +1615,32 @@ describe("unified desktop and assistant conversation composition", () => {
     elements(assistantTabs()).find((element) => element.type === "button" && element.props.children === "邮件")!.props.onClick();
     fullTree = fullDashboard.draw();
     expect(elements(fullTree).some((element) => element.type === ConversationView)).toBe(false);
+    apiRequest.mockClear();
+    pushEvent({
+      eventId: "shared-compact", seq: 1, timestamp: 11, sessionId: "A", origin: "claude-host", type: "session.compacted", data: {},
+    });
+    const sharedEvidence = { id: "shared-bundle", sessionId: "A", startedAt: 12, summary: "Shared evidence", tools: [], artifacts: [] };
+    pushEvent({
+      eventId: "shared-evidence", seq: 2, timestamp: 12, sessionId: "A", origin: "claude-host", type: "evidence.ready",
+      data: { evidence: sharedEvidence },
+    });
+    fullTree = fullDashboard.draw();
+    expect(apiRequest.mock.calls.some(([request]) => request.method === "session.open")).toBe(false);
 
     elements(assistantTabs()).find((element) => element.type === IconButton && element.props.label === "助理设置")!.props.onClick();
     fullTree = fullDashboard.draw();
+    apiRequest.mockImplementation(async ({ method, params }) => ({
+      kind: "response", requestId: "test", ok: true,
+      result: method === "session.open" ? { history: { items: history, hasMore: false } }
+        : method === "evidence.list" ? { evidence: { items: params.sessionId === "A" ? [sharedEvidence] : [], hasMore: false } } : {},
+    }));
     elements(assistantTabs()).find((element) => element.type === "button" && element.props.children === "对话")!.props.onClick();
+    fullTree = fullDashboard.draw();
+    const conversationEvidence = () => elements(fullTree).find((element) => element.type === ConversationView)?.props.evidence;
+    expect(conversationEvidence()).toMatchObject({ status: "loading", items: [{ id: "shared-bundle" }] });
     await settle();
     fullTree = fullDashboard.draw();
+    expect(conversationEvidence()).toMatchObject({ status: "ready", items: [{ id: "shared-bundle" }] });
     expect(composerInput().props.value).toBe("从会话页输入的草稿");
 
     composerInput().props.onChange("助理页修改后的草稿");
@@ -1700,7 +1770,7 @@ describe("unified desktop and assistant conversation composition", () => {
       ...host2Snapshot,
       host: { ...host2Snapshot.host, hostId: "standalone-host-1" },
     };
-    const standalone = renderer(DesktopSessions, {
+    const standalone = renderer(StandaloneDesktopSessions, {
       snapshot: host1Snapshot,
       events: retainedEvents,
       apiRequest,
@@ -1801,7 +1871,7 @@ describe("unified desktop and assistant conversation composition", () => {
       host: { ...snapshot.host, hostId: "dl-host-2" },
     };
 
-    const standalone = renderer(DesktopSessions, {
+    const standalone = renderer(StandaloneDesktopSessions, {
       snapshot: host1Snapshot,
       events: [],
       apiRequest: host1Api,

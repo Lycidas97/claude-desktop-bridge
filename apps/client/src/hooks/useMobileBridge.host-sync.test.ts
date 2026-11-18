@@ -1,11 +1,7 @@
 import type { BridgeCrypto, BridgeEvent, BridgeHostSnapshot, BridgeRequest, BridgeResponse, BridgeSessionInfo, DecryptedEnvelope, EncryptedEnvelope, ServerFrame, SocketState } from "@bridge/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { useMobileBridge, type BridgeMutableStore } from "./useMobileBridge.js";
-import { captureBridgeStoreRef } from "./useMobileBridge.test-harness.js";
-
-type HarnessStore = {
-  [K in keyof BridgeMutableStore]: K extends "setState" ? BridgeMutableStore[K] : { current: any };
-};
+import { INITIAL_STATE, useMobileBridge } from "./useMobileBridge.js";
+import { createBridgeTestStore, type HarnessStore } from "./useMobileBridge.test-harness.js";
 import { bridgeVault } from "../lib/vault.js";
 import {
   ensureSessionNotificationPermission,
@@ -63,22 +59,18 @@ vi.mock("@bridge/protocol", async (importOriginal) => ({
 
 vi.mock("react", async (importOriginal) => ({
   ...await importOriginal<typeof import("react")>(),
-  useState(initial: any) {
-    harness.state = { ...initial, ...harness.state };
-    return [harness.state, (update: any) => {
-      harness.state = typeof update === "function" ? update(harness.state) : update;
-      if (harness.commitStateImmediately && harness.store) {
-        harness.store.stateRef.current = harness.state;
-      }
-    }];
-  },
-  useRef: (initial: unknown) => captureBridgeStoreRef(initial, (store: HarnessStore) => {
-    harness.store = store;
-    store.cryptoRef.current = hostCrypto("A");
-    store.socketRef.current = socket("A");
-  }),
   useCallback: (callback: unknown) => callback,
   useEffect: () => undefined,
+}));
+vi.mock("./bridge/useMobileBridgeStore.js", async (original) => ({
+  ...await original<typeof import("./bridge/useMobileBridgeStore.js")>(),
+  useMobileBridgeStore() {
+    const fixture = createBridgeTestStore(harness);
+    const store: HarnessStore = harness.store = fixture.store;
+    store.cryptoRef.current = hostCrypto("A");
+    store.socketRef.current = socket("A");
+    return fixture;
+  },
 }));
 
 vi.mock("../lib/vault.js", () => ({
@@ -161,7 +153,7 @@ beforeEach(() => {
   harness.notify.mockReset().mockResolvedValue(undefined);
   harness.commitStateImmediately = true;
   harness.requests = [];
-  harness.state = { activeHostId: "A", desktopName: "A", snapshot: snapshot("A") };
+  harness.state = { ...INITIAL_STATE, activeHostId: "A", desktopName: "A", snapshot: snapshot("A") };
   harness.cacheEncrypt.mockReset().mockResolvedValue({ id: "cached-A" });
   harness.requestEncrypt.mockReset();
   harness.saveMessage.mockReset().mockResolvedValue(undefined);

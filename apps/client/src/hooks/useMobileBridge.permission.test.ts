@@ -1,11 +1,7 @@
 import type { BridgeEvent, BridgeRequest } from "@bridge/protocol";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { applyPermissionEvent, useMobileBridge, type BridgeMutableStore } from "./useMobileBridge.js";
-import { captureBridgeStoreRef } from "./useMobileBridge.test-harness.js";
-
-type HarnessStore = {
-  [K in keyof BridgeMutableStore]: K extends "setState" ? BridgeMutableStore[K] : { current: any };
-};
+import { INITIAL_STATE, applyPermissionEvent, useMobileBridge } from "./useMobileBridge.js";
+import { createBridgeTestStore, type HarnessStore } from "./useMobileBridge.test-harness.js";
 
 const harness = vi.hoisted(() => ({
   state: undefined as any,
@@ -18,15 +14,14 @@ const harness = vi.hoisted(() => ({
 
 vi.mock("react", async (importOriginal) => ({
   ...await importOriginal<typeof import("react")>(),
-  useState(initial: any) {
-    harness.state = { ...initial, snapshot: harness.state.snapshot };
-    return [harness.state, (update: any) => {
-      harness.state = typeof update === "function" ? update(harness.state) : update;
-      if (harness.store) harness.store.stateRef.current = harness.state;
-    }];
-  },
-  useRef: (initial: unknown) => captureBridgeStoreRef(initial, (store: HarnessStore) => {
-    harness.store = store;
+  useCallback: (callback: unknown) => callback,
+  useEffect: () => undefined,
+}));
+vi.mock("./bridge/useMobileBridgeStore.js", async (original) => ({
+  ...await original<typeof import("./bridge/useMobileBridgeStore.js")>(),
+  useMobileBridgeStore() {
+    const fixture = createBridgeTestStore(harness);
+    const store: HarnessStore = harness.store = fixture.store;
     store.cryptoRef.current = {
       encrypt: async (request: BridgeRequest) => ({ id: request.requestId, sentAt: 1, request }),
     };
@@ -46,9 +41,8 @@ vi.mock("react", async (importOriginal) => ({
         });
       },
     };
-  }),
-  useCallback: (callback: unknown) => callback,
-  useEffect: () => undefined,
+    return fixture;
+  },
 }));
 
 beforeEach(() => {
@@ -57,7 +51,7 @@ beforeEach(() => {
   harness.result = {};
   harness.error = undefined;
   harness.beforeReply = undefined;
-  harness.state = { snapshot: {
+  harness.state = { ...INITIAL_STATE, snapshot: {
     host: { hostId: "computer", defaultPermissionMode: "standard" },
     sessions: [
       { sessionId: "codex-desktop:first", runtimeId: "codex-desktop" },

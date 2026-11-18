@@ -15,7 +15,7 @@ function fixture(turnState: BridgeTurnState = "running", archivedAt?: number) {
   const controller = createControllerFixture({
     broker: {
       listSessions: () => [nativeSession], session: () => nativeSession,
-      refreshDesktopConfiguration: vi.fn(async () => undefined), history: vi.fn(async () => ({ items: [] })),
+      refreshDesktopSession: vi.fn(async () => undefined), history: vi.fn(async () => ({ items: [] })),
       rename: vi.fn(async (_id: string, title: string) => { nativeSession = { ...nativeSession, title }; }),
     },
     conversationState: {},

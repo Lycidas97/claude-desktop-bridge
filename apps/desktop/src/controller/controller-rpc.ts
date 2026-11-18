@@ -291,7 +291,7 @@ async function dispatchControllerRequestInner(
   if (request.method === "session.open") {
     const sessionId = stringParam(params, "sessionId")!;
 
-    await host.broker.refreshDesktopConfiguration(sessionId);
+    await host.broker.refreshDesktopSession(sessionId);
     const session = host.broker.session(sessionId);
     if (!session) throw new Error("Session not found");
     const history = await host.broker.history(sessionId, undefined, numberParam(params, "limit", 18));

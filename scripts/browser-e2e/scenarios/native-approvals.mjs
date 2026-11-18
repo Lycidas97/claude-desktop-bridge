@@ -112,7 +112,7 @@ async function verifySessionHeader(page, host, steps, directory, baseUrl) {
   steps.push("mobile 375/320px and narrow desktop retain complete profile fields and updated accessible settings descriptions; read-only headers remain visible and confirmed notices disappear");
 }
 
-export async function verifyNativeApprovals(page, host, steps, directory, baseUrl, relayPeers) {
+export async function verifyNativeApprovals(page, host, steps, directory, baseUrl, relayRoutes) {
   await openMobileSession(page);
   await page.getByRole("heading", { name: originalTitle, exact: true }).waitFor();
   const slashInput = page.getByRole("combobox", { name: "给 Claude 发指令" });
@@ -200,10 +200,13 @@ export async function verifyNativeApprovals(page, host, steps, directory, baseUr
   await latestOutput.waitFor();
   assert.equal(await latestOutput.evaluate(output => Boolean(output.compareDocumentPosition(document.querySelector(".pending-question")) & Node.DOCUMENT_POSITION_FOLLOWING)), true, "The live question stays after subsequent assistant output");
   const snapshotCount = host.requests.filter((request) => request.method === "snapshot.get").length;
-  const peer = [...relayPeers].find(([, hello]) => hello.roomId === host.pairing.roomId && hello.role === "mobile");
-  assert.ok(peer, "Native approval scenario must own a connected phone");
-  peer[0].close(1012, "native approval reconnect fixture");
+  const routeCount = relayRoutes.length;
+  assert.ok(routeCount > 0, "Native approval scenario must own a phone connection");
+  // The startup probe also opens /ws. Close the page side of every existing relay route
+  // so the phone stops sending before Playwright closes its native socket.
+  await Promise.all(relayRoutes.map(route => route.close({ code: 1000, reason: "native approval reconnect fixture" })));
   await eventually(() => host.requests.filter((request) => request.method === "snapshot.get").length > snapshotCount, true, "Reconnect must fetch pending native approval");
+  assert.ok(relayRoutes.length > routeCount, "Reconnect must open a new relay connection");
   assert.equal(host.nativeApproval.list()[0].requestId, question.request.requestId);
   const submit = questionCard.getByRole("button", { name: "提交回答", exact: true });
   assert.equal(await questionCard.getByRole("textbox").count(), 0, "Preset questions start with Other collapsed");

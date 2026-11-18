@@ -1147,6 +1147,42 @@ describe("mobile session creation", () => {
     ]);
   });
 
+  it.each([false, true])("shows and submits only explicitly selected effort on a model switch (explicit: %s)", async (explicitEffort) => {
+    const created = { ...props.snapshot!.sessions[0]!, sessionId: "created-mixed-effort", model: "native-model" };
+    delete created.effort;
+    delete created.reasoningEffort;
+    props = {
+      ...props,
+      onLoadSessionConfiguration: vi.fn().mockResolvedValue({
+        sessionId: "__default__",
+        model: "native-model",
+        availableModels: [
+          { value: "native-model", displayName: "Native" },
+          { value: "group/mixed", displayName: "Gateway", supportedEffortLevels: ["low", "high", "max"], declaredEffortLevels: ["low", "high", "max", "ultra"] },
+        ],
+        availableEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+        effort: "xhigh",
+      }),
+      onCreateSession: vi.fn().mockResolvedValue(created),
+      onConfigureSession: vi.fn().mockResolvedValue({ model: "group/mixed" }),
+    };
+    draw();
+    startNewChatFromDrawer();
+    await settle();
+    elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "模型")!.props.onChange("group/mixed");
+    draw();
+    const high = () => elements(tree).find(element => element.type === "button" && element.props.children === "高")!;
+    expect(high().props["aria-pressed"]).toBe(false);
+    if (explicitEffort) {
+      high().props.onClick(); draw();
+      expect(high().props["aria-pressed"]).toBe(true);
+    }
+    elements(tree).find(element => element.type === "button" && String(element.props.className).includes("new-chat-empty-create-btn"))!.props.onClick();
+    await settle();
+    expect(props.onConfigureSession).toHaveBeenCalledExactlyOnceWith(created.sessionId,
+      explicitEffort ? { model: "group/mixed", effort: "high" } : { model: "group/mixed" });
+  });
+
   it("creates a session without sending effort when the selected model only declares a gateway-only level", async () => {
     const created = { ...props.snapshot!.sessions[0]!, sessionId: "created-gateway-effort", model: "native-model", effort: "medium" as const };
     props = {
@@ -1169,7 +1205,7 @@ describe("mobile session creation", () => {
     await settle();
     elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "模型")!.props.onChange("gateway-model");
     draw();
-    expect(elements(tree).find(element => element.props.className === "effort-unavailable")?.props.children).toBe("Desktop 不支持：超高");
+    expect(elements(tree).find(element => element.props.className === "effort-unavailable")?.props.children).toBe("当前模型不可用：超高");
     expect(elements(tree).some(element => element.props['aria-label'] === "思考强度")).toBe(false);
     elements(tree).find(element => element.type === "button" && String(element.props.className).includes("new-chat-empty-create-btn"))!.props.onClick();
     await settle();

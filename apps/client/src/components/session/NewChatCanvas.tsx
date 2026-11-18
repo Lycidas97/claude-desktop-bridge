@@ -5,6 +5,7 @@ import {
   DEFAULT_CONFIGURATION_SESSION_ID,
   isBridgeEffort,
   type BridgeDesktopRuntimeId,
+  type BridgeEffort,
   type BridgeHostSnapshot,
   type BridgeProjectInfo,
   type BridgeSDKPermissionMode,
@@ -37,7 +38,6 @@ import {
   PERMISSION_MODE_OPTIONS,
   effortLabel,
   modelEffortOptions,
-  supportedEffort,
   type SessionConfigurationChange,
 } from "./SessionConfigurationDialog.js";
 
@@ -226,9 +226,7 @@ export function NewChatCanvas({
   const [configuration, setConfiguration] = useState<BridgeSessionConfiguration>();
   const [configLoading, setConfigLoading] = useState(false);
   const [model, setModel] = useState<string>(() => referenceSession?.model ?? "");
-  const [effort, setEffort] = useState<string>(
-    () => referenceSession?.reasoningEffort ?? referenceSession?.effort ?? "high",
-  );
+  const [effortDraft, setEffortDraft] = useState<BridgeEffort>();
   const [permissionMode, setPermissionMode] = useState<BridgeSDKPermissionMode>(
     () => referenceSession?.nativePermissionMode ?? "default",
   );
@@ -240,7 +238,6 @@ export function NewChatCanvas({
     cwd: false,
     section: initialProjectId !== undefined,
     model: false,
-    effort: false,
     permission: false,
   });
 
@@ -311,17 +308,6 @@ export function NewChatCanvas({
         if (!userTouchedRef.current.model) {
           setModel(next.model ?? next.availableModels[0]?.value ?? referenceSession?.model ?? "");
         }
-        if (!userTouchedRef.current.effort) {
-          setEffort(
-            next.reasoningEffort
-            ?? next.effort
-            ?? next.availableReasoningEfforts?.[0]
-            ?? next.availableEffortLevels[0]
-            ?? referenceSession?.reasoningEffort
-            ?? referenceSession?.effort
-            ?? "high",
-          );
-        }
         if (!userTouchedRef.current.permission && next.nativePermissionMode) {
           setPermissionMode(next.nativePermissionMode);
         }
@@ -376,7 +362,7 @@ export function NewChatCanvas({
       : configuration?.availableEffortLevels.length ? configuration.availableEffortLevels : BRIDGE_EFFORT_LEVELS,
   );
 
-  const shownEffort = supportedEffort(effort, effortLevels);
+  const pickedEffort = effortDraft && effortLevels.includes(effortDraft) ? effortDraft : undefined;
   const outputStyles = onConfigureSession && canConfigureRuntime
     && snapshot?.host.capabilities.includes("session.output-style.v1")
     && configuration?.sessionId === DEFAULT_CONFIGURATION_SESSION_ID
@@ -496,7 +482,6 @@ export function NewChatCanvas({
   }
 
   function buildPostCreateConfiguration(created: BridgeSessionInfo): SessionConfigurationChange | undefined {
-    const desiredEffort = shownEffort;
     const createdEffort = created.effort ?? (isBridgeEffort(created.reasoningEffort) ? created.reasoningEffort : undefined);
     const createdPermission = created.nativePermissionMode ?? "default";
 
@@ -504,9 +489,7 @@ export function NewChatCanvas({
     const needsModel = Boolean(
       model && (userTouchedRef.current.model || (created.model && model !== created.model)),
     );
-    const needsEffort = Boolean(
-      desiredEffort && (createdEffort ? desiredEffort !== createdEffort : userTouchedRef.current.effort),
-    );
+    const needsEffort = pickedEffort !== undefined && pickedEffort !== createdEffort;
     const needsPermission = Boolean(permissionMode && permissionMode !== createdPermission);
     const needsOutputStyle = outputStyle && outputStyle !== created.outputStyle;
 
@@ -516,7 +499,7 @@ export function NewChatCanvas({
 
     return {
       ...(needsModel ? { model } : {}),
-      ...(needsEffort && desiredEffort ? { effort: desiredEffort } : {}),
+      ...(needsEffort ? { effort: pickedEffort } : {}),
       ...(needsPermission ? { permissionMode } : {}),
       ...(needsOutputStyle ? { outputStyle } : {}),
     };
@@ -770,20 +753,17 @@ export function NewChatCanvas({
 
             {(effortLevels.length > 0 || unavailableEffort) && (
               <div className="new-chat-config-row">
-                <span className="new-chat-config-label">思考强度</span>
+                <span className="new-chat-config-label">思考强度{effortLevels.length > 0 && !pickedEffort && " · 默认"}</span>
                 {effortLevels.length > 0 && (
                   <div className="effort-segments new-chat-effort-segments" role="group" aria-label="思考强度">
                     {effortLevels.map((level) => (
                       <button
                         type="button"
                         key={level}
-                        className={shownEffort === level ? "active" : ""}
-                        aria-pressed={shownEffort === level}
+                        className={pickedEffort === level ? "active" : ""}
+                        aria-pressed={pickedEffort === level}
                         disabled={!connected || locked}
-                        onClick={() => {
-                          userTouchedRef.current.effort = true;
-                          setEffort(level);
-                        }}
+                        onClick={() => setEffortDraft(level)}
                       >
                         {effortLabel(level)}
                       </button>

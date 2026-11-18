@@ -1,10 +1,9 @@
-import {
-  BRIDGE_EFFORT_LEVELS,
-  type BridgeEffort,
-  type BridgeModelInfo,
-  type BridgeSDKPermissionMode,
-  type BridgeSessionConfiguration,
-  type BridgeSessionInfo,
+import type {
+  BridgeEffort,
+  BridgeModelInfo,
+  BridgeSDKPermissionMode,
+  BridgeSessionConfiguration,
+  BridgeSessionInfo,
 } from "@bridge/protocol";
 import { LoaderCircle, Settings2, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -32,21 +31,13 @@ export function effortLabel(value: string): string {
   return Object.hasOwn(EFFORT_LABELS, value) ? EFFORT_LABELS[value]! : value;
 }
 
-const EFFORT_ORDER = ["none", "minimal", ...BRIDGE_EFFORT_LEVELS, "ultra"];
-
-/** The strongest offered level not above the configured level, or the lowest offered level. */
-export function supportedEffort(effort: string, levels: readonly BridgeEffort[]): BridgeEffort | undefined {
-  const rank = EFFORT_ORDER.indexOf(effort);
-  return BRIDGE_EFFORT_LEVELS.filter(level => levels.includes(level) && EFFORT_ORDER.indexOf(level) <= rank).at(-1) ?? levels[0];
-}
-
 export function modelEffortOptions(model: BridgeModelInfo | undefined, fallback: readonly BridgeEffort[]) {
   const declared = model?.declaredEffortLevels;
   const levels = model?.supportsEffort === false ? []
     : declared ? model.supportedEffortLevels ?? []
     : model?.supportedEffortLevels?.length ? model.supportedEffortLevels : fallback;
   const unavailable = declared?.filter(level => !levels.some(option => option === level)).map(effortLabel).join("、");
-  return { levels, unavailable: unavailable ? `Desktop 不支持：${unavailable}` : undefined };
+  return { levels, unavailable: unavailable ? `当前模型不可用：${unavailable}` : undefined };
 }
 
 export const PERMISSION_MODE_OPTIONS: ReadonlyArray<{ value: BridgeSDKPermissionMode; label: string }> = [

@@ -350,9 +350,11 @@ runners. Upon a full clean pass (after owned temporary-directory cleanup complet
 `local-ci.mjs` records a receipt under `<git-common-dir>/local-ci/` and publishes the
 `ci/local-distributed = success` commit status to `Lycidas97/claude-desktop-bridge`
 (if `ci:local` ran before `git push`, `npm run ci:local -- --publish` publishes that
-receipt immediately after pushing). Every run, passing or failing, also keeps its full
-output in `<git-common-dir>/local-ci/logs/<sha12>-<UTC time>.log` (path printed on the
-first line), so callers do not need to redirect it.
+receipt immediately after pushing). If every check passes but the status POST fails
+(for example `EOF`), the run exits 1 with the receipt already saved; publish it with
+`npm run ci:local -- --publish` instead of rerunning. Every run, passing or failing,
+also keeps its full output in `<git-common-dir>/local-ci/logs/<sha12>-<UTC time>.log`
+(path printed on the first line), so callers do not need to redirect it.
 
 `.github/workflows/ci.yml` is retained as a manual `workflow_dispatch` fallback that
 runs the full 6-job hosted matrix (`changes`, Linux `verify`, Windows installers,

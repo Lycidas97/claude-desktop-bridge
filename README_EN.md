@@ -24,7 +24,7 @@ Android is the native phone client. The generic mobile Web client remains availa
 
 The release also includes `SHA256SUMS.txt` and `SOURCE_COMMIT.txt`. Successful builds do not establish live-device validation on every platform. Android system back navigation has been tested in an Android 16 emulator.
 
-**1.3.6** adds per-session output styles, makes pairing QR codes easier to scan, and opens Android’s system app chooser after a download. It also fixes relative-path file previews on the phone, duplicate replacement-session opens after a desktop reset, and received-receipt labels reappearing after the queue drains. See the [1.3.6 changelog](CHANGELOG.md#136).
+**1.3.7** fixes a bug that prevented Bridge from saving thinking effort in native sessions. When you create a session, Bridge applies the model you explicitly chose before sending the first message. If session configuration fails, the first message stays in the composer. See the [1.3.7 changelog](CHANGELOG.md#137).
 
 ## What you need
 

@@ -669,7 +669,7 @@ export async function verifyNativeBoundaries(page, host, steps, directory) {
   await openMobileDrawer(page);
   await page.locator(".mobile-drawer-dock-nav").getByRole("button", { name: "设置", exact: true }).click();
   await page.getByRole("heading", { name: "远端桌面状态", exact: true }).waitFor();
-  await page.getByRole("heading", { name: "版本与更新", exact: true }).waitFor();
+  await page.getByRole("region", { name: "版本与更新", exact: true }).getByRole("button", { name: "查看 GitHub Releases", exact: true }).waitFor();
   assert.ok((await page.locator(".mobile-settings-page").innerText()).includes("v1.1.1"));
   const remoteUpdaterRegion = page.getByRole("region", { name: "远端桌面状态", exact: true });
   assert.deepEqual(
@@ -689,7 +689,11 @@ export async function verifyNativeBoundaries(page, host, steps, directory) {
           topRadius: [style.borderTopLeftRadius, style.borderTopRightRadius], bottomRadius: [style.borderBottomLeftRadius, style.borderBottomRightRadius],
           topBorder: style.borderTopWidth, bottomBorder: style.borderBottomWidth, sideBorderWidths: [style.borderLeftWidth, style.borderRightWidth] };
       }));
-      assert.ok(rows.length >= 4, `${title} includes version, details, and actions`);
+      if (title === "版本与更新") {
+        assert.equal(rows.length, 3, "Web updates show the version, channel, and Releases action");
+      } else {
+        assert.ok(rows.length >= 4, "Remote desktop updates show version, details, and actions");
+      }
       for (const [index, row] of rows.entries()) {
         assert.equal(row.left, rows[0].left, `${title} rows share the left hairline edge`);
         assert.equal(row.right, rows[0].right, `${title} rows share the right hairline edge`);

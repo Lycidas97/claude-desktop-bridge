@@ -809,7 +809,6 @@ export function ConversationView({
         && history?.status === "ready" && (
           <div className="conversation-empty">
             <strong>这是一个空会话</strong>
-            <span>从下方发出第一条指令。</span>
           </div>
         )}
       {displayNodes.map((node) => {

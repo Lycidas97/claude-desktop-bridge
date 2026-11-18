@@ -1187,8 +1187,7 @@ button.mobile-settings-row:active { background: var(--surface-2); }
 .mobile-settings-actions button > svg { flex-shrink: 0; }
 
 .mobile-empty-directory { padding: 60px 12px; text-align: center; }
-.mobile-empty-directory h2 { font-size: var(--m-fs-title); }
-.mobile-empty-directory p { margin: 12px 0 24px; color: var(--muted); font-size: var(--m-fs-callout); }
+.mobile-empty-directory h2 { margin: 0 0 16px; font-size: var(--m-fs-title); }
 
 .mobile-app-shell .mobile-desktop-control {
   grid-template-columns: minmax(0, 1fr);

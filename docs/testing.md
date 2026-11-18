@@ -68,7 +68,7 @@ version emits.
 Controller unit tests and the Native browser fixture share
 [`createControllerFixture`](../apps/desktop/src/controller/controller-fixture.ts).
 It runs the controller constructor so tests start with the real publication
-caches, visibility state and event emitter. Each scenario supplies the dependencies
+caches and event emitter. Each scenario supplies the dependencies
 its code path calls. The transport tests also call `initialize()` to exercise
 startup with their synthetic broker and socket. The Native browser fixture starts
 its own local dependencies and routes requests through the constructed controller.

@@ -22,6 +22,7 @@ import {
   HISTORY_PAGE_SIZE,
   REWOUND_HISTORY,
   applyEvidencePageResult,
+  applyInitialEvidencePageResult,
   applySessionResultToState,
   projectHistoryPage,
   projectLegacyEvidenceDetails,
@@ -103,7 +104,7 @@ export async function openBridgeSession(
             history: { sessionId, page: result.history! },
           })
         : current);
-      const itemsAtRequestStart = new Set(stateRef.current.evidence[sessionId]?.items);
+      const eventsAtRequestStart = stateRef.current.events;
       void sendRequest("evidence.list", { sessionId, limit: 12 }, {
         wait: true,
         timeoutMs: 30_000,
@@ -114,10 +115,7 @@ export async function openBridgeSession(
           : undefined;
         setState((current) => isCurrent() ? {
           ...current,
-          evidence: applyEvidencePageResult(current.evidence, sessionId, evidenceResult?.evidence, {
-            hasMoreOnError: false,
-            itemsAtRequestStart,
-          }),
+          evidence: applyInitialEvidencePageResult(current, sessionId, evidenceResult?.evidence, eventsAtRequestStart),
         } : current);
       }).catch(() => {
         setState((current) => isCurrent() ? {

@@ -93,7 +93,7 @@ export async function verifyMobileSafeArea(page, steps, directory, viewports) {
     await page.screenshot({ path: resolve(directory, `${tab}-safe-area.png`), fullPage: true });
     steps.push(`${tab}: env(safe-area-inset-bottom) 0 → 48px changes padding ${paddings[0]} → ${paddings[1]}px; last content clears safe area, header/document stay fixed`);
   }
-  await page.getByRole("button", { name: /连接诊断与日志/u }).click();
+  await page.getByRole("button", { name: "连接诊断与日志", exact: true }).click();
   await page.getByRole("dialog", { name: "连接诊断与日志导出", exact: true }).waitFor();
   steps.push("The final settings diagnostics button opens its dialog after scrolling to the bottom");
   await emulation.detach();

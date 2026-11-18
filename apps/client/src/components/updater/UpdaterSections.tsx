@@ -332,19 +332,16 @@ export function MobileClientUpdaterSection({ updater }: { updater: ClientUpdater
           </div>
         </>
       ) : (
-        <>
-          <p className="mobile-settings-row detail-text">Web 访问端请前往 GitHub Releases 获取各平台最新安装包。</p>
-          <div className="mobile-settings-row mobile-settings-actions">
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={() => void updater.openReleasesPage(GITHUB_RELEASES_PAGE_URL)}
-            >
-              <ExternalLink size={16} />
-              查看 GitHub Releases
-            </button>
-          </div>
-        </>
+        <div className="mobile-settings-row mobile-settings-actions">
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={() => void updater.openReleasesPage(GITHUB_RELEASES_PAGE_URL)}
+          >
+            <ExternalLink size={16} />
+            查看 GitHub Releases
+          </button>
+        </div>
       )}
     </section>
   );

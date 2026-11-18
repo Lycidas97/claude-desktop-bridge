@@ -788,7 +788,6 @@ export function ConversationView({
         && history?.status === "ready" && (
           <div className="conversation-empty">
             <strong>这是一个空会话</strong>
-            <span>从下方发出第一条指令。</span>
           </div>
         )}
       {displayNodes.map((node) => {
@@ -1121,10 +1120,8 @@ export function ConversationView({
         <div className="session-channel-warning message-queue-status" role="status" aria-label="消息排队状态">
           <LoaderCircle size={17} />
           <span>
-            <strong>{isOnline ? sessionQueueLabel(session) : "连接已断开，等待同步状态"}</strong>
-            {isOnline
-              ? `${session.pendingCount} 条消息已到电脑，轮到后会自动执行，无需重复发送。`
-              : `上次同步时有 ${session.pendingCount} 条消息排队，当前进度尚未确认。`}
+            <strong>{isOnline ? `${sessionQueueLabel(session)} · ${session.pendingCount} 条` : "连接已断开，等待同步状态"}</strong>
+            {!isOnline && `上次同步时有 ${session.pendingCount} 条消息排队，当前进度尚未确认。`}
           </span>
           {menu.canSync && (
             <button

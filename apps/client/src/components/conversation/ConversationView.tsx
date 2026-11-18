@@ -272,7 +272,8 @@ export function ConversationView({
   const previousDraftKeyRef = useRef(draftKey);
 
   const effectiveSessionView = controlledSessionView ?? internalSessionView;
-  useAcknowledgeSessionCompletion(hostId, session, visible && effectiveSessionView === "conversation" && history?.status === "ready");
+  useAcknowledgeSessionCompletion(hostId, session,
+    visible && effectiveSessionView === "conversation" && (history?.status === "ready" || Boolean(history?.items.length)));
   function setSessionView(next: "conversation" | "evidence"): void {
     if (onSessionViewChange) onSessionViewChange(next);
     else setInternalSessionView(next);

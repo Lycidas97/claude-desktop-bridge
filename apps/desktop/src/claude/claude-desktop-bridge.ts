@@ -962,6 +962,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
       }
       await this.options.eventLog.flushDeltas(sessionId);
       await this.record({ sessionId, origin: "claude-desktop", type: "session.rewound", data: { messageId, scope } });
+      this.lastCompletedTurns.delete(sessionId);
       this.messageProjection.delete(sessionId);
       this.contextStates.set(sessionId, createNativeContextState(this.contextStates.get(sessionId)?.maxTokensByModel));
       this.backgroundTasks.delete(sessionId);

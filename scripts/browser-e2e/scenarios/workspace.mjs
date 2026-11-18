@@ -41,8 +41,12 @@ export async function verifySessionCatalog(page, host, steps, directory, viewpor
   await host.send({ kind: "snapshot", snapshot: host.snapshot });
   await mobileMetadataRow.locator(".session-state-dot.completed").waitFor();
   await capture("mobile-catalog");
+  const seenKey = `bridge-seen-session-completions:${host.pairing.roomId}`;
+  // Model another tab persisting a fork acknowledgement after this catalog cached its state.
+  await page.evaluate(key => localStorage.setItem(key, JSON.stringify({ "browser-e2e-fork": "fork-result" })), seenKey);
   await mobileMetadataRow.locator(".session-row-hit").click();
-  await page.waitForFunction(({ hostId, id }) => JSON.parse(localStorage.getItem(`bridge-seen-session-completions:${hostId}`) ?? "{}")[id] === "mobile-background-result", { hostId: host.pairing.roomId, id: sessionId });
+  await page.waitForFunction(({ key, id }) => JSON.parse(localStorage.getItem(key) ?? "{}")[id] === "mobile-background-result", { key: seenKey, id: sessionId });
+  assert.equal(await page.evaluate(key => JSON.parse(localStorage.getItem(key))["browser-e2e-fork"], seenKey), "fork-result");
   await openMobileDrawer(page);
   await mobileMetadataRow.waitFor();
   assert.equal(await mobileMetadataRow.locator(".session-state-dot.completed").count(), 0);

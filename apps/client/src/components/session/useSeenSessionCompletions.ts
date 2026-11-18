@@ -6,15 +6,18 @@ const empty: SeenCompletions = {};
 const seenByHost = new Map<string, SeenCompletions>();
 const listeners = new Set<() => void>();
 
+function readSeenCompletions(key: string): SeenCompletions {
+  try {
+    return JSON.parse(localStorage.getItem(key) ?? "null") ?? empty;
+  } catch {
+    return empty;
+  }
+}
+
 function seenCompletions(hostId: string): SeenCompletions {
   const cached = seenByHost.get(hostId);
   if (cached) return cached;
-  let seen = empty;
-  try {
-    seen = JSON.parse(localStorage.getItem(`bridge-seen-session-completions:${hostId}`) ?? "null") ?? empty;
-  } catch {
-    // An unavailable or malformed preference starts with nothing seen.
-  }
+  const seen = readSeenCompletions(`bridge-seen-session-completions:${hostId}`);
   seenByHost.set(hostId, seen);
   return seen;
 }
@@ -31,13 +34,15 @@ export function useSeenSessionCompletions(hostId: string | undefined): SeenCompl
 export function useAcknowledgeSessionCompletion(hostId: string, session: BridgeSessionInfo, visible: boolean): void {
   const { sessionId, lastCompletedTurnId } = session;
   useEffect(() => {
-    if (!visible || !hostId || !lastCompletedTurnId || seenCompletions(hostId)[sessionId] === lastCompletedTurnId) return;
-    function acknowledge() {
+    const completionId = lastCompletedTurnId;
+    if (!visible || !hostId || !completionId || seenCompletions(hostId)[sessionId] === completionId) return;
+    const key = `bridge-seen-session-completions:${hostId}`;
+    const acknowledge = () => {
       if (document.visibilityState === "hidden") return;
-      const seen = { ...seenCompletions(hostId), [sessionId]: lastCompletedTurnId! };
+      const seen = { ...seenCompletions(hostId), ...readSeenCompletions(key), [sessionId]: completionId };
       seenByHost.set(hostId, seen);
       try {
-        localStorage.setItem(`bridge-seen-session-completions:${hostId}`, JSON.stringify(seen));
+        localStorage.setItem(key, JSON.stringify(seen));
       } catch {
         // Keep the in-memory acknowledgement when storage is unavailable.
       }

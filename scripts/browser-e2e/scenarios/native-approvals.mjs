@@ -169,7 +169,9 @@ export async function verifyNativeApprovals(page, host, steps, directory, baseUr
   const input = { questions: [
     { question: "选择执行范围", multiSelect: false, options: [{ label: "仅本机", description: "使用隔离测试目录" }, { label: "稍后处理" }] },
     { question: "选择检查项目", multiSelect: true, options: [{ label: "稍后处理" }, { label: "类型检查" }, { label: "回归测试" }] },
+    { question: "选择归档位置", multiSelect: true, options: [{ label: "本机归档" }, { label: "团队云盘" }] },
   ] };
+  const archiveAnswer = "已归档到共享目录, 本机归档";
   await openMobileDrawer(page);
   const question = await host.nativeApproval.open("AskUserQuestion", input);
   for (const event of await host.nativeApproval.message({ type: "assistant", uuid: "native-question-card", timestamp: Date.now(), message: { content: [
@@ -208,25 +210,42 @@ export async function verifyNativeApprovals(page, host, steps, directory, baseUr
   await questionCard.getByRole("checkbox", { name: "类型检查", exact: true }).check();
   await questionCard.getByRole("checkbox", { name: "回归测试", exact: true }).check();
   await page.screenshot({ path: resolve(directory, "native-question.png"), fullPage: true });
-  const multiOther = questionCard.getByRole("checkbox", { name: "其他", exact: true });
+  await questionCard.getByRole("group", { name: "选择归档位置", exact: true }).getByRole("checkbox", { name: "其他", exact: true }).check();
+  await questionCard.getByRole("textbox", { name: "选择归档位置：其他回答", exact: true }).fill(archiveAnswer);
+  const checks = questionCard.getByRole("group", { name: "选择检查项目", exact: true });
+  const multiOther = checks.getByRole("checkbox", { name: "其他", exact: true });
   await multiOther.check();
   assert.equal(await submit.isDisabled(), true, "Selected Other needs text even with other checks selected");
-  await questionCard.getByRole("textbox", { name: "选择检查项目：其他回答", exact: true }).fill("浏览器检查");
+  const otherAnswer = "浏览器检查, 稍后处理";
+  const multiText = checks.getByRole("textbox", { name: "选择检查项目：其他回答", exact: true });
+  await multiText.fill(otherAnswer);
   assert.equal(await submit.isEnabled(), true);
   await page.screenshot({ path: resolve(directory, "native-question-other.png"), fullPage: true });
   await multiOther.uncheck();
-  assert.equal(await questionCard.getByRole("textbox").count(), 0, "Unchecking Other closes the input");
+  assert.equal(await multiText.count(), 0, "Unchecking Other closes the input");
+  await multiOther.check();
+  await multiText.fill(otherAnswer);
   await submit.click();
   const questionReply = await question.response;
   assert.equal(questionReply.decision, "once");
   assert.equal(questionReply.requestId, question.request.requestId);
-  assert.deepEqual(questionReply.response, { ...input, answers: { "选择执行范围": "仅本机", "选择检查项目": "类型检查, 回归测试" } });
+  assert.deepEqual(questionReply.response, {
+    ...input,
+    answers: { "选择执行范围": "仅本机", "选择检查项目": "类型检查, 回归测试", "选择归档位置": archiveAnswer },
+    annotations: { "选择检查项目": { notes: otherAnswer } },
+  });
   await questionCard.waitFor({ state: "hidden" });
-  for (const event of await host.nativeApproval.message({ type: "user", uuid: "native-question-result", timestamp: Date.now(), toolUseResult: questionReply.response, message: { content: [
-    { type: "tool_result", tool_use_id: question.request.toolUseId, content: "User has answered your questions." },
-  ] } })) await host.emit(event.type, event.data, { itemId: event.itemId });
+  const notes = "只处理本机目录, 保留共享副本";
+  for (const event of await host.nativeApproval.message({ type: "user", uuid: "native-question-result", timestamp: Date.now(),
+    toolUseResult: { ...questionReply.response, annotations: { ...questionReply.response.annotations, "选择执行范围": { notes } } }, message: { content: [
+      { type: "tool_result", tool_use_id: question.request.toolUseId, content: "User has answered your questions." },
+    ] },
+  })) await host.emit(event.type, event.data, { itemId: event.itemId });
   const answeredQuestion = page.locator(".interactive-prompt-card").filter({ hasText: "选择检查项目" });
-  await eventually(() => answeredQuestion.locator(".interactive-option-button.is-selected").count(), 3, "Every single and multi-choice selection is visible after the native result");
+  await answeredQuestion.getByText(archiveAnswer, { exact: true }).waitFor();
+  await answeredQuestion.getByText(otherAnswer, { exact: true }).waitFor();
+  await answeredQuestion.getByText(notes, { exact: true }).waitFor();
+  await eventually(() => answeredQuestion.locator(".interactive-option-button.is-selected").count(), 3, "Every preset selection is visible and the free-text answer selects none");
   assert.equal(await answeredQuestion.locator(".is-primary").count(), 0, "An answered question has no default first-option highlight");
   assert.equal(await answeredQuestion.locator(".interactive-question-block").filter({ hasText: "选择检查项目" }).getByRole("button", { name: "稍后处理", exact: true }).getAttribute("class").then(value => value.includes("is-selected")), false);
   await page.screenshot({ path: resolve(directory, "native-question-answered.png"), fullPage: true });
@@ -237,7 +256,10 @@ export async function verifyNativeApprovals(page, host, steps, directory, baseUr
   await eventually(() => answeredQuestion.locator(".interactive-option-button.is-selected").count(), 3, "Reopened native history retains every selection");
   await page.reload({ waitUntil: "domcontentloaded" });
   await openMobileSession(page);
-  await eventually(() => answeredQuestion.locator(".interactive-option-button.is-selected").count(), 3, "Reloaded native history retains every selection");
+  await answeredQuestion.getByText(archiveAnswer, { exact: true }).waitFor();
+  await answeredQuestion.getByText(otherAnswer, { exact: true }).waitFor();
+  await answeredQuestion.getByText(notes, { exact: true }).waitFor();
+  await eventually(() => answeredQuestion.locator(".interactive-option-button.is-selected").count(), 3, "Reloaded native history retains every selection without selecting a free-text fragment");
   const resolutions = host.requests.filter((request) => request.method === "permission.resolve");
   assert.equal(resolutions.length, 3);
   assert.equal(new Set(resolutions.map((request) => request.params.requestId)).size, 3);

@@ -70,7 +70,7 @@ interface TranscriptNode {
   results?: Array<{ id: string; failed?: boolean; backgroundTaskId?: string; stoppedTaskId?: string }>;
   backgroundShellUpdates?: Array<{ taskId: string; pending: boolean }>;
   planUpdates?: Array<{ id: string; input: Record<string, unknown>; wrapUp: boolean }>;
-  toolResultAnswers?: Record<string, string>;
+  toolResultAnswers?: QuestionAnswers;
   createdAt: number;
 }
 
@@ -249,40 +249,79 @@ export function extractInteractivePrompt(value: Record<string, unknown>): Bridge
   return found;
 }
 
-export function extractToolResultAnswers(value: Record<string, unknown>): Record<string, string> | undefined {
+export type QuestionAnswers = Record<string, { answer?: string | string[]; notes?: string }>;
+
+export function extractToolResultAnswers(value: Record<string, unknown>): QuestionAnswers | undefined {
   if (value.type !== "user") return undefined;
   const direct = value.toolUseResult ?? value.tool_use_result;
-  if (!isRecord(direct) || !isRecord(direct.answers)) return undefined;
-  const answers: Record<string, string> = {};
-  for (const [k, v] of Object.entries(direct.answers)) {
-    if (typeof v === "string" && v.trim()) {
-      answers[k] = v.trim();
-    } else if (Array.isArray(v)) {
-      const joined = v.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim()).join(", ");
-      if (joined) answers[k] = joined;
+  if (!isRecord(direct)) return undefined;
+  const answers: QuestionAnswers = Object.create(null);
+  if (isRecord(direct.annotations)) {
+    for (const [question, annotation] of Object.entries(direct.annotations)) {
+      if (isRecord(annotation) && typeof annotation.notes === "string" && annotation.notes.trim()) {
+        answers[question] = { notes: annotation.notes.trim() };
+      }
+    }
+  }
+  if (isRecord(direct.answers)) {
+    for (const [question, raw] of Object.entries(direct.answers)) {
+      if (typeof raw === "string" && raw.trim() && !(raw === "(notes only)" && answers[question]?.notes)) {
+        (answers[question] ??= {}).answer = raw.trim();
+      } else if (Array.isArray(raw)) {
+        const parts = raw.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map(item => item.trim());
+        if (parts.length) (answers[question] ??= {}).answer = parts;
+      }
     }
   }
   return Object.keys(answers).length > 0 ? answers : undefined;
 }
 
+/** Enumerate complete matches because option labels can themselves contain comma-space. */
+function* questionLabelMatches(answer: string, labels: string[]): Generator<string[], void> {
+  if (labels.includes(answer)) yield [answer];
+  for (const label of labels) {
+    if (!answer.startsWith(label)) continue;
+    const tail = answer.slice(label.length).trimStart();
+    if (!tail.startsWith(", ")) continue;
+    for (const rest of questionLabelMatches(tail.slice(2).trimStart(), labels.filter(other => other !== label))) {
+      yield [label, ...rest];
+    }
+  }
+}
+
 export function applyQuestionAnswers(
   prompt: BridgeInteractivePrompt,
-  answers?: Record<string, string>,
+  answers?: QuestionAnswers,
 ): BridgeInteractivePrompt {
   if (prompt.kind !== "question" || !prompt.questions) return prompt;
   return {
     ...prompt,
     answered: true,
     questions: prompt.questions.map((q) => {
-      const answer = answers?.[q.question];
-      if (!answer) return q;
-      const selectedSet = new Set(answer.split(", ").map((part) => part.trim()).filter(Boolean));
+      const result = answers?.[q.question];
+      if (!result) return q;
+      const { answer, notes } = result;
+      const labels = q.options.map(option => option.label);
+      let selected: string[] | undefined;
+      let freeTextAnswer: string | undefined;
+      if (Array.isArray(answer)) {
+        selected = answer.filter(label => labels.includes(label));
+        if (selected.length && selected.length < answer.length) {
+          freeTextAnswer = answer.filter(part => !labels.includes(part)).join(", ");
+        }
+      } else if (answer) {
+        if (q.multiSelect) {
+          const matches = questionLabelMatches(answer, labels);
+          const first = matches.next();
+          if (!first.done && matches.next().done) selected = first.value;
+        } else if (labels.includes(answer)) selected = [answer];
+      }
       return {
         ...q,
-        answer,
-        options: q.options.map((opt) => (
-          opt.label === answer || selectedSet.has(opt.label) ? { ...opt, selected: true } : opt
-        )),
+        ...(answer ? { answer: Array.isArray(answer) ? answer.join(", ") : answer } : {}),
+        ...(freeTextAnswer ? { freeTextAnswer } : {}),
+        ...(notes ? { notes } : {}),
+        options: selected?.length ? q.options.map(option => selected.includes(option.label) ? { ...option, selected: true } : option) : q.options,
       };
     }),
   };

@@ -5562,6 +5562,18 @@ button:disabled {
   gap: 8px;
 }
 
+.interactive-question-answer {
+  margin: 0;
+  padding: 9px 12px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: calc(13px * var(--font-scale));
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .interactive-prompt-options {
   display: grid;
   grid-template-columns: minmax(0, 1fr);

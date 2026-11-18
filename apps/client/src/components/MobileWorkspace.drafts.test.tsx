@@ -1942,8 +1942,9 @@ describe("native structured approvals", () => {
     expect(props.onResolvePermission).not.toHaveBeenCalled();
   });
 
-  it.each(["single", "multi", "open"] as const)("submits a %s text answer through the original question without sending chat", async mode => {
-    const question = { question: "下一步怎么做？", multiSelect: mode === "multi", options: mode === "open" ? [] : [{ label: "先检查" }] };
+  it.each(["single", "multi", "multi-long", "open"] as const)("submits a %s text answer through the original question without sending chat", async mode => {
+    const text = mode === "multi-long" ? "检".repeat(8193) : "按修订意见继续";
+    const question = { question: "下一步怎么做？", multiSelect: mode.startsWith("multi"), options: mode === "open" ? [] : [{ label: "先检查" }] };
     const permission: BridgePermissionInfo = { requestId: "text-answer", sessionId: "A", toolUseId: "text-tool", toolName: "AskUserQuestion", createdAt: 1, canAllowAlways: false, input: { questions: [question] } };
     const submission = deferred();
     const onResolve = vi.fn().mockReturnValueOnce(submission.promise).mockResolvedValue(undefined);
@@ -1953,11 +1954,11 @@ describe("native structured approvals", () => {
     expect(elements(drawQuestion()).some(element => element.type === "input" && element.props.type === "text")).toBe(mode === "open");
     if (mode !== "open") {
       const choices = () => elements(drawQuestion()).filter(element => element.type === "input" && element.props.type !== "text");
-      if (mode === "multi") choices()[0]!.props.onChange();
+      if (question.multiSelect) choices()[0]!.props.onChange();
       choices().at(-1)!.props.onChange();
       expect(elements(drawQuestion()).find(element => element.props.className === "primary-button")!.props.disabled).toBe(true);
     }
-    elements(drawQuestion()).find(element => element.type === "input" && element.props.type === "text")!.props.onChange({ target: { value: "  按修订意见继续  " } });
+    elements(drawQuestion()).find(element => element.type === "input" && element.props.type === "text")!.props.onChange({ target: { value: `  ${text}  ` } });
     expect(elements(drawQuestion()).find(element => element.props.className === "primary-button")!.props.disabled).toBe(false);
     elements(drawQuestion()).find(element => element.props.className === "primary-button")!.props.onClick();
     expect(elements(drawQuestion()).find(element => element.type === "fieldset")!.props.disabled).toBe(true);
@@ -1965,10 +1966,14 @@ describe("native structured approvals", () => {
     await settle();
     expect(elements(drawQuestion()).find(element => element.type === "fieldset")!.props.disabled).toBe(false);
     expect(elements(drawQuestion()).find(element => element.props.role === "alert")?.props.children).toBe("回答尚未提交");
-    expect(elements(drawQuestion()).find(element => element.type === "input" && element.props.type === "text")!.props.value).toBe("  按修订意见继续  ");
+    expect(elements(drawQuestion()).find(element => element.type === "input" && element.props.type === "text")!.props.value).toBe(`  ${text}  `);
     elements(drawQuestion()).find(element => element.props.className === "primary-button")!.props.onClick();
     expect(onResolve).toHaveBeenCalledTimes(2);
-    expect(onResolve).toHaveBeenLastCalledWith("text-answer", "allow-once", undefined, { ...permission.input, answers: { "下一步怎么做？": mode === "multi" ? "先检查, 按修订意见继续" : "按修订意见继续" } });
+    expect(onResolve).toHaveBeenLastCalledWith("text-answer", "allow-once", undefined, {
+      ...permission.input,
+      answers: { "下一步怎么做？": mode === "multi" ? "先检查" : mode === "multi-long" ? `先检查, ${text}` : text },
+      ...(mode === "multi" ? { annotations: { "下一步怎么做？": { notes: text } } } : {}),
+    });
     expect(props.onSendTurn).not.toHaveBeenCalled();
   });
 

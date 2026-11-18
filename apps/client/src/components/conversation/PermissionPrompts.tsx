@@ -165,6 +165,12 @@ export function InteractivePromptCard({
               </button>
             ))}
           </div>
+          {answered && (question.freeTextAnswer || (question.answer && !question.options.some(option => option.selected))) && (
+            <p className="interactive-question-answer">{question.freeTextAnswer || question.answer}</p>
+          )}
+          {answered && question.notes && (
+            <p className="interactive-question-answer">{question.notes}</p>
+          )}
         </div>
       ))}
     </section>
@@ -373,10 +379,25 @@ export function QuestionPrompt({
           type="button"
           className="primary-button"
           disabled={!complete || busy}
-          onClick={() => void resolveQuestion(
-            "allow-once",
-            { ...permission.input, answers: Object.fromEntries(questions.map(question => [question.question, [answers[question.question as string], customAnswers[question.question as string]?.trim()].flat().filter(Boolean).join(", ")])) },
-          )}
+          onClick={() => {
+            const annotations: Record<string, { notes: string }> = Object.create(null);
+            const submittedAnswers = Object.fromEntries(questions.map(({ question }) => {
+              const key = question as string;
+              const selected = [answers[key]].flat().filter(Boolean).join(", ");
+              const text = customAnswers[key]?.trim();
+              // The native tool caps notes at 8192 characters. Longer text still fits in answers.
+              if (selected && text && text.length <= 8192) {
+                annotations[key] = { notes: text };
+                return [key, selected];
+              }
+              return [key, [selected, text].filter(Boolean).join(", ")];
+            }));
+            void resolveQuestion("allow-once", {
+              ...permission.input,
+              answers: submittedAnswers,
+              ...(Object.keys(annotations).length ? { annotations } : {}),
+            });
+          }}
         >
           {busy && <LoaderCircle className="is-spinning" size={15} />}提交回答
         </button>

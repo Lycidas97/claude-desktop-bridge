@@ -8,7 +8,7 @@ import type {
 } from "@bridge/protocol";
 import type { NativeDesktopReceipt } from "../controller/conversation-state-store.js";
 import type { BridgeEventDraft } from "../controller/session-event-log.js";
-import { applyQuestionAnswers, extractInteractivePrompt, extractToolResultAnswers, updateClaudeTaskPlan, visibleMessage } from "../transcript/claude-history.js";
+import { applyQuestionAnswers, extractInteractivePrompt, extractToolResultAnswers, updateClaudeTaskPlan, visibleMessage, type QuestionAnswers } from "../transcript/claude-history.js";
 import { summarizeNativeToolInput } from "../transcript/transcript-tool-detail.js";
 import { NativeCallError } from "./claude-desktop-inspector.js";
 
@@ -17,7 +17,7 @@ export interface NativeMessageProjection {
   planObserved?: boolean;
   tasks?: Map<string, BridgeSubagentSummary>;
   questions?: Map<string, BridgeHistoryItem>;
-  questionAnswers?: Map<string, Record<string, string>>;
+  questionAnswers?: Map<string, QuestionAnswers>;
 }
 
 function record(value: unknown): Record<string, unknown> {

@@ -114,6 +114,7 @@ foreach ($key in $environmentKeys) {
 }
 
 $relayProcess = $null
+$qaFailure = $null
 try {
   if ($env:RUNNER_ENVIRONMENT -eq "github-hosted") {
     $installResult = Start-Process -FilePath $installer.FullName `
@@ -270,6 +271,9 @@ try {
       & cmd.exe /c "`"$adb`" forward --remove tcp:$androidPort >nul 2>nul"
     }
   }
+} catch {
+  $qaFailure = $_
+  throw
 } finally {
   if ($null -ne $relayProcess -and -not $relayProcess.HasExited) {
     Stop-Process -Id $relayProcess.Id -Force -ErrorAction SilentlyContinue
@@ -291,7 +295,12 @@ try {
       & cmd.exe /c "taskkill.exe /PID $($process.Id) /T /F >nul 2>nul"
     }
     if ($installProcesses.Count -gt 0) {
-      Wait-Process -InputObject $installProcesses -Timeout 5
+      try {
+        Wait-Process -InputObject $installProcesses -Timeout 5
+      } catch {
+        if ($qaFailure) { Write-Error -ErrorRecord $qaFailure -ErrorAction Continue }
+        throw
+      }
     }
     $global:LASTEXITCODE = 0
   }

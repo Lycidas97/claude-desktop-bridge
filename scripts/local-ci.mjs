@@ -153,10 +153,13 @@ export async function publishVerifiedHead({
   return { revision, tree, viaTree, sourceRevision: receipt.revision };
 }
 
-export function recycleWindowsRunCommand(path, recycleExe = "D:\\work\\cache\\bridge-recycle.exe") {
-  return `if (Test-Path -LiteralPath "${path}") { ` +
-    `& "${recycleExe}" "${path}"; ` +
-    `if ($LASTEXITCODE -ne 0) { throw "Windows Recycle Bin cleanup failed for ${path} (exit $LASTEXITCODE)" } }`;
+export function recycleWindowsRunCommand(path, recycleSource) {
+  const literal = `'${path.replaceAll("'", "''")}'`;
+  // Send the recycler with the command so cleanup is available even if the first upload fails.
+  return `if (Test-Path -LiteralPath ${literal}) { try { ` +
+    `Add-Type -TypeDefinition ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${recycleSource.toString("base64")}'))); ` +
+    `[WindowsCiRecycle]::Recycle(${literal}) ` +
+    `} catch { [Console]::Error.WriteLine('Windows Recycle Bin cleanup failed for ' + ${literal} + ': ' + $_.Exception.Message); throw } }`;
 }
 
 async function runCli() {
@@ -234,6 +237,7 @@ async function runCli() {
     });
   }
 
+  const windowsRecycleSource = skipWin ? null : await readFile(new URL("./win-ci-recycle.cs", import.meta.url));
   const tempRoot = await mkdtemp(join(tmpdir(), "bridge-local-ci-"));
   const results = [];
   const sshAlive = ["-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"];
@@ -286,7 +290,7 @@ async function runCli() {
         const psArgs = [
           ...sshAlive,
           winHost,
-          `$ErrorActionPreference = 'Stop'; $env:BRIDGE_TEST_TEMP_ROOT = "${remoteTempWin}"; try { powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${remoteScriptWin}" -Revision "${revision}" -BundlePath "${remoteBundleWin}"; $ec = $LASTEXITCODE } finally { ${recycleWindowsRunCommand(remoteTempWin)} }; exit $ec`,
+          `$ErrorActionPreference = 'Stop'; $env:BRIDGE_TEST_TEMP_ROOT = "${remoteTempWin}"; try { powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${remoteScriptWin}" -Revision "${revision}" -BundlePath "${remoteBundleWin}"; $ec = $LASTEXITCODE } finally { ${recycleWindowsRunCommand(remoteTempWin, windowsRecycleSource)} }; exit $ec`,
         ];
         const tWin = await runPrefixed("WIN", "ssh", psArgs, {
           onClose(code) {
@@ -312,7 +316,7 @@ async function runCli() {
       const stop = spawnSync("ssh", [
         ...sshAlive,
         winHost,
-        `$ErrorActionPreference = 'Stop'; Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like '*win-local-ci-${unfinishedWinRunId}.ps1*' } | ForEach-Object { cmd.exe /c "taskkill.exe /PID $($_.ProcessId) /T /F >nul 2>nul" }; ${recycleWindowsRunCommand(`D:\\work\\cache\\temp\\bridge-ci-${unfinishedWinRunId}`)}; exit 0`,
+        `$ErrorActionPreference = 'Stop'; Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like '*win-local-ci-${unfinishedWinRunId}.ps1*' } | ForEach-Object { cmd.exe /c "taskkill.exe /PID $($_.ProcessId) /T /F >nul 2>nul" }; ${recycleWindowsRunCommand(`D:\\work\\cache\\temp\\bridge-ci-${unfinishedWinRunId}`, windowsRecycleSource)}; exit 0`,
       ], { encoding: "utf8" });
       if (stop.status !== 0) {
         console.error(`[WIN] Remote cancellation or Recycle Bin cleanup failed for ${unfinishedWinRunId}: ${stop.stderr || stop.error}`);

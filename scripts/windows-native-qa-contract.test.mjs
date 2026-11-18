@@ -341,29 +341,72 @@ ${stageSlice}
 test("Windows CI recycles its QA staging after exit and preserves locked staging on failure", { skip: process.platform !== "win32" }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "bridge-ci-recycle-"));
   try {
-    const recycleExe = join(directory, "bridge-recycle.exe");
+    const runRoot = join(directory, "run");
+    const installRoot = join(runRoot, "qa-staging", "install");
+    const modulePath = join(installRoot, "node_datachannel.node");
+    await mkdir(installRoot, { recursive: true });
+    await writeFile(modulePath, "QA lock fixture");
+
+    const lockSource = join(directory, "hold-lock.cs");
+    const lockExe = join(installRoot, "hold-lock.exe");
+    await writeFile(lockSource, `
+      class LockHolder {
+        static void Main() {
+          using (System.IO.File.Open("node_datachannel.node", System.IO.FileMode.Open,
+                   System.IO.FileAccess.ReadWrite, System.IO.FileShare.None)) {
+            System.Console.WriteLine("LOCKED");
+            System.Threading.Thread.Sleep(30000);
+          }
+        }
+      }
+    `);
     const compiler = join(process.env.SystemRoot, "Microsoft.NET/Framework64/v4.0.30319/csc.exe");
-    const compilation = spawnSync(compiler, ["/nologo", `/out:${recycleExe}`, fileURLToPath(new URL("./win-recycle.cs", import.meta.url))], { encoding: "utf8" });
+    const compilation = spawnSync(compiler, ["/nologo", `/out:${lockExe}`, lockSource], { encoding: "utf8" });
     assert.equal(compilation.status, 0, compilation.stdout + compilation.stderr);
 
-    const runRoot = join(directory, "run");
-    const modulePath = join(runRoot, "qa-staging", "node_datachannel.node");
-    await mkdir(dirname(modulePath), { recursive: true });
-    await writeFile(modulePath, "QA lock fixture");
+    const recycleSource = await readFile(new URL("./win-ci-recycle.cs", import.meta.url));
+    const recycleRun = recycleWindowsRunCommand(runRoot, recycleSource);
+    const teardown = windowsSource.slice(windowsSource.search(/^\} catch \{\r?\n  \$qaFailure = \$_/mu));
     const fixture = join(directory, "recycle.ps1");
     await writeFile(fixture, `
-      param([switch]$Locked)
+      param([switch]$Locked, [switch]$WaitFailure)
       $ErrorActionPreference = 'Stop'
-      if ($Locked) { $handle = [IO.File]::Open('${modulePath}', 'Open', 'ReadWrite', 'None') }
-      try { ${recycleWindowsRunCommand(runRoot, recycleExe)} }
-      finally { if ($handle) { $handle.Dispose() } }
+      $env:BRIDGE_RECYCLE_STAGING = '${dirname(installRoot)}'
+      $installRoot = '${installRoot}'
+      $environmentKeys = @()
+      $start = [Diagnostics.ProcessStartInfo]::new('${lockExe}')
+      $start.WorkingDirectory = $installRoot
+      $start.UseShellExecute = $false
+      $start.RedirectStandardOutput = $true
+      $child = [Diagnostics.Process]::Start($start)
+      try {
+        if ($child.StandardOutput.ReadLine() -ne 'LOCKED') { throw 'Fixture did not acquire the file lock' }
+        if ($Locked) { ${recycleRun} }
+        if ($WaitFailure) {
+          function Wait-Process { throw 'QA_WAIT_FAILED' }
+        }
+        try { if ($WaitFailure) { throw 'QA_ASSERTION_FAILED' }
+        ${teardown}
+        if (-not $child.HasExited) { throw 'QA did not stop the lock holder' }
+        ${recycleRun}
+      } finally {
+        if (-not $child.HasExited) { $child.Kill(); $child.WaitForExit() }
+        $child.Dispose()
+      }
     `);
-    const run = (...args) => spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-File", fixture, ...args], { encoding: "utf8" });
+    const run = (...args) => spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-File", fixture, ...args], { encoding: "utf8", timeout: 20_000 });
     const locked = run("-Locked");
     assert.equal(locked.status, 1, locked.stdout + locked.stderr);
     assert.match(locked.stderr, /Windows Recycle Bin cleanup failed for/u);
     assert.ok(locked.stderr.includes(runRoot));
     assert.equal(await readFile(modulePath, "utf8"), "QA lock fixture");
+
+    const waitFailure = run("-WaitFailure");
+    assert.equal(waitFailure.status, 1, waitFailure.stdout + waitFailure.stderr);
+    assert.match(waitFailure.stderr, /QA_ASSERTION_FAILED/u);
+    assert.match(waitFailure.stderr, /QA_WAIT_FAILED/u);
+    assert.ok(existsSync(runRoot));
+
     const released = run();
     assert.equal(released.status, 0, released.stdout + released.stderr);
     assert.equal(existsSync(runRoot), false);

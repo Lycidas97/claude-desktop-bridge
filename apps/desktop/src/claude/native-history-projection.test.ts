@@ -6,9 +6,9 @@ const questions = [
   { question: "选择执行范围", options: [{ label: "仅本机" }, { label: "所有设备" }] },
 ];
 
-function ask(id: string, toolUseId: string) {
+function ask(id: string, toolUseId: string, questionList = questions) {
   return { type: "assistant", uuid: id, timestamp: 10, message: { content: [
-    { type: "tool_use", id: toolUseId, name: "AskUserQuestion", input: { questions } },
+    { type: "tool_use", id: toolUseId, name: "AskUserQuestion", input: { questions: questionList } },
   ] } };
 }
 
@@ -64,6 +64,20 @@ describe("native question answers", () => {
     expect(live.find(item => item.id === "question")).toEqual(history.find(item => item.id === "question"));
     const question = history.find(item => item.id === "question")?.interactivePrompt?.questions?.[0];
     expect(question?.answer).toBe(text);
+    expect(question?.options.filter(option => option.selected).map(option => option.label)).toEqual(selected);
+  });
+
+  it.each([
+    { checks: "构建, 打包", selected: [] },
+    { checks: ["构建", "打包"], selected: ["构建", "打包"] },
+    { checks: ["构建, 打包"], selected: ["构建, 打包"] },
+  ])("uses option boundaries only when the answer is unambiguous ($checks)", ({ checks, selected }) => {
+    const request = ask("question", "ask-1", [{
+      question: "选择检查项目", multiSelect: true, options: ["构建", "打包", "构建, 打包"].map(label => ({ label })),
+    }]);
+    const [item] = nativeHistoryItems("session", [request, answer("ask-1", checks)]);
+    const question = item?.interactivePrompt?.questions?.[0];
+    expect(question?.answer).toBe("构建, 打包");
     expect(question?.options.filter(option => option.selected).map(option => option.label)).toEqual(selected);
   });
 

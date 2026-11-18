@@ -276,15 +276,15 @@ export function extractToolResultAnswers(value: Record<string, unknown>): Questi
   return Object.keys(answers).length > 0 ? answers : undefined;
 }
 
-/** Match the entire string against option labels, which can themselves contain comma-space. */
-function matchQuestionLabels(answer: string, labels: string[]): string[] | undefined {
-  if (labels.includes(answer)) return [answer];
+/** Enumerate complete matches because option labels can themselves contain comma-space. */
+function* questionLabelMatches(answer: string, labels: string[]): Generator<string[], void> {
+  if (labels.includes(answer)) yield [answer];
   for (const label of labels) {
     if (!answer.startsWith(`${label}, `)) continue;
-    const rest = matchQuestionLabels(answer.slice(label.length + 2), labels.filter(other => other !== label));
-    if (rest) return [label, ...rest];
+    for (const rest of questionLabelMatches(answer.slice(label.length + 2), labels.filter(other => other !== label))) {
+      yield [label, ...rest];
+    }
   }
-  return undefined;
 }
 
 export function applyQuestionAnswers(
@@ -304,8 +304,11 @@ export function applyQuestionAnswers(
       if (Array.isArray(answer)) {
         if (answer.every(label => labels.includes(label))) selected = answer;
       } else if (answer) {
-        if (q.multiSelect) selected = matchQuestionLabels(answer, labels);
-        else if (labels.includes(answer)) selected = [answer];
+        if (q.multiSelect) {
+          const matches = questionLabelMatches(answer, labels);
+          const first = matches.next();
+          if (!first.done && matches.next().done) selected = first.value;
+        } else if (labels.includes(answer)) selected = [answer];
       }
       return {
         ...q,

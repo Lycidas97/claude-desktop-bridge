@@ -58,6 +58,30 @@ it("writes a local upload to the session cwd and keeps the prefix cancellation f
   }
 });
 
+it("rejects late writes and commit after the upload is cancelled", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "bridge-upload-rpc-"));
+  try {
+    const controller = createControllerFixture({ allSessions: () => [{ sessionId: "session-1", cwd }] });
+    const content = Buffer.from("cancelled upload");
+    const opened = await controller.dispatchLocal({ method: "file.upload.open", params: {
+      sessionId: "session-1", name: "note.txt", size: content.length, sha256: createHash("sha256").update(content).digest("hex"),
+    } });
+    expect(opened).toMatchObject({ ok: true, result: { upload: { uploadId: expect.any(String) } } });
+    const { uploadId } = (opened.result as { upload: BridgeFileUploadInfo }).upload;
+    const write = { method: "file.upload.write", params: { uploadId, index: 0, data: content.toString("base64") } } as const;
+    expect(await controller.dispatchLocal(write)).toMatchObject({ ok: true, result: { received: 1 } });
+    expect(await controller.dispatchLocal({ method: "file.upload.cancel", params: { uploadId } }))
+      .toMatchObject({ ok: true, result: { cancelled: true } });
+
+    const unavailable = { ok: false, error: { message: "Upload transfer expired or unavailable" } };
+    expect(await controller.dispatchLocal(write)).toMatchObject(unavailable);
+    expect(await controller.dispatchLocal({ method: "file.upload.commit", params: { uploadId } })).toMatchObject(unavailable);
+    await expect(readFile(join(cwd, ".bridge-uploads", uploadId, "note.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 it.each([
   ["plugin.assistant-mail.status", { sessionId: "codex-desktop:saved" }, "UNSUPPORTED", "当前电脑不支持邮件助理。"],
   ["evidence.list", { sessionId: "codex-desktop:saved" }, "UNSUPPORTED", "当前仅支持 Claude Desktop，其他 Agent 适配已停用。"],

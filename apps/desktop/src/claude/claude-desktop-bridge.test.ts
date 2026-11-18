@@ -1778,16 +1778,34 @@ describe("Claude native relay", () => {
     } finally { await f.close(); }
   });
 
-  it("derives native history cursors from the oldest raw UUID", async () => {
+  it.each([false, true])("derives cursors from the oldest raw UUID and ends pagination (empty terminal page: %s)", async empty => {
     const f = await fixture();
     try {
       f.native.page = { messages: [{ type: "system", uuid: "oldest-control" }, { type: "assistant", uuid: "row", message: { id: "api-message", content: [{ type: "thinking", thinking: "hidden" }, { type: "text", text: "Visible" }] } }], hasMore: true };
-      f.native.pages.set("oldest-control", { messages: [], hasMore: false });
+      f.native.pages.set("oldest-control", { hasMore: false, messages: empty ? [] : [
+        { type: "user", uuid: "first-request", message: { content: "First request" } },
+      ] });
       const page = await f.bridge.history("local-native", undefined, 2);
-      expect(page.nextCursor).toBe("oldest-control");
-      expect(page.items).toMatchObject([{ id: "api-message", text: "Visible" }]);
-      await f.bridge.history("local-native", page.nextCursor, 2);
-      expect(f.native.calls.at(-1)?.args[1]).toBe("oldest-control");
+      expect(page).toMatchObject({ hasMore: true, nextCursor: "oldest-control", items: [{ id: "api-message", text: "Visible" }] });
+      f.native.calls.length = 0;
+      const last = await f.bridge.history("local-native", page.nextCursor, 2);
+      expect(last).toMatchObject({ hasMore: false, items: empty ? [] : [{ id: "first-request", text: "First request" }] });
+      expect(last).not.toHaveProperty("nextCursor");
+      expect(f.native.calls).toEqual([{ method: "getTranscriptPage", args: ["local-native", "oldest-control", 2, { window: "accept" }] }]);
+    } finally { await f.close(); }
+  });
+
+  it("opens a new session with empty history and no next cursor", async () => {
+    const f = await fixture();
+    try {
+      const controller = createControllerFixture({ broker: f.bridge, eventLog: f.eventLog });
+      f.native.calls.length = 0;
+      const opened = await controller.dispatchLocal({ method: "session.open", params: { sessionId: "local-native" } });
+      expect(opened).toMatchObject({ ok: true });
+      expect(opened).toHaveProperty("result.history", { sessionId: "local-native", items: [], hasMore: false });
+      expect(f.native.calls.filter(call => call.method === "getTranscriptPage")).toEqual([
+        { method: "getTranscriptPage", args: ["local-native", "", 18, { window: "accept" }] },
+      ]);
     } finally { await f.close(); }
   });
 
@@ -3737,6 +3755,31 @@ describe("Claude native relay", () => {
       expect(f.native.calls.filter(call => ["getTranscriptPage", "getContextUsage"].includes(call.method))).toEqual([
         { method: "getTranscriptPage", args: ["local-native", "", 7, { window: "accept" }] },
         { method: "getContextUsage", args: ["local-native"] },
+      ]);
+    } finally { await f.close(); }
+  });
+
+  it("opens a running session with an estimate when Native lacks realtime usage", async () => {
+    const f = await fixture();
+    try {
+      const model = "claude-sonnet-4-5";
+      f.native.sessions[0]!.model = model;
+      f.native.sessions[0]!.turnRunning = true;
+      f.native.unsupported.add("getContextUsage");
+      f.native.page = { hasMore: false, messages: [{
+        type: "assistant", uuid: "only-reply", message: { model, content: "Only reply", usage: { input_tokens: 12_000, output_tokens: 400 } },
+      }] };
+      const controller = createControllerFixture({ broker: f.bridge, eventLog: f.eventLog });
+      f.native.calls.length = 0;
+
+      expect(await controller.dispatchLocal({ method: "session.open", params: { sessionId: "local-native" } })).toMatchObject({
+        ok: true, result: {
+          history: { hasMore: false, items: [{ id: "only-reply", text: "Only reply" }] },
+          session: { contextUsage: { model, totalTokens: 12_400, estimated: true } },
+        },
+      });
+      expect(f.native.calls.filter(call => ["getTranscriptPage", "getContextUsage"].includes(call.method))).toEqual([
+        { method: "getTranscriptPage", args: ["local-native", "", 18, { window: "accept" }] },
       ]);
     } finally { await f.close(); }
   });

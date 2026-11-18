@@ -233,6 +233,17 @@ export class ClaudeDesktopInspector extends EventEmitter {
     }
   }
 
+  async inputQueueDrained(sessionId: string): Promise<boolean> {
+    // LocalSessions' public heldInput omits ordinary deferred sends. Use Desktop's own unread-input check.
+    return this.evaluate(`(() => {
+      const manager = ${SESSION_MANAGERS}.find(candidate => typeof candidate?.githubPr?.config?.getSession === 'function'
+        && typeof candidate.heldInputChecks?.hasInputThatDiesWithQuery === 'function');
+      const session = manager?.githubPr.config.getSession(${JSON.stringify(sessionId)});
+      return Boolean(session && session.isRunning === false && !session.pendingCycle
+        && !session.sendsHeldAfterError?.length && !manager.heldInputChecks.hasInputThatDiesWithQuery(session));
+    })()`) as Promise<boolean>;
+  }
+
   async prPreferences(sessionId: string): Promise<NativePrPreferences | undefined> {
     if (!this.ready) throw new InspectorDisconnectedError("Claude Desktop inspector is disconnected");
     return this.evaluate(`(() => {

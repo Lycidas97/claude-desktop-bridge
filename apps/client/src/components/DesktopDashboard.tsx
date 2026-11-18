@@ -150,8 +150,6 @@ export function DesktopDashboard({ themeControl }: { themeControl: ThemeControl 
                                   conversationTabLabel="消息"
                                   snapshot={visibleSnapshot!}
                                   events={events}
-                                  apiRequest={request}
-                                  onRefreshSnapshot={refreshSnapshot}
                                   onSelectSession={(nextSessionId) => {
                                     if (nextSessionId !== sessionId) openDesktopSession(nextSessionId);
                                   }}

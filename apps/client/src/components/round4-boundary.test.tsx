@@ -44,7 +44,6 @@ interface HookStore {
 
 const rt = vi.hoisted(() => ({
   store: undefined as HookStore | undefined,
-  contextValue: undefined as any,
 }));
 
 vi.mock("react", async (original) => {
@@ -52,17 +51,6 @@ vi.mock("react", async (original) => {
   return {
     ...actual,
     useSyncExternalStore: (_subscribe: unknown, getSnapshot: () => unknown) => getSnapshot(),
-    createContext(defaultValue: unknown) {
-      const ctx = actual.createContext(defaultValue);
-      const OriginalProvider = ctx.Provider;
-      (ctx as any).Provider = ({ value, children }: { value: unknown; children: ReactNode }) => {
-        rt.contextValue = value;
-        return typeof children === "function"
-          ? (children as () => ReactNode)()
-          : OriginalProvider({ value: value as never, children });
-      };
-      return ctx;
-    },
     useState(initial: any) {
       const store = rt.store!;
       const index = store.index++;
@@ -86,7 +74,7 @@ vi.mock("react", async (original) => {
     },
     useMemo: (create: () => unknown) => create(),
     useCallback: <T extends (...args: any[]) => any>(fn: T) => fn,
-    useContext: () => rt.contextValue,
+    useContext: (context: unknown) => readDesktopConversationTestContext(context),
     useId: () => "r4-boundary-id",
     useEffect(effect: () => (() => void) | void, deps?: unknown[]) {
       const store = rt.store!;
@@ -143,7 +131,7 @@ import {
   type ConversationDraftsController,
 } from "./conversation/ConversationDraftsProvider.js";
 import { SlashCommandInput } from "./conversation/SlashCommandInput.js";
-import { DesktopSessions } from "./desktop/DesktopSessionsPane.js";
+import { readDesktopConversationTestContext, renderDesktopSessions } from "./desktop/DesktopSessions.test-fixture.js";
 import { MobileWorkspace } from "./MobileWorkspace.js";
 import { MobilePageHeader } from "./mobile/MobilePageHeader.js";
 import { MobileSessionCatalog } from "./mobile/MobileSessionCatalog.js";
@@ -340,7 +328,6 @@ function makeDesktopSnapshot(overrides: Partial<DesktopControlSnapshot> = {}): D
 
 describe("Round-4 Boundary 2B.1: localStorage corruption, QuotaExceededError, SecurityError & host isolation", () => {
   afterEach(() => {
-    rt.contextValue = undefined;
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
@@ -449,7 +436,7 @@ describe("Round-4 Boundary 2B.1: localStorage corruption, QuotaExceededError, Se
       result: { history: { sessionId: "sess-1", items: [], hasMore: false }, evidence: { sessionId: "sess-1", items: [], hasMore: false } },
     }));
     const desktopStore = createStore();
-    expect(() => runWithStore(desktopStore, () => DesktopSessions({
+    expect(() => runWithStore(desktopStore, () => renderDesktopSessions({
       snapshot: makeDesktopSnapshot(),
       events: [],
       apiRequest,
@@ -546,7 +533,7 @@ describe("Round-4 Boundary 2B.1: localStorage corruption, QuotaExceededError, Se
       makeSession({ sessionId: "s-b", projectId: "sec-beta" }),
     ];
 
-    const treeA = runWithStore(store, () => DesktopSessions({
+    const treeA = runWithStore(store, () => renderDesktopSessions({
       snapshot: makeDesktopSnapshot({
         host: { ...makeDesktopSnapshot().host, hostId: "host-a" },
         projects: projectsBothActive,
@@ -562,7 +549,7 @@ describe("Round-4 Boundary 2B.1: localStorage corruption, QuotaExceededError, Se
     expect(headersA).toEqual(["Beta 组", "Alpha 组"]);
 
     // Switch same mounted DesktopSessions instance to host-b -> must immediately reflect host-b's stored order!
-    const treeB = runWithStore(store, () => DesktopSessions({
+    const treeB = runWithStore(store, () => renderDesktopSessions({
       snapshot: makeDesktopSnapshot({
         host: { ...makeDesktopSnapshot().host, hostId: "host-b" },
         projects: projectsBothActive,
@@ -582,7 +569,6 @@ describe("Round-4 Boundary 2B.1: localStorage corruption, QuotaExceededError, Se
 
 describe("Round-4 Boundary 2B.2: Drafts 100-entry LRU, 100KB paste, delete cleanup & mid-IME session switch", () => {
   afterEach(() => {
-    rt.contextValue = undefined;
     vi.restoreAllMocks();
     vi.useRealTimers();
     vi.unstubAllGlobals();
@@ -1124,7 +1110,7 @@ describe("Round-4 Boundary 2B.4: Drag-and-drop edge boundaries", () => {
       ok: true,
       result: { history: { sessionId: "sess-1", items: [], hasMore: false }, evidence: { sessionId: "sess-1", items: [], hasMore: false } },
     }));
-    let sidebarTree = runWithStore(sidebarStore, () => DesktopSessions({
+    let sidebarTree = runWithStore(sidebarStore, () => renderDesktopSessions({
       snapshot: makeDesktopSnapshot(),
       events: [],
       apiRequest,
@@ -1146,7 +1132,7 @@ describe("Round-4 Boundary 2B.4: Drag-and-drop edge boundaries", () => {
       target: validRowTarget(),
     });
     fakeWin.dispatch("pointermove", { pointerId: 33, clientX: 95, clientY: 140 });
-    sidebarTree = runWithStore(sidebarStore, () => DesktopSessions({
+    sidebarTree = runWithStore(sidebarStore, () => renderDesktopSessions({
       snapshot: makeDesktopSnapshot(),
       events: [],
       apiRequest,

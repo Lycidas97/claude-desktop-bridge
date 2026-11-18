@@ -9,7 +9,7 @@ import { build } from "esbuild";
 import { afterEach, expect, it, vi } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
 import { DesktopServiceClient, connectDesktopService, serveDesktopService, type ServiceController } from "./service-connection.js";
-import { DesktopController } from "../controller/controller.js";
+import { createControllerFixture } from "../controller/controller-fixture.js";
 import { DesktopConfigRepository } from "../transport/config.js";
 import { diagnostics } from "./diag.js";
 import { AssistantMailService } from "../../../../plugins/assistant-mail/desktop.js";
@@ -84,7 +84,7 @@ it("toggles the unified recorder and persisted profile through the authenticated
   const repository = new DesktopConfigRepository(configPath, { available: () => true, protect: value => value, unprotect: value => value }, defaults);
   const config = await repository.loadOrCreate();
   diagnostics.start(join(root, "diagnostics", "trace.sqlite"));
-  const controller = Object.assign(Object.create(DesktopController.prototype), new EventEmitter(), {
+  const controller = createControllerFixture({
     config, repository, publish: async () => ({ diagnosticsEnabled: diagnostics.enabled }),
   });
   const addressPath = join(root, "address.json");
@@ -115,7 +115,10 @@ it("requires the local bearer token and refuses non-allowlisted methods", async 
     const browser = new WebSocket(`ws://127.0.0.1:${port}`, { headers: { Authorization: `Bearer ${token}`, Origin: "https://example.com" } });
     expect(await new Promise<string>((resolve) => browser.once("error", (error) => resolve(error.message)))).toContain("401");
     await client.connect();
-    await expect((client.call as (method: string) => Promise<unknown>)("close")).rejects.toThrow("Unknown service method");
+    const call = client.call.bind(client) as (method: string, ...args: unknown[]) => Promise<unknown>;
+    await expect(call("close")).rejects.toThrow("Unknown service method");
+    await expect(call("setAnthropicApiKey", "unused")).rejects.toThrow("Unknown service method");
+    await expect(call("removeAnthropicApiKey")).rejects.toThrow("Unknown service method");
     await expect(client.call("setLaunchAtLogin", "false" as unknown as boolean)).rejects.toThrow("Expected one boolean");
     await expect(client.call("setDiagnosticsEnabled", "false" as unknown as boolean)).rejects.toThrow("Expected one boolean");
   } finally { client.close(); await server.close(); }

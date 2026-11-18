@@ -11,6 +11,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConfirmationDialog } from "../common/ConfirmationDialog.js";
 import { IconButton } from "../common/IconButton.js";
 import { DesktopDashboard } from "../DesktopDashboard.js";
+import { DesktopConversationProvider, DesktopSessionConversation } from "../desktop/DesktopSessionConversation.js";
+import { DesktopSessions } from "../desktop/DesktopSessionsPane.js";
 import { EvidencePanel } from "./EvidencePanel.js";
 
 type HookStore = {
@@ -21,7 +23,10 @@ type HookStore = {
   effectIndex: number;
   pending: Array<() => void>;
 };
-const hooks = vi.hoisted(() => ({ current: undefined as HookStore | undefined }));
+const hooks = vi.hoisted(() => ({
+  current: undefined as HookStore | undefined,
+  contexts: new Map<unknown, unknown>(),
+}));
 const media = vi.hoisted(() => ({
   open: vi.fn(),
   confirm: vi.fn<(_target: unknown, open: () => void) => void>((_target, open) => open()),
@@ -67,7 +72,7 @@ vi.mock("react", async (original) => ({
   },
   useMemo: (create: () => unknown) => create(),
   useCallback: (callback: unknown) => callback,
-  useContext: () => undefined,
+  useContext: (context: unknown) => hooks.contexts.get(context),
   useEffect: recordEffect,
   useLayoutEffect: recordEffect,
 }));
@@ -437,10 +442,14 @@ describe("deduplicated chronological output-file evidence list", () => {
     }));
     vi.stubGlobal("localStorage", { getItem: () => null, setItem: vi.fn() });
     let onEvent!: (event: BridgeEvent) => void;
+    let onSnapshot!: (snapshot: DesktopControlSnapshot) => void;
     vi.stubGlobal("window", {
       bridgeDesktop: {
         getSnapshot: async () => snapshot,
-        onSnapshot: () => () => undefined,
+        onSnapshot: (receive: typeof onSnapshot) => {
+          onSnapshot = receive;
+          return () => undefined;
+        },
         onEvent: (receive: typeof onEvent) => {
           onEvent = receive;
           return () => undefined;
@@ -460,13 +469,19 @@ describe("deduplicated chronological output-file evidence list", () => {
             if (Array.isArray(node)) return node.map((child, index) => expand(child, `${path}/${index}`));
             if (!node || typeof node !== "object" || !("props" in node)) return node;
             const element = node as ReactElement<Record<string, any>>;
+            if (typeof element.type === "object" && "value" in element.props) {
+              hooks.contexts.set(element.type, element.props.value);
+              try {
+                return expand(element.props.children, `${path}/provider`);
+              } finally {
+                hooks.contexts.delete(element.type);
+              }
+            }
             if (
-              typeof element.type === "function"
-              && (
-                element.type.name === "DesktopSessionConversation"
-                || element.type.name === "ConversationView"
-                || element.type.name === "MobilePageHeader"
-              )
+              element.type === DesktopConversationProvider
+              || element.type === DesktopSessions
+              || element.type === DesktopSessionConversation
+              || (typeof element.type === "function" && ["ConversationView", "MobilePageHeader"].includes(element.type.name))
             ) {
               const key = `${path}/${element.type.name}:${element.key ?? ""}`;
               visited.add(key);
@@ -481,7 +496,7 @@ describe("deduplicated chronological output-file evidence list", () => {
               childStore.effectIndex = 0;
               const childOut = (element.type as (props: any) => ReactNode)(element.props);
               childStore.pending.splice(0).forEach((effect) => effect());
-              return expand(childOut, key);
+              return { ...element, props: { ...element.props, children: expand(childOut, key) } };
             }
             return {
               ...element,
@@ -530,20 +545,16 @@ describe("deduplicated chronological output-file evidence list", () => {
       type: "evidence.ready",
       data: { evidence: full },
     });
-    const child = elements(dashboard()).find(
-      (element) => typeof element.type === "function" && element.type.name === "DesktopSessions",
-    )!;
+    const child = elements(dashboard()).find((element) => element.type === DesktopSessions)!;
     expect(child.props.events[0].data.evidence).toMatchObject({
       detailsAvailable: true,
       tools: [],
       artifacts: [],
       toolCount: 61,
     });
-    const sessions = renderComponent(child.type as (props: any) => ReactNode, child.props);
-    sessions();
     for (let i = 0; i < 12; i++) await Promise.resolve();
-    elements(sessions()).find((element) => element.type === "button" && text(element.props.children).startsWith("成果"))!.props.onClick();
-    const panel = elements(sessions()).find((element) => element.type === EvidencePanel)!;
+    elements(dashboard()).find((element) => element.type === "button" && text(element.props.children).startsWith("成果"))!.props.onClick();
+    const panel = elements(dashboard()).find((element) => element.type === EvidencePanel)!;
     expect(panel.props.state.items[0]).toMatchObject({ detailsAvailable: true, tools: [], artifacts: [] });
     expect(await panel.props.onLoadDetails("evidence", "artifacts")).toMatchObject({
       kind: "artifacts",
@@ -551,9 +562,8 @@ describe("deduplicated chronological output-file evidence list", () => {
       hasMore: false,
     });
     expect(request).toHaveBeenLastCalledWith({ method: "evidence.get", params: { evidenceId: "evidence" } });
-    const modernPanel = elements(
-      sessions({ ...child.props, snapshot: { ...snapshot, host: { ...snapshot.host, capabilities: ["evidence.details.v1"] } } }),
-    ).find((element) => element.type === EvidencePanel)!;
+    onSnapshot({ ...snapshot, host: { ...snapshot.host, capabilities: ["evidence.details.v1"] } });
+    const modernPanel = elements(dashboard()).find((element) => element.type === EvidencePanel)!;
     expect(await modernPanel.props.onLoadDetails("evidence", "artifacts", "cursor")).toMatchObject({
       items: [artifact("rpc-page")],
     });

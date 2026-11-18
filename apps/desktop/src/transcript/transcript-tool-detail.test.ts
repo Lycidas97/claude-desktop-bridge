@@ -12,7 +12,7 @@ import {
 } from "@bridge/protocol";
 import { ClaudeDesktopBridge, nativeHistoryItems } from "../claude/claude-desktop-bridge.js";
 import type { ClaudeDesktopInspector } from "../claude/claude-desktop-inspector.js";
-import { DesktopController } from "../controller/controller.js";
+import { createControllerFixture } from "../controller/controller-fixture.js";
 import { ConversationStateStore } from "../controller/conversation-state-store.js";
 import { SessionEventLog } from "../controller/session-event-log.js";
 import { deliverTransportMessage } from "../transport/controller-transport.js";
@@ -490,7 +490,7 @@ describe("zero-bloat timeline projection & RPC wiring", () => {
       expect(completedEvent.data.text).toBe("/project/big.ts");
 
       // On-demand RPC retrieves the complete input and output
-      const controller = Object.assign(Object.create(DesktopController.prototype), { broker: bridge });
+      const controller = createControllerFixture({ broker: bridge });
       const req: BridgeRequest = {
         kind: "request",
         requestId: "req-detail",

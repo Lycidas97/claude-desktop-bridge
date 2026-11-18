@@ -8,8 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_GITHUB_RELEASES_PAGE_URL } from "@bridge/protocol";
-import { DesktopController } from "../controller/controller.js";
-import { BridgeRequestError } from "../controller/controller-rpc.js";
+import { createControllerFixture } from "../controller/controller-fixture.js";
 import {
   DesktopUpdater,
   type DesktopUpdaterPlatform,
@@ -228,10 +227,7 @@ describe("DesktopUpdater lightweight version checker & browser jump", () => {
       onChanged: () => {},
     });
     await updater.initialize();
-    const controller: DesktopController = Object.assign(Object.create(DesktopController.prototype), {
-      updater,
-      publish: async () => {},
-    });
+    const controller = createControllerFixture({ updater, publish: async () => {} });
     const appSource = await readFile(new URL("../../../client/src/App.tsx", import.meta.url), "utf8");
     const callback = appSource.match(/const invokeRemoteUpdate = useCallback\((async [\s\S]*?), \[request\]\);/u);
     expect(callback).not.toBeNull();
@@ -250,7 +246,7 @@ describe("DesktopUpdater lightweight version checker & browser jump", () => {
     await new (Object.getPrototypeOf(async function () {}).constructor)("page", "assert", "desktopPackage", "ipcProof", qaBlock)(
       {
         evaluate: (body: () => unknown) => runInNewContext(`(${body.toString()})()`, {
-          window: { bridgeDesktop: { request: (input: Parameters<DesktopController["dispatchLocal"]>[0]) => controller.dispatchLocal(input) } },
+          window: { bridgeDesktop: { request: (input: Parameters<typeof controller.dispatchLocal>[0]) => controller.dispatchLocal(input) } },
         }),
       },
       assert,
@@ -261,15 +257,14 @@ describe("DesktopUpdater lightweight version checker & browser jump", () => {
     updater.close();
   });
 
-  it("preserves Object.create(DesktopController.prototype) safety when updater is absent", async () => {
-    const bareController = Object.create(DesktopController.prototype) as DesktopController;
-    const response = await bareController.dispatchLocal({
+  it("returns UNSUPPORTED when no updater is configured", async () => {
+    const controller = createControllerFixture({});
+    const response = await controller.dispatchLocal({
       method: "system.update",
       params: { action: "status" },
     });
     expect(response.ok).toBe(false);
     expect(response.error?.code).toBe("UNSUPPORTED");
-    expect(BridgeRequestError).toBeDefined();
   });
 
   it("defaults unconfigured prerelease builds to prerelease channel while respecting release defaults and explicit saved stable channel", async () => {

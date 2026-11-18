@@ -5,6 +5,7 @@ import { BridgeCrypto, isEncryptedEnvelope } from "@bridge/protocol";
 import { EvidenceManager } from "../evidence/evidence-manager.js";
 import { EvidenceStore } from "../evidence/evidence-store.js";
 import { DesktopController } from "../controller/controller.js";
+import { createControllerFixture } from "../controller/controller-fixture.js";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -62,6 +63,7 @@ class NativeDesktop extends EventEmitter {
   applyPrSettings = true;
   promptResult = true;
   ignoreStartTitle = false;
+  inputQueueDrained = vi.fn(async () => false);
   async promptChoices() { return this.promptChoiceValues; }
   async prPreferences(sessionId: string) {
     const session = this.sessions.find(session => session.sessionId === sessionId);
@@ -2022,6 +2024,59 @@ describe("Claude native relay", () => {
     } finally { await restarted?.close(); await f.close(); }
   });
 
+  it.each(["idle upgrade", "restart during next turn", "rewind"])("keeps an answered input out of the actionable queue after %s", async transition => {
+    const f = await fixture();
+    let restarted: ClaudeDesktopBridge | undefined;
+    try {
+      const receipt = await f.bridge.startTurn(input);
+      const user = { type: "user", uuid: receipt.messageId, message: { content: input.text } };
+      const reply = { type: "assistant", uuid: "finished-reply", message: { content: [{ type: "text", text: "Done" }] } };
+      const result = { type: "result", uuid: "unattributed-result", is_error: false };
+      f.native.page.messages = [user, reply, result, { ...user, uuid: "later-input" }];
+      for (const message of [user, reply, result]) await f.message(message);
+      // This is also the on-disk shape from before queue settlement existed.
+      expect(f.state.nativeDesktopReceipt(input.idempotencyKey)?.queueSettled).toBeUndefined();
+      f.native.inputQueueDrained.mockResolvedValue(true);
+      let bridge = f.bridge;
+      if (transition !== "rewind") {
+        if (transition === "restart during next turn") {
+          await bridge.refreshRuntime();
+          expect(f.state.nativeDesktopReceipt(input.idempotencyKey)?.queueSettled).toBe(true);
+          f.native.sessions[0]!.turnRunning = true;
+        }
+        await bridge.close();
+        restarted = new ClaudeDesktopBridge(f.options);
+        await restarted.initialize();
+        bridge = restarted;
+      } else {
+        await bridge.rewindSession(input.sessionId, "later-input", "conversation");
+      }
+      f.native.sessions[0]!.turnRunning = true;
+      f.native.queueResult = false;
+      await bridge.refreshRuntime();
+      expect((await bridge.history(input.sessionId)).items.find(item => item.id === receipt.messageId)).toMatchObject({ text: input.text, delivery: "session-received", queueSettled: true });
+      expect(f.state.nativeDesktopReceipt(input.idempotencyKey)?.state).toBe("session-received");
+      await expect(bridge.cancelQueuedTurn(input.sessionId, receipt.commandId)).rejects.toThrow("当前不可调整");
+      expect(f.native.calls.some(call => call.method === "cancelQueuedMessage")).toBe(false);
+    } finally { await restarted?.close(); await f.close(); }
+  });
+
+  it("publishes an unmatched success when the queue observation disconnects", async () => {
+    const f = await fixture();
+    try {
+      const receipt = await f.bridge.startTurn(input);
+      await f.message({ type: "user", uuid: receipt.messageId, message: { content: input.text } });
+      f.native.inputQueueDrained.mockRejectedValueOnce(new InspectorDisconnectedError("Disconnected during queue observation"));
+      await f.message({ type: "result", uuid: "unmatched-success", is_error: false });
+      expect(f.eventLog.latestItem(input.sessionId, "turn.completed", "unmatched-success")).toBeDefined();
+      expect(f.bridge.session(input.sessionId)?.lastCompletedTurnId).toBe("unmatched-success");
+      expect(f.state.nativeDesktopReceipt(input.idempotencyKey)?.queueSettled).toBeUndefined();
+      f.native.inputQueueDrained.mockResolvedValue(true);
+      await f.bridge.refreshRuntime();
+      expect(f.state.nativeDesktopReceipt(input.idempotencyKey)).toMatchObject({ state: "session-received", queueSettled: true });
+    } finally { await f.close(); }
+  });
+
   it("broadcasts unmatched native results without inventing Bridge command identities or receipts", async () => {
     const f = await fixture();
     try {
@@ -2350,12 +2405,12 @@ describe("Claude native relay", () => {
     } finally { await f.close(); }
   });
 
-  it("refreshes one session configuration without refreshing the entire directory", async () => {
+  it("refreshes one session without refreshing the entire directory", async () => {
     const f = await fixture();
     try {
       f.options.scanCatalog.mockClear();
       f.native.calls = [];
-      await f.bridge.refreshDesktopConfiguration("local-native");
+      await f.bridge.refreshDesktopSession("local-native");
       expect(f.native.calls).toContainEqual({ method: "getSession", args: ["local-native"] });
       expect(f.native.calls.some(call => call.method === "getAll")).toBe(false);
       expect(f.options.scanCatalog).not.toHaveBeenCalled();
@@ -2401,6 +2456,71 @@ describe("Claude native relay", () => {
       resolvePaths.mockRestore();
       vi.unstubAllEnvs();
       await f.close();
+    }
+  });
+
+  it("opens the latest native history while the model catalog request is pending", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-open-catalog-"));
+    const state = new ConversationStateStore({ databasePath: join(root, "state.sqlite") });
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"));
+    await state.initialize();
+    await eventLog.initialize();
+    const native = new NativeDesktop();
+    native.pages.set("", { hasMore: true, messages: [
+      { type: "user", uuid: "newest", message: { content: "Latest native message" } },
+    ] });
+    native.pages.set("newest", { hasMore: false, messages: [] });
+    let releaseCatalog!: () => void;
+    const catalog = new Promise<Response>(resolve => {
+      releaseCatalog = () => resolve(new Response(null, { status: 503 }));
+    });
+    const fetchImpl = vi.fn<typeof fetch>(() => catalog);
+    const settingsPath = join(root, "settings.json");
+    const bridge = new ClaudeDesktopBridge({
+      settingsPath, eventLog, conversationState: state, inspector: native,
+      home: root, environment: {}, fetchImpl, refreshIntervalMs: 60_000,
+    });
+    const controller = createControllerFixture({ broker: bridge, eventLog });
+    const configurationRequest = {
+      kind: "request" as const, method: "session.configuration" as const,
+      requestId: "configuration", idempotencyKey: "configuration", params: { sessionId: "local-native" },
+    };
+    const pending: Promise<unknown>[] = [];
+    try {
+      await bridge.initialize();
+      await writeFile(settingsPath, JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://catalog.example.test" } }));
+      const firstConfiguration = controller.handleRequest(configurationRequest, "mobile", "phone");
+      pending.push(firstConfiguration);
+      await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(1));
+
+      native.sessions[0]!.title = "Fresh native title";
+      const opened = vi.fn();
+      pending.push(controller.handleRequest({
+        ...configurationRequest, method: "session.open", requestId: "open", idempotencyKey: "open",
+      }, "mobile", "phone").then(opened));
+      await vi.waitFor(() => expect(opened).toHaveBeenCalledWith(expect.objectContaining({
+        session: expect.objectContaining({ sessionId: "local-native", title: "Fresh native title" }),
+        history: expect.objectContaining({
+          items: [expect.objectContaining({ id: "newest", text: "Latest native message" })],
+          hasMore: true, nextCursor: "newest",
+        }),
+      })));
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+      releaseCatalog();
+      expect(await firstConfiguration).toMatchObject({ session: { title: "Fresh native title" } });
+      fetchImpl.mockResolvedValueOnce(Response.json({ data: [{ id: "fixture-model", display_name: "Fixture model" }] }));
+      await expect(controller.handleRequest({ ...configurationRequest, requestId: "retry", idempotencyKey: "retry" }, "mobile", "phone")).resolves.toMatchObject({
+        configuration: { modelsComplete: true, availableModels: [{ value: "fixture-model", displayName: "Fixture model" }] },
+      });
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    } finally {
+      releaseCatalog();
+      await Promise.allSettled(pending);
+      await bridge.close();
+      await eventLog.close();
+      state.close();
+      await rm(root, { recursive: true, force: true });
     }
   });
 
@@ -2872,6 +2992,27 @@ describe("Claude native relay", () => {
 
   const planMessage = (id: string, input: Record<string, unknown>, timestamp = 1, name = "mcp__ccd_turn__update_plan") => ({ type: "assistant", uuid: id, timestamp, message: { content: [{ type: "tool_use", id, name, input }] } });
 
+  it.each([undefined, "newer-page"])("reads only the requested ordinary history page (cursor=%s)", async cursor => {
+    const f = await fixture();
+    try {
+      if (!cursor) {
+        await f.message(planMessage("live-plan", { scope: "first_task", items: [{ content: "Read", status: "in_progress" }] }));
+        f.native.contextUsage = { totalTokens: 64_200, rawMaxTokens: 1_000_000 };
+      }
+      for (let index = 0; index < 18; index += 1) {
+        f.native.pages.set(index === 0 ? cursor ?? "" : `ordinary-${index - 1}`, {
+          messages: [{ type: "assistant", uuid: `ordinary-${index}`, message: { content: [{ type: "text", text: `Page ${index}` }] } }],
+          hasMore: index < 17,
+        });
+      }
+
+      const page = await f.bridge.history("local-native", cursor, 1);
+      expect(page).toMatchObject({ hasMore: true, nextCursor: "ordinary-0", items: [{ id: "ordinary-0", text: "Page 0" }] });
+      if (!cursor) expect(f.bridge.session("local-native")?.contextUsage).toMatchObject({ totalTokens: 64_200, maxTokens: 1_000_000, estimated: false });
+      expect(f.native.calls.filter(call => call.method === "getTranscriptPage").map(call => call.args[1])).toEqual([cursor ?? ""]);
+    } finally { await f.close(); }
+  });
+
   it("keeps one plan identity when initialization and continuation occupy adjacent native history pages", async () => {
     const f = await fixture();
     try {
@@ -2956,12 +3097,16 @@ describe("Claude native relay", () => {
     } finally { await f.close(); }
   });
 
-  it("recovers a history plan after an ordinary live assistant message initialized the projection", async () => {
+  it("recovers an older history plan on a plain latest page before any live plan is observed", async () => {
     const f = await fixture();
     try {
-      await f.message({ type: "assistant", uuid: "ordinary", timestamp: 20, message: { content: [{ type: "text", text: "Continuing work" }] } });
-      f.native.page.messages = [planMessage("history-plan", { scope: "first_task", items: [{ content: "Read", status: "in_progress" }, { content: "Verify", status: "pending" }] }, 10)];
-      await f.bridge.history("local-native");
+      const ordinary = { type: "assistant", uuid: "ordinary", timestamp: 20, message: { content: [{ type: "text", text: "Continuing work" }] } };
+      await f.message(ordinary);
+      f.native.pages.set("", { messages: [ordinary], hasMore: true });
+      f.native.pages.set("ordinary", { messages: [planMessage("history-plan", { scope: "first_task", items: [{ content: "Read", status: "in_progress" }, { content: "Verify", status: "pending" }] }, 10)], hasMore: false });
+      const history = await f.bridge.history("local-native");
+      expect(history.items.map(item => item.id)).toEqual(["ordinary"]);
+      expect(f.native.calls.filter(call => call.method === "getTranscriptPage").map(call => call.args[1])).toEqual(["", "ordinary"]);
       await f.message(planMessage("live-advance", { advance: true }, 30));
       expect(f.eventLog.latestItem("local-native", "assistant.completed", "plan:history-plan")?.data.taskPlan).toMatchObject({
         id: "history-plan", items: [{ content: "Read", status: "completed" }, { content: "Verify", status: "in_progress" }],
@@ -2999,7 +3144,7 @@ describe("Claude native relay", () => {
     } finally { await f.close(); }
   });
 
-  it("restores only plan context across multiple pages and stops at the nearest top-level new_task", async () => {
+  it.each([undefined, "newer-page"])("restores plan context up to the nearest top-level new_task (cursor=%s)", async cursor => {
     const f = await fixture();
     try {
       const old = planMessage("older-plan", { scope: "first_task", items: [{ content: "Old work", status: "in_progress" }] }, 1);
@@ -3008,16 +3153,16 @@ describe("Claude native relay", () => {
       const continuation = planMessage("continued", { scope: "continuation", items: [{ content: "Read", status: "in_progress" }, { content: "Verify", status: "pending" }] }, 20);
       const text = { type: "assistant", uuid: "latest-text", timestamp: 25, message: { content: [{ type: "text", text: "Visible latest text" }] } };
       const advance = planMessage("latest-advance", { advance: true }, 30);
-      f.native.pages.set("", { messages: [text, advance], hasMore: true });
+      f.native.pages.set(cursor ?? "", { messages: [text, advance], hasMore: true });
       f.native.pages.set("latest-text", { messages: [child, continuation], hasMore: true });
       f.native.pages.set("child-initial", { messages: [old, initial], hasMore: true });
-      const latest = await f.bridge.history("local-native", undefined, 2);
-      expect(latest).toMatchObject({ hasMore: true, nextCursor: "latest-text", items: [
+      const history = await f.bridge.history("local-native", cursor, 2);
+      expect(history).toMatchObject({ hasMore: true, nextCursor: "latest-text", items: [
         { id: "latest-text", text: "Visible latest text" },
         { id: "plan:current-plan", taskPlan: { id: "current-plan", items: [{ content: "Read", status: "completed" }, { content: "Verify", status: "in_progress" }] } },
       ] });
-      expect(latest.items).toHaveLength(2);
-      expect(f.native.calls.filter(call => call.method === "getTranscriptPage").map(call => call.args[1])).toEqual(["", "latest-text", "child-initial"]);
+      expect(history.items).toHaveLength(2);
+      expect(f.native.calls.filter(call => call.method === "getTranscriptPage").map(call => call.args[1])).toEqual([cursor ?? "", "latest-text", "child-initial"]);
       expect(f.native.calls.some(call => call.method === "getTranscript")).toBe(false);
     } finally { await f.close(); }
   });
@@ -3964,11 +4109,13 @@ describe("Claude native relay", () => {
         estimated: false,
       });
 
-      // Idle fallback: getContextUsage returns null, sidechain messages > 50 do not hide or pollute main-chain usage.
+      // With the live plan settled and no live usage, find main-chain usage behind a full sidechain page.
       f.native.contextUsage = null;
       f.native.sessions[0]!.model = "claude-sonnet-4-5";
       await f.bridge.refreshRuntime();
-      const trailingSidechains = Array.from({ length: 50 }, (_, index) => ({
+      await f.message(planMessage("live-wrap", { recap: "Done" }, 20, "mcp__ccd_turn__wrap_up"));
+      f.native.calls.length = 0;
+      const trailingSidechains = Array.from({ length: 18 }, (_, index) => ({
         type: "assistant",
         uuid: `side-${index}`,
         isSidechain: true,
@@ -3982,8 +4129,11 @@ describe("Claude native relay", () => {
         ],
         hasMore: false,
       });
-      await f.bridge.history("local-native", undefined, 50);
-      expect(f.bridge.session("local-native")?.contextUsage).toEqual({
+      const openedEstimated = await controller.handleRequest({
+        kind: "request", requestId: "open-estimated", idempotencyKey: "open-estimated", method: "session.open", params: { sessionId: "local-native" },
+      }, "mobile", "phone");
+      expect(f.native.calls.filter(call => call.method === "getTranscriptPage").map(call => call.args[1])).toEqual(["", "side-0"]);
+      expect(openedEstimated.session?.contextUsage).toEqual({
         totalTokens: 40_800,
         maxTokens: 200_000,
         percentage: 20.4,

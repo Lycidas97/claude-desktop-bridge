@@ -440,9 +440,20 @@ export async function verifyDesktopConversation(page, host, steps, directory, vi
     messageId: imageMsgId,
   }, { itemId: imageMsgId });
   const imageBubble = stream.locator("article.conversation-item.user").filter({ hasText: "桌面原生参考图消息" });
-  await imageBubble.locator(".conversation-image-preview").scrollIntoViewIfNeeded();
-  await eventually(() => imageBubble.locator("img").evaluate(node => node.complete && node.naturalWidth > 0), true, "Desktop lazy-loads native reference thumbnail");
-  await imageBubble.locator("img").click();
+  const thumbnail = imageBubble.locator(".conversation-image-preview");
+  await thumbnail.scrollIntoViewIfNeeded();
+  await eventually(() => thumbnail.locator("img").evaluate(node => node.complete && node.naturalWidth > 0), true, "Desktop lazy-loads native reference thumbnail");
+  const thumbnailState = () => thumbnail.evaluate(button => ({
+    src: button.querySelector("img")?.src,
+    height: button.getBoundingClientRect().height,
+  }));
+  const loadedThumbnail = await thumbnailState();
+  await host.emit("assistant.delta", { text: "图片之后的流式回复" }, { itemId: "desktop-image-stream" });
+  await stream.getByText("图片之后的流式回复", { exact: true }).waitFor();
+  assert.deepEqual(await thumbnailState(), loadedThumbnail, "Streaming updates preserve the loaded thumbnail and its height");
+  assert.equal(host.requests.filter(({ method, params }) => method === "artifact.transfer.open" && params.nativeImage?.messageUuid === imageMsgId).length, 1,
+    "Streaming updates do not start a second thumbnail transfer");
+  await thumbnail.locator("img").click();
   const mediaViewer = page.getByRole("dialog").last();
   await mediaViewer.waitFor();
   await eventually(() => mediaViewer.locator("img").evaluate(node => node.complete && node.naturalWidth > 0), true, "Desktop opens full native image in media viewer");

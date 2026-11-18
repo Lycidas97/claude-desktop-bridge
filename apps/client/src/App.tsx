@@ -2,7 +2,10 @@ import type { BridgeHostSnapshot, BridgeSessionInfo, BridgeSystemUpdateParams, B
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { claudeSnapshot } from "./lib/claude-snapshot.js";
 import { useClientUpdater } from "./lib/client-updater.js";
-import { useTheme } from "./hooks/useTheme.js";
+import { useTheme, type ThemeControl } from "./hooks/useTheme.js";
+import { getActiveArtifactDownloadGauges } from "./lib/artifact-download.js";
+import { registerDiagnosticsStateProvider } from "./lib/diagnostics.js";
+import { getActiveMediaTransferGauges } from "./lib/media-preview.js";
 import { useMobileBridge } from "./hooks/useMobileBridge.js";
 import {
   installMobileBackNavigation,
@@ -166,8 +169,29 @@ function MobileAssistantConversation({
 
 export function App() {
   const themeControl = useTheme();
+  const isDesktop = Boolean(window.bridgeDesktop);
+  useEffect(() => {
+    if (!isDesktop) return;
+    return registerDiagnosticsStateProvider("bridgeState", () => {
+      const downloads = getActiveArtifactDownloadGauges();
+      const media = getActiveMediaTransferGauges();
+      return {
+        activeDownloads: downloads.activeCount,
+        artifactTransfers: {
+          count: downloads.activeCount + media.activeCount,
+          // Desktop download activity is reported separately via activeDownloads.
+          activeCount: media.activeCount,
+          totalCachedBytes: downloads.cachedBytes + media.cachedBytes,
+        },
+      };
+    });
+  }, [isDesktop]);
+  return isDesktop ? <DesktopDashboard themeControl={themeControl} /> : <MobileApp themeControl={themeControl} />;
+}
+
+function MobileApp({ themeControl }: { themeControl: ThemeControl }) {
   const mobile = useMobileBridge();
-  const clientUpdater = useClientUpdater(!window.bridgeDesktop);
+  const clientUpdater = useClientUpdater();
   const snapshot = useMemo(() => mobile.state.snapshot
     ? claudeSnapshot(mobile.state.snapshot)
     : undefined, [mobile.state.snapshot]);
@@ -260,7 +284,6 @@ export function App() {
   }), [mobile.state.activeHostId, mobile.selectHost]);
 
   useEffect(() => registerMobileBackHandler(() => {
-    if (window.bridgeDesktop) return false;
     // The secure import must finish before a back gesture can change route.
     if (mobile.state.pairingSync) return true;
     if (pairingOpen && mobile.state.hosts.length > 0) {
@@ -295,7 +318,6 @@ export function App() {
     tab,
   ]);
 
-  if (window.bridgeDesktop) return <DesktopDashboard themeControl={themeControl} />;
   return (
     <ConversationDraftsProvider activeHostId={mobile.state.activeHostId} controllerRef={draftsHandle}>
       {mobile.state.pairingSync ? (

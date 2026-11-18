@@ -11,7 +11,7 @@ import { MAGPIE_QUOTA_METHOD, type QuotaSnapshot } from "../../../../plugins/mag
 import { MagpieQuotaProvider } from "../../../../plugins/magpie-quota/client.js";
 import type { ThemeControl } from "../hooks/useTheme.js";
 import { claudeSnapshot } from "../lib/claude-snapshot.js";
-import { AssistantMailProvider, type AssistantRequest } from "./assistant/AssistantMailProvider.js";
+import { AssistantMailProvider } from "./assistant/AssistantMailProvider.js";
 import { AssistantPage } from "./assistant/AssistantPage.js";
 import { BrandMark } from "./common/BrandMark.js";
 import { DiagnosticFloatingEntry } from "./common/DiagnosticLogDialog.js";
@@ -37,7 +37,8 @@ export function DesktopDashboard({ themeControl }: { themeControl: ThemeControl 
   const focusKeyRef = useRef(0);
   const activeHostIdRef = useRef<string | undefined>(undefined);
   if (snapshot) activeHostIdRef.current = snapshot.host.hostId;
-  const mailRequest = useMemo<AssistantRequest>(() => (method, params) => api!.request({ method, params }), [api]);
+  const requestByMethod = useMemo(() => (method: LocalBridgeRequest["method"], params: Record<string, unknown>) =>
+    api!.request({ method, params }), [api]);
   const visibleSnapshot = useMemo(() => (snapshot ? claudeSnapshot(snapshot) : undefined), [snapshot]);
 
   function applySnapshot(nextSnapshot: DesktopControlSnapshot): void {
@@ -102,9 +103,9 @@ export function DesktopDashboard({ themeControl }: { themeControl: ThemeControl 
   return (
     <ConversationDraftsProvider activeHostId={snapshot.host.hostId}>
       <DesktopConversationProvider snapshot={visibleSnapshot!} events={events} eventsByHost={eventsByHost} apiRequest={request} onRefreshSnapshot={refreshSnapshot}>
-        <MediaPreviewProvider request={(method, params) => request({ method, params })} supportsFileStat={snapshot.host.capabilities.includes("artifact.transfer.stat.v1")}>
+        <MediaPreviewProvider request={requestByMethod} supportsFileStat={snapshot.host.capabilities.includes("artifact.transfer.stat.v1")}>
           <MagpieQuotaProvider loader={loadMagpieQuota} enabled={snapshot.host.capabilities.includes("plugin.magpie-quota.v1")} sourceKey={quotaSourceKey}>
-            <AssistantMailProvider key={snapshot.host.hostId} snapshot={snapshot} online request={mailRequest} onDiscuss={() => setTab("assistant")}>
+            <AssistantMailProvider key={snapshot.host.hostId} snapshot={snapshot} online request={requestByMethod} onDiscuss={() => setTab("assistant")}>
               <main className="desktop-shell-v2">
                 <section className="desktop-content-v2">
                   {snapshot.claudeInspector?.state === "error" && (

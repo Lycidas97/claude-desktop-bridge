@@ -60,7 +60,10 @@ const EMPTY_PREVIEWS: Record<string, BridgeArtifactPreview> = {};
 const EMPTY_TRANSFERS: Record<string, number> = {};
 const EMPTY_HOST_EVENTS: BridgeEvent[] = [];
 
-type DesktopEvidenceState = SessionEvidenceState & { openedIds?: ReadonlySet<string> };
+type DesktopEvidenceCache = {
+  pages: Record<string, SessionEvidenceState>;
+  openedIds: Record<string, ReadonlySet<string> | undefined>;
+};
 
 export function unwrap<T>(response: BridgeResponse): T {
   if (!response.ok) {
@@ -86,7 +89,8 @@ export interface DesktopConversationController {
   selectedSessionFor(hostId: string): string | undefined;
   selectSession(hostId: string, sessionId: string | undefined): void;
   historyFor(sessionId: string, hostId?: string): SessionHistoryState | undefined;
-  evidenceFor(sessionId: string, hostId?: string): DesktopEvidenceState | undefined;
+  evidenceFor(sessionId: string, hostId?: string): SessionEvidenceState | undefined;
+  openedEvidenceIdsFor(sessionId: string, hostId?: string): ReadonlySet<string> | undefined;
   artifactPreviews: Record<string, BridgeArtifactPreview>;
   artifactTransfers: Record<string, number>;
   mountSession(sessionId: string, hostId?: string): () => void;
@@ -158,7 +162,7 @@ function useDesktopConversationController(input: DesktopConversationInput): Desk
 
   const [selectedByHost, setSelectedByHost] = useState<Record<string, string | undefined>>({});
   const [histories, setHistories] = useState<Record<string, SessionHistoryState>>({});
-  const [evidence, setEvidence] = useState<Record<string, DesktopEvidenceState>>({});
+  const [{ pages: evidence, openedIds }, setEvidence] = useState<DesktopEvidenceCache>({ pages: {}, openedIds: {} });
   const [artifactPreviewsByHost, setArtifactPreviewsByHost] = useState<Record<string, Record<string, BridgeArtifactPreview>>>({});
   const [artifactTransfersByHost, setArtifactTransfersByHost] = useState<Record<string, Record<string, number>>>({});
 
@@ -218,13 +222,20 @@ function useDesktopConversationController(input: DesktopConversationInput): Desk
     });
   }
 
-  function updateEvidence(
-    change: (current: Record<string, DesktopEvidenceState>) => Record<string, DesktopEvidenceState>,
-  ): void {
+  function updateEvidence(change: (current: DesktopEvidenceCache) => DesktopEvidenceCache): void {
     setEvidence((current) => {
       const next = change(current);
-      evidenceRef.current = next;
+      evidenceRef.current = next.pages;
       return next;
+    });
+  }
+
+  function updateEvidencePages(
+    change: (pages: DesktopEvidenceCache["pages"]) => DesktopEvidenceCache["pages"],
+  ): void {
+    updateEvidence((current) => {
+      const pages = change(current.pages);
+      return pages === current.pages ? current : { ...current, pages };
     });
   }
 
@@ -249,14 +260,17 @@ function useDesktopConversationController(input: DesktopConversationInput): Desk
         ...(current[key]?.nextCursor ? { nextCursor: current[key]!.nextCursor } : {}),
       },
     }));
-    updateEvidence((current) => ({
-      ...current,
-      [key]: {
-        status: "loading",
-        items: current[key]?.items ?? [],
-        hasMore: current[key]?.hasMore ?? false,
-        ...(current[key]?.nextCursor ? { nextCursor: current[key]!.nextCursor } : {}),
+    updateEvidence(({ pages, openedIds }) => ({
+      pages: {
+        ...pages,
+        [key]: {
+          status: "loading",
+          items: pages[key]?.items ?? [],
+          hasMore: pages[key]?.hasMore ?? false,
+          ...(pages[key]?.nextCursor ? { nextCursor: pages[key].nextCursor } : {}),
+        },
       },
+      openedIds: { ...openedIds, [key]: undefined },
     }));
 
     const request = latestRef.current.apiRequest;
@@ -290,13 +304,12 @@ function useDesktopConversationController(input: DesktopConversationInput): Desk
         response.ok ? response.result as { evidence: BridgeEvidencePage } : undefined
       ), () => undefined).then((result) => {
         if (openSeqRef.current.get(key) !== seq) return;
-        updateEvidence((current) => {
-          const next = applyEvidencePageResult(current, key, result?.evidence, { hasMoreOnError: false, itemsAtRequestStart });
-          const opened = next[key]!;
+        updateEvidence(({ pages, openedIds }) => {
+          const next = applyEvidencePageResult(pages, key, result?.evidence, { hasMoreOnError: false, itemsAtRequestStart });
           // The reducer keeps post-request live summaries by reference.
-          const previousItems = new Set(current[key]?.items);
-          const openedIds = new Set(opened.items.filter((item) => item.state !== "collecting" && !previousItems.has(item)).map((item) => item.id));
-          return openedIds.size ? { ...next, [key]: { ...opened, openedIds } } : next;
+          const previousItems = new Set(pages[key]?.items);
+          const ids = new Set(next[key]!.items.filter((item) => item.state !== "collecting" && !previousItems.has(item)).map((item) => item.id));
+          return { pages: next, openedIds: ids.size ? { ...openedIds, [key]: ids } : openedIds };
         });
       }),
     ]);
@@ -338,10 +351,12 @@ function useDesktopConversationController(input: DesktopConversationInput): Desk
       return next;
     });
     updateEvidence((current) => {
-      if (!(key in current)) return current;
-      const next = { ...current };
-      delete next[key];
-      return next;
+      if (!(key in current.pages)) return current;
+      const pages = { ...current.pages };
+      const openedIds = { ...current.openedIds };
+      delete pages[key];
+      delete openedIds[key];
+      return { pages, openedIds };
     });
     setSelectedByHost((current) => (
       current[targetHostId] === sessionId ? { ...current, [targetHostId]: undefined } : current
@@ -371,7 +386,7 @@ function useDesktopConversationController(input: DesktopConversationInput): Desk
         if (!consumedEvidenceRef.current.has(event)) {
           consumedEvidenceRef.current.add(event);
           if (event.sessionId && deletedSessionKeysRef.current.has(keyForSession(event.sessionId))) continue;
-          updateEvidence((current) => applyEvidenceEventToPages(current, event, keyForSession));
+          updateEvidencePages((pages) => applyEvidenceEventToPages(pages, event, keyForSession));
         }
         continue;
       }
@@ -464,8 +479,8 @@ function useDesktopConversationController(input: DesktopConversationInput): Desk
     const requestedCursor = current.nextCursor;
     const startSeq = openSeqRef.current.get(key) ?? 0;
     loadingEvidenceRef.current.add(key);
-    updateEvidence((value) => ({
-      ...value,
+    updateEvidencePages((pages) => ({
+      ...pages,
       [key]: { ...current, status: "loading" },
     }));
     try {
@@ -474,10 +489,10 @@ function useDesktopConversationController(input: DesktopConversationInput): Desk
         params: { sessionId, cursor: requestedCursor, limit: EVIDENCE_PAGE_SIZE },
       }));
       if (!loadingEvidenceRef.current.has(key) || (openSeqRef.current.get(key) ?? 0) !== startSeq) return;
-      updateEvidence((value) => applyEvidencePageResult(value, key, result.evidence));
+      updateEvidencePages((pages) => applyEvidencePageResult(pages, key, result.evidence));
     } catch {
       if (!loadingEvidenceRef.current.has(key) || (openSeqRef.current.get(key) ?? 0) !== startSeq) return;
-      updateEvidence((value) => applyEvidencePageResult(value, key, undefined, {
+      updateEvidencePages((pages) => applyEvidencePageResult(pages, key, undefined, {
         forceErrorStatus: true,
         preserveCursorOnError: true,
       }));
@@ -952,6 +967,9 @@ function useDesktopConversationController(input: DesktopConversationInput): Desk
     evidenceFor: (sessionId, hostId = latestRef.current.snapshot.host.hostId) => (
       evidence[conversationDraftKey(hostId, sessionId)]
     ),
+    openedEvidenceIdsFor: (sessionId, hostId = latestRef.current.snapshot.host.hostId) => (
+      openedIds[conversationDraftKey(hostId, sessionId)]
+    ),
     artifactPreviews: artifactPreviewsByHost[currentHostId] ?? EMPTY_PREVIEWS,
     artifactTransfers: artifactTransfersByHost[currentHostId] ?? EMPTY_TRANSFERS,
     mountSession,
@@ -987,6 +1005,7 @@ function useDesktopConversationController(input: DesktopConversationInput): Desk
     currentHostId,
     evidence,
     histories,
+    openedIds,
     selectedByHost,
     stableActions,
   ]);
@@ -1073,7 +1092,7 @@ export function DesktopSessionConversation({
       conversationDrafts={conversationDrafts}
       history={controller.historyFor(session.sessionId, hostId)}
       evidence={evidence}
-      openedEvidenceIds={evidence?.openedIds}
+      openedEvidenceIds={controller.openedEvidenceIdsFor(session.sessionId, hostId)}
       renderEvidence={(panel) => (
         <EvidencePanel
           {...panel}

@@ -1684,6 +1684,24 @@ export function applyEvidenceEventToPages(
   };
 }
 
+export function applyInitialEvidencePageResult(
+  current: MobileBridgeState,
+  sessionId: string,
+  page: BridgeEvidencePage | undefined,
+  eventsAtRequestStart: readonly BridgeEvent[],
+): Record<string, SessionEvidenceState> {
+  if (page && current.events !== eventsAtRequestStart) {
+    const previousEventIds = new Set(eventsAtRequestStart.map((event) => event.eventId));
+    const liveItems = current.events.flatMap((event) => {
+      if (previousEventIds.has(event.eventId)) return [];
+      const item = evidenceFromEvent(event);
+      return item?.sessionId === sessionId ? [item] : [];
+    });
+    page = { ...page, items: [...page.items, ...liveItems] };
+  }
+  return applyEvidencePageResult(current.evidence, sessionId, page, { hasMoreOnError: false });
+}
+
 /**
  * Applies a fetched/cached `BridgeEvidencePage` (or error/missing page
  * fallback) to `evidence[sessionId]`.

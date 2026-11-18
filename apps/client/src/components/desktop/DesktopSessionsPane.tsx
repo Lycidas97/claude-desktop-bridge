@@ -186,6 +186,7 @@ export function DesktopSessions({
   const desktopProjectListRef = useRef<HTMLDivElement>(null);
   const rowRenameDialogRef = useRef<HTMLElement>(null);
   const handledResetEventsRef = useRef(new Set<string>());
+  const pendingResetRef = useRef<{ hostId: string; sessionId: string } | undefined>(undefined);
   const handledFocusKeyRef = useRef<number | undefined>(undefined);
 
   function setSelectedId(sessionId: string | undefined): void {
@@ -194,6 +195,7 @@ export function DesktopSessions({
   }
 
   function selectSessionFromSidebar(sessionId: string): void {
+    pendingResetRef.current = undefined;
     setNewChatTarget(undefined);
     setSelectedId(sessionId);
     if (activeTab !== "sessions") {
@@ -343,6 +345,11 @@ export function DesktopSessions({
     jumpToSession(focusRequest.sessionId);
   }, [focusRequest, hostId, snapshot.sessions]);
 
+  const selected = snapshot.sessions.find((session) => session.sessionId === selectedId);
+  const seenCompletions = useSeenSessionCompletions(hostId);
+  const visibilityAvailable = snapshot.host.capabilities.includes("session.visibility.v1");
+  const hasActiveSessions = activeSessions.length > 0;
+
   useEffect(() => {
     for (const event of hostEvents) {
       if (event.type !== "session.reset") continue;
@@ -354,23 +361,20 @@ export function DesktopSessions({
         setResetError(undefined);
         controller.resetSessionHistory(nextSessionId, hostId);
         conversationDrafts.resetSession(hostId, nextSessionId);
-        setSelectedId(nextSessionId);
+        pendingResetRef.current = { hostId, sessionId: nextSessionId };
         void onRefreshSnapshot()
-          .then(() => controller.openSession(nextSessionId, hostId))
           .catch((reason) => setResetError(reason instanceof Error ? reason.message : "新会话打开失败"));
       }
     }
-  }, [events, hostId, selectedId]);
 
-  const selected = snapshot.sessions.find((session) => session.sessionId === selectedId);
-  const seenCompletions = useSeenSessionCompletions(hostId);
-  const visibilityAvailable = snapshot.host.capabilities.includes("session.visibility.v1");
-  const hasActiveSessions = activeSessions.length > 0;
-
-  useEffect(() => {
-    if (selectedId && snapshot.sessions.some((session) => session.sessionId === selectedId)) return;
-    setSelectedId(activeSessions[0]?.sessionId);
-  }, [activeSessions, selectedId, snapshot.sessions]);
+    const pendingReset = pendingResetRef.current;
+    if (pendingReset?.hostId === hostId && snapshot.sessions.some((session) => session.sessionId === pendingReset.sessionId)) {
+      pendingResetRef.current = undefined;
+      setSelectedId(pendingReset.sessionId);
+    } else if (!selected) {
+      setSelectedId(activeSessions[0]?.sessionId);
+    }
+  }, [events, hostId, selectedId, activeSessions, snapshot.sessions]);
 
   useEffect(() => {
     if (!rowRenameSessionId || !rowActionBusy) return;

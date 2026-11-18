@@ -483,6 +483,7 @@ export function conversationItems(
         createdAt: event.timestamp,
         origin: event.origin,
         delivery: mergeAcceptedDelivery(items.get(itemId)?.delivery, event.data.delivery as BridgeDeliveryState | undefined),
+        ...(event.data.queueSettled === true ? { queueSettled: true } : {}),
         ...(attachments?.length ? { attachments } : {}),
         ...(typeof event.data.requestId === "string" ? { requestId: event.data.requestId } : {}),
         ...(typeof event.data.commandId === "string" ? { commandId: event.data.commandId } : {}),
@@ -699,6 +700,7 @@ export function conversationItems(
         : event.type === "turn.interrupted" ? "cancelled" : event.type === "turn.started" ? "running" : "queued";
       if (incoming) delivery = incoming === "completed" || incoming === "failed" || incoming === "cancelled"
         ? incoming : mergeAcceptedDelivery(delivery, incoming);
+      if (event.data.queueSettled === true) item.queueSettled = true;
       if (typeof event.data.error === "string") error = event.data.error;
     }
     const attachments = item.attachments?.length ? item.attachments : local?.attachments;

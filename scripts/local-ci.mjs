@@ -153,6 +153,15 @@ export async function publishVerifiedHead({
   return { revision, tree, viaTree, sourceRevision: receipt.revision };
 }
 
+export function recycleWindowsRunCommand(path, recycleSource) {
+  const literal = `'${path.replaceAll("'", "''")}'`;
+  // Send the recycler with the command so cleanup is available even if the first upload fails.
+  return `if (Test-Path -LiteralPath ${literal}) { try { ` +
+    `Add-Type -TypeDefinition ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${recycleSource.toString("base64")}'))); ` +
+    `[WindowsCiRecycle]::Recycle(${literal}) ` +
+    `} catch { [Console]::Error.WriteLine('Windows Recycle Bin cleanup failed for ' + ${literal} + ': ' + $_.Exception.Message); throw } }`;
+}
+
 async function runCli() {
   const args = new Set(process.argv.slice(2));
   const publishOnly = args.has("--publish");
@@ -191,7 +200,7 @@ async function runCli() {
   console.log(`=== Local Distributed CI @ ${revision} ===\nLog: ${logPath}`);
 
   const activeChildren = new Set();
-  function runPrefixed(prefix, command, commandArgs, extraEnv = {}) {
+  function runPrefixed(prefix, command, commandArgs, { extraEnv, onClose } = {}) {
     return new Promise((resolveStep, rejectStep) => {
       const startedAt = Date.now();
       const child = spawn(command, commandArgs, {
@@ -220,6 +229,7 @@ async function runCli() {
       });
       child.on("close", (code) => {
         activeChildren.delete(child);
+        onClose?.(code);
         const elapsedSec = ((Date.now() - startedAt) / 1000).toFixed(1);
         if (code === 0) resolveStep(Number(elapsedSec));
         else rejectStep(new Error(`[${prefix}] ${command} ${commandArgs.join(" ")} exited with code ${code} after ${elapsedSec}s`));
@@ -227,6 +237,7 @@ async function runCli() {
     });
   }
 
+  const windowsRecycleSource = skipWin ? null : await readFile(new URL("./win-ci-recycle.cs", import.meta.url));
   const tempRoot = await mkdtemp(join(tmpdir(), "bridge-local-ci-"));
   const results = [];
   const sshAlive = ["-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"];
@@ -250,7 +261,7 @@ async function runCli() {
         results.push(`macOS verify: typecheck + 5 Vitest suites + full build (${tVerify}s)`);
 
         const [tBrowser, tService] = await Promise.all([
-          runPrefixed("MAC", "npm", ["run", "test:browser:nobuild"], browserEnv),
+          runPrefixed("MAC", "npm", ["run", "test:browser:nobuild"], { extraEnv: browserEnv }),
           runPrefixed("MAC", "npm", ["run", "ci:run", "--", "run", "test:desktop:service"]),
         ]);
         results.push(`macOS test:browser: 10 Chrome mobile E2E scenarios x 2 themes (${tBrowser}s)`);
@@ -279,10 +290,15 @@ async function runCli() {
         const psArgs = [
           ...sshAlive,
           winHost,
-          `$ErrorActionPreference = 'Stop'; $env:BRIDGE_TEST_TEMP_ROOT = "${remoteTempWin}"; try { powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${remoteScriptWin}" -Revision "${revision}" -BundlePath "${remoteBundleWin}"; $ec = $LASTEXITCODE } finally { Remove-Item -LiteralPath "${remoteTempWin}" -Recurse -Force }; exit $ec`,
+          `$ErrorActionPreference = 'Stop'; $env:BRIDGE_TEST_TEMP_ROOT = "${remoteTempWin}"; try { powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${remoteScriptWin}" -Revision "${revision}" -BundlePath "${remoteBundleWin}"; $ec = $LASTEXITCODE } finally { ${recycleWindowsRunCommand(remoteTempWin, windowsRecycleSource)} }; exit $ec`,
         ];
-        const tWin = await runPrefixed("WIN", "ssh", psArgs);
-        unfinishedWinRunId = null;
+        const tWin = await runPrefixed("WIN", "ssh", psArgs, {
+          onClose(code) {
+            // ssh reports transport errors as 255. Other exit codes came from the remote command,
+            // which already tried cleanup and must retain the directory if that failed.
+            if (code !== null && code !== 255) unfinishedWinRunId = null;
+          },
+        });
         results.push(
           `Windows 11 + Android API 36 WHPX Emulator (${tWin}s)`,
         );
@@ -296,15 +312,14 @@ async function runCli() {
     }
     if (unfinishedWinRunId) {
       // Windows OpenSSH keeps the remote powershell.exe running after the local ssh client dies, so it would hold
-      // its win-local-ci slot mutex and emulator until it finished on its own. Kill that process tree and delete
-      // only the fresh run directory allocated above for its uploaded bundle/script and scratch.
+      // its win-local-ci slot mutex and emulator until it finishes. Stop that process tree and recycle its run directory.
       const stop = spawnSync("ssh", [
         ...sshAlive,
         winHost,
-        `$ErrorActionPreference = 'Stop'; Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like '*win-local-ci-${unfinishedWinRunId}.ps1*' } | ForEach-Object { cmd.exe /c "taskkill.exe /PID $($_.ProcessId) /T /F >nul 2>nul" }; if (Test-Path -LiteralPath "D:\\work\\cache\\temp\\bridge-ci-${unfinishedWinRunId}") { Remove-Item -LiteralPath "D:\\work\\cache\\temp\\bridge-ci-${unfinishedWinRunId}" -Recurse -Force }; exit 0`,
+        `$ErrorActionPreference = 'Stop'; Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like '*win-local-ci-${unfinishedWinRunId}.ps1*' } | ForEach-Object { cmd.exe /c "taskkill.exe /PID $($_.ProcessId) /T /F >nul 2>nul" }; ${recycleWindowsRunCommand(`D:\\work\\cache\\temp\\bridge-ci-${unfinishedWinRunId}`, windowsRecycleSource)}; exit 0`,
       ], { encoding: "utf8" });
       if (stop.status !== 0) {
-        console.error(`[WIN] Failed to stop remote win-local-ci-${unfinishedWinRunId}.ps1; its slot stays held until it exits: ${stop.stderr || stop.error}`);
+        console.error(`[WIN] Remote cancellation or Recycle Bin cleanup failed for ${unfinishedWinRunId}: ${stop.stderr || stop.error}`);
       }
     }
     await recycle(tempRoot, { recursive: true, force: true });

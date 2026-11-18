@@ -32,7 +32,7 @@ async function verifySessionHeader(page, host, steps, directory, baseUrl) {
     await eventually(() => notice.count(), state === "confirmed" ? 0 : 1, `Permission notice state ${state}`);
     assert.ok((await page.locator(".m-header .session-profile-summary").textContent()).includes("Don't Ask"), "A requested mode never replaces the observed header mode");
   }
-  async function checkWrapping(summary, surface, expectedMeta, canConfigure) {
+  async function checkProfileLayout(summary, surface, { metaText, stacked, modelEllipsized, canConfigure }) {
     const layout = await summary.evaluate(element => {
       const modelLine = element.querySelector(".is-model-line");
       const metaLine = element.querySelector(".is-meta-line");
@@ -44,16 +44,29 @@ async function verifySessionHeader(page, host, steps, directory, baseUrl) {
       return {
         metaText: metaLine.textContent,
         metaVisible: meta.left >= bounds.left && meta.right <= bounds.right && metaLine.scrollWidth <= metaLine.clientWidth,
-        oneLine: meta.left >= model.right && model.top < meta.bottom && meta.top < model.bottom,
+        layout: meta.top >= model.bottom && meta.left === model.left ? "stacked"
+          : meta.left >= model.right && model.top < meta.bottom && meta.top < model.bottom ? "inline" : "misaligned",
+        modelVisible: modelLine.scrollWidth <= modelLine.clientWidth,
         modelEllipsized: modelLine.scrollWidth > modelLine.clientWidth && modelStyle.textOverflow === "ellipsis" && modelStyle.whiteSpace === "nowrap",
         inViewport: bounds.left >= 0 && bounds.right <= innerWidth,
         chevronAtEnd: chevron ? chevron.left >= bounds.right && chevron.right <= innerWidth : null,
       };
     });
-    assert.ok(layout.metaVisible, `${surface} shows the full effort and permission mode beside the long model name`);
-    assert.deepEqual(layout, { metaText: expectedMeta, metaVisible: true, oneLine: true, modelEllipsized: true, inViewport: true, chevronAtEnd: canConfigure ? true : null },
-      `${surface} keeps the header profile on one line and ellipsizes the model name`);
+    assert.deepEqual(layout, { metaText, metaVisible: true, layout: stacked ? "stacked" : "inline", modelVisible: !modelEllipsized,
+      modelEllipsized, inViewport: true, chevronAtEnd: canConfigure ? true : null }, `${surface} profile layout`);
   }
+  const mobileSummary = page.locator(".m-header .session-profile-summary");
+  const longModelName = profile.modelDisplayName;
+  profile.modelDisplayName = "bridge/gpt-6.2-sol";
+  Object.assign(session, profile);
+  await host.send({ kind: "snapshot", snapshot: host.snapshot });
+  await eventually(() => mobileSummary.textContent(), "bridge/gpt-6.2-sol · High · Don't Ask", "The mobile header receives the model label");
+  await checkProfileLayout(mobileSummary, "Mobile 375px", { metaText: "High · Don't Ask", stacked: true, modelEllipsized: false, canConfigure: true });
+  await page.screenshot({ path: resolve(directory, "mobile-header-375.png"), fullPage: true });
+  profile.modelDisplayName = longModelName;
+  Object.assign(session, profile);
+  await host.send({ kind: "snapshot", snapshot: host.snapshot });
+  await eventually(() => mobileSummary.textContent(), `${longModelName} · High · Don't Ask`, "The mobile header receives the long model label");
   for (const width of [375, 320]) {
     await page.setViewportSize({ width, height: 812 });
     for (const font of ["standard", "larger"]) {
@@ -62,7 +75,9 @@ async function verifySessionHeader(page, host, steps, directory, baseUrl) {
         session.allowedActions.canConfigure = canConfigure;
         await host.send({ kind: "snapshot", snapshot: host.snapshot });
         await eventually(() => page.getByRole("button", { name: "会话设置", exact: true }).count(), canConfigure ? 1 : 0, "Settings availability changes only the header action");
-        await checkWrapping(page.locator(".m-header .session-profile-summary"), `Mobile ${width}px ${font} configure=${canConfigure}`, "High · Don't Ask", canConfigure);
+        await checkProfileLayout(mobileSummary, `Mobile ${width}px ${font} configure=${canConfigure}`, {
+          metaText: "High · Don't Ask", stacked: true, modelEllipsized: true, canConfigure,
+        });
       }
     }
   }
@@ -94,11 +109,13 @@ async function verifySessionHeader(page, host, steps, directory, baseUrl) {
     const summary = page.locator(".desktop-conversation .session-profile-summary");
     await eventually(() => summary.textContent(), `${profile.modelDisplayName} · High · ${modes[mode]}`, "Desktop receives updated mode without a configuration read");
     if (canConfigure) await eventually(accessibleProfile, { name: "会话设置", description: `${profile.modelDisplayName} · High · ${modes[mode]}` }, "Desktop settings announce the current snapshot profile");
-    await checkWrapping(summary, `Desktop configure=${canConfigure}`, `High · ${modes[mode]}`, canConfigure);
+    await checkProfileLayout(summary, `Desktop configure=${canConfigure}`, {
+      metaText: `High · ${modes[mode]}`, stacked: false, modelEllipsized: true, canConfigure,
+    });
   }
   await accessibility.detach();
   await page.screenshot({ path: resolve(directory, "desktop-header-readonly-larger.png"), fullPage: true });
-  steps.push("mobile at 375/320px ellipsizes long model names on one line and keeps the full effort, permission mode, and chevron visible; mobile and desktop retain full accessible settings descriptions and read-only summaries");
+  steps.push("mobile gives the model its own line at 375/320px and keeps the full effort, permission mode, and chevron visible; desktop stays inline and both retain full accessible settings descriptions and read-only summaries");
 }
 
 export async function verifyNativeApprovals(page, host, steps, directory, baseUrl, relayRoutes) {

@@ -214,11 +214,18 @@ export async function verifyNativeQueueActions(page, host, steps, directory, rel
   }), "The received status row with queue buttons clears its bubble");
   assert.equal(host.nativeApproval.receipts().at(-1).state, "session-received");
   assert.equal(host.session.pendingCount, 0, "The adapter does not invent queued status to expose actions");
+  assert.equal(host.session.turnState, "running");
+  await host.syncNativeQueue(await host.nativeApproval.event({ type: "message", message: {
+    type: "assistant", uuid: "active-turn-progress", timestamp: Date.now(), message: { content: [{ type: "text", text: "上一条任务仍在运行。" }] },
+  } }));
+  await page.getByText("上一条任务仍在运行。", { exact: true }).waitFor();
+  assert.equal(await receivedMessage.locator(".delivery-state.session-received").count(), 1, "An active turn's progress does not settle received input waiting for that turn");
   await composer.fill(draft);
   await receivedMessage.getByRole("button", { name: "立即发送", exact: true }).click();
   await eventually(() => host.nativeApproval.calls.filter(call => call.method === "promoteQueuedMessage" && call.args[1] === received.messageId).length, 1, "Received-only 立即发送 promotes the normally submitted message exactly once");
   await eventually(() => receivedMessage.getByRole("button", { name: "撤回", exact: true }).isEnabled(), true, "Received-only 立即发送 preserves draft and later cancellation");
   assert.equal(await composer.inputValue(), draft);
+  await receivedMessage.locator(".conversation-bubble").tap();
   assert.equal(await receivedMessage.getByRole("button", { name: "回退到这条消息之前", exact: true }).isEnabled(), true);
   await page.screenshot({ path: resolve(directory, "queue-received-actions.png"), fullPage: true });
   await receivedMessage.getByRole("button", { name: "回退到这条消息之前", exact: true }).click();
@@ -245,4 +252,79 @@ export async function verifyNativeQueueActions(page, host, steps, directory, rel
   assert.equal(await receivedMessage.count(), 0, "Replayed pre-rewind events cannot revive the discarded received message");
   await page.screenshot({ path: resolve(directory, "queue-running-rewind-complete.png"), fullPage: true });
   steps.push("normal sends without a composer mode selector keep delivered-only replies received but expose 立即发送 and native rewind; active rewind uses the user UUID/assistant anchor, stops through Native, clears withdrawal receipts, restores text and survives reload without resubmitting");
+
+  const completedText = "已得到回复的原生消息";
+  await composer.fill(completedText);
+  await page.getByRole("button", { name: "发送", exact: true }).click();
+  await eventually(() => host.nativeApproval.receipts().at(-1)?.state, "submitted", "Native accepted the new send RPC");
+  const completedReceipt = host.nativeApproval.receipts().at(-1);
+  for (const message of [
+    { type: "user", uuid: completedReceipt.messageId, message: { content: completedText } },
+    { type: "assistant", uuid: "uncorrelated-reply", message: { content: [{ type: "text", text: "原生回复已结束。" }] } },
+    { type: "result", uuid: "uncorrelated-result", subtype: "success", is_error: false },
+  ]) {
+    const events = await host.nativeApproval.message({ ...message, timestamp: Date.now() });
+    await host.syncNativeQueue({ events, history: await host.nativeApproval.history(), session: host.nativeApproval.session() });
+  }
+  assert.equal(host.nativeApproval.receipts().at(-1).state, "session-received", "An uncorrelated result must not promote the stored receipt");
+  const completedMessage = page.locator("article.conversation-item.user").filter({ hasText: completedText });
+  await page.getByText("原生回复已结束。", { exact: true }).waitFor();
+  await eventually(() => completedMessage.locator(".delivery-state").count(), 0, "Answered native input stops showing its stale received badge");
+  const staleActions = completedMessage.getByRole("button", { name: /^(立即发送|撤回)$/u });
+  assert.equal(await staleActions.count(), 0, "Answered input has no queue controls");
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await openMobileSession(page);
+  await completedMessage.waitFor();
+  await page.getByText("原生回复已结束。", { exact: true }).waitFor();
+  assert.equal(await completedMessage.locator(".delivery-state").count(), 0, "History keeps the stale received badge hidden after reload");
+  assert.equal(await staleActions.count(), 0, "History keeps stale queue controls hidden after reload");
+
+  const nextText = "下一轮收到的新消息";
+  const next = await host.syncNativeQueue(await host.nativeApproval.enqueue(nextText));
+  await host.syncNativeQueue(await host.nativeApproval.event({ type: "message", message: {
+    type: "user", uuid: next.receipt.messageId, timestamp: Date.now(), message: { content: nextText },
+  } }));
+  assert.equal(host.session.turnState, "running");
+  const nextMessage = page.locator("article.conversation-item.user").filter({ hasText: nextText });
+  await nextMessage.locator(".delivery-state.session-received").waitFor();
+  assert.equal(await nextMessage.getByRole("button", { name: /^(立即发送|撤回)$/u }).count(), 2, "New received-only input remains actionable");
+  assert.equal(await completedMessage.locator(".delivery-state").count(), 0, "A later native turn cannot revive an old received badge");
+  assert.equal(await staleActions.count(), 0, "A later native turn cannot revive stale queue controls");
+  const waitingText = "上一轮完成时仍在等待的指令";
+  const waiting = await host.syncNativeQueue(await host.nativeApproval.enqueue(waitingText));
+  await host.syncNativeQueue(await host.nativeApproval.event({ type: "message", message: {
+    type: "user", uuid: waiting.receipt.messageId, message: { content: waitingText },
+  } }));
+  const waitingMessage = page.locator("article.conversation-item.user").filter({ hasText: waitingText });
+  await waitingMessage.locator(".delivery-state.session-received").waitFor();
+  for (const message of [
+    { type: "assistant", uuid: "next-reply", message: { content: [{ type: "text", text: "上一轮的最终回复。" }] } },
+    { type: "result", uuid: "correlated-next-result", user_message_uuid: next.receipt.messageId, is_error: false },
+  ]) {
+    const events = await host.nativeApproval.message({ ...message, timestamp: Date.now() });
+    await host.syncNativeQueue({ events, history: await host.nativeApproval.history(), session: host.nativeApproval.session() });
+  }
+  await nextMessage.locator(".delivery-state.completed").waitFor();
+  assert.equal(host.session.turnState, "running");
+  assert.equal(await waitingMessage.locator(".delivery-state.session-received").count(), 1, "Another input's completion preserves the waiting receipt");
+  assert.equal(await waitingMessage.getByRole("button", { name: /^(立即发送|撤回)$/u }).count(), 2);
+  assert.equal(await completedMessage.locator(".delivery-state").count(), 0, "A matching result for another message does not revive the old received badge");
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await openMobileSession(page);
+  await completedMessage.waitFor();
+  await page.getByText("原生回复已结束。", { exact: true }).waitFor();
+  assert.equal(await completedMessage.locator(".delivery-state").count(), 0, "Reopening during a later turn keeps the old badge hidden");
+  assert.equal(await staleActions.count(), 0, "Reopening during a later turn keeps the old controls hidden");
+  await waitingMessage.locator(".conversation-bubble").tap();
+  await waitingMessage.getByRole("button", { name: "回退到这条消息之前", exact: true }).click();
+  const laterRewind = page.getByRole("dialog", { name: "回退会话", exact: true });
+  await laterRewind.getByRole("button", { name: "确认回退", exact: true }).click();
+  await laterRewind.waitFor({ state: "hidden" });
+  await eventually(() => waitingMessage.count(), 0, "Native rewind discarded the waiting input");
+  await host.syncNativeQueue(await host.nativeApproval.enqueue("回退后开始的第一轮"));
+  assert.equal(host.session.turnState, "running");
+  await completedMessage.waitFor();
+  assert.equal(await completedMessage.locator(".delivery-state").count(), 0, "The first active turn after rewind keeps the answered bubble clear");
+  assert.equal(await staleActions.count(), 0);
+  steps.push("received-only history hides stale controls after reload, later active turns and rewind, while another input's correlated result preserves a genuinely waiting input");
 }

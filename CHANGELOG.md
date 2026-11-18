@@ -1,19 +1,21 @@
 ## 1.3.6
 
-- Choose an output style per session from session settings, or preselect it when
-  creating a session. Built-in styles and personal styles from the computer are
-  available. Changes apply from the next reply.
+- Choose an output style per session. Preselect a built-in or global personal
+  style when creating a session. Choose project and plugin styles in session
+  settings after the session initializes. Changes apply from the next reply.
 - Show Android’s system app chooser after saving a download so it can be opened
   in a compatible app. Preserve the file extension and report when no viewer is
   available.
 - Make desktop pairing QR codes easier to scan with a shorter payload and better
-  camera detection. Older mobile clients can still pair by pasting the full
-  pairing link. Preserve existing pairings if desktop configuration migration
-  fails.
+  camera detection. Phones that support Pairing V4 can also paste the full pairing
+  link. Use the full link with Bridge 1.3.5. Keep the existing pairings when a
+  valid desktop configuration cannot be saved during migration.
 - Preview relative file links opened from phone conversations. Show desktop
   history while the evidence list loads, preserve thumbnails while replies
   stream, and keep the first page of mobile evidence current during loading.
-  Open the replacement session only once after a desktop reset.
+  Open the replacement session only once after a desktop reset. After a fork,
+  open the new session only once. If session deletion fails, keep the confirmation
+  dialog open so the user can retry.
 - Keep old message actions tucked away and show queue status below the message.
   Keep received receipts collapsed once the native queue drains, including after
   restart or rewind. Restore session activity and unread completion markers,

@@ -390,6 +390,11 @@
   --row-title-line-height: 1.38;
 }
 
+.mobile-home-catalog.is-flat-tree .session-row-copy small {
+  color: color-mix(in srgb, var(--muted) 70%, var(--text));
+  font-size: var(--m-fs-footnote);
+}
+
 .mobile-home-catalog.is-flat-tree .session-row-v2,
 .mobile-home-catalog.is-flat-tree .session-row-hit {
   min-height: 42px;
@@ -688,6 +693,21 @@
 .mobile-app-shell .conversation-workspace .session-profile-summary,
 .assistant-page-mobile .session-profile-summary {
   text-align: left;
+}
+
+.mobile-app-shell .conversation-workspace .session-profile-summary {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+}
+
+/* Keep the separator in the settings button's accessible description. */
+.mobile-app-shell .conversation-workspace .session-profile-summary .is-line-sep {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
 }
 
 .new-chat-canvas.is-mobile .m-header.is-title-hidden .session-profile-summary .session-profile-line.is-meta-line {
@@ -1349,6 +1369,10 @@ button.mobile-settings-row:active { background: var(--surface-2); }
 .mobile-app-shell .message-queue-status > button { flex: 0 0 auto; min-height: 36px; }
 .mobile-app-shell .message-queue-status > button:first-of-type { margin-left: 27px; }
 .mobile-app-shell .delivery-state { font-size: var(--m-fs-footnote); }
+
+.mobile-app-shell .conversation-item.user .conversation-message-actions:has(> .delivery-state:not(.completed)) {
+  margin-block: 4px 0;
+}
 
 .mobile-app-shell .session-channel-warning {
   padding: 10px var(--m-gutter);

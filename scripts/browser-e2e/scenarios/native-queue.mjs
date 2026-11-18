@@ -182,11 +182,13 @@ export async function verifyNativeQueueActions(page, host, steps, directory, rel
   assert.equal(await page.getByRole("button", { name: "立即发送", exact: true }).count(), 0);
   assert.equal(await page.getByRole("button", { name: "撤回", exact: true }).count(), 0);
   assert.equal(await page.getByRole("status", { name: "消息排队状态" }).count(), 0);
-  assert.equal(await historyMessage.evaluate(message => {
-    const bubble = message.querySelector(".conversation-bubble");
-    const status = message.querySelector(".delivery-state");
-    return status.getBoundingClientRect().right - bubble.getBoundingClientRect().right;
-  }), 0, "A standalone delivery status aligns with its bubble edge");
+  const standaloneStatusGap = await historyMessage.evaluate(message => {
+    const bubble = message.querySelector(".conversation-bubble").getBoundingClientRect();
+    const status = message.querySelector(".delivery-state").getBoundingClientRect();
+    return { horizontal: status.right - bubble.right, vertical: status.top - bubble.bottom };
+  });
+  assert.equal(standaloneStatusGap.horizontal, 0, "A standalone delivery status aligns with its bubble edge");
+  assert.ok(standaloneStatusGap.vertical > 0, `A standalone delivery status clears its bubble (gap: ${standaloneStatusGap.vertical}px)`);
   await page.screenshot({ path: resolve(directory, "queue-terminal-states.png"), fullPage: true });
   steps.push("fresh history reconciles a missed rekey into one cached bubble; steered 立即发送 uses its native UUID; completed events preceding a delayed cancel true remain completed; successful cancels persist and queue actions never resubmit or interrupt");
 
@@ -204,6 +206,12 @@ export async function verifyNativeQueueActions(page, host, steps, directory, rel
   await host.syncNativeQueue(await host.nativeApproval.event({ type: "message", message: { type: "user", uuid: received.messageId, message: { content: receivedText } } }));
   const receivedMessage = page.locator("article.conversation-item.user").filter({ hasText: receivedText });
   await receivedMessage.getByRole("status").filter({ hasText: "已接收" }).waitFor();
+  await receivedMessage.getByRole("button", { name: "立即发送", exact: true }).waitFor();
+  assert.ok(await receivedMessage.evaluate(message => {
+    const bubble = message.querySelector(".conversation-bubble").getBoundingClientRect();
+    const actions = message.querySelector(".conversation-message-actions").getBoundingClientRect();
+    return actions.top > bubble.bottom;
+  }), "The received status row with queue buttons clears its bubble");
   assert.equal(host.nativeApproval.receipts().at(-1).state, "session-received");
   assert.equal(host.session.pendingCount, 0, "The adapter does not invent queued status to expose actions");
   await composer.fill(draft);

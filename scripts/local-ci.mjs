@@ -166,6 +166,20 @@ function removeOwnedWindowsRunCommand(path) {
   return `if (Test-Path -LiteralPath '${path}') { Remove-Item -LiteralPath '${path}' -Recurse -Force }`;
 }
 
+export function cancelWindowsRunCommand(runId) {
+  // A tree kill can also stop another process in the original CIM snapshot.
+  return [
+    "$ErrorActionPreference = 'Stop';",
+    `Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like '*win-local-ci-${runId}.ps1*' } |`,
+    "ForEach-Object {",
+    'cmd.exe /c "taskkill.exe /PID $($_.ProcessId) /T /F >nul 2>nul";',
+    'if ($LASTEXITCODE -ne 0 -and (Get-CimInstance Win32_Process -Filter "ProcessId = $($_.ProcessId)")) {',
+    'throw "Could not stop Windows CI process $($_.ProcessId) (taskkill exit $LASTEXITCODE)"',
+    "} };",
+    `${removeOwnedWindowsRunCommand(`D:\\work\\cache\\temp\\bridge-ci-${runId}`)}; exit 0`,
+  ].join(" ");
+}
+
 async function runCli() {
   const args = new Set(process.argv.slice(2));
   const publishOnly = args.has("--publish");
@@ -319,7 +333,7 @@ async function runCli() {
       const stop = spawnSync("ssh", [
         ...sshAlive,
         winHost,
-        `$ErrorActionPreference = 'Stop'; Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like '*win-local-ci-${unfinishedWinRunId}.ps1*' } | ForEach-Object { cmd.exe /c "taskkill.exe /PID $($_.ProcessId) /T /F >nul 2>nul" }; ${removeOwnedWindowsRunCommand(`D:\\work\\cache\\temp\\bridge-ci-${unfinishedWinRunId}`)}; exit 0`,
+        cancelWindowsRunCommand(unfinishedWinRunId),
       ], { encoding: "utf8" });
       if (stop.status !== 0) {
         console.error(`[WIN] Remote cancellation or run directory cleanup failed for ${unfinishedWinRunId}: ${stop.stderr || stop.error}`);

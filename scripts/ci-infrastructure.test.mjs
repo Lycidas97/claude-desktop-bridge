@@ -13,7 +13,7 @@ import vm from 'node:vm';
 import { transform } from 'esbuild';
 import { runSuites } from './test.mjs';
 import { recycleEnv } from './ci-run.mjs';
-import { LOCAL_CI_STATUS_CONTEXT, recordAndPublishLocalCi, validateStatusRepo } from './local-ci.mjs';
+import { cancelWindowsRunCommand, LOCAL_CI_STATUS_CONTEXT, recordAndPublishLocalCi, validateStatusRepo } from './local-ci.mjs';
 import { buildAndroidDogfood } from './dogfood-android.mjs';
 
 const require = createRequire(import.meta.url);
@@ -803,6 +803,32 @@ test('local CI cancels a running Windows leg and preserves a completed leg’s f
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test('Windows CI cancellation preserves scratch if taskkill fails and the process is still present', { skip: process.platform !== 'win32' }, () => {
+  const run = (workerSurvives) => {
+    const command = Buffer.from(`
+      function Get-CimInstance($ClassName, $Filter) {
+        if (-not $Filter -or ${workerSurvives ? '$true' : '$false'}) {
+          [pscustomobject]@{ ProcessId = $PID + 1; CommandLine = 'win-local-ci-fixture.ps1' }
+        }
+      }
+      function cmd.exe { & "$env:SystemRoot\\System32\\cmd.exe" /c 'exit 5' }
+      function Test-Path { $true }
+      function Remove-Item { Write-Output 'CLEANUP_REACHED' }
+      ${cancelWindowsRunCommand('fixture')}
+    `, 'utf16le').toString('base64');
+    return spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', command], { encoding: 'utf8' });
+  };
+
+  const survivingWorker = run(true);
+  assert.equal(survivingWorker.status, 1, survivingWorker.stdout + survivingWorker.stderr);
+  assert.match(survivingWorker.stderr, /taskkill exit 5/u);
+  assert.doesNotMatch(survivingWorker.stdout, /CLEANUP_REACHED/u);
+
+  const exitedWorker = run(false);
+  assert.equal(exitedWorker.status, 0, exitedWorker.stdout + exitedWorker.stderr);
+  assert.match(exitedWorker.stdout, /CLEANUP_REACHED/u);
 });
 
 test('browser E2E binds an ephemeral kernel port via httpServer.listen and local-ci isolates concurrent Windows runs per slot', async () => {

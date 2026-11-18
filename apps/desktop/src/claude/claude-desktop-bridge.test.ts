@@ -177,9 +177,62 @@ async function fixture(legacy = false, evidence?: ConstructorParameters<typeof C
   const directory = await mkdtemp(join(tmpdir(), "bridge-native-"));
   const databasePath = join(directory, "state.sqlite");
   const state = new ConversationStateStore({ databasePath, sessionsPath: join(directory, "sessions.json"), queuePath: join(directory, "queue.json"), masterSecret: Buffer.alloc(32, 7).toString("base64url") });
-  await state.initialize();
   if (legacy) {
     withDatabase(databasePath, (db) => {
+      db.exec(`
+        CREATE TABLE provider_profiles (
+          id TEXT PRIMARY KEY,
+          kind TEXT NOT NULL,
+          name TEXT NOT NULL,
+          status TEXT NOT NULL,
+          detail TEXT NOT NULL,
+          configured INTEGER NOT NULL,
+          local_only_configuration INTEGER NOT NULL,
+          read_only INTEGER NOT NULL,
+          models_json TEXT NOT NULL,
+          default_model TEXT,
+          refreshed_at INTEGER
+        ) STRICT;
+        CREATE TABLE conversations (
+          id TEXT PRIMARY KEY,
+          cwd TEXT NOT NULL,
+          title TEXT NOT NULL,
+          source TEXT NOT NULL,
+          active_lane_id TEXT,
+          active_provider_profile_id TEXT,
+          route_state TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        ) STRICT;
+        CREATE TABLE lanes (
+          id TEXT PRIMARY KEY,
+          conversation_id TEXT NOT NULL,
+          provider_profile_id TEXT NOT NULL,
+          provider_kind TEXT NOT NULL,
+          native_session_id TEXT,
+          status TEXT NOT NULL,
+          access TEXT NOT NULL,
+          model TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          last_used_at INTEGER,
+          FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+          FOREIGN KEY (provider_profile_id) REFERENCES provider_profiles(id)
+        ) STRICT;
+        CREATE TABLE bridge_sessions (
+          session_id TEXT PRIMARY KEY,
+          session_json TEXT NOT NULL
+        ) STRICT;
+        CREATE TABLE turn_queue (
+          command_id TEXT PRIMARY KEY,
+          session_id TEXT NOT NULL,
+          lane_id TEXT NOT NULL,
+          idempotency_key TEXT NOT NULL UNIQUE,
+          state TEXT NOT NULL,
+          turn_json TEXT NOT NULL,
+          FOREIGN KEY (lane_id) REFERENCES lanes(id)
+        ) STRICT;
+      `);
       db.prepare(`
         INSERT INTO provider_profiles(id, kind, name, status, detail, configured, local_only_configuration, read_only, models_json)
         VALUES ('provider:claude-3p:default', 'claude-3p', 'Claude-3p', 'unavailable', '', 0, 0, 0, '[]')
@@ -205,6 +258,7 @@ async function fixture(legacy = false, evidence?: ConstructorParameters<typeof C
       }));
     });
   }
+  await state.initialize();
   const eventLog = new SessionEventLog(join(directory, "events.jsonl"));
   await eventLog.initialize();
   const native = new NativeDesktop();
@@ -2464,7 +2518,9 @@ describe("Claude native relay", () => {
       expect(f.native.calls.find(call => call.method === "sendMessage")?.args.slice(0, 2)).toEqual(["local-child", "Why does this work?"]);
       expect(f.native.sessions.find(session => session.sessionId === "local-child")?.spawnedFrom).toMatchObject({ sessionId: "local-native", btw: true });
       expect(f.eventLog.replay(0).some(event => event.type === "session.observed")).toBe(false);
-      expect(withDatabase(f.databasePath, (db) => db.prepare("SELECT session_id FROM bridge_sessions").all())).toEqual([]);
+      expect(withDatabase(f.databasePath, (db) => db.prepare(
+        "SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'bridge_sessions'",
+      ).get())).toBeUndefined();
       expect(await f.bridge.runCommand(command)).toMatchObject({ action: "session", session: { sessionId: "local-child" } });
       expect(f.native.calls.filter(call => call.method === "startBtwChild")).toHaveLength(1);
       expect(f.native.calls.filter(call => call.method === "sendMessage")).toHaveLength(1);

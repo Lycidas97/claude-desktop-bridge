@@ -509,8 +509,9 @@ export function NewChatCanvas({
     const createdEffort = created.effort ?? asBridgeEffort(created.reasoningEffort);
     const createdPermission = created.nativePermissionMode ?? "default";
 
+    // The created session can display a catalog fallback before Desktop applies a model.
     const needsModel = Boolean(
-      model && (created.model ? model !== created.model : userTouchedRef.current.model),
+      model && (userTouchedRef.current.model || (created.model && model !== created.model)),
     );
     const needsEffort = Boolean(
       desiredEffort && (createdEffort ? desiredEffort !== createdEffort : userTouchedRef.current.effort),
@@ -582,7 +583,7 @@ export function NewChatCanvas({
               configurationError = "所选授权模式未生效，请检查会话设置后再发送。";
             }
           } catch (configReason) {
-            configurationError = configReason instanceof Error ? configReason.message : "会话配置应用失败";
+            configurationError = (configReason instanceof Error && configReason.message) || "会话配置应用失败。";
           }
         }
       }
@@ -593,7 +594,9 @@ export function NewChatCanvas({
       }
       await onSessionCreated?.(created, {
         ...(withPrompt && trimmedPrompt ? { initialPrompt: trimmedPrompt } : {}),
-        ...(configurationError ? { configurationError } : {}),
+        ...(configurationError ? {
+          configurationError: withPrompt ? `首条消息未发送。${configurationError}` : configurationError,
+        } : {}),
       });
     } catch (reason) {
       const { isTrust, code } = isWorkspaceTrustError(reason);

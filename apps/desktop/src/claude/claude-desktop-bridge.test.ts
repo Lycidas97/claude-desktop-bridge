@@ -1620,6 +1620,8 @@ describe("Claude native relay", () => {
       f.native.codeModels = [`mythos-magpie-${magpieModelIdHash(base)}${suffix ? "" : "[1m]"}`, alias];
       await writeFile(f.options.settingsPath, JSON.stringify({ modelPicker: { options: [{ model: canonical, label: "Selected saved model" }] } }));
       const session = await f.bridge.createSession("/new-project");
+      expect(session.model).toBe(canonical);
+      expect(f.native.sessions.find(entry => entry.sessionId === session.sessionId)?.model).toBeUndefined();
       const configured = await f.bridge.configureSession({ sessionId: session.sessionId, model: canonical });
       expect(f.native.availableCodeModels).toHaveBeenCalledExactlyOnceWith();
       expect(f.native.calls.some(call => call.method === "getAvailableCodeModels")).toBe(false);

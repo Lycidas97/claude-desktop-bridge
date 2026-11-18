@@ -224,6 +224,12 @@ export async function verifyHistoryPagination(page, host, steps, directory) {
     await eventually(() => host.requests.filter(request => request.method === "session.history").length, 1, "Reaching the top automatically requests the next page once");
     await stream.evaluate(root => { for (let index = 0; index < 5; index += 1) root.dispatchEvent(new Event("scroll")); });
     assert.equal(host.requests.filter(request => request.method === "session.history").length, 1, "Repeated top scrolls cannot duplicate an in-flight cursor");
+    await stream.evaluate(root => { root.scrollTop = root.scrollHeight; root.dispatchEvent(new Event("scroll")); });
+    host.snapshot.sessions.find(session => session.sessionId === sessionId).lastCompletedTurnId = "result-during-pagination";
+    await host.send({ kind: "snapshot", snapshot: host.snapshot });
+    await page.waitForFunction(({ key, id }) => JSON.parse(localStorage.getItem(key) ?? "{}")[id] === "result-during-pagination", { key: `bridge-seen-session-completions:${host.pairing.roomId}`, id: sessionId });
+    await stream.evaluate(root => { root.scrollTop = 0; });
+    steps.push("the visible conversation acknowledges a completion while the older page is pending");
   } finally {
     host.historyGate = undefined;
     release();

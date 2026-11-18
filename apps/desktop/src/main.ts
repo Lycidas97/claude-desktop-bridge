@@ -297,6 +297,7 @@ async function desktopMain(): Promise<void> {
     mainWindow = new BrowserWindow({
       width: 1180, height: 780, minWidth: 860, minHeight: 620,
       show: !process.argv.includes("--hidden") && !(process.platform === "darwin" && app.getLoginItemSettings().wasOpenedAtLogin),
+      paintWhenInitiallyHidden: false,
       backgroundColor: nativeTheme.shouldUseDarkColors ? "#191816" : "#faf9f5",
       title: "Bridge",
       ...(process.platform === "darwin" ? { titleBarStyle: "hiddenInset" as const, trafficLightPosition: { x: 16, y: 16 } } : {}),

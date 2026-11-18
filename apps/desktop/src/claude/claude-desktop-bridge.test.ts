@@ -4069,7 +4069,7 @@ describe("Claude native relay", () => {
         kind: "request", requestId: "open-estimated", idempotencyKey: "open-estimated", method: "session.open", params: { sessionId: "local-native" },
       }, "mobile", "phone");
       expect(f.native.calls.filter(call => call.method === "getTranscriptPage").map(call => call.args[1])).toEqual(["", "side-0"]);
-      expect(openedEstimated.session?.contextUsage).toEqual({
+      expect(openedEstimated).toHaveProperty("session.contextUsage", {
         totalTokens: 40_800,
         maxTokens: 200_000,
         percentage: 20.4,

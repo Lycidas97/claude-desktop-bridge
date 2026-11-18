@@ -113,35 +113,43 @@ const configuration: BridgeSessionConfiguration = {
 };
 
 describe("session effort", () => {
-  it("shows and saves the nearest level the model supports instead of an unsupported current effort", async () => {
-    const gemini = {
+  it("lets Desktop choose the effort on a model-only save", async () => {
+    const loaded: BridgeSessionConfiguration = {
       ...configuration,
-      model: "gemini[1m]",
-      effort: "xhigh" as const,
+      effort: "xhigh",
       availableModels: [
-        { value: "gemini[1m]", displayName: "Gemini", supportedEffortLevels: ["low", "medium", "high"] },
-        { value: "claude", displayName: "Claude", supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"] },
+        { value: "current-model", displayName: "Current" },
+        { value: "next-model", displayName: "Next", supportedEffortLevels: ["low", "medium", "high"] },
       ],
-      availableEffortLevels: ["low", "medium", "high"] as const,
-    } as BridgeSessionConfiguration;
+      availableEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+    };
     const props = {
-      session, onLoad: vi.fn().mockResolvedValue(gemini), onSave: vi.fn().mockResolvedValue(gemini), onClose: vi.fn(),
+      session, onLoad: vi.fn().mockResolvedValue(loaded),
+      onSave: vi.fn().mockResolvedValue({ ...loaded, model: "next-model", effort: "medium" }), onClose: vi.fn(),
     };
     const draw = () => render(() => <SessionConfigurationDialog {...props} />);
-    draw();
-    await settle();
-    let tree = draw();
-    expect(button(tree, "高").props["aria-pressed"]).toBe(true);
-    expect(button(tree, "极高")).toBeUndefined();
-    expect(textContent(tree)).toContain("这个模型不支持「极高」");
-    button(tree, "保存配置").props.onClick();
-    await settle();
-    expect(props.onSave).toHaveBeenCalledWith({ reasoningEffort: "high" });
+    draw(); await settle();
+    elements(draw()).find(element => element.type === SelectMenu && element.props.ariaLabel === "模型")!.props.onChange("next-model");
+    button(draw(), "保存配置").props.onClick(); await settle();
+    expect(props.onSave).toHaveBeenCalledExactlyOnceWith({ model: "next-model" });
+    expect(button(draw(), "中").props["aria-pressed"]).toBe(true);
+  });
 
-    elements(tree).find((element) => element.type === SelectMenu && element.props.value === "gemini[1m]")!
-      .props.onChange("claude");
-    tree = draw();
-    expect(button(tree, "极高").props["aria-pressed"], "a model that supports it gets it back").toBe(true);
+  it("starts unset and shows the effort Desktop returns after an explicit change", async () => {
+    const loaded = { ...configuration, availableEffortLevels: ["low", "medium", "high"] };
+    const props = {
+      session, onLoad: vi.fn().mockResolvedValue(loaded),
+      onSave: vi.fn().mockResolvedValue({ ...loaded, effort: "medium" }), onClose: vi.fn(),
+    };
+    const draw = () => render(() => <SessionConfigurationDialog {...props} />);
+    draw(); await settle();
+    const tree = draw();
+    expect(button(tree, "低").props["aria-pressed"]).toBe(false);
+    expect(textContent(tree)).toContain("思考强度 · 默认");
+    button(tree, "高").props.onClick();
+    button(draw(), "保存配置").props.onClick(); await settle();
+    expect(props.onSave).toHaveBeenCalledExactlyOnceWith({ effort: "high" });
+    expect(button(draw(), "中").props["aria-pressed"]).toBe(true);
   });
 });
 

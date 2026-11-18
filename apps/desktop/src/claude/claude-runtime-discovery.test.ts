@@ -252,7 +252,7 @@ describe("Claude gateway and model discovery", () => {
         id: "claude/claude-opus-5-5",
         display_name: "Claude Opus 5.5",
         magpie_label: "Claude Opus 5.5 · Claude Code",
-        supported_reasoning_levels: [{ effort: "low" }, { effort: "high" }, { effort: "max" }],
+        supported_reasoning_levels: [{ effort: "max" }, { effort: "low" }, { effort: "high" }],
       },
       {
         id: "antigravity/gemini-4-argon",

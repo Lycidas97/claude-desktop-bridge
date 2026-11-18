@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type {
-  BridgeAssistantMailSnapshot, BridgePendingPrompt, BridgePermissionInfo, BridgePermissionResolution, BridgePullRequest, BridgeRequest, BridgeSDKPermissionMode,
+  BridgeAssistantMailSnapshot, BridgeEffort, BridgePendingPrompt, BridgePermissionInfo, BridgePermissionResolution, BridgePullRequest, BridgeRequest, BridgeSDKPermissionMode,
 } from "../../packages/protocol/src/index.js";
 import { ClaudeDesktopBridge } from "../../apps/desktop/src/claude/claude-desktop-bridge.js";
 import { InspectorDisconnectedError } from "../../apps/desktop/src/claude/claude-desktop-inspector.js";
@@ -67,6 +67,7 @@ export async function startNativeApprovalHost(options: {
   await writeFile(settingsPath, JSON.stringify({ modelPicker: { options: savedModels } }));
   const native = {
     sessionId: options.sessionId, cwd: commandCwd, harnessCwd, title: options.title, model: nativeModelIds[0]!,
+    effort: undefined as BridgeEffort | undefined,
     turnRunning: false,
     outputStyle: "default",
     availableOutputStyles: ["default", "Explanatory", "Fixture personal style", "Fixture project style"],
@@ -303,7 +304,12 @@ export async function startNativeApprovalHost(options: {
         options.onModelChanged?.(savedModels[index]!.model);
         return;
       }
-      if (method === "setEffort") return;
+      if (method === "setEffort") {
+        const target = nativeSessions.find(candidate => candidate.sessionId === args[0]);
+        assert.ok(target, "setEffort must target an existing native session");
+        target.effort = (args[1] as BridgeEffort | null) ?? undefined;
+        return;
+      }
       if (method === "listGlobalOutputStyles") return { builtIns: ["Explanatory"], customs: ["Fixture personal style"] };
       if (method === "applyFlagSettings") {
         const target = nativeSessions.find(candidate => candidate.sessionId === args[0]);

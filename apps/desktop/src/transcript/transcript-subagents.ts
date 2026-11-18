@@ -2,7 +2,12 @@ import { createReadStream } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
-import type { BridgeBackgroundTask, BridgeSubagentSummary } from "@bridge/protocol";
+import {
+  CLAUDE_INTERRUPTED_USER_MESSAGE,
+  CLAUDE_TOOL_USE_INTERRUPTED_USER_MESSAGE,
+  type BridgeBackgroundTask,
+  type BridgeSubagentSummary,
+} from "@bridge/protocol";
 import { readClaudeTranscriptBranch } from "./claude-history.js";
 import {
   findClaudeTranscriptFile,
@@ -206,7 +211,9 @@ async function parseSingleSubagentFileOnce(
         if (isRecord(output)) lastStopReason = output.is_error === true ? undefined : "structured_output";
         // Other results from the same tool batch do not start a new turn.
         else if (!content?.length || content.some((block) => !isRecord(block) || block.type !== "tool_result")) {
-          lastStopReason = undefined;
+          lastStopReason = content?.length === 1 && textFromContent(content) === CLAUDE_INTERRUPTED_USER_MESSAGE
+            ? "interrupted"
+            : undefined;
           handbackReports.length = 0;
         }
       }
@@ -237,9 +244,9 @@ async function parseSingleSubagentFileOnce(
   const effectiveUpdatedAt = Math.max(effectiveStartedAt, updatedAt || Math.round(fileStat.mtimeMs));
   const state: BridgeSubagentSummary["state"] = explicitlyFinished
     ? "completed"
-    : subagentProcessLive(effectiveStartedAt, liveSince)
-      ? "running"
-      : "stopped";
+    : meta.stoppedByUser === true || lastStopReason === "interrupted" || !subagentProcessLive(effectiveStartedAt, liveSince)
+      ? "stopped"
+      : "running";
   const completedReport = reportText || (state === "completed" ? latestText : undefined);
 
   const summary: BridgeSubagentSummary = {
@@ -453,6 +460,11 @@ async function parseParentTranscriptSubagentsOnce(transcriptPath: string): Promi
             const call = callsByToolId.get(block.tool_use_id);
             if (!call) continue;
             const txt = textFromContent(block.content);
+            if (block.is_error === true && txt === CLAUDE_TOOL_USE_INTERRUPTED_USER_MESSAGE) {
+              call.endedState = "stopped";
+              call.updatedAt = Math.max(call.updatedAt, ts);
+              continue;
+            }
             const match = txt.match(/agentId:\s*([^\s(]+)/u);
             if (match?.[1]) {
               call.agentId = match[1];
@@ -619,9 +631,14 @@ export async function readClaudeTranscriptSubagents(
   return [...byKey.entries()]
     .map(([key, subagent]) => {
       const task = parent.taskStates.get(subagent.agentId);
-      if (task && subagent.state === "running" && task.at >= subagent.startedAt) {
-        if (task.state !== "running") return { ...subagent, state: task.state, updatedAt: Math.max(subagent.updatedAt, task.at) };
-        if (subagentProcessLive(subagent.startedAt, liveSince)) return subagent;
+      if (task && task.at >= subagent.startedAt) {
+        if (task.state !== "running") {
+          if (subagent.state === "running" || (subagent.state === "stopped" && task.at > subagent.updatedAt)) {
+            return { ...subagent, state: task.state, updatedAt: Math.max(subagent.updatedAt, task.at) };
+          }
+        } else if (subagent.state === "running" && subagentProcessLive(subagent.startedAt, liveSince)) {
+          return subagent;
+        }
       }
       if (subagent.state === "running" && !withChildFile.has(key) && !subagentProcessLive(subagent.startedAt, liveSince)) {
         return { ...subagent, state: "stopped" as const };

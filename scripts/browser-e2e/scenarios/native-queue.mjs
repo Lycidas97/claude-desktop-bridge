@@ -206,11 +206,18 @@ export async function verifyNativeQueueActions(page, host, steps, directory, rel
   await receivedMessage.getByRole("status").filter({ hasText: "已接收" }).waitFor();
   assert.equal(host.nativeApproval.receipts().at(-1).state, "session-received");
   assert.equal(host.session.pendingCount, 0, "The adapter does not invent queued status to expose actions");
+  assert.equal(host.session.turnState, "running");
+  await host.syncNativeQueue(await host.nativeApproval.event({ type: "message", message: {
+    type: "assistant", uuid: "active-turn-progress", timestamp: Date.now(), message: { content: [{ type: "text", text: "上一条任务仍在运行。" }] },
+  } }));
+  await page.getByText("上一条任务仍在运行。", { exact: true }).waitFor();
+  assert.equal(await receivedMessage.locator(".delivery-state.session-received").count(), 1, "An active turn's progress does not settle received input waiting for that turn");
   await composer.fill(draft);
   await receivedMessage.getByRole("button", { name: "立即发送", exact: true }).click();
   await eventually(() => host.nativeApproval.calls.filter(call => call.method === "promoteQueuedMessage" && call.args[1] === received.messageId).length, 1, "Received-only 立即发送 promotes the normally submitted message exactly once");
   await eventually(() => receivedMessage.getByRole("button", { name: "撤回", exact: true }).isEnabled(), true, "Received-only 立即发送 preserves draft and later cancellation");
   assert.equal(await composer.inputValue(), draft);
+  await receivedMessage.locator(".conversation-bubble").tap();
   assert.equal(await receivedMessage.getByRole("button", { name: "回退到这条消息之前", exact: true }).isEnabled(), true);
   await page.screenshot({ path: resolve(directory, "queue-received-actions.png"), fullPage: true });
   await receivedMessage.getByRole("button", { name: "回退到这条消息之前", exact: true }).click();
@@ -255,11 +262,13 @@ export async function verifyNativeQueueActions(page, host, steps, directory, rel
   const completedMessage = page.locator("article.conversation-item.user").filter({ hasText: completedText });
   await page.getByText("原生回复已结束。", { exact: true }).waitFor();
   await eventually(() => completedMessage.locator(".delivery-state").count(), 0, "Answered native input stops showing its stale received badge");
-  assert.equal(await completedMessage.locator(".conversation-message-actions").evaluate(node => getComputedStyle(node).display), "flex", "Queue controls stay on the same row without a delivery badge");
+  const staleActions = completedMessage.getByRole("button", { name: /^(立即发送|撤回)$/u });
+  assert.equal(await staleActions.count(), 0, "Answered input has no queue controls");
   await page.reload({ waitUntil: "domcontentloaded" });
   await openMobileSession(page);
   await completedMessage.waitFor();
   await page.getByText("原生回复已结束。", { exact: true }).waitFor();
   assert.equal(await completedMessage.locator(".delivery-state").count(), 0, "History keeps the stale received badge hidden after reload");
-  steps.push("an uncorrelated result leaves the stored receipt intact and the answered mobile bubble hides its stale received badge live and after reload");
+  assert.equal(await staleActions.count(), 0, "History keeps stale queue controls hidden after reload");
+  steps.push("an uncorrelated result leaves the stored receipt intact and the answered mobile bubble hides its stale received badge and queue controls live and after reload");
 }

@@ -56,15 +56,16 @@ export function ConversationMessageItem({
 }: ConversationMessageItemProps) {
   const [actionsRevealed, setActionsRevealed] = useState(false);
   const messageQueued = isQueuedConversationMessage(item, session);
+  // While Native is active, later text may still belong to the preceding turn.
+  const delivery = item.delivery === "session-received" && hasLaterNativeReply && session.turnState === "idle"
+    ? undefined : item.delivery;
   const canActOnQueued = Boolean(
     item.role === "user"
     && item.commandId
-    && (messageQueued || item.delivery === "submitted" || item.delivery === "session-received")
+    && (messageQueued || delivery === "submitted" || delivery === "session-received")
     && desktopRuntimeId(session) === "claude-desktop"
     && canSend,
   );
-  // A visible later reply makes the receipt label redundant. Only Desktop can settle the receipt.
-  const delivery = item.delivery === "session-received" && hasLaterNativeReply ? undefined : item.delivery;
   const copyable = (item.role === "assistant" || item.role === "user") && Boolean(item.text.trim());
   const canRewind = rewindAvailable && onRewind && item.role === "user" && !item.id.startsWith("local:");
   const hasUtilities = copyable || canRewind;
@@ -115,7 +116,7 @@ export function ConversationMessageItem({
       )}
       {/* A sent message's bubble holds only what was sent; status and copy sit under it. */}
       {item.role === "user" ? <div className="conversation-bubble">{content}</div> : content}
-      {(hasUtilities || delivery || canActOnQueued) && (
+      {(hasUtilities || delivery) && (
         <div className="conversation-message-actions">
           {hasUtilities && (
             <div className="conversation-message-utilities">

@@ -51,6 +51,7 @@ vi.mock("react", async (original) => {
   const actual = await original<typeof import("react")>();
   return {
     ...actual,
+    useSyncExternalStore: (_subscribe: unknown, getSnapshot: () => unknown) => getSnapshot(),
     createContext(defaultValue: unknown) {
       const ctx = actual.createContext(defaultValue);
       const OriginalProvider = ctx.Provider;

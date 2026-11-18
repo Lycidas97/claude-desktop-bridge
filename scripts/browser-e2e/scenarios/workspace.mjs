@@ -74,11 +74,14 @@ export async function verifySessionCatalog(page, host, steps, directory, viewpor
       const forkedRow = document.querySelector(".mobile-home-catalog .session-row-v2.has-forks");
       const plainRow = document.querySelector('.mobile-home-catalog [data-session-id="browser-e2e-fork"]');
       return {
+        forkedTitleDelta: Math.abs(midY(forkedRow.querySelector(".session-family-chevron")) - midY(forkedRow.querySelector(".session-row-copy strong"))),
+        childTitleDelta: Math.abs(plainRow.querySelector(".session-tree-elbow").getBoundingClientRect().top + 5 - midY(plainRow.querySelector(".session-row-copy strong"))),
         forkedChevronDelta: Math.abs(midY(forkedRow.querySelector(".session-family-chevron")) - midY(forkedRow.querySelector(".session-row-action"))),
         forkedBadgesDelta: Math.abs(midY(forkedRow.querySelector(".session-row-badges")) - midY(forkedRow.querySelector(".session-row-action"))),
         plainBadgesDelta: Math.abs(midY(plainRow.querySelector(".session-row-badges")) - midY(plainRow.querySelector(".session-row-action"))),
       };
     });
+    assert.ok(mobileAlign.forkedTitleDelta <= 1.5 && mobileAlign.childTitleDelta <= 1.5, `Mobile ${font} fork chevron and connector align with their titles: ${JSON.stringify(mobileAlign)}`);
     assert.ok(mobileAlign.forkedChevronDelta <= 1.5, `Mobile ${font} forked chevron aligns with action: ${JSON.stringify(mobileAlign)}`);
     assert.ok(mobileAlign.forkedBadgesDelta <= 1.5, `Mobile ${font} forked dot aligns with action: ${JSON.stringify(mobileAlign)}`);
     assert.ok(mobileAlign.plainBadgesDelta <= 1.5, `Mobile ${font} non-forked dot aligns with action: ${JSON.stringify(mobileAlign)}`);

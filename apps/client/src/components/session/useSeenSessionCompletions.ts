@@ -1,5 +1,5 @@
 import type { BridgeSessionInfo } from "@bridge/protocol";
-import { useEffect, useState } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 
 type SeenCompletions = Readonly<Record<string, string>>;
 const empty: SeenCompletions = {};
@@ -19,17 +19,13 @@ function seenCompletions(hostId: string): SeenCompletions {
   return seen;
 }
 
+function subscribe(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => { listeners.delete(listener); };
+}
+
 export function useSeenSessionCompletions(hostId: string | undefined): SeenCompletions {
-  const seen = hostId ? seenCompletions(hostId) : empty;
-  const [, setSeen] = useState(seen);
-  useEffect(() => {
-    if (!hostId) return;
-    const update = () => setSeen(seenCompletions(hostId));
-    listeners.add(update);
-    update();
-    return () => { listeners.delete(update); };
-  }, [hostId]);
-  return seen;
+  return useSyncExternalStore(subscribe, () => hostId ? seenCompletions(hostId) : empty, () => empty);
 }
 
 export function useAcknowledgeSessionCompletion(hostId: string, session: BridgeSessionInfo, visible: boolean): void {

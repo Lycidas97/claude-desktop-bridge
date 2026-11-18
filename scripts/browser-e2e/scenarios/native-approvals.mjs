@@ -32,52 +32,41 @@ async function verifySessionHeader(page, host, steps, directory, baseUrl) {
     await eventually(() => notice.count(), state === "confirmed" ? 0 : 1, `Permission notice state ${state}`);
     assert.ok((await page.locator(".m-header .session-profile-summary").textContent()).includes("Don't Ask"), "A requested mode never replaces the observed header mode");
   }
-  async function checkWrapping(selector, surface, requiredParts = [], stackedSecondLine = true) {
-    const layout = await page.locator(selector).evaluate((element) => {
+  async function checkWrapping(summary, surface, expectedMeta, canConfigure) {
+    const layout = await summary.evaluate(element => {
       const modelLine = element.querySelector(".is-model-line");
       const metaLine = element.querySelector(".is-meta-line");
-      const rect = element.getBoundingClientRect();
-      const modelRect = modelLine?.getBoundingClientRect();
-      const metaRect = metaLine?.getBoundingClientRect();
-      const range = document.createRange();
-      if (modelLine) range.selectNodeContents(modelLine);
+      const bounds = element.getBoundingClientRect();
+      const model = modelLine.getBoundingClientRect();
+      const meta = metaLine.getBoundingClientRect();
+      const chevron = element.parentElement.querySelector("svg")?.getBoundingClientRect();
+      const modelStyle = getComputedStyle(modelLine);
       return {
-        modelWhiteSpace: modelLine ? getComputedStyle(modelLine).whiteSpace : "",
-        modelTextOverflow: modelLine ? getComputedStyle(modelLine).textOverflow : "",
-        modelLines: modelLine ? new Set([...range.getClientRects()].map((r) => Math.round(r.top))).size : 0,
-        metaText: metaLine?.textContent ?? "",
-        metaClipped: metaLine ? metaLine.scrollWidth > metaLine.clientWidth + 1 : false,
-        stacked: modelRect && metaRect ? metaRect.top >= modelRect.bottom - 2 : false,
-        left: rect.left,
-        right: rect.right,
-        metaRight: metaRect ? metaRect.right : rect.right,
-        width: innerWidth,
+        metaText: metaLine.textContent,
+        metaVisible: meta.left >= bounds.left && meta.right <= bounds.right && metaLine.scrollWidth <= metaLine.clientWidth,
+        oneLine: meta.left >= model.right && model.top < meta.bottom && meta.top < model.bottom,
+        modelEllipsized: modelLine.scrollWidth > modelLine.clientWidth && modelStyle.textOverflow === "ellipsis" && modelStyle.whiteSpace === "nowrap",
+        inViewport: bounds.left >= 0 && bounds.right <= innerWidth,
+        chevronAtEnd: chevron ? chevron.left >= bounds.right && chevron.right <= innerWidth : null,
       };
     });
-    assert.equal(layout.modelWhiteSpace, "nowrap", `${surface} keeps model line on one single line`);
-    assert.equal(layout.modelTextOverflow, "ellipsis", `${surface} truncates long model names cleanly with ellipsis`);
-    assert.equal(layout.modelLines, 1, `${surface} model line never wraps: ${JSON.stringify(layout)}`);
-    assert.equal(layout.metaClipped, false, `${surface} never truncates effort or permission mode: ${JSON.stringify(layout)}`);
-    for (const part of requiredParts) {
-      assert.ok(layout.metaText.includes(part), `${surface} keeps "${part}" visible in meta line: ${JSON.stringify(layout)}`);
-    }
-    assert.equal(layout.stacked, stackedSecondLine, `${surface} stackedSecondLine=${stackedSecondLine} mismatch: ${JSON.stringify(layout)}`);
-    assert.ok(layout.left >= 0 && layout.right <= layout.width + 1 && layout.metaRight <= layout.width + 1, `${surface} fits the viewport`);
+    assert.ok(layout.metaVisible, `${surface} shows the full effort and permission mode beside the long model name`);
+    assert.deepEqual(layout, { metaText: expectedMeta, metaVisible: true, oneLine: true, modelEllipsized: true, inViewport: true, chevronAtEnd: canConfigure ? true : null },
+      `${surface} keeps the header profile on one line and ellipsizes the model name`);
   }
   for (const width of [375, 320]) {
     await page.setViewportSize({ width, height: 812 });
     for (const font of ["standard", "larger"]) {
       await page.evaluate(font => { document.documentElement.dataset.fontSize = font; }, font);
-      for (const canConfigure of [true, false]) {
+      for (const canConfigure of [false, true]) {
         session.allowedActions.canConfigure = canConfigure;
         await host.send({ kind: "snapshot", snapshot: host.snapshot });
         await eventually(() => page.getByRole("button", { name: "会话设置", exact: true }).count(), canConfigure ? 1 : 0, "Settings availability changes only the header action");
-        await checkWrapping(".m-header .session-profile-summary", `Mobile ${width}px ${font} configure=${canConfigure}`, ["Don't Ask", "High"]);
+        await checkWrapping(page.locator(".m-header .session-profile-summary"), `Mobile ${width}px ${font} configure=${canConfigure}`, "High · Don't Ask", canConfigure);
       }
     }
   }
   await page.screenshot({ path: resolve(directory, "mobile-header-larger-320.png"), fullPage: true });
-  session.allowedActions.canConfigure = true;
   await page.exposeFunction("headerRequest", async input => ({ kind: "response", requestId: randomUUID(), ok: true,
     result: await host.nativeApproval.controllerRequest({ kind: "request", requestId: randomUUID(), ...input }) }));
   await page.addInitScript(snapshot => {
@@ -105,11 +94,11 @@ async function verifySessionHeader(page, host, steps, directory, baseUrl) {
     const summary = page.locator(".desktop-conversation .session-profile-summary");
     await eventually(() => summary.textContent(), `${profile.modelDisplayName} · High · ${modes[mode]}`, "Desktop receives updated mode without a configuration read");
     if (canConfigure) await eventually(accessibleProfile, { name: "会话设置", description: `${profile.modelDisplayName} · High · ${modes[mode]}` }, "Desktop settings announce the current snapshot profile");
-    await checkWrapping(".desktop-conversation .session-profile-summary", `Desktop configure=${canConfigure}`, [modes[mode], "High"], false);
+    await checkWrapping(summary, `Desktop configure=${canConfigure}`, `High · ${modes[mode]}`, canConfigure);
   }
   await accessibility.detach();
   await page.screenshot({ path: resolve(directory, "desktop-header-readonly-larger.png"), fullPage: true });
-  steps.push("mobile 375/320px and narrow desktop retain complete profile fields and updated accessible settings descriptions; read-only headers remain visible and confirmed notices disappear");
+  steps.push("mobile at 375/320px ellipsizes long model names on one line and keeps the full effort, permission mode, and chevron visible; mobile and desktop retain full accessible settings descriptions and read-only summaries");
 }
 
 export async function verifyNativeApprovals(page, host, steps, directory, baseUrl, relayRoutes) {

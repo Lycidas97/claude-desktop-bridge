@@ -107,8 +107,15 @@ export async function verifyNativeMessages(page, host, steps, directory) {
   steps.push("long streamed replies stay expanded after completed/observed finalization and still support manual collapse and expansion");
 
   assert.match(host.session.model, /^mythos-magpie-/u, "The header test must receive a native internal model alias");
-  await eventually(async () => (await page.getByRole("button", { name: "会话设置", exact: true }).innerText()).includes("隔离模型 · 标准"), true, "Initial native alias snapshot uses its saved header label before opening configuration");
-  await page.getByRole("button", { name: "会话设置", exact: true }).click();
+  const settingsButton = page.getByRole("button", { name: "会话设置", exact: true });
+  await eventually(async () => (await settingsButton.innerText()).includes("隔离模型 · 标准"), true, "Initial native alias snapshot uses its saved header label before opening configuration");
+  const modelLabel = await settingsButton.getByText("隔离模型 · 标准", { exact: true }).boundingBox();
+  const permissionLabel = await settingsButton.getByText("Manual", { exact: true }).boundingBox();
+  const chevron = await settingsButton.locator("svg").boundingBox();
+  assert.ok(modelLabel && permissionLabel && chevron, "The header must show the model, permission mode and chevron");
+  assert.ok(permissionLabel.y < modelLabel.y + modelLabel.height && modelLabel.y < permissionLabel.y + permissionLabel.height, "The model and Manual permission mode share one line at 375px");
+  assert.ok(chevron.x >= permissionLabel.x + permissionLabel.width - 1, "The chevron follows the permission mode");
+  await settingsButton.click();
   const configuration = page.getByRole("dialog", { name: originalTitle, exact: true });
   const modelSelect = configuration.getByRole("combobox", { name: "模型", exact: true });
   await eventually(() => customSelectValue(modelSelect), "synthetic-model", "Native alias selects the matching original model ID in the picker");

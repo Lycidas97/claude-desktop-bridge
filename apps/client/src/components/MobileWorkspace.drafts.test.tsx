@@ -418,7 +418,7 @@ describe("conversation unmount and remount safety", () => {
       },
     };
     draw();
-    const steerBtn = () => elements(tree).find((element) => element.type === "button" && element.props.children === "Send now")!;
+    const steerBtn = () => elements(tree).find((element) => element.type === "button" && element.props.children === "立即发送")!;
     expect(steerBtn().props.disabled).toBe(false);
     void steerBtn().props.onClick();
     draw();
@@ -1432,15 +1432,15 @@ describe("actions on messages already queued in native Desktop", () => {
   const action = (label: string) => elements(tree).find(element => element.type === "button" && element.props.children === label);
   const actions = () => elements(tree).filter(element => element.type === "button" && /queued-(steer|cancel)-button/u.test(element.props.className ?? ""));
 
-  it.each(["Send now", "撤回"])("%s targets the original command while idle, retains the text and image draft, and never resends or interrupts", async label => {
+  it.each(["立即发送", "撤回"])("%s targets the original command while idle, retains the text and image draft, and never resends or interrupts", async label => {
     queued();
     text("尚未发送的草稿");
     const selecting = selectImage(); hooks.readers[0].finish(); await selecting; await settle();
     const original = props.localTurns[0];
-    expect(actions().map(element => element.props.children)).toEqual(["Send now", "撤回"]);
+    expect(actions().map(element => element.props.children)).toEqual(["立即发送", "撤回"]);
     await action(label)!.props.onClick(); draw();
-    expect(label === "Send now" ? props.onSteerQueuedTurn : props.onCancelQueuedTurn).toHaveBeenCalledExactlyOnceWith("A", "queued-command");
-    expect(label === "Send now" ? props.onCancelQueuedTurn : props.onSteerQueuedTurn).not.toHaveBeenCalled();
+    expect(label === "立即发送" ? props.onSteerQueuedTurn : props.onCancelQueuedTurn).toHaveBeenCalledExactlyOnceWith("A", "queued-command");
+    expect(label === "立即发送" ? props.onCancelQueuedTurn : props.onSteerQueuedTurn).not.toHaveBeenCalled();
     expect(props.onSendTurn).not.toHaveBeenCalled();
     expect(props.onInterruptTurn).not.toHaveBeenCalled();
     expect(props.localTurns[0]).toBe(original);
@@ -1452,12 +1452,12 @@ describe("actions on messages already queued in native Desktop", () => {
     expect(actions()).toHaveLength(0);
   });
 
-  it.each(["submitted", "session-received"] as const)("shows Send now for a %s native receipt without a queued lifecycle event", async delivery => {
+  it.each(["submitted", "session-received"] as const)("shows 立即发送 for a %s native receipt without a queued lifecycle event", async delivery => {
     queued();
     props = { ...props, snapshot: { ...props.snapshot!, sessions: props.snapshot!.sessions.map(session => session.sessionId === "A" ? { ...session, pendingCount: 0, pendingCommandIds: [], turnState: "running" } : session) }, localTurns: props.localTurns.map(turn => ({ ...turn, messageId: "received-native-uuid", delivery })) };
     draw();
-    expect(actions().map(element => element.props.children)).toEqual(["Send now", "撤回"]);
-    await action("Send now")!.props.onClick();
+    expect(actions().map(element => element.props.children)).toEqual(["立即发送", "撤回"]);
+    await action("立即发送")!.props.onClick();
     expect(props.onSteerQueuedTurn).toHaveBeenCalledExactlyOnceWith("A", "queued-command");
     expect(props.onSendTurn).not.toHaveBeenCalled();
     expect(props.onInterruptTurn).not.toHaveBeenCalled();
@@ -1486,20 +1486,20 @@ describe("actions on messages already queued in native Desktop", () => {
     expect(props.onInterruptTurn).not.toHaveBeenCalled();
   });
 
-  it.each(["Send now", "撤回"])("%s works for an attachment-only queued message", async label => {
+  it.each(["立即发送", "撤回"])("%s works for an attachment-only queued message", async label => {
     queued("");
     expect(actions()).toHaveLength(2);
     await action(label)!.props.onClick();
-    expect(label === "Send now" ? props.onSteerQueuedTurn : props.onCancelQueuedTurn).toHaveBeenCalledWith("A", "queued-command");
+    expect(label === "立即发送" ? props.onSteerQueuedTurn : props.onCancelQueuedTurn).toHaveBeenCalledWith("A", "queued-command");
     expect(props.onSendTurn).not.toHaveBeenCalled();
     expect(props.onInterruptTurn).not.toHaveBeenCalled();
   });
 
-  it.each(["Send now", "撤回"])("%s disables both actions while pending, shows failure on the original session, and allows retry", async label => {
+  it.each(["立即发送", "撤回"])("%s disables both actions while pending, shows failure on the original session, and allows retry", async label => {
     queued();
     const held = deferred();
     const callback = vi.fn().mockImplementationOnce(() => held.promise).mockResolvedValue(undefined);
-    props = { ...props, ...(label === "Send now" ? { onSteerQueuedTurn: callback } : { onCancelQueuedTurn: callback }) };
+    props = { ...props, ...(label === "立即发送" ? { onSteerQueuedTurn: callback } : { onCancelQueuedTurn: callback }) };
     draw();
     const pending = action(label)!.props.onClick(); draw();
     expect(actions().every(element => element.props.disabled)).toBe(true);
@@ -1517,12 +1517,48 @@ describe("actions on messages already queued in native Desktop", () => {
     expect(props.onInterruptTurn).not.toHaveBeenCalled();
   });
 
-  it.each(["offline", "disconnected"])("disables both actions while %s", status => {
+  it.each(["offline", "disconnected"])("disables both actions and labels the last known queue state while %s", status => {
     queued();
     props = status === "offline" ? { ...props, desktopOnline: false } : { ...props, connection: "closed" };
     draw();
     expect(actions()).toHaveLength(2);
     expect(actions().every(element => element.props.disabled && element.props.title.includes("离线"))).toBe(true);
+    expect(elements(tree).find(element => element.props.className === "delivery-state queued")?.props.children).toBe("上次同步时已排队");
+    expect(elements(tree).some(element => element.props["aria-label"] === "消息排队状态")).toBe(false);
+  });
+
+  it("counts only the pending messages whose bubbles are missing", () => {
+    queued();
+    props = { ...props, snapshot: { ...props.snapshot!, sessions: props.snapshot!.sessions.map(session => session.sessionId === "A"
+      ? { ...session, turnState: "queued", pendingCount: 2, pendingCommandIds: ["queued-command", "second-command"] } : session) } };
+    draw();
+    const banner = () => elements(tree).find(element => element.props["aria-label"] === "消息排队状态");
+    expect(elements(tree).find(element => element.props.className === "delivery-state queued")?.props.children).toBe("已排队");
+    expect(elements(banner()).find(element => element.type === "span")?.props.children).toBe("消息排队中 · 另有 1 条");
+
+    props = { ...props, localTurns: [...props.localTurns, { ...props.localTurns[0]!, requestId: "second-request",
+      commandId: "second-command", idempotencyKey: "second-key", createdAt: 11 }] };
+    draw();
+    expect(banner()).toBeUndefined();
+  });
+
+  it("keeps the running tool and its timer when a follow-up queues, then includes it once started", () => {
+    queued();
+    props = { ...props, snapshot: { ...props.snapshot!, sessions: props.snapshot!.sessions.map(session => session.sessionId === "A"
+      ? { ...session, turnState: "running", executionStage: "running" } : session) },
+    histories: { ...props.histories, A: { status: "ready", hasMore: false, items: [
+      { id: "active-user", sessionId: "A", role: "user", text: "开始当前任务", createdAt: 100, origin: "claude-desktop" },
+      { id: "active-command", sessionId: "A", role: "tool", toolName: "Command", text: "", state: "running", createdAt: 200, origin: "claude-desktop" },
+    ] } }, localTurns: props.localTurns.map(turn => ({ ...turn, createdAt: 300 })) };
+    draw();
+    const activity = () => elements(tree).find(element => element.type === SessionActivityIndicator)!.props.activity;
+    expect(activity()).toEqual({ kind: "running", label: "正在运行 · Command", since: 100 });
+
+    props = { ...props, snapshot: { ...props.snapshot!, sessions: props.snapshot!.sessions.map(session => session.sessionId === "A"
+      ? { ...session, pendingCount: 0, pendingCommandIds: [] } : session) },
+    localTurns: props.localTurns.map(turn => ({ ...turn, delivery: "running" })) };
+    draw();
+    expect(activity()).toEqual({ kind: "thinking", label: "思考中", since: 300 });
   });
 
   it("offers host-received compatibility only while the command is confirmed pending", () => {
@@ -1533,9 +1569,9 @@ describe("actions on messages already queued in native Desktop", () => {
     draw(); expect(actions()).toHaveLength(0);
   });
 
-  it("can withdraw a message that remains queued after Send now succeeds", async () => {
+  it("can withdraw a message that remains queued after 立即发送 succeeds", async () => {
     queued();
-    await action("Send now")!.props.onClick(); draw();
+    await action("立即发送")!.props.onClick(); draw();
     expect(action("撤回")!.props.disabled).toBe(false);
     await action("撤回")!.props.onClick(); draw();
     expect(props.onSteerQueuedTurn).toHaveBeenCalledExactlyOnceWith("A", "queued-command");
@@ -1558,19 +1594,19 @@ describe("actions on messages already queued in native Desktop", () => {
     expect(props.onInterruptTurn).not.toHaveBeenCalled();
   });
 
-  it.each(["Send now", "撤回"])("shows only the supported callback action when %s is missing", missing => {
+  it.each(["立即发送", "撤回"])("shows only the supported callback action when %s is missing", missing => {
     queued();
-    if (missing === "Send now") delete props.onSteerQueuedTurn;
+    if (missing === "立即发送") delete props.onSteerQueuedTurn;
     else delete props.onCancelQueuedTurn;
     draw();
-    expect(actions().map(element => element.props.children)).toEqual([missing === "Send now" ? "撤回" : "Send now"]);
+    expect(actions().map(element => element.props.children)).toEqual([missing === "立即发送" ? "撤回" : "立即发送"]);
   });
 
-  it.each(["Send now", "撤回"])("keeps %s pending across a connection flap without resubmitting or losing the draft", async label => {
+  it.each(["立即发送", "撤回"])("keeps %s pending across a connection flap without resubmitting or losing the draft", async label => {
     queued(); text("连接恢复后仍保留");
     const held = deferred();
     const callback = vi.fn(() => held.promise);
-    props = { ...props, ...(label === "Send now" ? { onSteerQueuedTurn: callback } : { onCancelQueuedTurn: callback }) };
+    props = { ...props, ...(label === "立即发送" ? { onSteerQueuedTurn: callback } : { onCancelQueuedTurn: callback }) };
     draw();
     const pending = action(label)!.props.onClick(); draw();
     props = { ...props, connection: "closed", desktopOnline: false }; draw();
@@ -1585,10 +1621,10 @@ describe("actions on messages already queued in native Desktop", () => {
     expect(props.onInterruptTurn).not.toHaveBeenCalled();
   });
 
-  it.each(["Send now", "撤回"])("does not attach a pending %s failure to another host with identical session and command IDs", async label => {
+  it.each(["立即发送", "撤回"])("does not attach a pending %s failure to another host with identical session and command IDs", async label => {
     queued(); text("电脑一草稿");
     const held = deferred();
-    props = { ...props, ...(label === "Send now" ? { onSteerQueuedTurn: vi.fn(() => held.promise) } : { onCancelQueuedTurn: vi.fn(() => held.promise) }) };
+    props = { ...props, ...(label === "立即发送" ? { onSteerQueuedTurn: vi.fn(() => held.promise) } : { onCancelQueuedTurn: vi.fn(() => held.promise) }) };
     draw(); const pending = action(label)!.props.onClick(); draw();
     props = { ...props, activeHostId: "computer-2", snapshot: { ...props.snapshot!, host: { ...props.snapshot!.host, hostId: "computer-2" } } };
     open("A"); text("电脑二草稿");
@@ -1625,7 +1661,7 @@ describe("actions on messages already queued in native Desktop", () => {
   it.each(["running", "completed", "cancelled"] as const)("hides actions when native state becomes %s while a request is pending", async delivery => {
     queued(); text("保留草稿");
     const held = deferred(); props = { ...props, onSteerQueuedTurn: vi.fn(() => held.promise) }; draw();
-    const pending = action("Send now")!.props.onClick(); draw();
+    const pending = action("立即发送")!.props.onClick(); draw();
     props = { ...props, localTurns: props.localTurns.map(turn => ({ ...turn, delivery })), snapshot: { ...props.snapshot!, sessions: props.snapshot!.sessions.map(session => ({ ...session, pendingCount: 0, pendingCommandIds: [] })) } };
     draw(); expect(actions()).toHaveLength(0);
     held.resolve(); await pending; draw(); expect(actions()).toHaveLength(0);
@@ -1634,11 +1670,11 @@ describe("actions on messages already queued in native Desktop", () => {
     expect(props.onInterruptTurn).not.toHaveBeenCalled();
   });
 
-  it("preserves command action state when Send now rekeys the bubble", async () => {
+  it("preserves command action state when 立即发送 rekeys the bubble", async () => {
     queued(); props = { ...props, localTurns: props.localTurns.map(turn => ({ ...turn, messageId: "old-queue-uuid" })) }; draw();
-    await action("Send now")!.props.onClick(); draw();
+    await action("立即发送")!.props.onClick(); draw();
     props = { ...props, localTurns: props.localTurns.map(turn => ({ ...turn, messageId: "new-queue-uuid" })), events: [{ eventId: "rekey", seq: 1, timestamp: 20, sessionId: "A", origin: "claude-desktop", type: "message.delivery", data: { commandId: "queued-command", previousMessageId: "old-queue-uuid", messageId: "new-queue-uuid", delivery: "queued" } }] };
-    draw(); expect(action("Send now")!.props.disabled).toBe(true); expect(action("撤回")!.props.disabled).toBe(false);
+    draw(); expect(action("立即发送")!.props.disabled).toBe(true); expect(action("撤回")!.props.disabled).toBe(false);
     expect(elements(tree).filter(element => element.type === "article" && element.props.className.includes("user"))).toHaveLength(1);
     await action("撤回")!.props.onClick();
     expect(props.onCancelQueuedTurn).toHaveBeenCalledExactlyOnceWith("A", "queued-command");

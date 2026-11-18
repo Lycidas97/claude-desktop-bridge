@@ -146,6 +146,7 @@ export function DesktopDashboard({ themeControl }: { themeControl: ThemeControl 
                               <section className="desktop-conversation">
                                 <DesktopSessionConversation
                                   session={boundSession}
+                                  conversationTabLabel="消息"
                                   snapshot={visibleSnapshot!}
                                   events={events}
                                   apiRequest={request}

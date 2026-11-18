@@ -96,6 +96,7 @@ import { useAcknowledgeSessionCompletion } from "../session/useSeenSessionComple
 
 export interface ConversationViewProps {
   variant?: "mobile" | "desktop" | undefined;
+  conversationTabLabel?: string | undefined;
   hostId: string;
   session: BridgeSessionInfo;
   sessions: BridgeSessionInfo[];
@@ -180,6 +181,7 @@ export interface ConversationViewProps {
 
 export function ConversationView({
   variant = "mobile",
+  conversationTabLabel = "对话",
   hostId,
   session,
   sessions,
@@ -1055,7 +1057,7 @@ export function ConversationView({
                   className={effectiveSessionView === "conversation" ? "active" : ""}
                   onClick={() => setSessionView("conversation")}
                 >
-                  对话
+                  {conversationTabLabel}
                 </button>
                 <button
                   type="button"

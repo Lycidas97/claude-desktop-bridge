@@ -249,6 +249,11 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
   await page.getByRole("button", { name: "助理", exact: true }).click();
   await page.locator(".assistant-conversation textarea").waitFor();
+  assert.equal(await page.locator(".assistant-page").getByRole("button", { name: "对话", exact: true }).count(), 1, "Only the assistant-level tab is labeled 对话");
+  const sessionViews = page.getByRole("navigation", { name: "会话视图" });
+  await sessionViews.getByRole("button", { name: /^成果/ }).click();
+  await page.locator(".assistant-conversation .evidence-panel, .assistant-conversation .evidence-empty").waitFor();
+  await sessionViews.getByRole("button", { name: "消息", exact: true }).click();
   assert.equal(await page.locator(".assistant-conversation .desktop-session-sidebar").count(), 0);
   assert.equal(await page.locator(".assistant-conversation .desktop-session-layout, .assistant-conversation .is-fixed-session").count(), 0, "Desktop AssistantPage mounts DesktopSessionConversation directly without DesktopSessions layout");
   await page.locator(".assistant-conversation .desktop-conversation-stream [data-mail-id]").first().waitFor();

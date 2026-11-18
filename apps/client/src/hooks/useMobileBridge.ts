@@ -5,7 +5,7 @@ import {
   type BridgeArtifactPreview,
   type BridgeAttachment,
   type BridgeBackgroundTask,
-  type BridgeDesktopAppStatus,
+  type BridgeDesktopAppLaunchResult,
   type BridgeDesktopRuntimeId,
   type BridgeDirectoryListing,
   type BridgeEvent,
@@ -780,10 +780,10 @@ export function useMobileBridge() {
     [controlClaudeDesktop],
   );
 
-  const controlDesktopApp = useCallback(async (
+  const requestDesktopAppAction = useCallback(async (
     runtimeId: BridgeDesktopRuntimeId,
     action: "status" | "launch" | "quit",
-  ): Promise<BridgeDesktopAppStatus[]> => {
+  ): Promise<BridgeDesktopAppLaunchResult> => {
     const method: BridgeRequest["method"] = `desktop.app.${action}`;
     const response = await sendRequest(method, { runtimeId }, {
       wait: true,
@@ -794,7 +794,7 @@ export function useMobileBridge() {
         action === "launch" ? "Desktop 应用启动失败" : action === "quit" ? "Desktop 应用退出失败" : "无法读取 Desktop 应用状态"
       ));
     }
-    const result = response.result as { desktopApps?: BridgeDesktopAppStatus[] } | undefined;
+    const result = response.result as BridgeDesktopAppLaunchResult | undefined;
     if (!result?.desktopApps) throw new Error("电脑未返回 Desktop 应用状态");
     const desktopApps = result.desktopApps;
     setState((current) => {
@@ -809,8 +809,15 @@ export function useMobileBridge() {
         },
       };
     });
-    return desktopApps;
+    return result;
   }, [sendRequest]);
+
+  const controlDesktopApp = useCallback(
+    async (runtimeId: BridgeDesktopRuntimeId, action: "status" | "launch" | "quit") => (
+      (await requestDesktopAppAction(runtimeId, action)).desktopApps
+    ),
+    [requestDesktopAppAction],
+  );
 
   const refresh = useCallback(
     (sessionId?: string): Promise<boolean> => refreshBridgeHostState(
@@ -820,6 +827,12 @@ export function useMobileBridge() {
     ),
     [controlClaudeDesktop, openSession, refreshSessionList, refreshSnapshot, resumeEvents, sendRequest],
   );
+
+  const activateClaudeRemote = useCallback(async () => {
+    const { claudeActivation } = await requestDesktopAppAction("claude-desktop", "launch");
+    void refresh();
+    return claudeActivation;
+  }, [requestDesktopAppAction, refresh]);
 
   const forgetHost = useCallback(
     (roomId: string) => forgetBridgeHost(transportRefs, sendRequest, roomId),
@@ -925,6 +938,7 @@ export function useMobileBridge() {
     deleteSession,
     launchClaudeDesktop,
     controlDesktopApp,
+    activateClaudeRemote,
     quitClaudeDesktop,
     refresh,
     forgetHost,

@@ -1247,6 +1247,17 @@ export interface BridgeInspectorStatus {
   notificationError?: string;
 }
 
+export interface BridgeClaudeActivationResult {
+  inspectorState: BridgeInspectorStatus["state"] | "unknown";
+  nativeReady: boolean;
+  detail?: string;
+}
+
+export interface BridgeDesktopAppLaunchResult {
+  desktopApps: BridgeDesktopAppStatus[];
+  claudeActivation?: BridgeClaudeActivationResult;
+}
+
 export interface DesktopControlSnapshot extends BridgeHostSnapshot {
   claudeInspector?: BridgeInspectorStatus;
   connection: "idle" | "connecting" | "connected" | "reconnecting" | "closed";

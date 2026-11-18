@@ -27,6 +27,7 @@ import {
 import {
   MobileInspectorCallout,
   resolveClaudeRemoteActivationStatus,
+  type MobileInspectorCalloutProps,
 } from "../mobile/MobileInspectorCallout.js";
 import { MobilePageHeader } from "../mobile/MobilePageHeader.js";
 import "./new-chat-canvas.css";
@@ -105,7 +106,7 @@ export interface NewChatCanvasProps {
     created: BridgeSessionInfo,
     options?: { initialPrompt?: string | undefined; configurationError?: string | undefined },
   ): Promise<void> | void;
-  onActivateClaude?: (() => Promise<void>) | undefined;
+  onActivateClaude?: MobileInspectorCalloutProps["onActivate"];
 }
 
 export function NewChatCanvas({
@@ -620,11 +621,6 @@ export function NewChatCanvas({
     )?.cwd.trim();
   }
 
-  const remoteActivation = resolveClaudeRemoteActivationStatus(snapshot);
-  const showMobileInspectorCallout = Boolean(
-    mobile && connected && snapshot && remoteActivation.nativeUnavailable && onActivateClaude,
-  );
-
   return (
     <section className={`new-chat-canvas${mobile ? " is-mobile" : " is-desktop"}`}>
       <MobilePageHeader
@@ -648,7 +644,7 @@ export function NewChatCanvas({
 
       <div className="new-chat-canvas-body">
         <div className="new-chat-canvas-hero">
-          {showMobileInspectorCallout && (
+          {mobile && onActivateClaude && (
             <MobileInspectorCallout
               snapshot={snapshot}
               connected={connected}
@@ -809,7 +805,7 @@ export function NewChatCanvas({
           {groupUnavailable && (
             <p className="session-create-error new-chat-inline-alert" role="alert">所选分组已不可用，请重新选择。</p>
           )}
-          {connected && !runtimeAvailable && !showMobileInspectorCallout && (
+          {connected && !runtimeAvailable && !(mobile && onActivateClaude && resolveClaudeRemoteActivationStatus(snapshot).nativeUnavailable) && (
             <p className="session-create-error new-chat-inline-alert" role="alert">
               {desktopRuntimeName(runtimeId)} 当前无法创建会话。
             </p>

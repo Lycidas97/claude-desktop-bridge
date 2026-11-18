@@ -62,6 +62,7 @@ import {
   dispatchControllerRequest,
   errorResponse,
   type ControllerRpcHost,
+  type DesktopAppLaunchOutcome,
 } from "./controller-rpc.js";
 import type { SessionEventLog } from "./session-event-log.js";
 import { AssistantMailCoordinator } from "./assistant-mail.js";
@@ -74,7 +75,7 @@ export class DesktopController extends EventEmitter {
   private inspectorStatus: BridgeInspectorStatus | undefined;
   private inspectorEnabler: (() => Promise<BridgeInspectorStatus>) | undefined;
   private runtimeAttachSleep: ((ms: number) => Promise<void>) | undefined;
-  private launchInFlight: Map<BridgeDesktopRuntimeId, Promise<DesktopControlSnapshot>> | undefined;
+  private launchInFlight: Map<BridgeDesktopRuntimeId, Promise<DesktopAppLaunchOutcome>> | undefined;
 
   updateInspectorStatus(status: BridgeInspectorStatus): void {
     this.inspectorStatus = status;
@@ -414,19 +415,26 @@ export class DesktopController extends EventEmitter {
   }
 
   async launchDesktopApp(runtimeId: BridgeDesktopRuntimeId): Promise<DesktopControlSnapshot> {
+    return (await this.launchDesktopAppWithResult(runtimeId)).snapshot;
+  }
+
+  async launchDesktopAppWithResult(runtimeId: BridgeDesktopRuntimeId): Promise<DesktopAppLaunchOutcome> {
     const lifecycle = this.desktopAppControls?.get(runtimeId)
       ?? (runtimeId === "claude-desktop" ? this.claudeDesktop : undefined);
     if (!lifecycle) throw new Error("未知 Desktop 应用");
     const inFlightMap = (this.launchInFlight ??= new Map());
     const existing = inFlightMap.get(runtimeId);
     if (existing) return existing;
-    const task = (async (): Promise<DesktopControlSnapshot> => {
+    const task = (async (): Promise<DesktopAppLaunchOutcome> => {
       const shouldEnableInspector = runtimeId === "claude-desktop"
         && Boolean(this.inspectorEnabler)
         && this.inspectorStatus?.state !== "listening";
       await (shouldEnableInspector ? lifecycle.launch({ activate: true }) : lifecycle.launch());
+      let inspectorStatus = this.inspectorStatus;
+      let inspectorDetail: string | undefined;
       if (shouldEnableInspector && this.inspectorEnabler) {
-        const inspectorStatus = await this.inspectorEnabler();
+        inspectorStatus = await this.inspectorEnabler();
+        inspectorDetail = inspectorStatus.state === "error" ? inspectorStatus.error : inspectorStatus.startup?.detail;
         this.inspectorStatus = inspectorStatus;
         if (this.broker?.refreshRuntime) {
           await this.broker.refreshRuntime();
@@ -443,7 +451,7 @@ export class DesktopController extends EventEmitter {
         }
       } else if (
         runtimeId === "claude-desktop"
-        && this.inspectorStatus?.state === "listening"
+        && inspectorStatus?.state === "listening"
         && this.broker?.refreshRuntime
       ) {
         const state = this.broker.runtimeStatus?.().state;
@@ -451,9 +459,22 @@ export class DesktopController extends EventEmitter {
           await this.broker.refreshRuntime();
         }
       }
+      const integration = runtimeId === "claude-desktop" ? this.broker.runtimeStatus().desktopIntegration : undefined;
       const snapshot = await this.publish();
       await this.broadcast({ kind: "snapshot", snapshot });
-      return snapshot;
+      if (!integration) return { snapshot };
+      const nativeReady = integration.state === "ready";
+      const detail = inspectorStatus?.state === "listening"
+        ? (nativeReady ? undefined : integration.detail)
+        : inspectorDetail ?? inspectorStatus?.error;
+      return {
+        snapshot,
+        claudeActivation: {
+          inspectorState: inspectorStatus?.state ?? "unknown",
+          nativeReady,
+          ...(detail ? { detail } : {}),
+        },
+      };
     })();
     inFlightMap.set(runtimeId, task);
     try {

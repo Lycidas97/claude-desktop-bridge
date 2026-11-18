@@ -8,6 +8,7 @@ import {
   parseSystemUpdateParams,
   summarizeEvidenceEvent,
   type BridgeAttachment,
+  type BridgeDesktopAppLaunchResult,
   type BridgeDesktopAppStatus,
   type BridgeDesktopRuntime,
   type BridgeDesktopRuntimeId,
@@ -134,6 +135,11 @@ export function errorResponse(requestId: string, error: unknown): BridgeResponse
   };
 }
 
+export interface DesktopAppLaunchOutcome {
+  snapshot: DesktopControlSnapshot;
+  claudeActivation?: BridgeDesktopAppLaunchResult["claudeActivation"];
+}
+
 export interface ControllerRpcHost {
   readonly config: LoadedDesktopConfig | undefined;
   readonly broker: ClaudeDesktopBridge;
@@ -151,7 +157,7 @@ export interface ControllerRpcHost {
   launchClaudeDesktop(): Promise<DesktopControlSnapshot>;
   quitClaudeDesktop(): Promise<DesktopControlSnapshot>;
   desktopAppStatuses(force?: boolean): Promise<BridgeDesktopAppStatus[]>;
-  launchDesktopApp(runtimeId: BridgeDesktopRuntimeId): Promise<DesktopControlSnapshot>;
+  launchDesktopAppWithResult(runtimeId: BridgeDesktopRuntimeId): Promise<DesktopAppLaunchOutcome>;
   quitDesktopApp(runtimeId: BridgeDesktopRuntimeId): Promise<DesktopControlSnapshot>;
   desktopRuntimes(): BridgeDesktopRuntime[];
   allProjects(): DesktopControlSnapshot["projects"];
@@ -211,8 +217,11 @@ async function dispatchControllerRequestInner(
   if (request.method === "desktop.app.launch") {
     const runtimeId = runtimeIdParam(params, "runtimeId");
     if (!runtimeId) throw new Error("desktop.app.launch 缺少 runtimeId");
-    await host.launchDesktopApp(runtimeId);
-    return { desktopApps: await host.desktopAppStatuses(true) };
+    const { claudeActivation } = await host.launchDesktopAppWithResult(runtimeId);
+    return {
+      desktopApps: await host.desktopAppStatuses(true),
+      ...(claudeActivation ? { claudeActivation } : {}),
+    } satisfies BridgeDesktopAppLaunchResult;
   }
   if (request.method === "desktop.app.quit") {
     const runtimeId = runtimeIdParam(params, "runtimeId");

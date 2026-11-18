@@ -26,9 +26,6 @@ import {
   discoverClaudeGatewayConfig,
   discoverClaudeProjectDirectory,
   fetchClaudeGatewayModels,
-  humanizeMagpieAnthropicModel,
-  humanizeUpstreamModelId,
-  magpieModelIdHash,
   normalizeAnthropicModelSlug,
   parseMagpieSyntheticModelId,
   resolveClaudeGatewayConfig,
@@ -51,10 +48,10 @@ import {
   hydrateObservedContextModel,
   parseLiveContextUsage,
   projectedContextUsage,
-  savedModelOption,
   type NativeContextState,
 } from "./native-context-usage.js";
 import { readNativeHistoryPage, readNativeTranscriptPage } from "./native-history-pagination.js";
+import { directModelDisplayName, mergeModelCatalog, modelOptionHash, resolveSessionModel, savedModelOption } from "./native-model-catalog.js";
 import {
   enrichNativeSubagentItems,
   extractNativeImageAttachment,
@@ -169,49 +166,6 @@ function nativeSession(value: unknown): NativeSession {
 
 function outputStyleNames(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((name): name is string => typeof name === "string" && name !== "") : [];
-}
-
-function modelOptionHash(value: string): string {
-  return parseMagpieSyntheticModelId(value)?.hash ?? magpieModelIdHash(value);
-}
-
-function mergeModelCatalog(
-  saved: BridgeModelInfo[] | undefined,
-  discovered: BridgeModelInfo[] | undefined,
-): BridgeModelInfo[] | undefined {
-  if (!discovered?.length) return saved;
-  if (!saved?.length) return discovered;
-  const merged = saved.map((option) => {
-    const longContext = /\[1m\]$/iu.test(option.value);
-    const hash = modelOptionHash(option.value);
-    const slug = normalizeAnthropicModelSlug(option.value);
-    const sameRoute = (item: BridgeModelInfo) => modelOptionHash(item.value) === hash;
-    const sameContext = (item: BridgeModelInfo) => /\[1m\]$/iu.test(item.value) === longContext;
-    const match = discovered.find(item => item.value === option.value)
-      ?? discovered.find(item => sameRoute(item) && sameContext(item));
-    // Effort belongs to the gateway route. Context capacity still requires a matching variant.
-    const effort = match ?? discovered.find(sameRoute);
-    const capacity = match ?? (slug ? discovered.find(item => sameContext(item) && normalizeAnthropicModelSlug(item.value) === slug) : undefined);
-    return {
-      ...option,
-      ...(capacity?.maxInputTokens ? { maxInputTokens: capacity.maxInputTokens } : {}),
-      ...(effort?.supportsEffort !== undefined ? { supportsEffort: effort.supportsEffort } : {}),
-      ...(effort?.supportedEffortLevels?.length ? { supportedEffortLevels: effort.supportedEffortLevels } : {}),
-      ...(effort?.declaredEffortLevels ? { declaredEffortLevels: effort.declaredEffortLevels } : {}),
-    };
-  });
-  // Keep saved picker context choices authoritative so Desktop's base -> 1M preference check stays intact; append only models absent from settings.json.
-  const coveredHashes = new Set(saved.map(option => modelOptionHash(option.value)));
-  const coveredSlugs = new Set(
-    saved.map(option => normalizeAnthropicModelSlug(option.value)).filter((slug): slug is string => Boolean(slug)),
-  );
-  for (const item of discovered) {
-    const hash = modelOptionHash(item.value);
-    const slug = normalizeAnthropicModelSlug(item.value);
-    if (coveredHashes.has(hash) || (slug && coveredSlugs.has(slug))) continue;
-    merged.push(item);
-  }
-  return merged;
 }
 
 type QueryGatewayDiscovery = ClaudeGatewayDiscovery & { mode: "auto" | "manual" };
@@ -421,76 +375,13 @@ export class ClaudeDesktopBridge extends EventEmitter {
     };
   }
 
-  private savedModel(model: string, models = this.models): BridgeModelInfo | undefined {
-    return savedModelOption(models, model);
-  }
-
-  private directModelDisplayName(model: string | undefined, models = this.models): string | undefined {
-    const trimmed = model?.trim();
-    if (!trimmed || trimmed.toLowerCase() === "default") return undefined;
-    const saved = this.savedModel(trimmed, models);
-    if (saved) return saved.displayName;
-    if (trimmed.includes("/") || /^(?:claude|gpt|gemini)-/iu.test(trimmed)) {
-      return humanizeUpstreamModelId(trimmed);
-    }
-    return humanizeMagpieAnthropicModel(trimmed);
-  }
-
-  private resolveSessionModel(
-    sessionId: string | undefined,
-    rawNativeModel: string | undefined,
-    models = this.models,
-  ): {
-    sessionModel?: string;
-    configModel?: string;
-    modelDisplayName?: string;
-    extraOption?: BridgeModelInfo;
-  } {
-    const trimmedNative = rawNativeModel?.trim();
-    const explicitNative = trimmedNative && trimmedNative.toLowerCase() !== "default" ? trimmedNative : undefined;
-    const rawContextModel = sessionId ? this.contextStates.get(sessionId)?.model?.trim() : undefined;
-    const contextModel = rawContextModel && rawContextModel.toLowerCase() !== "default" ? rawContextModel : undefined;
-
-    if (explicitNative) {
-      const saved = this.savedModel(explicitNative, models);
-      const directDisplay = this.directModelDisplayName(explicitNative, models);
-      if (directDisplay) {
-        return {
-          sessionModel: explicitNative,
-          configModel: saved?.value ?? explicitNative,
-          modelDisplayName: directDisplay,
-          ...(saved ? { extraOption: saved } : {}),
-        };
-      }
-      if (contextModel && !parseMagpieSyntheticModelId(contextModel)) {
-        const effectiveContext = /\[1m\]$/iu.test(explicitNative) && !/\[1m\]$/iu.test(contextModel)
-          ? `${contextModel}[1m]`
-          : contextModel;
-        const contextSaved = this.savedModel(effectiveContext, models);
-        const contextDisplay = contextSaved?.displayName ?? humanizeUpstreamModelId(effectiveContext);
-        return {
-          sessionModel: explicitNative,
-          configModel: contextSaved?.value ?? explicitNative,
-          ...(contextDisplay ? { modelDisplayName: contextDisplay } : {}),
-          ...(contextSaved ? { extraOption: contextSaved } : {}),
-        };
-      }
-      return { sessionModel: explicitNative, configModel: explicitNative };
-    }
-
-    const fallbackRaw = (contextModel && !parseMagpieSyntheticModelId(contextModel) ? contextModel : undefined)
-      ?? this.defaultModel
-      ?? models?.[0]?.value;
-    if (!fallbackRaw) return {};
-    const saved = this.savedModel(fallbackRaw, models);
-    const resolvedValue = saved?.value ?? fallbackRaw;
-    const displayName = saved?.displayName ?? this.directModelDisplayName(resolvedValue, models) ?? humanizeUpstreamModelId(resolvedValue);
-    return {
-      sessionModel: resolvedValue,
-      configModel: resolvedValue,
-      ...(displayName ? { modelDisplayName: displayName } : {}),
-      ...(saved ? { extraOption: saved } : {}),
-    };
+  private resolveSessionModel(sessionId: string | undefined, nativeModel: string | undefined, models = this.models) {
+    return resolveSessionModel({
+      nativeModel,
+      contextModel: sessionId ? this.contextStates.get(sessionId)?.model : undefined,
+      models,
+      defaultModel: this.defaultModel,
+    });
   }
 
   private async hydrateContextModel(
@@ -498,7 +389,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
     nativeModel: string | undefined,
     page?: { messages: readonly unknown[]; hasMore: boolean },
   ): Promise<void> {
-    if (this.directModelDisplayName(nativeModel) || this.contextStates.get(sessionId)?.model) return;
+    if (directModelDisplayName(nativeModel, this.models) || this.contextStates.get(sessionId)?.model) return;
     const tailLimit = 20;
     if (page) {
       const pageModel = extractLatestTranscriptModel(page.messages);
@@ -1353,7 +1244,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
     const configuration = await this.configuration(input.sessionId);
     const observedNativeModel = this.native.get(input.sessionId)?.model?.trim();
     const observedResolvedModel = observedNativeModel && observedNativeModel.toLowerCase() !== "default"
-      ? (this.savedModel(observedNativeModel)?.value ?? observedNativeModel)
+      ? (savedModelOption(this.models, observedNativeModel)?.value ?? observedNativeModel)
       : undefined;
     // Validate against raw native readback (never transcript/default fallbacks), accepting
     // only Desktop's known base -> preferred-1M normalization when 1M was not a separate option.

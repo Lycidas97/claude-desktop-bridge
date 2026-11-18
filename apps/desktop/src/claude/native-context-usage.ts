@@ -1,6 +1,7 @@
 import type { BridgeModelInfo, BridgeSessionContextUsage } from "@bridge/protocol";
 import { scanClaudeContextFromMessages } from "../transcript/claude-history.js";
-import { magpieModelIdHash, normalizeAnthropicModelSlug, parseMagpieSyntheticModelId } from "./claude-runtime-discovery.js";
+import { parseMagpieSyntheticModelId } from "./claude-runtime-discovery.js";
+import { modelOptionHash, savedModelOption } from "./native-model-catalog.js";
 
 export interface NativeContextState {
   totalTokens: number;
@@ -50,52 +51,6 @@ export function knownClaudeModelWindow(rawModel: string): number | undefined {
     return 200_000;
   }
   return undefined;
-}
-
-function modelOptionHash(value: string): string {
-  return parseMagpieSyntheticModelId(value)?.hash ?? magpieModelIdHash(value);
-}
-
-export function savedModelOption(models: BridgeModelInfo[] | undefined, model: string): BridgeModelInfo | undefined {
-  const exact = models?.find(option => option.value === model);
-  if (exact) return exact;
-  const longContext = /\[1m\]$/iu.test(model);
-  const alias = parseMagpieSyntheticModelId(model);
-  const targetSlug = normalizeAnthropicModelSlug(model);
-  const matched = (alias
-    ? models?.find(option => modelOptionHash(option.value) === alias.hash && /\[1m\]$/iu.test(option.value) === alias.longContext)
-    : undefined)
-    ?? (targetSlug
-      ? models?.find(option => normalizeAnthropicModelSlug(option.value) === targetSlug && /\[1m\]$/iu.test(option.value) === longContext)
-      : undefined);
-  if (matched) return matched;
-  if (!longContext) {
-    const longOption = models?.find(option => option.value.toLowerCase() === `${model.toLowerCase()}[1m]`)
-      ?? (alias
-        ? models?.find(option => /\[1m\]$/iu.test(option.value) && modelOptionHash(option.value) === alias.hash)
-        : undefined)
-      ?? (targetSlug
-        ? models?.find(option => /\[1m\]$/iu.test(option.value) && normalizeAnthropicModelSlug(option.value) === targetSlug)
-        : undefined);
-    if (!longOption) return undefined;
-    const { maxInputTokens, ...rest } = longOption;
-    return {
-      ...rest,
-      value: longOption.value.replace(/\[1m\]$/iu, ""),
-      displayName: longOption.displayName.replace(/\s*(?:·\s*)?1M$/iu, ""),
-      ...(maxInputTokens !== undefined && maxInputTokens !== 1_000_000 ? { maxInputTokens } : {}),
-    };
-  }
-  const base = models?.find(option => model === `${option.value}[1m]`)
-    ?? (alias
-      ? models?.find(option => !/\[1m\]$/iu.test(option.value) && modelOptionHash(option.value) === alias.hash)
-      : undefined)
-    ?? (targetSlug
-      ? models?.find(option => !/\[1m\]$/iu.test(option.value) && normalizeAnthropicModelSlug(option.value) === targetSlug)
-      : undefined);
-  // Desktop's provider can prefer 1M even when the saved picker only lists
-  // the base model. Preserve the actual context in the returned value/label.
-  return base ? { ...base, value: `${base.value}[1m]`, displayName: `${base.displayName} · 1M` } : undefined;
 }
 
 // Rebuild nested records: old pages must not keep content or extra Native fields alive.
@@ -174,7 +129,7 @@ export function resolveContextMaxTokens(
 function contextWindowModel(sessionModel?: string, usageModel?: string): string {
   const selected = sessionModel?.trim();
   const model = selected && selected.toLowerCase() !== "default" ? selected : usageModel;
-  return model ? `${parseMagpieSyntheticModelId(model)?.hash ?? magpieModelIdHash(model)}${/\[1m\]$/iu.test(model) ? "[1m]" : ""}` : "";
+  return model ? `${modelOptionHash(model)}${/\[1m\]$/iu.test(model) ? "[1m]" : ""}` : "";
 }
 
 function updateContextModel(state: NativeContextState, model: string | undefined): void {

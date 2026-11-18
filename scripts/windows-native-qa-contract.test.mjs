@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { recycleWindowsRunCommand } from "./local-ci.mjs";
 
 const qaSource = await readFile(new URL("./packaged-desktop-qa.mjs", import.meta.url), "utf8");
 const windowsSource = await readFile(new URL("./windows-packaged-qa.ps1", import.meta.url), "utf8");
@@ -333,6 +334,40 @@ ${stageSlice}
     if (hostSimPid) {
       spawnSync("cmd.exe", ["/c", `taskkill.exe /PID ${hostSimPid} /T /F >nul 2>nul`]);
     }
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Windows CI recycles its QA staging after exit and preserves locked staging on failure", { skip: process.platform !== "win32" }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "bridge-ci-recycle-"));
+  try {
+    const recycleExe = join(directory, "bridge-recycle.exe");
+    const compiler = join(process.env.SystemRoot, "Microsoft.NET/Framework64/v4.0.30319/csc.exe");
+    const compilation = spawnSync(compiler, ["/nologo", `/out:${recycleExe}`, fileURLToPath(new URL("./win-recycle.cs", import.meta.url))], { encoding: "utf8" });
+    assert.equal(compilation.status, 0, compilation.stdout + compilation.stderr);
+
+    const runRoot = join(directory, "run");
+    const modulePath = join(runRoot, "qa-staging", "node_datachannel.node");
+    await mkdir(dirname(modulePath), { recursive: true });
+    await writeFile(modulePath, "QA lock fixture");
+    const fixture = join(directory, "recycle.ps1");
+    await writeFile(fixture, `
+      param([switch]$Locked)
+      $ErrorActionPreference = 'Stop'
+      if ($Locked) { $handle = [IO.File]::Open('${modulePath}', 'Open', 'ReadWrite', 'None') }
+      try { ${recycleWindowsRunCommand(runRoot, recycleExe)} }
+      finally { if ($handle) { $handle.Dispose() } }
+    `);
+    const run = (...args) => spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-File", fixture, ...args], { encoding: "utf8" });
+    const locked = run("-Locked");
+    assert.equal(locked.status, 1, locked.stdout + locked.stderr);
+    assert.match(locked.stderr, /Windows Recycle Bin cleanup failed for/u);
+    assert.ok(locked.stderr.includes(runRoot));
+    assert.equal(await readFile(modulePath, "utf8"), "QA lock fixture");
+    const released = run();
+    assert.equal(released.status, 0, released.stdout + released.stderr);
+    assert.equal(existsSync(runRoot), false);
+  } finally {
     await rm(directory, { recursive: true, force: true });
   }
 });

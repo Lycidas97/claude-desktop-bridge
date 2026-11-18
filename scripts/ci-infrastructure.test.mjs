@@ -731,7 +731,7 @@ test('Mac CI shares owned scratch across commands and deletes it before completi
   }
 });
 
-test('a failed Mac leg stops the remote Windows leg so its slot is released', { skip: process.platform === 'win32' }, async () => {
+test('local CI cancels a running Windows leg and preserves a completed leg’s failed cleanup', { skip: process.platform === 'win32' }, async () => {
   // Windows OpenSSH keeps the remote powershell.exe (and its slot mutex) running after the local ssh client is killed.
   const directory = await mkdtemp(join(tmpdir(), 'bridge-local-ci-stop-'));
   try {
@@ -748,7 +748,7 @@ test('a failed Mac leg stops the remote Windows leg so its slot is released', { 
     runGit('init', '-q');
     runGit('add', '.');
     runGit('-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-q', '-m', 'fixture');
-    await writeFile(join(binDir, 'ssh'), `#!/bin/sh\nprintf '%s\\n' "$*" >> "${sshLog}"\ncase "$*" in *-File*) touch "${remoteStarted}"; exec sleep 30;; esac\n`);
+    await writeFile(join(binDir, 'ssh'), `#!/bin/sh\nprintf '%s\\n' "$*" >> "${sshLog}"\ncase "$*" in *-File*)\n  if [ "$BRIDGE_FIXTURE_WIN_EXIT" ]; then\n    printf 'Recycle failed for Windows run directory\\n' >&2\n    exit "$BRIDGE_FIXTURE_WIN_EXIT"\n  fi\n  touch "${remoteStarted}"; exec sleep 30;;\nesac\n`);
     await writeFile(join(binDir, 'scp'), '#!/bin/sh\nexit 0\n');
     await writeFile(join(binDir, 'npm'), `#!/bin/sh\nwhile [ ! -f "${remoteStarted}" ]; do sleep 0.05; done\nexit 1\n`);
     for (const name of ['ssh', 'scp', 'npm']) await chmod(join(binDir, name), 0o755);
@@ -766,10 +766,21 @@ test('a failed Mac leg stops the remote Windows leg so its slot is released', { 
     const stop = calls.find(call => call.includes('taskkill') && call.includes(`win-local-ci-${runId}.ps1`));
     assert.ok(stop, `No remote stop for win-local-ci-${runId}.ps1:\n${calls.join('\n')}`);
     assert.match(stop, /win-fixture/u);
-    assert.ok(stop.includes(`bridge-ci-${runId}`) && stop.includes('Remove-Item -LiteralPath'), stop);
+    assert.ok(stop.includes(`bridge-ci-${runId}`) && stop.includes('bridge-recycle.exe'), stop);
     const logDir = join(repoDir, '.git', 'local-ci', 'logs');
     const [logName] = await readdir(logDir);
     assert.match(await readFile(join(logDir, logName), 'utf8'), /\[MAC\] npm run test:infra exited with code 1/u);
+
+    await writeFile(sshLog, '');
+    const failedCleanup = spawnSync(process.execPath, [join(repoDir, 'scripts', 'local-ci.mjs'), '--skip-mac'], {
+      cwd: repoDir,
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH}`, BRIDGE_WIN_SSH_HOST: 'win-fixture', BRIDGE_FIXTURE_WIN_EXIT: '1' },
+      encoding: 'utf8',
+      timeout: 20_000,
+    });
+    assert.equal(failedCleanup.status, 1, failedCleanup.stdout + failedCleanup.stderr);
+    assert.match(failedCleanup.stderr, /Recycle failed for Windows run directory/u);
+    assert.doesNotMatch(await readFile(sshLog, 'utf8'), /taskkill/u, 'A completed remote leg must leave its failed cleanup path alone');
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

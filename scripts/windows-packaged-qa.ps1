@@ -114,9 +114,6 @@ foreach ($key in $environmentKeys) {
 }
 
 $relayProcess = $null
-$desktopProcess = $null
-$smokeProcess = $null
-$desktopExecutable = $null
 try {
   if ($env:RUNNER_ENVIRONMENT -eq "github-hosted") {
     $installResult = Start-Process -FilePath $installer.FullName `
@@ -274,12 +271,6 @@ try {
     }
   }
 } finally {
-  if ($null -ne $smokeProcess -and -not $smokeProcess.HasExited) {
-    & cmd.exe /c "taskkill.exe /PID $($smokeProcess.Id) /T /F >nul 2>nul"
-  }
-  if ($null -ne $desktopProcess -and -not $desktopProcess.HasExited) {
-    & cmd.exe /c "taskkill.exe /PID $($desktopProcess.Id) /T /F >nul 2>nul"
-  }
   if ($null -ne $relayProcess -and -not $relayProcess.HasExited) {
     Stop-Process -Id $relayProcess.Id -Force -ErrorAction SilentlyContinue
   }
@@ -288,18 +279,19 @@ try {
   }
   if (Test-Path -LiteralPath $installRoot) {
     $installPrefix = [IO.Path]::GetFullPath($installRoot).TrimEnd('\') + '\'
-    $installPids = @(
-      Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+    # Resolve processes before taskkill so Wait-Process can handle ones that already exited.
+    $installProcesses = @(
+      Get-CimInstance Win32_Process |
         Where-Object {
           $_.ExecutablePath -and $_.ExecutablePath.StartsWith($installPrefix, [StringComparison]::OrdinalIgnoreCase)
         } |
-        Select-Object -ExpandProperty ProcessId
+        ForEach-Object { Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue }
     )
-    foreach ($procId in $installPids) {
-      & cmd.exe /c "taskkill.exe /PID $procId /T /F >nul 2>nul"
+    foreach ($process in $installProcesses) {
+      & cmd.exe /c "taskkill.exe /PID $($process.Id) /T /F >nul 2>nul"
     }
-    if ($installPids.Count -gt 0) {
-      Wait-Process -Id $installPids -Timeout 5 -ErrorAction SilentlyContinue
+    if ($installProcesses.Count -gt 0) {
+      Wait-Process -InputObject $installProcesses -Timeout 5
     }
     $global:LASTEXITCODE = 0
   }

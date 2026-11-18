@@ -552,7 +552,11 @@ export class ClaudeDesktopBridge extends EventEmitter {
     // Only settle acknowledgements that predate the Native read. New input can arrive during IPC.
     for (const receipt of inputs) if (receipt.state !== "session-received") inputs.delete(receipt);
     const received = [...inputs];
-    if (received.length && await this.inspector.inputQueueDrained?.(session.sessionId)) {
+    const drained = received.length > 0 && await this.inspector.inputQueueDrained?.(session.sessionId).catch(error => {
+      if (error instanceof InspectorDisconnectedError) return false;
+      throw error;
+    });
+    if (drained) {
       for (const receipt of received) {
         if (!inputs.delete(receipt) || receipt.state !== "session-received") continue;
         receipt.queueSettled = true;

@@ -2061,6 +2061,22 @@ describe("Claude native relay", () => {
     } finally { await restarted?.close(); await f.close(); }
   });
 
+  it("publishes an unmatched success when the queue observation disconnects", async () => {
+    const f = await fixture();
+    try {
+      const receipt = await f.bridge.startTurn(input);
+      await f.message({ type: "user", uuid: receipt.messageId, message: { content: input.text } });
+      f.native.inputQueueDrained.mockRejectedValueOnce(new InspectorDisconnectedError("Disconnected during queue observation"));
+      await f.message({ type: "result", uuid: "unmatched-success", is_error: false });
+      expect(f.eventLog.latestItem(input.sessionId, "turn.completed", "unmatched-success")).toBeDefined();
+      expect(f.bridge.session(input.sessionId)?.lastCompletedTurnId).toBe("unmatched-success");
+      expect(f.state.nativeDesktopReceipt(input.idempotencyKey)?.queueSettled).toBeUndefined();
+      f.native.inputQueueDrained.mockResolvedValue(true);
+      await f.bridge.refreshRuntime();
+      expect(f.state.nativeDesktopReceipt(input.idempotencyKey)).toMatchObject({ state: "session-received", queueSettled: true });
+    } finally { await f.close(); }
+  });
+
   it("broadcasts unmatched native results without inventing Bridge command identities or receipts", async () => {
     const f = await fixture();
     try {

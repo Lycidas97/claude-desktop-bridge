@@ -26,21 +26,21 @@ A Light reviewer whose PR grows into Paired scope tells the patrol.
 
 | Role | Magpie group or model | Picker label |
 | --- | --- | --- |
-| Patrol | `group/bridge-runner`: DeepSeek Flash → GPT-6.1-Sol | `bridge-runner` |
-| Fork, reviewer, `LESSONS.md` consolidation, scheduled `bridge-tech-debt-patrol` (no subagents: a weaker scanner's misses cannot be caught by review) | `codex/gpt-6.1-sol` | `GPT-6.1-Sol · Codex` |
-| Extra reviewer for architecture/UI PRs | `group/ui-review`: Opus 5.5 (agy-cli → Claude Code) | `ui-review` |
-| `plan-ideator` / `plan-reviewer` | `group/ideator`: Opus 5.5 → GPT-6.1-Sol / `codex/gpt-6.1-sol` | `ideator` / `GPT-6.1-Sol · Codex` |
-| Drafting Issue bodies, PR descriptions, docs | `group/docs`: Opus 5.5 → DeepSeek Flash | `docs` |
-| Hard bugs | `codex/gpt-6-astra` | `GPT-6-Astra · Codex` |
+| Patrol | `group/bridge-runner`: DeepSeek-V4.1-Flash → GPT-6.2-Sol | `bridge-runner` |
+| Fork, reviewer, `LESSONS.md` consolidation, scheduled `bridge-tech-debt-patrol` (no subagents: a weaker scanner's misses cannot be caught by review) | `codex/gpt-6.2-sol` | `GPT-6.2-Sol · Codex` |
+| Extra reviewer for architecture/UI PRs | `group/ui-review`: Opus 5.5 → GPT-6.2-Sol | `ui-review` |
+| `plan-ideator` / `plan-reviewer` | `group/ideator`: Fable 5.2 → Opus 5.5 → GPT-6.2-Sol / `codex/gpt-6.2-sol` | `ideator` / `GPT-6.2-Sol · Codex` |
+| Drafting Issue bodies, PR descriptions, docs | `group/docs`: Opus 5.5 → DeepSeek-V4.1-Flash | `docs` |
+| Hard bugs | `codex/gpt-6.2-astra` | `GPT-6.2-Astra · Codex` |
 
 - All Gemini models are disabled after account bans, including through `agy-cli/*`, reverse proxies, and Google API keys. Never select them or add them to fallback chains. Keep the global Magpie disable rule below so requests using old model ids are refused too.
 - Fallback lives in Magpie groups with `routing=order`, so sessions carry no fallback logic. The second Opus account uses `agy-cli/*`. One-time setup per machine (the group name is the label):
   ```bash
   magpie model disable '*gemini*'
-  magpie group add bridge-runner models=deepseek/deepseek-flash,codex/gpt-6.1-sol routing=order
-  magpie group add ideator models=claude/claude-opus-5-5,codex/gpt-6.1-sol routing=order
-  magpie group add docs models=agy-cli/claude-opus-5-5,claude/claude-opus-5-5,deepseek/deepseek-flash routing=order
-  magpie group add ui-review models=agy-cli/claude-opus-5-5,claude/claude-opus-5-5 routing=order
+  magpie group add bridge-runner models=deepseek/deepseek-flash,codex/gpt-6.2-sol routing=order
+  magpie group add ideator models=claude/claude-fable-5-2,claude/claude-opus-5-5,codex/gpt-6.2-sol routing=order
+  magpie group add docs models=claude/claude-opus-5-5,deepseek/deepseek-flash routing=order
+  magpie group add ui-review models=claude/claude-opus-5-5,codex/gpt-6.2-sol routing=order
   ```
 - `set_session_model` and frontmatter take a picker id. Resolve it right before use with `node scripts/picker-id.mjs "<label>"`; never write ids down. A new group needs a Claude Desktop restart before its id works.
 - A session keeps one model for life. `set_session_model` applies only from the session's next turn (see **Dispatch**).

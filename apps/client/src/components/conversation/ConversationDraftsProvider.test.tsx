@@ -516,6 +516,42 @@ describe("ConversationDraftsProvider", () => {
     }
   });
 
+  it("bounds clear history and removes the forgotten host's records without clearing another host", () => {
+    vi.useFakeTimers();
+    const first = renderProvider();
+    first.session("host-a", "sess-A").setText("draft to clear before forgetting host A");
+    first.session("host-b", "sess-A").setText("draft B");
+    vi.advanceTimersByTime(250);
+    first.session("host-a", "sess-A").setText("");
+    const afterClear = [...stored];
+    for (let index = 0; index < 101; index += 1) {
+      first.resetSession("host-a", `never-drafted-${index}`);
+    }
+    expect([...stored]).toEqual(afterClear);
+
+    for (let index = 0; index < 100; index += 1) {
+      const session = first.session("host-a", `cleared-${index}`);
+      session.setText("draft to clear");
+      session.setText("");
+    }
+
+    const reopenedStore = createStore();
+    try {
+      const clearHistory = [...stored].filter(([key]) => key !== CONVERSATION_DRAFTS_STORAGE_KEY);
+      expect(clearHistory).toHaveLength(1);
+      expect(JSON.parse(clearHistory[0]![1])).toHaveLength(100);
+
+      const reopened = renderProvider(reopenedStore);
+      reopened.clearHost("host-a");
+      expect([...stored.keys()]).toEqual([CONVERSATION_DRAFTS_STORAGE_KEY]);
+      expect(JSON.parse(stored.get(CONVERSATION_DRAFTS_STORAGE_KEY)!).entries).toMatchObject([
+        { key: JSON.stringify(["host-b", "sess-A"]), text: "draft B" },
+      ]);
+    } finally {
+      unmountStore(reopenedStore);
+    }
+  });
+
   it.each(["pagehide", "visibilitychange"])("flushes pending text immediately on %s", (event) => {
     vi.useFakeTimers();
     const page = new EventTarget();

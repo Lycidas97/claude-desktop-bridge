@@ -237,4 +237,29 @@ export async function verifyNativeQueueActions(page, host, steps, directory, rel
   assert.equal(await receivedMessage.count(), 0, "Replayed pre-rewind events cannot revive the discarded received message");
   await page.screenshot({ path: resolve(directory, "queue-running-rewind-complete.png"), fullPage: true });
   steps.push("normal sends without a composer mode selector keep delivered-only replies received but expose 立即发送 and native rewind; active rewind uses the user UUID/assistant anchor, stops through Native, clears withdrawal receipts, restores text and survives reload without resubmitting");
+
+  const completedText = "已得到回复的原生消息";
+  await composer.fill(completedText);
+  await page.getByRole("button", { name: "发送", exact: true }).click();
+  await eventually(() => host.nativeApproval.receipts().at(-1)?.state, "submitted", "Native accepted the new send RPC");
+  const completedReceipt = host.nativeApproval.receipts().at(-1);
+  for (const message of [
+    { type: "user", uuid: completedReceipt.messageId, message: { content: completedText } },
+    { type: "assistant", uuid: "uncorrelated-reply", message: { content: [{ type: "text", text: "原生回复已结束。" }] } },
+    { type: "result", uuid: "uncorrelated-result", subtype: "success", is_error: false },
+  ]) {
+    const events = await host.nativeApproval.message({ ...message, timestamp: Date.now() });
+    await host.syncNativeQueue({ events, history: await host.nativeApproval.history(), session: host.nativeApproval.session() });
+  }
+  assert.equal(host.nativeApproval.receipts().at(-1).state, "session-received", "An uncorrelated result must not promote the stored receipt");
+  const completedMessage = page.locator("article.conversation-item.user").filter({ hasText: completedText });
+  await page.getByText("原生回复已结束。", { exact: true }).waitFor();
+  await eventually(() => completedMessage.locator(".delivery-state").count(), 0, "Answered native input stops showing its stale received badge");
+  assert.equal(await completedMessage.locator(".conversation-message-actions").evaluate(node => getComputedStyle(node).display), "flex", "Queue controls stay on the same row without a delivery badge");
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await openMobileSession(page);
+  await completedMessage.waitFor();
+  await page.getByText("原生回复已结束。", { exact: true }).waitFor();
+  assert.equal(await completedMessage.locator(".delivery-state").count(), 0, "History keeps the stale received badge hidden after reload");
+  steps.push("an uncorrelated result leaves the stored receipt intact and the answered mobile bubble hides its stale received badge live and after reload");
 }

@@ -18,6 +18,7 @@ export interface ConversationMessageItemProps {
   session: BridgeSessionInfo;
   entering?: boolean | undefined;
   latestMessage?: boolean | undefined;
+  hasLaterNativeReply?: boolean | undefined;
   revealActionsOnTap?: boolean | undefined;
   online?: boolean | undefined;
   canSend?: boolean | undefined;
@@ -38,6 +39,7 @@ export function ConversationMessageItem({
   session,
   entering = false,
   latestMessage = false,
+  hasLaterNativeReply = false,
   revealActionsOnTap = false,
   online = true,
   canSend = false,
@@ -61,6 +63,8 @@ export function ConversationMessageItem({
     && desktopRuntimeId(session) === "claude-desktop"
     && canSend,
   );
+  // A visible later reply makes the receipt label redundant. Only Desktop can settle the receipt.
+  const delivery = item.delivery === "session-received" && hasLaterNativeReply ? undefined : item.delivery;
   const copyable = (item.role === "assistant" || item.role === "user") && Boolean(item.text.trim());
   const canRewind = rewindAvailable && onRewind && item.role === "user" && !item.id.startsWith("local:");
   const hasUtilities = copyable || canRewind;
@@ -111,7 +115,7 @@ export function ConversationMessageItem({
       )}
       {/* A sent message's bubble holds only what was sent; status and copy sit under it. */}
       {item.role === "user" ? <div className="conversation-bubble">{content}</div> : content}
-      {(hasUtilities || item.delivery) && (
+      {(hasUtilities || delivery || canActOnQueued) && (
         <div className="conversation-message-actions">
           {hasUtilities && (
             <div className="conversation-message-utilities">
@@ -129,10 +133,10 @@ export function ConversationMessageItem({
               )}
             </div>
           )}
-          {item.delivery && (
-            <span className={`delivery-state ${item.delivery}`} role="status">
-              {!online && (messageQueued || item.delivery === "queued") ? "上次同步时已排队"
-                : messageQueued ? "已排队" : deliveryLabel(item.delivery)}
+          {delivery && (
+            <span className={`delivery-state ${delivery}`} role="status">
+              {!online && (messageQueued || delivery === "queued") ? "上次同步时已排队"
+                : messageQueued ? "已排队" : deliveryLabel(delivery)}
             </span>
           )}
           {canActOnQueued && ([

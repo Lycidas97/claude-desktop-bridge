@@ -2444,7 +2444,7 @@ button:disabled {
   margin: -4px var(--message-action-inset, 0px) -8px 0;
 }
 
-.conversation-message-actions:has(> .delivery-state:not(.completed)) {
+.conversation-message-actions:has(> .delivery-state:not(.completed), > .message-copy-button) {
   display: flex;
 }
 

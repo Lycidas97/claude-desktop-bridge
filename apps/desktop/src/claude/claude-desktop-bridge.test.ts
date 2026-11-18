@@ -4796,7 +4796,7 @@ describe("manual session title persistence and automatic first-turn title genera
     }
   });
 
-  it.each(["fixed", "host-auth", "host-url"] as const)("uses the matching Desktop profile models for %s titles in both Magpie modes", async (source) => {
+  it.each(["fixed", "host-auth", "host-url"] as const)("keeps Desktop models for %s titles across Magpie modes", async (source) => {
     const directory = await mkdtemp(join(tmpdir(), "bridge-autotitle-profile-"));
     const state = new ConversationStateStore({ databasePath: join(directory, "state.sqlite") });
     await state.initialize();
@@ -4879,6 +4879,12 @@ describe("manual session title persistence and automatic first-turn title genera
         expect(await bridge.refreshRuntime()).toBe(true);
         expect(fetchImpl).toHaveBeenLastCalledWith(desktopModelsUrl, expect.anything());
         await expectTitleModel("after-failed-refresh", "host-only-model");
+
+        await bridge.saveMagpieConnection({ mode: "manual", baseUrl: "https://manual.example.test", authScheme: "x-api-key", apiKey: "manual-key" });
+        expect((await bridge.defaultConfiguration()).availableModels).toEqual([
+          expect.objectContaining({ value: "manual-only-model" }),
+        ]);
+        await expectTitleModel("manual-after-fetch", "host-only-model");
       }
     } finally {
       await bridge.close();

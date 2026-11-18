@@ -182,23 +182,23 @@ function mergeModelCatalog(
 ): BridgeModelInfo[] | undefined {
   if (!discovered?.length) return saved;
   if (!saved?.length) return discovered;
-  const findDiscovered = (option: BridgeModelInfo): BridgeModelInfo | undefined => {
+  const merged = saved.map((option) => {
     const longContext = /\[1m\]$/iu.test(option.value);
     const hash = modelOptionHash(option.value);
     const slug = normalizeAnthropicModelSlug(option.value);
-    return discovered.find(item => item.value === option.value)
-      ?? discovered.find(item => modelOptionHash(item.value) === hash && /\[1m\]$/iu.test(item.value) === longContext)
-      ?? (slug ? discovered.find(item => normalizeAnthropicModelSlug(item.value) === slug && /\[1m\]$/iu.test(item.value) === longContext) : undefined);
-  };
-  const merged = saved.map((option) => {
-    const match = findDiscovered(option);
-    if (!match) return option;
+    const sameRoute = (item: BridgeModelInfo) => modelOptionHash(item.value) === hash;
+    const sameContext = (item: BridgeModelInfo) => /\[1m\]$/iu.test(item.value) === longContext;
+    const match = discovered.find(item => item.value === option.value)
+      ?? discovered.find(item => sameRoute(item) && sameContext(item));
+    // Effort belongs to the gateway route. Context capacity still requires a matching variant.
+    const effort = match ?? discovered.find(sameRoute);
+    const capacity = match ?? (slug ? discovered.find(item => sameContext(item) && normalizeAnthropicModelSlug(item.value) === slug) : undefined);
     return {
       ...option,
-      ...(match.maxInputTokens ? { maxInputTokens: match.maxInputTokens } : {}),
-      ...(match.supportsEffort !== undefined ? { supportsEffort: match.supportsEffort } : {}),
-      ...(match.supportedEffortLevels?.length ? { supportedEffortLevels: match.supportedEffortLevels } : {}),
-      ...(match.declaredEffortLevels ? { declaredEffortLevels: match.declaredEffortLevels } : {}),
+      ...(capacity?.maxInputTokens ? { maxInputTokens: capacity.maxInputTokens } : {}),
+      ...(effort?.supportsEffort !== undefined ? { supportsEffort: effort.supportsEffort } : {}),
+      ...(effort?.supportedEffortLevels?.length ? { supportedEffortLevels: effort.supportedEffortLevels } : {}),
+      ...(effort?.declaredEffortLevels ? { declaredEffortLevels: effort.declaredEffortLevels } : {}),
     };
   });
   // Keep saved picker context choices authoritative so Desktop's base -> 1M preference check stays intact; append only models absent from settings.json.

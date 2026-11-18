@@ -362,7 +362,7 @@ export function NewChatCanvas({
       : configuration?.availableEffortLevels.length ? configuration.availableEffortLevels : BRIDGE_EFFORT_LEVELS,
   );
 
-  const pickedEffort = effortDraft && effortLevels.includes(effortDraft) ? effortDraft : undefined;
+  const pickedEffort = !configLoading && effortDraft && effortLevels.includes(effortDraft) ? effortDraft : undefined;
   const outputStyles = onConfigureSession && canConfigureRuntime
     && snapshot?.host.capabilities.includes("session.output-style.v1")
     && configuration?.sessionId === DEFAULT_CONFIGURATION_SESSION_ID
@@ -762,7 +762,7 @@ export function NewChatCanvas({
                         key={level}
                         className={pickedEffort === level ? "active" : ""}
                         aria-pressed={pickedEffort === level}
-                        disabled={!connected || locked}
+                        disabled={!connected || locked || configLoading}
                         onClick={() => setEffortDraft(level)}
                       >
                         {effortLabel(level)}

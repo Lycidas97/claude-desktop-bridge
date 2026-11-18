@@ -370,7 +370,8 @@ export async function verifyDesktopConversation(page, host, steps, directory, vi
   });
   const assistantBubble = stream.locator("article.conversation-item.assistant").filter({ hasText: "桌面端已接入共享叶子组件" });
   const copyReply = assistantBubble.getByRole("button", { name: "复制这条回复", exact: true });
-  assert.equal(await copyReply.count(), 0, "Older desktop actions start hidden");
+  await sidebar.hover();
+  await copyReply.waitFor({ state: "hidden" });
   const collapsedHeight = await assistantBubble.evaluate(reply => reply.getBoundingClientRect().height);
   await assistantBubble.hover();
   await copyReply.waitFor();

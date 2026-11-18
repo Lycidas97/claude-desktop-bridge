@@ -19,9 +19,33 @@ export async function verifySessionCatalog(page, host, steps, directory, viewpor
     viewports.push({ page: name, ...page.viewportSize() });
     await page.screenshot({ path: resolve(directory, `${name}.png`), fullPage: true });
   }
+  async function verifyRowMetadata(row) {
+    const bounds = await row.locator(".session-row-copy small").evaluate(element => {
+      const { left, right, top, height } = element.getBoundingClientRect();
+      const title = element.previousElementSibling.getBoundingClientRect();
+      return { left, right, top, height, titleBottom: title.bottom, viewportWidth: innerWidth };
+    });
+    assert.ok(bounds.left >= 0 && bounds.right <= bounds.viewportWidth && bounds.top >= bounds.titleBottom && bounds.height > 1,
+      `Activity and summary appear beneath the title: ${JSON.stringify(bounds)}`);
+  }
+  const catalogSession = host.snapshot.sessions.find(session => session.sessionId === sessionId);
+  catalogSession.currentSummary = "正在验证链路压缩";
+  await host.send({ kind: "snapshot", snapshot: host.snapshot });
   await openMobileDrawer(page);
-  await capture("mobile-catalog");
+  const mobileMetadataRow = page.locator(`.mobile-home-catalog [data-session-id="${sessionId}"]`);
+  await mobileMetadataRow.getByText(/· 正在验证链路压缩/u).waitFor();
+  await verifyRowMetadata(mobileMetadataRow);
   const savedMobileSnapshot = structuredClone(host.snapshot);
+  assert.equal(await mobileMetadataRow.locator(".session-state-dot.completed").count(), 0);
+  catalogSession.lastCompletedTurnId = "mobile-background-result";
+  await host.send({ kind: "snapshot", snapshot: host.snapshot });
+  await mobileMetadataRow.locator(".session-state-dot.completed").waitFor();
+  await capture("mobile-catalog");
+  await mobileMetadataRow.locator(".session-row-hit").click();
+  await page.waitForFunction(({ hostId, id }) => JSON.parse(localStorage.getItem(`bridge-seen-session-completions:${hostId}`) ?? "{}")[id] === "mobile-background-result", { hostId: host.pairing.roomId, id: sessionId });
+  await openMobileDrawer(page);
+  await mobileMetadataRow.waitFor();
+  assert.equal(await mobileMetadataRow.locator(".session-state-dot.completed").count(), 0);
   for (const session of host.snapshot.sessions) {
     session.turnState = "running";
     session.ownership = "DESKTOP_NATIVE_RUNNING";
@@ -97,7 +121,9 @@ export async function verifySessionCatalog(page, host, steps, directory, viewpor
   await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
   const sidebar = page.locator(".desktop-session-sidebar");
   const headers = sidebar.locator('.project-group-open[aria-controls^="desktop-project-"] .project-group-toggle-copy strong');
-  await sidebar.locator(`[data-session-id="${sessionId}"]`).waitFor();
+  const desktopMetadataRow = sidebar.locator(`[data-session-id="${sessionId}"]`);
+  await desktopMetadataRow.getByText(/· 正在验证链路压缩/u).waitFor();
+  await verifyRowMetadata(desktopMetadataRow);
   assert.equal(await sidebar.locator('.project-group-open[aria-controls="desktop-archived-sessions"] .project-group-toggle-copy strong').textContent(), "已归档");
   const initialOrder = await headers.allTextContents();
   assert.equal(initialOrder.length, 2);
@@ -115,6 +141,16 @@ export async function verifySessionCatalog(page, host, steps, directory, viewpor
   await sidebar.locator('[data-session-id="browser-e2e-fork"] .session-row-hit').click();
   assert.equal(await sidebar.locator('[data-session-id="browser-e2e-fork"]').evaluate(element => element.classList.contains("active")), true);
   const savedCatalog = await page.evaluate(() => structuredClone(window.__catalogSnapshot));
+  await page.evaluate(id => {
+    const snapshot = structuredClone(window.__catalogSnapshot);
+    snapshot.sessions.find(session => session.sessionId === id).lastCompletedTurnId = "desktop-background-result";
+    window.__updateCatalog(snapshot);
+  }, sessionId);
+  await desktopMetadataRow.locator(".session-state-dot.completed").waitFor();
+  await desktopMetadataRow.locator(".session-row-hit").click();
+  await desktopMetadataRow.locator(".session-state-dot.completed").waitFor({ state: "detached" });
+  await page.evaluate(snapshot => window.__updateCatalog(snapshot), savedCatalog);
+  steps.push("Mobile and Desktop show activity and summary, mark an unopened result, and clear it on opening");
   const contrastChecks = [];
   await page.evaluate(axeSource);
   for (const state of ["running", "waiting", "queued"]) {

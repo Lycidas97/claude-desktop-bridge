@@ -206,6 +206,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
   private sectionCatalog: NativeSectionCatalog | undefined;
   private readonly projectDirectories = new Map<string, ClaudeProjectDirectory>();
   private readonly sessions = new Map<string, BridgeSessionInfo>();
+  private readonly lastCompletedTurns = new Map<string, string>();
   private readonly permissions = new Map<string, BridgePermissionInfo>();
   private readonly prompts = new Map<string, BridgePendingPrompt>();
   private readonly prPreferences = new Map<string, { onlyOwnPrs: boolean; nextOwnPrArmed: boolean }>();
@@ -617,6 +618,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
       const pendingCommandIds = queuedBySession.get(sessionId) ?? [];
       const modeChange = this.permissionModeChanges.get(sessionId);
       const contextUsage = this.projectedContextUsage(sessionId, native.model);
+      const lastCompletedTurnId = this.lastCompletedTurns.get(sessionId);
       const parentSessionId = native.forkedFromSessionId ?? native.spawnedFrom?.sessionId;
       const projectCwd = this.projectCwd(native.cwd);
       const section = this.sectionCatalog?.sections.find(section => section.id === this.sectionCatalog?.assignments[sessionId]);
@@ -634,6 +636,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
         ownership: running ? "DESKTOP_NATIVE_RUNNING" : "DESKTOP_NATIVE_IDLE",
         turnState: waiting ? "waiting" : running ? "running" : "idle",
         lastActivityAt: native.lastActivityAt ?? native.createdAt ?? 0, pendingCount: pendingCommandIds.length, pendingCommandIds,
+        ...(lastCompletedTurnId ? { lastCompletedTurnId } : {}),
         ...(resolvedModel.sessionModel ? { model: resolvedModel.sessionModel, ...(resolvedModel.modelDisplayName ? { modelDisplayName: resolvedModel.modelDisplayName } : {}) } : {}), ...(native.effort ? { effort: native.effort } : {}),
         ...(native.permissionMode ? { nativePermissionMode: native.permissionMode } : {}),
         ...(contextUsage ? { contextUsage } : {}),
@@ -829,6 +832,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
       await this.inspector.call("delete", [id]);
       this.native.delete(id);
       this.sessions.delete(sessionId);
+      this.lastCompletedTurns.delete(sessionId);
       this.contextStates.delete(sessionId);
       this.prPreferences.delete(sessionId);
       this.autoTitledSessions.delete(sessionId);
@@ -1810,6 +1814,9 @@ export class ClaudeDesktopBridge extends EventEmitter {
         }
       }
       if (message.type === "result") {
+        if (!message.parent_tool_use_id && message.isSyntheticResult !== true && message.is_error === false) {
+          this.lastCompletedTurns.set(sessionId, typeof message.uuid === "string" ? message.uuid : commandUuids.at(-1) ?? randomUUID());
+        }
         const context = this.contextStates.get(sessionId);
         applyResultModelUsageContext(context, message, context?.turnModel ?? this.native.get(sessionId)?.model);
         if (context) delete context.turnModel;

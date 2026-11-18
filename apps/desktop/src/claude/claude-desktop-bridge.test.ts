@@ -2028,6 +2028,19 @@ describe("Claude native relay", () => {
       expect(terminal).toHaveLength(1);
       expect(terminal[0]).toMatchObject({ sessionId: "local-native", itemId: "desktop-result", data: {} });
       expect(terminal[0]?.turnId).toBeUndefined();
+      expect(f.bridge.session("local-native")).toMatchObject({ lastCompletedTurnId: "desktop-result", turnState: "idle" });
+      await f.bridge.refreshRuntime();
+      expect(f.bridge.session("local-native")?.lastCompletedTurnId).toBe("desktop-result");
+    } finally { await f.close(); }
+  });
+
+  it("does not mark failed, synthetic, or child results as completed", async () => {
+    const f = await fixture();
+    try {
+      for (const outcome of [{ is_error: true }, { is_error: false, isSyntheticResult: true }, { is_error: false, parent_tool_use_id: "child" }]) {
+        await f.message({ type: "result", uuid: "excluded-result", ...outcome });
+        expect(f.bridge.session("local-native")?.lastCompletedTurnId).toBeUndefined();
+      }
     } finally { await f.close(); }
   });
 

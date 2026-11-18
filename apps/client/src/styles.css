@@ -1846,6 +1846,10 @@ button:disabled {
   background: var(--danger);
 }
 
+.session-state-dot.completed {
+  background: var(--success-ink);
+}
+
 .session-row-copy {
   display: grid;
   min-width: 0;
@@ -7106,14 +7110,7 @@ button:disabled {
 }
 
 .is-flat-tree .session-row-copy small {
-  position: fixed;
-  top: 0;
-  left: -9999px;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  white-space: nowrap;
-  pointer-events: none;
+  color: color-mix(in srgb, var(--muted) 88%, var(--text));
 }
 
 .is-flat-tree .session-row-badges {

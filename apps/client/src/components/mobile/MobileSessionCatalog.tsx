@@ -31,6 +31,7 @@ import { ProjectGroupHeader } from "../session/ProjectGroupHeader.js";
 import { SectionCreateDialog, type SectionCreateState } from "../session/SectionCreateDialog.js";
 import { SectionManageDialog, type SectionManageController } from "../session/SectionManageDialog.js";
 import { SessionFamilyList } from "../session/SessionFamilyList.js";
+import { useSeenSessionCompletions } from "../session/useSeenSessionCompletions.js";
 import {
   SessionSectionDragGhost,
   UNSECTIONED_DROP_ID,
@@ -186,6 +187,7 @@ export function MobileSessionCatalog({
   sessionActionError,
   onActivateClaude,
 }: MobileSessionCatalogProps) {
+  const seenCompletions = useSeenSessionCompletions(activeHostId);
   const searchQuery = search.trim().toLocaleLowerCase();
   const online = connection === "connected" && desktopOnline;
   const supportsCreateSection = Boolean(onCreateSection && snapshot?.host.capabilities.includes("section.create.v1"));
@@ -551,6 +553,7 @@ export function MobileSessionCatalog({
                             flat
                             sessionDrag={sessionDrag}
                             selectedId={selectedSessionId}
+                            seenCompletions={seenCompletions}
                             onSelectSession={(targetSessionId) => {
                               onClose?.();
                               return selectSession(targetSessionId);

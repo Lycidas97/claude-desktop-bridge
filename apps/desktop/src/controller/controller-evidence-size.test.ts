@@ -33,7 +33,7 @@ it("routes metadata-only preview requests without opening a content transfer", a
   expect(await controller.handleRequest(request, "mobile", "phone")).toEqual({ metadata });
   expect(evidence.artifactTransferMetadata).toHaveBeenCalledWith("preview_artifact");
   expect(await controller.handleRequest({ ...request, params: { sessionId: "preview_session", path: "large.txt", purpose: "stat" } }, "mobile", "phone")).toEqual({ metadata });
-  expect(evidence.fileTransferMetadata).toHaveBeenCalledWith("/preview/project", "large.txt", "/preview/project/worktree");
+  expect(evidence.fileTransferMetadata).toHaveBeenCalledWith("/preview/project", "large.txt", "/preview/project/worktree", expect.any(Function));
   expect(evidence.openTransfer).not.toHaveBeenCalled(); expect(evidence.openFileTransfer).not.toHaveBeenCalled(); expect(evidence.openBytesTransfer).not.toHaveBeenCalled();
 });
 

@@ -1,7 +1,7 @@
 import { EventEmitter, once } from "node:events";
 import { appendFile, rm, mkdir, mkdtemp, readFile, readdir, symlink, writeFile } from "node:fs/promises";
 import * as platform from "../app/platform.js";
-import { BridgeCrypto, isEncryptedEnvelope } from "@bridge/protocol";
+import { BridgeCrypto, isEncryptedEnvelope, type BridgeArtifactTransferInfo } from "@bridge/protocol";
 import { EvidenceManager } from "../evidence/evidence-manager.js";
 import { EvidenceStore } from "../evidence/evidence-store.js";
 import { DesktopController } from "../controller/controller.js";
@@ -36,6 +36,7 @@ class NativeDesktop extends EventEmitter {
   calls: Array<{ method: string; args: unknown[] }> = [];
   sessions: Array<Record<string, unknown>> = [{ sessionId: "local-native", cwd: "/project", title: "Native", isRunning: true, turnRunning: false, permissionMode: "default", model: "native-model", pendingToolPermissions: [] }];
   page: Record<string, unknown> = { messages: [], hasMore: false };
+  resolvedSessionFiles = new Map<string, string>();
   pages = new Map<string, Record<string, unknown>>();
   sendError: Error | undefined;
   sendReply: Promise<unknown> | undefined;
@@ -84,6 +85,7 @@ class NativeDesktop extends EventEmitter {
     if (method === "delete") this.sessions = this.sessions.filter(session => session.sessionId !== args[0]);
     const session = this.sessions.find(session => session.sessionId === args[0]);
     if (method === "getSession") return structuredClone(session);
+    if (method === "resolveSessionFileQuietly") return this.resolvedSessionFiles.get(String(args[1])) ?? null;
     if (method === "getContextUsage") return structuredClone(this.contextUsage);
     if (method === "getGitInfo") return { branch: "feature/owned" };
     const promptField = ({ respondToRefusalFallbackPrompt: "pendingRefusalFallbackPrompt", respondToAutoModeServerFallbackPrompt: "pendingAutoModeServerFallbackPrompt", respondToLanyardConsent: "pendingLanyardConsent", respondToViolinBowPrompt: "pendingViolinBowPrompt", answerPendingCwdTrust: "pendingCwdTrustPrompt" } as Record<string, string>)[method];
@@ -1517,6 +1519,50 @@ describe("Claude native relay", () => {
       }
       expect(f.bridge.session("local-native")?.cwd).toBe(project);
       expect(f.bridge.listProjects()[0]?.cwd).toBe(project);
+    } finally { await evidence.close(); await f.close(); }
+  });
+
+  it("previews a relative link to a file Desktop resolves in a shell subdirectory", async () => {
+    const f = await fixture();
+    const store = new EvidenceStore({ databasePath: join(f.directory, "files.sqlite"), blobsPath: join(f.directory, "file-blobs"), masterSecret: Buffer.alloc(32, 4).toString("base64url") });
+    const evidence = new EvidenceManager({ store, eventLog: f.eventLog });
+    await evidence.initialize();
+    try {
+      const project = join(f.directory, "repo");
+      const subdirectory = join(project, "shell-work");
+      const name = "report.md";
+      const contents = "# Shell report";
+      await mkdir(subdirectory, { recursive: true });
+      await writeFile(join(subdirectory, name), contents);
+      Object.assign(f.native.sessions[0]!, { cwd: project });
+      await f.bridge.refreshRuntime();
+      f.native.resolvedSessionFiles.set(name, join(subdirectory, name));
+      const controller = createControllerFixture({ broker: f.bridge, evidence, allSessions: () => f.bridge.listSessions() });
+      expect(await controller.handleRequest({ kind: "request", requestId: "stat", idempotencyKey: "stat", method: "artifact.transfer.open", params: { sessionId: "local-native", path: name, purpose: "stat" } }, "mobile", "phone")).toMatchObject({ metadata: { name, size: Buffer.byteLength(contents) } });
+      const { transfer } = await controller.handleRequest({ kind: "request", requestId: "preview", idempotencyKey: "preview", method: "artifact.transfer.open", params: { sessionId: "local-native", path: `${name}:12:3`, purpose: "text-preview" } }, "mobile", "phone") as { transfer: BridgeArtifactTransferInfo };
+      expect(Buffer.from(evidence.readTransfer(transfer.transferId, 0, "phone").data, "base64").toString()).toBe(contents);
+      expect(f.native.calls.filter(call => call.method === "resolveSessionFileQuietly").map(call => call.args)).toEqual([["local-native", name], ["local-native", name]]);
+    } finally { await evidence.close(); await f.close(); }
+  });
+
+  it.each(["outside-project", "parent-checkout"])("keeps Desktop's relative file fallback inside the allowed directory (%s)", async location => {
+    const f = await fixture();
+    const store = new EvidenceStore({ databasePath: join(f.directory, "files.sqlite"), blobsPath: join(f.directory, "file-blobs"), masterSecret: Buffer.alloc(32, 4).toString("base64url") });
+    const evidence = new EvidenceManager({ store, eventLog: f.eventLog });
+    await evidence.initialize();
+    try {
+      const project = join(f.directory, "repo");
+      const harnessCwd = join(project, ".claude/worktrees/task");
+      await mkdir(harnessCwd, { recursive: true });
+      const name = "report.md";
+      const parentCheckout = location === "parent-checkout";
+      const resolved = join(parentCheckout ? project : f.directory, name);
+      await writeFile(resolved, "other report");
+      Object.assign(f.native.sessions[0]!, { cwd: project, ...(parentCheckout ? { harnessCwd } : {}) });
+      await f.bridge.refreshRuntime();
+      f.native.resolvedSessionFiles.set(name, resolved);
+      const controller = createControllerFixture({ broker: f.bridge, evidence, allSessions: () => f.bridge.listSessions() });
+      await expect(controller.handleRequest({ kind: "request", requestId: "preview", idempotencyKey: "preview", method: "artifact.transfer.open", params: { sessionId: "local-native", path: name, purpose: "text-preview" } }, "mobile", "phone")).rejects.toThrow(parentCheckout ? "工作树之外" : "项目目录之外");
     } finally { await evidence.close(); await f.close(); }
   });
 

@@ -20,6 +20,7 @@ async function fixture() {
   const api = {
     getAll: () => [{ sessionId: "local-native", cwd: "/project", isRunning: false }],
     getSession: (...args: unknown[]) => { calls.push(["getSession", ...args]); return Promise.resolve({ sessionId: "local-native", cwd: "/project" }); },
+    resolveSessionFileQuietly: (...args: unknown[]) => { calls.push(args); return "/project/subdir/report.md"; },
     respondToRefusalFallbackPrompt: (...args: unknown[]) => { calls.push(args); return true; },
     respondToAutoModeServerFallbackPrompt: (...args: unknown[]) => { calls.push(args); return true; },
     respondToLanyardConsent: (...args: unknown[]) => { calls.push(args); return true; },
@@ -170,6 +171,7 @@ describe("native Desktop inspector", () => {
     ["respondToViolinBowPrompt", ["local-native", "prompt", "native_choice"]],
     ["answerPendingCwdTrust", ["local-native", "prompt", false]],
     ["getGitInfo", ["/project"]],
+    ["resolveSessionFileQuietly", ["local-native", "report.md"]],
     ["getPrOverview", ["/project", 42, "owner/repo", "local-native", true]],
     ["getPrChecks", ["/project", 42, "owner/repo", "github.example"]],
     ["setBoundPrAutoFix", ["local-native", "owner/repo", 42, true, "github.example"]],
@@ -186,7 +188,7 @@ describe("native Desktop inspector", () => {
 
   it.each([
     "respondToRefusalFallbackPrompt", "respondToAutoModeServerFallbackPrompt", "respondToLanyardConsent",
-    "respondToViolinBowPrompt", "answerPendingCwdTrust", "getPrOverview", "getPrChecks",
+    "respondToViolinBowPrompt", "answerPendingCwdTrust", "getPrOverview", "getPrChecks", "resolveSessionFileQuietly",
     "setBoundPrAutoFix", "setAutoFixOwnPrsWanted", "armAutoFixOnNextPr",
   ])("does not advertise or invoke absent Native %s", async method => {
     const f = await fixture();

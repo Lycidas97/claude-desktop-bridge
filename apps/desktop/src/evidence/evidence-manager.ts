@@ -54,6 +54,8 @@ interface TransferRecord {
   bytes: Buffer;
 }
 
+type RelativeFileResolver = (path: string) => Promise<string | undefined>;
+
 export interface ObservedDesktopTool {
   id: string;
   toolName: string;
@@ -806,8 +808,8 @@ export class EvidenceManager {
     return { ...metadata, name: artifact.manifest.name, mimeType: artifact.manifest.mimeType };
   }
 
-  async fileTransferMetadata(cwd: string, candidatePath: string, readCwd?: string): Promise<BridgeArtifactTransferMetadata> {
-    return (await this.fileTransferSource(cwd, candidatePath, readCwd)).metadata;
+  async fileTransferMetadata(cwd: string, candidatePath: string, readCwd?: string, resolveRelativePath?: RelativeFileResolver): Promise<BridgeArtifactTransferMetadata> {
+    return (await this.fileTransferSource(cwd, candidatePath, readCwd, resolveRelativePath)).metadata;
   }
 
   async openTransfer(artifactId: string, owner: string, _textPreview = false): Promise<BridgeArtifactTransferInfo> {
@@ -843,9 +845,9 @@ export class EvidenceManager {
     return info;
   }
 
-  async openFileTransfer(cwd: string, candidatePath: string, owner: string, _textPreview = false, readCwd?: string): Promise<BridgeArtifactTransferInfo> {
+  async openFileTransfer(cwd: string, candidatePath: string, owner: string, _textPreview = false, readCwd?: string, resolveRelativePath?: RelativeFileResolver): Promise<BridgeArtifactTransferInfo> {
     this.pruneTransfers();
-    const { sourcePath, metadata } = await this.fileTransferSource(cwd, candidatePath, readCwd);
+    const { sourcePath, metadata } = await this.fileTransferSource(cwd, candidatePath, readCwd, resolveRelativePath);
     return this.openBytesTransfer({
       artifactId: `file:${stableId(sourcePath)}`,
       ...metadata,
@@ -853,19 +855,29 @@ export class EvidenceManager {
     }, owner);
   }
 
-  private async fileTransferSource(cwd: string, candidatePath: string, readCwd?: string) {
+  private async fileTransferSource(cwd: string, candidatePath: string, readCwd?: string, resolveRelativePath?: RelativeFileResolver) {
     const cleaned = candidatePath.trim().replace(/:\d+(?::\d+)?$/u, "");
     if (!cleaned) throw new Error("文件路径不能为空");
     const rootPath = await realpath(cwd);
     const expanded = cleaned.startsWith("~/")
       ? resolve(process.env.HOME ?? cwd, cleaned.slice(2))
       : cleaned;
-    const resolvedCandidate = isAbsolute(expanded) ? resolve(expanded) : resolve(readCwd ? await realpath(readCwd) : rootPath, expanded);
+    const isRelative = !isAbsolute(expanded);
+    const readRoot = isRelative && readCwd ? await realpath(readCwd) : rootPath;
+    const resolvedCandidate = isRelative ? resolve(readRoot, expanded) : resolve(expanded);
     let sourcePath = await realpath(resolvedCandidate).catch(() => undefined);
-    if (!sourcePath && !isAbsolute(expanded)) {
+    if (!sourcePath && isRelative) {
       const rootBase = rootPath.split(sep).at(-1);
       if (rootBase && (expanded.startsWith(`${rootBase}/`) || expanded.startsWith(`${rootBase}\\`))) {
         sourcePath = await realpath(resolve(rootPath, "..", expanded)).catch(() => undefined);
+      }
+      if (!sourcePath) {
+        const nativePath = await resolveRelativePath?.(expanded);
+        if (nativePath) sourcePath = await realpath(nativePath).catch(() => undefined);
+        // A relative fallback must not pick a namesake from the parent checkout.
+        if (sourcePath && readRoot !== rootPath && !normalizedProjectPath(readRoot, sourcePath).relativePath) {
+          throw new Error("工作树之外的文件不允许通过相对链接读取");
+        }
       }
     }
     if (!sourcePath) throw new Error("文件不存在或无法读取");

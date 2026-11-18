@@ -787,8 +787,10 @@ async function dispatchControllerRequestInner(
     const filePath = stringParam(params, "path")!;
     const session = host.allSessions().find((candidate) => candidate.sessionId === sessionId);
     if (!session) throw new Error("Session not found");
+    const readCwd = host.broker.executionCwd(sessionId);
+    const resolveRelativePath = (path: string) => host.broker.resolveSessionFile(sessionId, path);
     if (params.purpose === "stat") {
-      return { metadata: await host.evidence.fileTransferMetadata(session.cwd, filePath, host.broker.executionCwd(sessionId)) };
+      return { metadata: await host.evidence.fileTransferMetadata(session.cwd, filePath, readCwd, resolveRelativePath) };
     }
     return {
       transfer: await host.evidence.openFileTransfer(
@@ -796,7 +798,8 @@ async function dispatchControllerRequestInner(
         filePath,
         sourceDeviceId ?? "desktop",
         textPreview,
-        host.broker.executionCwd(sessionId),
+        readCwd,
+        resolveRelativePath,
       ),
     };
   }

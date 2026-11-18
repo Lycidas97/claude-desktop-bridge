@@ -316,11 +316,12 @@ containing spaces. On first load the preload creates a fresh private temporary
 root, records its exact path in `BRIDGE_TEST_TEMP_ROOT`, and points `TMPDIR`, `TEMP`
 and `TMP` there. Children inherit that root; only its creator deletes the root on
 exit. Windows distributed CI creates its own fresh root before uploading the
-bundle/script and passes it to the Windows leg. The SSH wrapper recycles that
-root after the leg exits. A Recycle Bin failure fails the run and leaves the path
-for inspection. A standalone Windows leg creates and cleans its own root. Do not
-register a pre-existing directory, the system temp directory, a reused CI slot,
-or a name prefix as disposable.
+bundle/script and passes it to the Windows leg. The SSH wrapper directly deletes
+that root after the leg exits. Cancellation also deletes it after stopping the
+run's processes. If a targeted process survives a failed stop, cancellation reports
+the error and retains the root. A deletion error fails cleanup. A standalone Windows
+leg creates and cleans its own root. Do not register a pre-existing directory, the
+system temp directory, a reused CI slot, or a name prefix as disposable.
 
 Node's sync, promise and callback `rm`, `unlink` and `rmdir` APIs use their original
 delete implementation only for this root and its descendants. Physical parent paths

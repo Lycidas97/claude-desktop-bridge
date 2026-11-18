@@ -153,13 +153,31 @@ export async function publishVerifiedHead({
   return { revision, tree, viaTree, sourceRevision: receipt.revision };
 }
 
+// Used by the Windows QA contract to exercise the existing Recycle Bin path.
 export function recycleWindowsRunCommand(path, recycleSource) {
   const literal = `'${path.replaceAll("'", "''")}'`;
-  // Send the recycler with the command so cleanup is available even if the first upload fails.
   return `if (Test-Path -LiteralPath ${literal}) { try { ` +
     `Add-Type -TypeDefinition ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${recycleSource.toString("base64")}'))); ` +
     `[WindowsCiRecycle]::Recycle(${literal}) ` +
     `} catch { [Console]::Error.WriteLine('Windows Recycle Bin cleanup failed for ' + ${literal} + ': ' + $_.Exception.Message); throw } }`;
+}
+
+function removeOwnedWindowsRunCommand(path) {
+  return `if (Test-Path -LiteralPath '${path}') { Remove-Item -LiteralPath '${path}' -Recurse -Force }`;
+}
+
+export function cancelWindowsRunCommand(runId) {
+  // A tree kill can also stop another process in the original CIM snapshot.
+  return [
+    "$ErrorActionPreference = 'Stop';",
+    `Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like '*win-local-ci-${runId}.ps1*' } |`,
+    "ForEach-Object {",
+    'cmd.exe /c "taskkill.exe /PID $($_.ProcessId) /T /F >nul 2>nul";',
+    'if ($LASTEXITCODE -ne 0 -and (Get-CimInstance Win32_Process -Filter "ProcessId = $($_.ProcessId)")) {',
+    'throw "Could not stop Windows CI process $($_.ProcessId) (taskkill exit $LASTEXITCODE)"',
+    "} };",
+    `${removeOwnedWindowsRunCommand(`D:\\work\\cache\\temp\\bridge-ci-${runId}`)}; exit 0`,
+  ].join(" ");
 }
 
 async function runCli() {
@@ -237,7 +255,6 @@ async function runCli() {
     });
   }
 
-  const windowsRecycleSource = skipWin ? null : await readFile(new URL("./win-ci-recycle.cs", import.meta.url));
   const tempRoot = await mkdtemp(join(tmpdir(), "bridge-local-ci-"));
   const results = [];
   const sshAlive = ["-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"];
@@ -290,7 +307,7 @@ async function runCli() {
         const psArgs = [
           ...sshAlive,
           winHost,
-          `$ErrorActionPreference = 'Stop'; $env:BRIDGE_TEST_TEMP_ROOT = "${remoteTempWin}"; try { powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${remoteScriptWin}" -Revision "${revision}" -BundlePath "${remoteBundleWin}"; $ec = $LASTEXITCODE } finally { ${recycleWindowsRunCommand(remoteTempWin, windowsRecycleSource)} }; exit $ec`,
+          `$ErrorActionPreference = 'Stop'; $env:BRIDGE_TEST_TEMP_ROOT = "${remoteTempWin}"; try { powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${remoteScriptWin}" -Revision "${revision}" -BundlePath "${remoteBundleWin}"; $ec = $LASTEXITCODE } finally { ${removeOwnedWindowsRunCommand(remoteTempWin)} }; exit $ec`,
         ];
         const tWin = await runPrefixed("WIN", "ssh", psArgs, {
           onClose(code) {
@@ -312,14 +329,14 @@ async function runCli() {
     }
     if (unfinishedWinRunId) {
       // Windows OpenSSH keeps the remote powershell.exe running after the local ssh client dies, so it would hold
-      // its win-local-ci slot mutex and emulator until it finishes. Stop that process tree and recycle its run directory.
+      // its win-local-ci slot mutex and emulator until it finishes. Stop that process tree and remove its run directory.
       const stop = spawnSync("ssh", [
         ...sshAlive,
         winHost,
-        `$ErrorActionPreference = 'Stop'; Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like '*win-local-ci-${unfinishedWinRunId}.ps1*' } | ForEach-Object { cmd.exe /c "taskkill.exe /PID $($_.ProcessId) /T /F >nul 2>nul" }; ${recycleWindowsRunCommand(`D:\\work\\cache\\temp\\bridge-ci-${unfinishedWinRunId}`, windowsRecycleSource)}; exit 0`,
+        cancelWindowsRunCommand(unfinishedWinRunId),
       ], { encoding: "utf8" });
       if (stop.status !== 0) {
-        console.error(`[WIN] Remote cancellation or Recycle Bin cleanup failed for ${unfinishedWinRunId}: ${stop.stderr || stop.error}`);
+        console.error(`[WIN] Remote cancellation or run directory cleanup failed for ${unfinishedWinRunId}: ${stop.stderr || stop.error}`);
       }
     }
     await recycle(tempRoot, { recursive: true, force: true });

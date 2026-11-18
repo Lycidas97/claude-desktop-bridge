@@ -856,7 +856,9 @@ describe("Claude native relay", () => {
     try {
       f.native.page.messages = [rewindUser];
       await f.message({ type: "assistant", uuid: "plan", message: { content: [{ type: "tool_use", id: "retained-plan", name: "mcp__ccd_turn__update_plan", input: { scope: "first_task", items: [{ content: "Retained work", status: "in_progress" }] } }] } });
+      await f.message({ type: "result", uuid: "retained-result", is_error: false });
       expect(await f.bridge.rewindSession("local-native", rewindUser.uuid, "files")).not.toHaveProperty("prefill");
+      expect(f.bridge.session("local-native")?.lastCompletedTurnId).toBe("retained-result");
       await f.message({ type: "assistant", uuid: "advance", message: { content: [{ type: "tool_use", id: "advance", name: "mcp__ccd_turn__update_plan", input: { advance: true } }] } });
       expect(f.eventLog.latestItem("local-native", "assistant.completed", "plan:retained-plan")?.data.taskPlan).toMatchObject({ id: "retained-plan", items: [{ content: "Retained work", status: "completed" }] });
       expect(f.native.page.messages).toEqual([rewindUser]);
@@ -869,15 +871,22 @@ describe("Claude native relay", () => {
     try {
       f.native.page.messages = [rewindUser];
       await f.bridge.previewRewind("local-native", rewindUser.uuid);
+      await f.message({ type: "result", uuid: "discarded-result", is_error: false });
+      await f.bridge.refreshRuntime();
+      expect(f.bridge.session("local-native")?.lastCompletedTurnId).toBe("discarded-result");
       f.native.calls = [];
       expect(await f.bridge.rewindSession("local-native", rewindUser.uuid, "both")).toEqual({ sessionId: "local-native", messageId: rewindUser.uuid, scope: "both", prefill: "Original draft" });
+      expect(f.bridge.session("local-native")?.lastCompletedTurnId).toBeUndefined();
       expect(f.native.calls.filter(call => ["canRewindTo", "rewindFiles", "rewindV2"].includes(call.method))).toEqual([
         { method: "canRewindTo", args: ["local-native", rewindUser.uuid] },
         { method: "rewindFiles", args: ["local-native", rewindUser.uuid, true] },
         { method: "rewindFiles", args: ["local-native", rewindUser.uuid, false, true] },
         { method: "rewindV2", args: ["local-native", rewindUser.uuid] },
       ]);
-      expect(f.eventLog.replay(0)).toMatchObject([{ type: "session.rewound", sessionId: "local-native", data: { messageId: rewindUser.uuid, scope: "both" } }]);
+      expect(f.eventLog.replay(0)).toMatchObject([
+        { type: "turn.completed", itemId: "discarded-result", sessionId: "local-native" },
+        { type: "session.rewound", sessionId: "local-native", data: { messageId: rewindUser.uuid, scope: "both" } },
+      ]);
       const after = f.native.calls.slice(f.native.calls.findIndex(call => call.method === "rewindV2") + 1).map(call => call.method);
       expect(after).toContain("getSession");
       expect(after).toContain("getTranscriptPage");
@@ -2028,6 +2037,19 @@ describe("Claude native relay", () => {
       expect(terminal).toHaveLength(1);
       expect(terminal[0]).toMatchObject({ sessionId: "local-native", itemId: "desktop-result", data: {} });
       expect(terminal[0]?.turnId).toBeUndefined();
+      expect(f.bridge.session("local-native")).toMatchObject({ lastCompletedTurnId: "desktop-result", turnState: "idle" });
+      await f.bridge.refreshRuntime();
+      expect(f.bridge.session("local-native")?.lastCompletedTurnId).toBe("desktop-result");
+    } finally { await f.close(); }
+  });
+
+  it("does not mark failed, synthetic, or child results as completed", async () => {
+    const f = await fixture();
+    try {
+      for (const outcome of [{ is_error: true }, { is_error: false, isSyntheticResult: true }, { is_error: false, parent_tool_use_id: "child" }]) {
+        await f.message({ type: "result", uuid: "excluded-result", ...outcome });
+        expect(f.bridge.session("local-native")?.lastCompletedTurnId).toBeUndefined();
+      }
     } finally { await f.close(); }
   });
 
@@ -4796,7 +4818,7 @@ describe("manual session title persistence and automatic first-turn title genera
     }
   });
 
-  it.each(["fixed", "host-auth", "host-url"] as const)("uses the matching Desktop profile models for %s titles in both Magpie modes", async (source) => {
+  it.each(["fixed", "host-auth", "host-url"] as const)("keeps Desktop models for %s titles across Magpie modes", async (source) => {
     const directory = await mkdtemp(join(tmpdir(), "bridge-autotitle-profile-"));
     const state = new ConversationStateStore({ databasePath: join(directory, "state.sqlite") });
     await state.initialize();
@@ -4879,6 +4901,12 @@ describe("manual session title persistence and automatic first-turn title genera
         expect(await bridge.refreshRuntime()).toBe(true);
         expect(fetchImpl).toHaveBeenLastCalledWith(desktopModelsUrl, expect.anything());
         await expectTitleModel("after-failed-refresh", "host-only-model");
+
+        await bridge.saveMagpieConnection({ mode: "manual", baseUrl: "https://manual.example.test", authScheme: "x-api-key", apiKey: "manual-key" });
+        expect((await bridge.defaultConfiguration()).availableModels).toEqual([
+          expect.objectContaining({ value: "manual-only-model" }),
+        ]);
+        await expectTitleModel("manual-after-fetch", "host-only-model");
       }
     } finally {
       await bridge.close();

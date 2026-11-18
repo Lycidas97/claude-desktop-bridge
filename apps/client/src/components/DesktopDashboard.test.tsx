@@ -62,6 +62,7 @@ function recordEffect(effect: () => (() => void) | void, deps?: unknown[]) {
 }
 vi.mock("react", async (original) => ({
   ...await original<typeof import("react")>(),
+  useSyncExternalStore: (_subscribe: unknown, getSnapshot: () => unknown) => getSnapshot(),
   useState(initial: any) {
     const store = hooks.current!;
     const index = store.index++;

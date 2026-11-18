@@ -846,7 +846,9 @@ export class ClaudeDesktopBridge extends EventEmitter {
     }
   }
 
-  async refreshDesktopConfiguration(sessionId: string): Promise<void> { await this.configuration(sessionId); }
+  async refreshDesktopSession(sessionId: string): Promise<void> {
+    await this.refreshSessionMetadata(this.desktopId(sessionId));
+  }
 
   private async readSessionTranscript(id: string) {
     if (!this.options.scanCatalog) return findClaudeSessionTranscript(claudeRuntimePaths(), id);
@@ -990,11 +992,14 @@ export class ClaudeDesktopBridge extends EventEmitter {
       if (!Array.isArray(page.messages)) throw new NativeCallError("Desktop returned an invalid transcript page");
       const nextCursor = page.hasMore === true && typeof record(page.messages[0]).uuid === "string" ? String(record(page.messages[0]).uuid) : undefined;
       const firstPlan = nativePlanMessages(page.messages)[0]?.message.content[0];
-      let boundaryFound = firstPlan?.name === "mcp__ccd_turn__update_plan" && ["first_task", "new_task"].includes(String(record(firstPlan.input).scope));
+      const plainLatestWithKnownPlan = !cursor && !firstPlan && this.messageProjection.get(sessionId)?.planObserved;
+      let needsEarlierPlan = firstPlan
+        ? !(firstPlan.name === "mcp__ccd_turn__update_plan" && ["first_task", "new_task"].includes(String(record(firstPlan.input).scope)))
+        : !cursor && !plainLatestWithKnownPlan;
       const context: unknown[] = [];
       const olderPages: unknown[][] = [];
       let before = nextCursor;
-      while (!boundaryFound && before) {
+      while (needsEarlierPlan && before) {
         diagnostics.count("history.planPage");
         const older = record(await this.inspector.call("getTranscriptPage", [id, before, limit, { window: "accept" }]));
         if (!Array.isArray(older.messages)) throw new NativeCallError("Desktop returned an invalid transcript page");
@@ -1003,7 +1008,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
           const block = message.message.content[0]!;
           context.unshift(message);
           if (block.name === "mcp__ccd_turn__wrap_up" || ["first_task", "new_task"].includes(String(record(block.input).scope))) {
-            boundaryFound = true;
+            needsEarlierPlan = false;
             break;
           }
         }
@@ -1047,7 +1052,9 @@ export class ClaudeDesktopBridge extends EventEmitter {
         } else {
           let combined: unknown[] = [...olderPages.flat(), ...page.messages];
           let scan = scanClaudeContextFromMessages(combined);
-          for (let hop = 0; !scan.anchored && before && page.messages.length >= limit && limit >= 20 && hop < 8; hop += 1) {
+          // Preserve estimated usage at session.open's 18-message default when plan recovery was skipped.
+          const canLookBack = plainLatestWithKnownPlan || (page.messages.length >= limit && limit >= 20);
+          for (let hop = 0; !scan.anchored && before && canLookBack && hop < 8; hop += 1) {
             diagnostics.count("history.planPage");
             const older = record(await this.inspector.call("getTranscriptPage", [id, before, Math.max(limit, 100), { window: "accept" }]));
             if (!Array.isArray(older.messages)) break;
@@ -1184,14 +1191,12 @@ export class ClaudeDesktopBridge extends EventEmitter {
     };
   }
 
-  async configuration(sessionId: string): Promise<BridgeSessionConfiguration> {
-    const id = this.desktopId(sessionId);
+  private async refreshSessionMetadata(sessionId: string): Promise<NativeSession> {
     const previousSnapshot = JSON.stringify(this.session(sessionId));
-    const native = nativeSession(await this.inspector.call("getSession", [id]));
-    await this.refreshModelCatalog("retry-failed");
+    const native = nativeSession(await this.inspector.call("getSession", [sessionId]));
     await this.observeNativeSession(native);
     if (native.turnRunning === true) {
-      const live = await this.readLiveContextUsage(id);
+      const live = await this.readLiveContextUsage(sessionId);
       if (live) this.applyLiveContextUsage(sessionId, live);
     }
     const rawTrimmed = native.model?.trim();
@@ -1199,12 +1204,18 @@ export class ClaudeDesktopBridge extends EventEmitter {
       || rawTrimmed.toLowerCase() === "default"
       || !this.directModelDisplayName(rawTrimmed);
     if (needsTailModel && !this.contextStates.get(sessionId)?.model) {
-      await this.hydrateContextModelFromTail(id);
+      await this.hydrateContextModelFromTail(sessionId);
     }
     this.projectSessions();
-    const projected = this.session(sessionId);
-    const context = projected?.contextUsage;
-    if (JSON.stringify(projected) !== previousSnapshot) this.emit("changed");
+    if (JSON.stringify(this.session(sessionId)) !== previousSnapshot) this.emit("changed");
+    return native;
+  }
+
+  async configuration(sessionId: string): Promise<BridgeSessionConfiguration> {
+    const id = this.desktopId(sessionId);
+    await this.refreshModelCatalog("retry-failed");
+    const native = await this.refreshSessionMetadata(id);
+    const context = this.session(sessionId)?.contextUsage;
     const resolved = this.resolveSessionModel(sessionId, native.model);
     const fallbackLabel = resolved.modelDisplayName
       ?? (resolved.configModel && /\[1m\]$/iu.test(resolved.configModel) ? "默认模型 · 1M" : "默认模型");

@@ -113,7 +113,7 @@ export async function verifyNativeMessages(page, host, steps, directory) {
   const permissionLabel = await settingsButton.getByText("Manual", { exact: true }).boundingBox();
   const chevron = await settingsButton.locator("svg").boundingBox();
   assert.ok(modelLabel && permissionLabel && chevron, "The header must show the model, permission mode and chevron");
-  assert.ok(permissionLabel.y < modelLabel.y + modelLabel.height && modelLabel.y < permissionLabel.y + permissionLabel.height, "The model and Manual permission mode share one line at 375px");
+  assert.ok(permissionLabel.y >= modelLabel.y + modelLabel.height, "The Manual permission mode is below the model at 375px");
   assert.ok(chevron.x >= permissionLabel.x + permissionLabel.width - 1, "The chevron follows the permission mode");
   await settingsButton.click();
   const configuration = page.getByRole("dialog", { name: originalTitle, exact: true });

@@ -1,6 +1,6 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import type { BridgeEffort } from "@bridge/protocol";
+import { isBridgeEffort, type BridgeEffort } from "@bridge/protocol";
 
 interface DesktopSessionFile {
   sessionId?: unknown;
@@ -59,16 +59,6 @@ export interface ClaudeDesktopSessionState {
   /** Record files by CLI session id; kept apart so session objects carry no local paths. */
   metadataPaths: Map<string, string>;
   archivedCliSessionIds: Set<string>;
-}
-
-function parseEffort(value: unknown): ClaudeSessionEffort | undefined {
-  return value === "low" ||
-    value === "medium" ||
-    value === "high" ||
-    value === "xhigh" ||
-    value === "max"
-    ? value
-    : undefined;
 }
 
 export function claudeDesktopProfileForPath(path: string): ClaudeDesktopProfile {
@@ -317,7 +307,7 @@ export async function listClaudeDesktopSessionState(roots: string[]): Promise<Cl
           .filter((priorId) => priorId !== cliSessionId)
       : [];
     const createdAt = typeof value.createdAt === "number" ? value.createdAt : 0;
-    const effort = parseEffort(value.effort);
+    const effort = isBridgeEffort(value.effort) ? value.effort : undefined;
     const ultracode = parseUltracode(value.sessionSettings);
     const spawnedName = typeof spawnedFrom?.name === "string" && spawnedFrom.name.trim()
       ? spawnedFrom.name.trim()

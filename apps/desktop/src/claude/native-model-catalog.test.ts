@@ -1,3 +1,4 @@
+import type { BridgeModelInfo } from "@bridge/protocol";
 import { expect, it } from "vitest";
 import { magpieModelIdHash } from "./claude-runtime-discovery.js";
 import { mergeModelCatalog, resolveSessionModel } from "./native-model-catalog.js";
@@ -11,7 +12,7 @@ it("keeps picker labels and order, enriches from exact ID, same-window hash and 
   const firstHash = magpieModelIdHash(saved[0]!.value);
   const secondHash = magpieModelIdHash(saved[1]!.value);
   const extra = { value: "fixture-provider/extra", displayName: "Gateway-only model" };
-  const discovered = [
+  const discovered: BridgeModelInfo[] = [
     { value: `mythos-magpie-${firstHash}`, displayName: "First hash", maxInputTokens: 90_000 },
     { value: "anthropic/claude-opus-5-5", displayName: "Second slug", maxInputTokens: 95_000 },
     { value: `mythos-magpie-${secondHash}[1m]`, displayName: "Second long variant", maxInputTokens: 1_000_000 },

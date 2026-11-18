@@ -21,15 +21,19 @@ export function mergeModelCatalog(
     const longContext = /\[1m\]$/iu.test(option.value);
     const hash = modelOptionHash(option.value);
     const slug = normalizeAnthropicModelSlug(option.value);
+    const sameRoute = (item: BridgeModelInfo) => modelOptionHash(item.value) === hash;
+    const sameContext = (item: BridgeModelInfo) => /\[1m\]$/iu.test(item.value) === longContext;
     const match = discovered.find(item => item.value === option.value)
-      ?? discovered.find(item => modelOptionHash(item.value) === hash && /\[1m\]$/iu.test(item.value) === longContext)
-      ?? (slug ? discovered.find(item => normalizeAnthropicModelSlug(item.value) === slug && /\[1m\]$/iu.test(item.value) === longContext) : undefined);
-    if (!match) return option;
+      ?? discovered.find(item => sameRoute(item) && sameContext(item));
+    // Effort belongs to the gateway route. Context capacity still requires a matching variant.
+    const effort = match ?? discovered.find(sameRoute);
+    const capacity = match ?? (slug ? discovered.find(item => sameContext(item) && normalizeAnthropicModelSlug(item.value) === slug) : undefined);
     return {
       ...option,
-      ...(match.maxInputTokens ? { maxInputTokens: match.maxInputTokens } : {}),
-      ...(match.supportsEffort !== undefined ? { supportsEffort: match.supportsEffort } : {}),
-      ...(match.supportedEffortLevels?.length ? { supportedEffortLevels: match.supportedEffortLevels } : {}),
+      ...(capacity?.maxInputTokens ? { maxInputTokens: capacity.maxInputTokens } : {}),
+      ...(effort?.supportsEffort !== undefined ? { supportsEffort: effort.supportsEffort } : {}),
+      ...(effort?.supportedEffortLevels?.length ? { supportedEffortLevels: effort.supportedEffortLevels } : {}),
+      ...(effort?.declaredEffortLevels ? { declaredEffortLevels: effort.declaredEffortLevels } : {}),
     };
   });
   // Keep the picker's context choices authoritative, including for Native's base-to-1M readback.

@@ -3,8 +3,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import {
   DEFAULT_CONFIGURATION_SESSION_ID,
-  evidenceSummary,
-  isBridgeNativeImageRef,
+  isBridgeEffort,
   parseSystemUpdateParams,
   summarizeEvidenceEvent,
   type BridgeAttachment,
@@ -35,7 +34,11 @@ import type { ConversationStateStore } from "./conversation-state-store.js";
 import type { SessionEventLog } from "./session-event-log.js";
 import type { DesktopUpdater } from "../updater/desktop-updater.js";
 import type { AssistantMailCoordinator } from "./assistant-mail.js";
-import { BridgeRequestError, stringParam } from "./request-error.js";
+import {
+  closeArtifactTransfer, getEvidence, getEvidenceDetails, handleFileUpload, listEvidence,
+  openArtifactTransfer, previewArtifact, readArtifactTransfer,
+} from "./controller-evidence-rpc.js";
+import { BridgeRequestError, integerParam, numberParam, stringParam } from "./request-error.js";
 
 export { stringParam };
 
@@ -49,17 +52,6 @@ export function runtimeIdParam(
   if (!value) return undefined;
   if (value === "claude-desktop") return value;
   throw new BridgeRequestError("UNSUPPORTED", "当前仅支持 Claude Desktop，其他 Agent 适配已停用。");
-}
-
-export function numberParam(params: Record<string, unknown>, key: string, fallback: number): number {
-  const value = params[key];
-  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
-}
-
-export function integerParam(params: Record<string, unknown>, key: string): number {
-  const value = params[key];
-  if (typeof value !== "number" || !Number.isInteger(value)) throw new Error(`${key} must be an integer`);
-  return value;
 }
 
 export function nullableStringParam(params: Record<string, unknown>, key: string): string | null | undefined {
@@ -81,8 +73,8 @@ export function nullableBooleanParam(params: Record<string, unknown>, key: strin
 export function effortParam(params: Record<string, unknown>, key: string): BridgeEffort | null | undefined {
   const value = nullableStringParam(params, key);
   if (value === undefined || value === null) return value;
-  if (["low", "medium", "high", "xhigh", "max"].includes(value)) return value as BridgeEffort;
-  throw new Error("Invalid effort");
+  if (isBridgeEffort(value)) return value;
+  throw new Error(`Claude Desktop does not support effort ${JSON.stringify(value)}`);
 }
 
 export function attachmentsParam(params: Record<string, unknown>): BridgeAttachment[] {
@@ -712,118 +704,18 @@ async function dispatchControllerRequestInner(
       hasMore: nextSeq < latestSeq,
     };
   }
-  if (request.method === "evidence.list") {
-    const sessionId = stringParam(params, "sessionId")!;
-
-    if (!host.broker.session(sessionId)) throw new Error("Session not found");
-    return {
-      evidence: host.evidence.list(
-        sessionId,
-        stringParam(params, "cursor", false),
-        numberParam(params, "limit", 30),
-      ),
-    };
-  }
-  if (request.method === "evidence.get") {
-    const evidence = host.evidence.get(stringParam(params, "evidenceId")!);
-    if (!evidence) throw new Error("Evidence not found");
-    return { evidence: evidenceSummary(evidence) };
-  }
-  if (request.method === "evidence.details") {
-    const kind = stringParam(params, "kind");
-    if (kind !== "tools" && kind !== "artifacts") throw new Error("Unknown evidence detail kind");
-    const page = host.evidence.details(
-      stringParam(params, "evidenceId")!, kind,
-      stringParam(params, "cursor", false), numberParam(params, "limit", 30),
-    );
-    if (!page) throw new Error("Evidence not found");
-    return { page };
-  }
+  if (request.method === "evidence.list") return listEvidence(host.evidence, host.broker, params);
+  if (request.method === "evidence.get") return getEvidence(host.evidence, params);
+  if (request.method === "evidence.details") return getEvidenceDetails(host.evidence, params);
   if (request.method.startsWith("file.upload.")) {
-    const owner = sourceDeviceId ?? "desktop";
-    if (request.method === "file.upload.open") {
-      const sessionId = stringParam(params, "sessionId")!;
-      const session = host.allSessions().find((candidate) => candidate.sessionId === sessionId);
-      if (!session) throw new Error("Session not found");
-      if (session.allowedActions?.canSend === false) throw new Error("当前会话不允许上传文件");
-      return { upload: await host.uploads.open({
-        owner,
-        sessionId,
-        cwd: session.cwd,
-        name: stringParam(params, "name")!,
-        size: integerParam(params, "size"),
-        sha256: stringParam(params, "sha256")!,
-      }) };
-    }
-    const uploadId = stringParam(params, "uploadId")!;
-    if (request.method === "file.upload.write") {
-      return { received: host.uploads.write(uploadId, integerParam(params, "index"), stringParam(params, "data", false) ?? "", owner) };
-    }
-    if (request.method === "file.upload.commit") return { file: await host.uploads.commit(uploadId, owner) };
-    return { cancelled: host.uploads.cancel(uploadId, owner) };
+    return handleFileUpload(host.uploads, () => host.allSessions(), request.method, params, sourceDeviceId);
   }
-  if (request.method === "artifact.preview") {
-    return {
-      preview: await host.evidence.preview(stringParam(params, "artifactId")!),
-    };
-  }
+  if (request.method === "artifact.preview") return previewArtifact(host.evidence, params);
   if (request.method === "artifact.transfer.open") {
-    const textPreview = params.purpose === "text-preview";
-    if (params.nativeImage !== undefined) {
-      if (!isBridgeNativeImageRef(params.nativeImage)) throw new Error("Invalid native image reference");
-      const image = await host.broker.readNativeImage(stringParam(params, "sessionId")!, params.nativeImage);
-      return { transfer: host.evidence.openBytesTransfer(image, sourceDeviceId ?? "desktop") };
-    }
-    const artifactId = stringParam(params, "artifactId", false);
-    if (artifactId) {
-      if (params.purpose === "stat") return { metadata: await host.evidence.artifactTransferMetadata(artifactId) };
-      return {
-        transfer: await host.evidence.openTransfer(
-          artifactId,
-          sourceDeviceId ?? "desktop",
-          textPreview,
-        ),
-      };
-    }
-    const sessionId = stringParam(params, "sessionId")!;
-    const filePath = stringParam(params, "path")!;
-    const session = host.allSessions().find((candidate) => candidate.sessionId === sessionId);
-    if (!session) throw new Error("Session not found");
-    const readCwd = host.broker.executionCwd(sessionId);
-    const resolveRelativePath = params.resolveRelativeLink === true
-      ? (path: string) => host.broker.resolveSessionFile(sessionId, path)
-      : undefined;
-    if (params.purpose === "stat") {
-      return { metadata: await host.evidence.fileTransferMetadata(session.cwd, filePath, readCwd, resolveRelativePath) };
-    }
-    return {
-      transfer: await host.evidence.openFileTransfer(
-        session.cwd,
-        filePath,
-        sourceDeviceId ?? "desktop",
-        textPreview,
-        readCwd,
-        resolveRelativePath,
-      ),
-    };
+    return openArtifactTransfer(host.evidence, host.broker, () => host.allSessions(), params, sourceDeviceId);
   }
-  if (request.method === "artifact.transfer.read") {
-    return {
-      chunk: host.evidence.readTransfer(
-        stringParam(params, "transferId")!,
-        integerParam(params, "index"),
-        sourceDeviceId ?? "desktop",
-      ),
-    };
-  }
-  if (request.method === "artifact.transfer.close") {
-    return {
-      closed: host.evidence.closeTransfer(
-        stringParam(params, "transferId")!,
-        sourceDeviceId ?? "desktop",
-      ),
-    };
-  }
+  if (request.method === "artifact.transfer.read") return readArtifactTransfer(host.evidence, params, sourceDeviceId);
+  if (request.method === "artifact.transfer.close") return closeArtifactTransfer(host.evidence, params, sourceDeviceId);
   if (request.method === "device.revoke") {
     const deviceId = stringParam(params, "deviceId")!;
     if (origin === "mobile" && sourceDeviceId !== deviceId) throw new Error("A phone can only revoke itself");

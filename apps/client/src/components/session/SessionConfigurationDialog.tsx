@@ -1,4 +1,6 @@
 import type {
+  BridgeEffort,
+  BridgeModelInfo,
   BridgeSDKPermissionMode,
   BridgeSessionConfiguration,
   BridgeSessionInfo,
@@ -26,16 +28,16 @@ const EFFORT_LABELS: Record<string, string> = {
 };
 
 export function effortLabel(value: string): string {
-  return EFFORT_LABELS[value] ?? value;
+  return Object.hasOwn(EFFORT_LABELS, value) ? EFFORT_LABELS[value]! : value;
 }
 
-const EFFORT_ORDER = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
-
-/** The configured level if the model offers it, else the strongest offered level not above it. */
-export function supportedEffort(effort: string, levels: readonly string[]): string {
-  if (levels.includes(effort)) return effort;
-  const rank = EFFORT_ORDER.indexOf(effort);
-  return levels.filter((level) => EFFORT_ORDER.indexOf(level) <= rank).at(-1) ?? levels[0] ?? effort;
+export function modelEffortOptions(model: BridgeModelInfo | undefined, fallback: readonly BridgeEffort[]) {
+  const declared = model?.declaredEffortLevels;
+  const levels = model?.supportsEffort === false ? []
+    : declared ? model.supportedEffortLevels ?? []
+    : model?.supportedEffortLevels?.length ? model.supportedEffortLevels : fallback;
+  const unavailable = declared?.filter(level => !levels.some(option => option === level)).map(effortLabel).join("、");
+  return { levels, unavailable: unavailable ? `当前模型不可用：${unavailable}` : undefined };
 }
 
 export const PERMISSION_MODE_OPTIONS: ReadonlyArray<{ value: BridgeSDKPermissionMode; label: string }> = [
@@ -49,8 +51,8 @@ export const PERMISSION_MODE_OPTIONS: ReadonlyArray<{ value: BridgeSDKPermission
 
 export interface SessionConfigurationChange {
   model?: string | null;
-  effort?: string | null;
-  permissionMode?: BridgeSDKPermissionMode | undefined;
+  effort?: BridgeEffort | null;
+  permissionMode?: BridgeSDKPermissionMode;
   outputStyle?: string;
 }
 
@@ -69,7 +71,7 @@ export function SessionConfigurationDialog({
 }) {
   const [configuration, setConfiguration] = useState<BridgeSessionConfiguration>();
   const [model, setModel] = useState("");
-  const [effortDraft, setEffortDraft] = useState<string>();
+  const [effortDraft, setEffortDraft] = useState<BridgeEffort>();
   const [nativePermissionMode, setNativePermissionMode] = useState<BridgeSDKPermissionMode>();
   const [outputStyle, setOutputStyle] = useState<string>();
   const [loading, setLoading] = useState(true);
@@ -140,9 +142,7 @@ export function SessionConfigurationDialog({
     () => modelOptions.find((candidate) => candidate.value === model),
     [model, modelOptions],
   );
-  const effortLevels = selectedModel?.supportsEffort === false ? []
-    : selectedModel?.supportedEffortLevels?.length ? selectedModel.supportedEffortLevels
-    : configuration?.availableEffortLevels ?? [];
+  const { levels: effortLevels, unavailable: unavailableEffort } = modelEffortOptions(selectedModel, configuration?.availableEffortLevels ?? []);
   const modelChanged = modelOptions.length > 0 && model !== (configuration?.model ?? modelOptions[0]?.value);
   const configuredEffort = modelChanged ? undefined : configuration?.effort;
   const pickedEffort = effortDraft && effortLevels.includes(effortDraft) ? effortDraft : undefined;
@@ -233,24 +233,28 @@ export function SessionConfigurationDialog({
             )}
             {quota && selectedModel && <MagpieModelQuota model={selectedModel} />}
 
-            {effortLevels.length > 0 && (
+            {(effortLevels.length > 0 || unavailableEffort) && (
               <fieldset className="session-effort-field">
                 <legend>
-                  思考强度{!effortLevels.some((level) => level === shownEffort) && ` · ${shownEffort ? effortLabel(shownEffort) : "默认"}`}
+                  思考强度{(shownEffort || effortLevels.length > 0) && !effortLevels.some(level => level === shownEffort)
+                    ? ` · ${shownEffort ? effortLabel(shownEffort) : "默认"}` : ""}
                 </legend>
-                <div className="effort-segments">
-                  {effortLevels.map((level) => (
-                    <button
-                      type="button"
-                      className={shownEffort === level ? "active" : ""}
-                      aria-pressed={shownEffort === level}
-                      onClick={() => setEffortDraft(level)}
-                      key={level}
-                    >
-                      {effortLabel(level)}
-                    </button>
-                  ))}
-                </div>
+                {effortLevels.length > 0 && (
+                  <div className="effort-segments">
+                    {effortLevels.map((level) => (
+                      <button
+                        type="button"
+                        className={shownEffort === level ? "active" : ""}
+                        aria-pressed={shownEffort === level}
+                        onClick={() => setEffortDraft(level)}
+                        key={level}
+                      >
+                        {effortLabel(level)}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {unavailableEffort && <small className="effort-unavailable">{unavailableEffort}</small>}
               </fieldset>
             )}
 

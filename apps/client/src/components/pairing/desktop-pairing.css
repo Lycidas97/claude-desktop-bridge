@@ -1,0 +1,59 @@
+.device-pairing-band {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 24px;
+  margin-bottom: 20px;
+  padding: 20px;
+  border: 1px solid var(--card-border);
+  border-radius: var(--m-r-group);
+  background: var(--card-fill);
+  box-shadow: var(--card-hi), var(--card-shadow);
+}
+
+.device-pairing-band .qr-wrap {
+  width: 338px;
+  height: 338px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--m-r-control);
+  background: #fff;
+}
+
+.device-pairing-band .qr-wrap svg {
+  width: 320px;
+  height: 320px;
+}
+
+.device-pairing-band h2 {
+  margin: 0 0 8px;
+  font-size: calc(19px * var(--font-scale));
+  font-weight: 650;
+}
+
+.device-pairing-band p {
+  max-width: 520px;
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: var(--m-fs-footnote);
+  line-height: 1.6;
+}
+
+.device-pairing-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 14px 0 10px;
+}
+
+.device-pairing-actions .secondary-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.device-pairing-band small {
+  color: var(--warm-ink);
+  font-size: var(--m-fs-caption);
+  font-weight: 600;
+}

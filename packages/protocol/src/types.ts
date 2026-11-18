@@ -824,8 +824,6 @@ export interface BridgeSessionConfiguration {
   fast?: boolean;
   inheritedModel?: string;
   inheritedEffort?: BridgeEffort;
-  overrideModel?: string;
-  overrideEffort?: BridgeEffort;
   modelSource: BridgeConfigurationSource;
   effortSource: BridgeConfigurationSource;
   providerSource?: BridgeConfigurationSource;

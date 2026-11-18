@@ -1,4 +1,4 @@
-import type { BridgeInspectorStatus, DesktopControlSnapshot } from "@bridge/protocol";
+import type { BridgeInspectorStatus } from "@bridge/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { createControllerFixture } from "./controller-fixture.js";
 
@@ -118,6 +118,7 @@ describe("DesktopController launchDesktopApp + explicit inspector enablement", (
 
     expect(result).toEqual({
       desktopApps: [expect.objectContaining({ id: "claude-desktop", state: "running" })],
+      claudeActivation: { inspectorState: "listening", nativeReady: true },
     });
     expect(launch).toHaveBeenCalledExactlyOnceWith({ activate: true });
     expect(enableInspector).toHaveBeenCalledOnce();
@@ -135,7 +136,7 @@ describe("DesktopController launchDesktopApp + explicit inspector enablement", (
     });
   });
 
-  it("preserves desktop.app.launch compatibility without throwing when OS permission blocks port 9229", async () => {
+  it("returns the launch attempt's permission error even if monitoring publishes a newer status", async () => {
     const enableInspector = vi.fn<() => Promise<BridgeInspectorStatus>>(async () => ({
       platform: "darwin",
       state: "closed",
@@ -154,16 +155,49 @@ describe("DesktopController launchDesktopApp + explicit inspector enablement", (
       runtimeStates: ["unavailable"],
     });
 
-    const snapshot: DesktopControlSnapshot = await controller.launchDesktopApp("claude-desktop");
-    expect(snapshot.claudeDesktop.state).toBe("running");
-    expect(snapshot.claudeInspector?.state).toBe("closed");
-    expect(snapshot.claudeInspector?.startup).toMatchObject({
-      state: "accessibility-required",
-      detail: expect.stringContaining("/Applications/Bridge.app"),
+    refreshRuntime.mockImplementationOnce(async () => {
+      controller.updateInspectorStatus({ platform: "darwin", state: "closed", port: 9229, pollIntervalMs: 3_000, clients: [], alerts: [] });
+      return false;
     });
+
+    await expect(controller.handleRequest({
+      kind: "request",
+      requestId: "req-launch-blocked",
+      idempotencyKey: "idem-launch-blocked",
+      method: "desktop.app.launch",
+      params: { runtimeId: "claude-desktop" },
+    }, "mobile")).resolves.toEqual({
+      desktopApps: [expect.objectContaining({ id: "claude-desktop", state: "running" })],
+      claudeActivation: { inspectorState: "closed", nativeReady: false, detail: expect.stringContaining("/Applications/Bridge.app") },
+    });
+    expect((await controller.snapshot()).claudeInspector?.startup).toBeUndefined();
     // Does not spin-retry broker attach when port 9229 is still closed.
     expect(refreshRuntime).toHaveBeenCalledOnce();
     expect(runtimeAttachSleep).not.toHaveBeenCalled();
+  });
+
+  it("reports a current inspector scan error instead of retained startup success", async () => {
+    const inspectorStatus: BridgeInspectorStatus = {
+      platform: "darwin", state: "error", port: 9229, pollIntervalMs: 3_000, clients: [], alerts: [],
+      startup: { state: "already-open", detail: "首次发现时调试端口已开放。" },
+      error: "扫描调试端口超时。",
+    };
+    const { controller } = createHarness({
+      initialAppState: "running",
+      initialInspector: inspectorStatus,
+      enableInspector: async () => inspectorStatus,
+      runtimeStates: ["unavailable"],
+    });
+
+    await expect(controller.handleRequest({
+      kind: "request",
+      requestId: "req-inspector-scan-error",
+      idempotencyKey: "idem-inspector-scan-error",
+      method: "desktop.app.launch",
+      params: { runtimeId: "claude-desktop" },
+    }, "mobile")).resolves.toMatchObject({
+      claudeActivation: { inspectorState: "error", nativeReady: false, detail: "扫描调试端口超时。" },
+    });
   });
 
   it("skips menu automation when port 9229 is already listening", async () => {

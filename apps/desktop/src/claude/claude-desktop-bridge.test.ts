@@ -470,9 +470,11 @@ describe("native application dialogs and PR Auto-fix", () => {
       expect(bound.prs[0]?.autoFix).toBe(true);
       expect(f.native.calls.find(call => call.method === "setBoundPrAutoFix")?.args).toEqual(["local-native", "owner/repo", 42, true, "github.com"]);
       expect((await f.bridge.setPrAutoFix({ sessionId: "local-native", target: "own-prs", enabled: true }, resolver)).onlyOwnPrs).toBe(true);
+      f.native.sessions[0]!.harnessCwd = "/owned/worktree";
+      await f.bridge.refreshRuntime();
       expect((await f.bridge.setPrAutoFix({ sessionId: "local-native", target: "next-pr", enabled: true }, resolver)).nextOwnPrArmed).toBe(true);
-      expect(f.native.calls.find(call => call.method === "armAutoFixOnNextPr")?.args).toEqual(["local-native", "feature/owned"]);
-      expect(f.native.calls.filter(call => call.method === "getGitInfo").map(call => call.args)).toEqual([["/project"]]);
+      expect(f.native.calls.filter(call => call.method === "armAutoFixOnNextPr").map(call => call.args)).toEqual([["local-native", "feature/owned"]]);
+      expect(f.native.calls.filter(call => call.method === "getGitInfo").map(call => call.args)).toEqual([["/owned/worktree"]]);
       f.native.applyPrSettings = false;
       delete f.native.sessions[0]!.autoFixNextOwnPr;
       await expect(f.bridge.setPrAutoFix({ sessionId: "local-native", target: "next-pr", enabled: true }, resolver)).rejects.toThrow("Desktop 未应用");

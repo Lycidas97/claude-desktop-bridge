@@ -31,8 +31,9 @@
 - Maintenance: retire the unused local API key interface, consolidate
   controller assembly and desktop/phone startup, assemble mobile bridge tests
   through the named store hook, and prune redundant retired-RPC and fixture
-  assertions. Windows packaged QA now waits for its process and recycles the
-  run's temporary directory; docs and model lists are refreshed.
+  assertions. Windows staging in the distributed local CI now waits for its
+  process and recycles the run's temporary directory; standalone packaged QA
+  keeps its own GUID scratch cleanup. Docs and model lists are refreshed.
 
 ## 1.3.5
 

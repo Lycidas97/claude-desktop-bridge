@@ -14,13 +14,13 @@ Android is the native phone client. The generic mobile Web client remains availa
 
 ## Versions and downloads
 
-**The current public release is [v1.3.6](https://github.com/Lycidas97/claude-desktop-bridge/releases/tag/v1.3.6). The setup steps below describe that release.** Download desktop and mobile packages from this fork, preferably from the same version.
+**The current public release is the [latest release](https://github.com/Lycidas97/claude-desktop-bridge/releases/latest); this document describes the 1.3.6 source.** Download desktop and mobile packages from this fork, preferably from the same version.
 
-| Platform | v1.3.6 download | Installation and validation |
+| Platform | Release artifact | Installation and validation |
 | --- | --- | --- |
-| macOS | [Desktop ZIP](https://github.com/Lycidas97/claude-desktop-bridge/releases/download/v1.3.6/Bridge-1.3.6-macos-adhoc.zip) | Extract and use the enclosed installer. Ad-hoc signed, without Apple notarization; the main desktop validation platform |
-| Android 8.0+ | [APK](https://github.com/Lycidas97/claude-desktop-bridge/releases/download/v1.3.6/Bridge-1.3.6-android-debug.apk) | Uses the repository's fixed debug signing key; allow installation from the app used to download it |
-| Windows | [Installer ZIP](https://github.com/Lycidas97/claude-desktop-bridge/releases/download/v1.3.6/Bridge-1.3.6-windows-installer-ci.zip) | CI build; see the included `windows-release-evidence.json` for signing status. Native connectivity has not completed live-device validation |
+| macOS | `Bridge-<version>-macos-adhoc.zip` | Extract and use the enclosed installer. Ad-hoc signed, without Apple notarization; the main desktop validation platform |
+| Android 8.0+ | `Bridge-<version>-android-debug.apk` | Uses the repository's fixed debug signing key; allow installation from the app used to download it |
+| Windows | `Bridge-<version>-windows-installer-ci.zip` | CI build; see the included `windows-release-evidence.json` for signing status. Native connectivity has not completed live-device validation |
 
 The release also includes `SHA256SUMS.txt` and `SOURCE_COMMIT.txt`. Successful builds do not establish live-device validation on every platform. Android system back navigation has been tested in an Android 16 emulator.
 
@@ -44,7 +44,7 @@ The app's current controls use Chinese labels, included below to help you find t
 
 Download Bridge above, extract it and use the enclosed installer. On macOS, place Bridge in Applications and open it. If macOS blocks the unnotarized app, verify its source and use the system's Open Anyway option where available.
 
-Launch Claude Desktop / Claude-3p at least once and finish signing in, then open Bridge. Its **Status (状态)** page separates the **Claude channel (Claude 通道)** from the **connection path (连接路径)**: the first connects to Desktop, while the second connects to the phone and relay. Check both.
+Launch Claude Desktop / Claude-3p at least once and finish signing in, then open Bridge. Under **Settings → Claude Integration (设置 → Claude 接入)** Bridge shows the **Claude channel (Claude 通道)**, and under **Settings → Connection and Startup (设置 → 连接与启动)** it shows the host and **Relay connection**. The first connects to Desktop, the second connects to the phone and relay; check both.
 
 ### 2. Enable Desktop's local connection on macOS
 
@@ -54,7 +54,7 @@ This requires two settings: allowing Desktop developer tools, then enabling its 
 2. Check whether `allowDevTools` is `true` in `developer_settings.json`. **Enable (一键开启)** only writes this field; **it does not open the inspector or guarantee a macOS permission prompt**. If the button is disabled or the check fails, use the manual instructions below.
 3. Desktop loads the changed configuration on its next launch. Wait for active tasks to finish, then quit and reopen Claude Desktop / Claude-3p. Bridge does not restart it for you.
 4. In Desktop's native menu, choose **Developer → Enable Main Process Debugger**. The default local address is `127.0.0.1:9229`. Account/workspace policies may restrict the menu, and the native action may open a Chrome debugger page.
-5. In Bridge's Status page, check that the Claude channel is **Ready (已就绪)** or **Running (运行中)**, and inspect errors under **Diagnostics and About → Debug connection monitoring (调试连接监测)**. An open port alone does not establish a working `LocalSessions` connection.
+5. In Bridge, check under **Settings → Claude Integration (设置 → Claude 接入)** that the Claude channel is **Ready (已就绪)** or **Running (运行中)**, and inspect errors under **Debug connection monitoring (调试连接监测)** on the same page. An open port alone does not establish a working `LocalSessions` connection.
 
 <details>
 <summary>Manually configure developer_settings.json if the button is unavailable</summary>
@@ -82,7 +82,7 @@ Check that the JSON is valid, reopen Desktop, then enable the main-process debug
 
 ### 3. Check the relay address
 
-In desktop Bridge, check **Status → Relay address (状态 → 中继地址)**. To use your own relay or change servers, enter the full WebSocket address, such as `wss://relay.example.com/ws`, then save and reconnect. Use plaintext `ws://` only on a trusted local network.
+In desktop Bridge, check the relay address under **Settings → Connection and Startup (设置 → 连接与启动)**. To use your own relay or change servers, enter the full WebSocket address, such as `wss://relay.example.com/ws`, then save and reconnect. Use plaintext `ws://` only on a trusted local network.
 
 Initial pairing passes the computer's connection information to the phone. To change the address for an existing pairing, also update **Computers → computer row “⋯” → Connection and computer settings → Relay address (电脑 → 连接与电脑设置 → 中继地址)** on the phone to the same address.
 
@@ -90,7 +90,7 @@ Initial pairing passes the computer's connection information to the phone. To ch
 
 ### 4. Pair your phone and open a session
 
-1. In desktop Bridge, open **Devices → Add phone (设备 → 添加手机)** to generate a one-time QR code.
+1. In desktop Bridge, open **Settings → Phone pairing and devices → Add phone (设置 → 手机配对与设备 → 添加手机)** to generate a one-time QR code.
 2. On first launch, choose **Scan QR code (扫描二维码)** on the phone, allow camera access and scan it. Alternatively, paste the pairing link copied on the computer. To add another computer later, use “+” on the phone's Computers page.
 3. The QR code is valid for ten minutes and binds to the first phone installation that uses it. Generate another code after expiry or for another phone. Pairing links contain device authorization information; do not share them publicly.
 4. After pairing, select an existing desktop Code session in the session directory. Confirm that its history loads before sending an instruction.
@@ -122,7 +122,7 @@ Closing the Bridge window leaves background connectivity running, so the phone c
 | --- | --- |
 | Images | Previews in conversations and evidence, including scaled images |
 | PDF | Embedded viewer using encrypted chunked transfers |
-| Text / code | Complete, valid UTF-8 files up to **1 MiB**. Rendered/source Markdown and highlighting for common languages; download oversized or binary files instead |
+| Text / code | Complete, valid UTF-8 files; above **1 MiB** Bridge confirms the size first and can keep previewing up to the **20 MiB** transfer limit. Rendered/source Markdown and highlighting for common languages; download binary files instead |
 | Upload / download | Up to **20 MiB** per file, transferred in encrypted **256 KiB** chunks; complete-file hash verification before saving or sharing downloads |
 
 Remote reads are subject to workspace and sensitive-path checks. Pairing does not grant access to files outside the workspace, `.env` files or private keys. Uploads are stored in `.bridge-uploads/<uploadId>/<filename>` under the session's working directory, and sending includes relative paths. Files can be sent without text. Removing an attachment from the composer does not delete the uploaded copy on the computer.
@@ -135,15 +135,15 @@ With a compatible Magpie Gateway, open **Settings → Magpie quota (设置 → M
 | --- | --- |
 | Enable (一键开启) stays disabled on Mac | Has the matching Desktop app launched once? Is the right `Claude` / `Claude-3p` profile selected? Is it already enabled, or is there a read/JSON error? Use manual setup above. A disabled button does not mean the app is waiting for system approval |
 | No Developer menu, or debugger cannot be enabled | Quit and reopen Desktop after changing `allowDevTools`; check account/workspace policies. Use the native menu after a failed automatic attempt. Bridge does not bypass native restrictions |
-| Port is open, but sessions or actions are unavailable | Read the Claude channel error on Status. Check that Desktop is running, the Code session exists, and that Desktop build exposes the required `LocalSessions` methods. Ordinary web chats are not imported |
+| Port is open, but sessions or actions are unavailable | Read the error under **Settings → Claude Integration (设置 → Claude 接入)**. Check that Desktop is running, the Code session exists, and that Desktop build exposes the required `LocalSessions` methods. Ordinary web chats are not imported |
 | Pairing fails or QR code expires | Generate a fresh code and confirm desktop Bridge is connected to a reachable relay. Paste the link if scanning is unavailable |
 | Phone shows the computer offline | Check computer sleep, network access, the Bridge background service, matching saved relay addresses, TLS and the `/ws` path |
 | Updated window still shows old capabilities | The old background service may still be running. Wait for tasks to finish, stop it and reopen Bridge. Prefer matching versions on both devices |
 | Message remains queued or delivery is unconfirmed | Check Desktop's active task, pending approvals, native queue and history before resending after a network timeout |
-| File preview fails | Check that the file is still readable in the workspace, is not a sensitive path, and fits the 1 MiB text-preview or 20 MiB transfer limit |
+| File preview fails | Check that the file is still readable in the workspace, is not a sensitive path, and whether the size confirmation above 1 MiB or the 20 MiB transfer limit blocks it |
 | No immediate notification while locked | Check system notification permission. Online local notifications are separate from background push. Android FCM require application and service credentials; the minimal relay setup does not guarantee immediate lock-screen wakeups |
 
-For further investigation, export diagnostics from desktop Status or **Settings → Diagnostics and About**. On mobile, open **Settings → Connection diagnostics and logs (设置 → 连接诊断与日志)**. Include versions, platform, steps and the exact error when reporting a problem; leave out pairing links, keys and conversation content. Report reproducible issues in [this fork's issue tracker](https://github.com/Lycidas97/claude-desktop-bridge/issues).
+For further investigation, export diagnostics from desktop **Settings → Diagnostics and About (设置 → 诊断与关于)**. On mobile, open **Settings → Connection diagnostics and logs (设置 → 连接诊断与日志)**. Include versions, platform, steps and the exact error when reporting a problem; leave out pairing links, keys and conversation content. Report reproducible issues in [this fork's issue tracker](https://github.com/Lycidas97/claude-desktop-bridge/issues).
 
 ## Deployment, internals and development
 

@@ -14,13 +14,13 @@ Bridge 把 Claude Desktop 的本地 Code 会话带到手机：接着聊、排队
 
 ## 版本与下载
 
-**当前正式版是 [v1.3.6](https://github.com/Lycidas97/claude-desktop-bridge/releases/tag/v1.3.6)，下方上手步骤以该版为准。** 请从本 fork 下载电脑端和手机端，尽量使用同一版本。
+**当前公开版本见 [最新发布](https://github.com/Lycidas97/claude-desktop-bridge/releases/latest)；本文描述 1.3.6 源码。** 请从本 fork 下载电脑端和手机端，尽量使用同一版本。
 
-| 平台 | v1.3.6 下载 | 安装与验证范围 |
+| 平台 | 发布产物 | 安装与验证范围 |
 | --- | --- | --- |
-| macOS | [电脑端 ZIP](https://github.com/Lycidas97/claude-desktop-bridge/releases/download/v1.3.6/Bridge-1.3.6-macos-adhoc.zip) | 解压后使用内含安装包。ad-hoc 签名，未经 Apple 公证；主要验证平台 |
-| Android 8.0+ | [APK](https://github.com/Lycidas97/claude-desktop-bridge/releases/download/v1.3.6/Bridge-1.3.6-android-debug.apk) | 使用仓库固定 debug 签名；需允许当前下载来源安装应用 |
-| Windows | [安装包 ZIP](https://github.com/Lycidas97/claude-desktop-bridge/releases/download/v1.3.6/Bridge-1.3.6-windows-installer-ci.zip) | CI 构建；签名状态见包内 `windows-release-evidence.json`，原生连接未完成实机验收 |
+| macOS | `Bridge-<version>-macos-adhoc.zip` | 解压后使用内含安装包。ad-hoc 签名，未经 Apple 公证；主要验证平台 |
+| Android 8.0+ | `Bridge-<version>-android-debug.apk` | 使用仓库固定 debug 签名；需允许当前下载来源安装应用 |
+| Windows | `Bridge-<version>-windows-installer-ci.zip` | CI 构建；签名状态见包内 `windows-release-evidence.json`，原生连接未完成实机验收 |
 
 发布页同时提供 `SHA256SUMS.txt` 与 `SOURCE_COMMIT.txt`。构建成功不代表所有平台均完成实机验证；Android 系统返回流程已在 Android 16 模拟器中验证。
 
@@ -42,7 +42,7 @@ Bridge 把 Claude Desktop 的本地 Code 会话带到手机：接着聊、排队
 
 从上方下载 Bridge，解压并按包内安装方式安装。macOS 将 Bridge 放入“应用程序”后打开；若系统拦截未经公证的应用，请在核对来源后使用系统提供的“仍要打开”等入口。
 
-先启动一次 Claude Desktop / Claude-3p 并完成登录，再打开 Bridge。Bridge 的“状态”页会分别显示 **Claude 通道**和**连接路径**：前者连接 Desktop，后者连接手机与中继，需要分别检查。
+先启动一次 Claude Desktop / Claude-3p 并完成登录，再打开 Bridge。**设置 → Claude 接入** 显示 **Claude 通道**，**设置 → 连接与启动** 显示主机与 **Relay 连接**：前者连接 Desktop，后者连接手机与中继，需要分别检查。
 
 ### 2. 开启 Claude Desktop 的本机连接（macOS）
 
@@ -52,7 +52,7 @@ Bridge 把 Claude Desktop 的本地 Code 会话带到手机：接着聊、排队
 2. 检查 `developer_settings.json` 中的 `allowDevTools` 是否为 `true`。“一键开启”只负责写入这个字段；**它不等于开启 inspector，也不保证弹出 macOS 权限请求**。按钮置灰或检查失败时，按下方手动配置。
 3. 配置变更需要在 Desktop 下一次启动时加载。等当前任务结束，退出并重新打开 Claude Desktop / Claude-3p；Bridge 不会替你重启它。
 4. 在 Desktop 的原生菜单选择 **Developer → Enable Main Process Debugger**。默认连接地址为本机 `127.0.0.1:9229`。菜单可能受账号 / 工作区策略限制，原生操作也可能打开 Chrome 调试页。
-5. 回到 Bridge 检查“状态”中的 Claude 通道是否“已就绪”或“运行中”，并查看“诊断与关于 → 调试连接监测”的错误。端口开放本身不代表 `LocalSessions` 已可用。
+5. 回到 Bridge，在 **设置 → Claude 接入** 检查 Claude 通道是否“已就绪”或“运行中”，并查看同页 **调试连接监测** 的错误。端口开放本身不代表 `LocalSessions` 已可用。
 
 <details>
 <summary>按钮不可用时，手动配置 developer_settings.json</summary>
@@ -80,7 +80,7 @@ Bridge 把 Claude Desktop 的本地 Code 会话带到手机：接着聊、排队
 
 ### 3. 确认中继地址
 
-在电脑 Bridge 的 **状态 → 中继地址**检查当前值。如果需要自建或切换中继，填入完整的 WebSocket 地址，例如 `wss://relay.example.com/ws`，保存并重连；仅在可信局域网中使用明文 `ws://`。
+在电脑 Bridge 的 **设置 → 连接与启动** 检查中继地址。如果需要自建或切换中继，填入完整的 WebSocket 地址，例如 `wss://relay.example.com/ws`，保存并重连；仅在可信局域网中使用明文 `ws://`。
 
 首次配对会把电脑的连接信息交给手机。已有配对要切换地址时，也在手机 **电脑 → 电脑行“⋯” → 连接与电脑设置 → 中继地址**修改为相同地址。
 
@@ -88,7 +88,7 @@ Bridge 把 Claude Desktop 的本地 Code 会话带到手机：接着聊、排队
 
 ### 4. 配对手机并打开会话
 
-1. 电脑 Bridge 打开 **设备 → 添加手机**，生成一次性二维码。
+1. 电脑 Bridge 打开 **设置 → 手机配对与设备 → 添加手机**，生成一次性二维码。
 2. 手机首次启动选择“扫描二维码”，允许相机访问并扫描；也可将电脑复制的配对链接粘贴到手机。已有电脑时，从手机“电脑”页右上角“+”添加。
 3. 二维码十分钟内有效，并绑定首次使用它的手机安装；过期或换手机时重新生成。配对链接包含设备授权信息，请勿公开分享。
 4. 配对成功后进入会话目录，选择电脑上已有的 Code 会话。确认能加载历史，再发送一条指令。
@@ -120,7 +120,7 @@ Claude 的任务、队列和审批由 Desktop 管理，Bridge 不另起 Claude S
 | --- | --- |
 | 图片 | 对话与成果内预览，可使用缩放图像 |
 | PDF | 客户端内嵌查看，通过加密分块通道读取 |
-| 文本 / 代码 | 完整、有效 UTF-8 文件，最大 **1 MiB**；Markdown 渲染 / 源码切换，常见语言高亮；超限或二进制文件请下载查看 |
+| 文本 / 代码 | 完整、有效 UTF-8 文件；超过 **1 MiB** 会先确认大小，可在 **20 MiB** 传输上限内继续预览；Markdown 渲染 / 源码切换，常见语言高亮；二进制文件请下载查看 |
 | 上传 / 下载 | 单文件最大 **20 MiB**，按 **256 KiB** 分块加密传输；下载 / 分享前校验完整文件哈希 |
 
 远程文件读取受工作区与敏感路径检查约束，项目外文件、`.env`、私钥等不会因配对而开放。上传文件保存在会话工作目录的 `.bridge-uploads/<uploadId>/<filename>`，发送时附上相对路径；可以只发送文件。从输入框移除附件不会删除电脑上已上传的副本。
@@ -133,15 +133,15 @@ Claude 的任务、队列和审批由 Desktop 管理，Bridge 不另起 Claude S
 | --- | --- |
 | Mac 的“一键开启”一直置灰 | 是否先启动过对应 Desktop、选对 `Claude` / `Claude-3p` 目录、已经开启，或存在具体读取 / JSON 错误；使用上方手动配置路径。不要把按钮置灰当成等待系统授权 |
 | 没有 Developer 菜单，或无法开启调试 | `allowDevTools` 修改后是否完整退出并重开 Desktop；查看账号 / 工作区策略。自动尝试失败后可手动使用菜单，Bridge 不会绕过原生限制 |
-| 端口开了但没有会话 / 无法操作 | 查看“状态 → Claude 通道”的具体错误；Desktop 是否仍运行、对应 Code 会话是否存在、当前构建是否提供所需 `LocalSessions` 方法。普通网页聊天不会从这里导入 |
+| 端口开了但没有会话 / 无法操作 | 查看 **设置 → Claude 接入** 中的具体错误；Desktop 是否仍运行、对应 Code 会话是否存在、当前构建是否提供所需 `LocalSessions` 方法。普通网页聊天不会从这里导入 |
 | 配对失败或二维码过期 | 重新生成二维码，确认电脑 Bridge 已连上可达中继；扫描不可用时粘贴链接 |
 | 手机显示电脑离线 | 电脑是否休眠 / 断网，Bridge 后台是否运行，两端保存的中继地址是否一致且可达，TLS 与 `/ws` 路径是否正确 |
 | 更新了窗口，仍显示旧能力 | 旧后台服务可能仍在运行；等任务结束后停止后台并重新打开 Bridge，两端尽量同版 |
 | 消息一直排队或投递未确认 | 先看 Desktop 的当前任务、授权等待和原生队列，再核对历史；不要因为网络超时重复发送 |
-| 文件预览失败 | 文件是否在工作区、仍存在且可读；是否触及敏感路径、1 MiB 文本预览或 20 MiB 传输限制 |
+| 文件预览失败 | 文件是否在工作区、仍存在且可读；是否触及敏感路径、超过 1 MiB 的大小确认或 20 MiB 传输限制 |
 | 锁屏后收不到即时通知 | 先检查系统通知权限；在线本地提醒不等于后台推送。Android FCM 需要另配应用与服务凭据，最小中继部署不提供锁屏即时唤醒保证 |
 
-继续排查时，电脑可在“状态”或“设置 → 诊断与关于”导出诊断；手机在 **设置 → 连接诊断与日志**查看连接问题。反馈版本、平台、出错步骤与具体提示，勿附配对链接、密钥或聊天正文。可以在[本 fork 的 Issues](https://github.com/Lycidas97/claude-desktop-bridge/issues)反馈可复现问题。
+继续排查时，电脑可在 **设置 → 诊断与关于** 导出诊断；手机在 **设置 → 连接诊断与日志**查看连接问题。反馈版本、平台、出错步骤与具体提示，勿附配对链接、密钥或聊天正文。可以在[本 fork 的 Issues](https://github.com/Lycidas97/claude-desktop-bridge/issues)反馈可复现问题。
 
 ## 部署、原理与开发
 

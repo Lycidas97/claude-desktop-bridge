@@ -18,7 +18,6 @@ export interface ConversationMessageItemProps {
   session: BridgeSessionInfo;
   entering?: boolean | undefined;
   latestMessage?: boolean | undefined;
-  hasLaterNativeReply?: boolean | undefined;
   revealActionsOnTap?: boolean | undefined;
   online?: boolean | undefined;
   canSend?: boolean | undefined;
@@ -39,7 +38,6 @@ export function ConversationMessageItem({
   session,
   entering = false,
   latestMessage = false,
-  hasLaterNativeReply = false,
   revealActionsOnTap = false,
   online = true,
   canSend = false,
@@ -56,7 +54,7 @@ export function ConversationMessageItem({
 }: ConversationMessageItemProps) {
   const [actionsRevealed, setActionsRevealed] = useState(false);
   const messageQueued = isQueuedConversationMessage(item, session);
-  const delivery = item.delivery === "session-received" && hasLaterNativeReply ? undefined : item.delivery;
+  const delivery = item.delivery === "session-received" && item.queueSettled ? undefined : item.delivery;
   const canActOnQueued = Boolean(
     item.role === "user"
     && item.commandId

@@ -430,14 +430,6 @@ export function ConversationView({
   const displayNodes = useMemo(() => groupTimelineTools(timeline), [timeline]);
   const latestMessage = displayNodes.filter((node) => node.kind === "message" && !node.item.sessionNotice
     && (node.item.role === "user" || node.item.role === "assistant")).at(-1);
-  // During an active turn, assistant progress after the last result can belong to a different input.
-  const nativeReplyCutoff = session.turnState === "idle" ? Infinity : session.lastCompletedTurnAt;
-  const lastNativeReplyIndex = session.transport === "claude-desktop-native" && typeof nativeReplyCutoff === "number"
-    ? displayNodes.reduce((last, node, index) => (
-      node.kind === "message" && node.item.role === "assistant" && !node.item.live && node.item.text.trim()
-        && node.item.createdAt <= nativeReplyCutoff ? index : last
-    ), -1)
-    : -1;
   const inlineQueuedIds = new Set<string>();
   if (effectiveSessionView === "conversation" && session.pendingCount > 0) {
     for (const node of displayNodes) {
@@ -822,7 +814,7 @@ export function ConversationView({
             <strong>这是一个空会话</strong>
           </div>
         )}
-      {displayNodes.map((node, index) => {
+      {displayNodes.map((node) => {
         if (node.kind === "mail") {
           return (
             <MailCard
@@ -913,7 +905,6 @@ export function ConversationView({
             session={session}
             entering={streamEntering(item.id)}
             latestMessage={node === latestMessage}
-            hasLaterNativeReply={index < lastNativeReplyIndex}
             revealActionsOnTap={isMobile}
             online={isOnline}
             canSend={canSendSession(session, snapshot)}

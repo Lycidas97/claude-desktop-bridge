@@ -63,6 +63,7 @@ class NativeDesktop extends EventEmitter {
   applyPrSettings = true;
   promptResult = true;
   ignoreStartTitle = false;
+  inputQueueDrained = vi.fn(async () => false);
   async promptChoices() { return this.promptChoiceValues; }
   async prPreferences(sessionId: string) {
     const session = this.sessions.find(session => session.sessionId === sessionId);
@@ -2023,6 +2024,43 @@ describe("Claude native relay", () => {
     } finally { await restarted?.close(); await f.close(); }
   });
 
+  it.each(["idle upgrade", "restart during next turn", "rewind"])("keeps an answered input out of the actionable queue after %s", async transition => {
+    const f = await fixture();
+    let restarted: ClaudeDesktopBridge | undefined;
+    try {
+      const receipt = await f.bridge.startTurn(input);
+      const user = { type: "user", uuid: receipt.messageId, message: { content: input.text } };
+      const reply = { type: "assistant", uuid: "finished-reply", message: { content: [{ type: "text", text: "Done" }] } };
+      const result = { type: "result", uuid: "unattributed-result", is_error: false };
+      f.native.page.messages = [user, reply, result, { ...user, uuid: "later-input" }];
+      for (const message of [user, reply, result]) await f.message(message);
+      // This is also the on-disk shape from before queue settlement existed.
+      expect(f.state.nativeDesktopReceipt(input.idempotencyKey)?.queueSettled).toBeUndefined();
+      f.native.inputQueueDrained.mockResolvedValue(true);
+      let bridge = f.bridge;
+      if (transition !== "rewind") {
+        if (transition === "restart during next turn") {
+          await bridge.refreshRuntime();
+          expect(f.state.nativeDesktopReceipt(input.idempotencyKey)?.queueSettled).toBe(true);
+          f.native.sessions[0]!.turnRunning = true;
+        }
+        await bridge.close();
+        restarted = new ClaudeDesktopBridge(f.options);
+        await restarted.initialize();
+        bridge = restarted;
+      } else {
+        await bridge.rewindSession(input.sessionId, "later-input", "conversation");
+      }
+      f.native.sessions[0]!.turnRunning = true;
+      f.native.queueResult = false;
+      await bridge.refreshRuntime();
+      expect((await bridge.history(input.sessionId)).items.find(item => item.id === receipt.messageId)).toMatchObject({ text: input.text, delivery: "session-received", queueSettled: true });
+      expect(f.state.nativeDesktopReceipt(input.idempotencyKey)?.state).toBe("session-received");
+      await expect(bridge.cancelQueuedTurn(input.sessionId, receipt.commandId)).rejects.toThrow("当前不可调整");
+      expect(f.native.calls.some(call => call.method === "cancelQueuedMessage")).toBe(false);
+    } finally { await restarted?.close(); await f.close(); }
+  });
+
   it("broadcasts unmatched native results without inventing Bridge command identities or receipts", async () => {
     const f = await fixture();
     try {
@@ -2038,10 +2076,9 @@ describe("Claude native relay", () => {
       expect(terminal).toHaveLength(1);
       expect(terminal[0]).toMatchObject({ sessionId: "local-native", itemId: "desktop-result", data: {} });
       expect(terminal[0]?.turnId).toBeUndefined();
-      const completed = f.bridge.session("local-native");
-      expect(completed).toMatchObject({ lastCompletedTurnId: "desktop-result", lastCompletedTurnAt: expect.any(Number), turnState: "idle" });
+      expect(f.bridge.session("local-native")).toMatchObject({ lastCompletedTurnId: "desktop-result", turnState: "idle" });
       await f.bridge.refreshRuntime();
-      expect(f.bridge.session("local-native")).toMatchObject({ lastCompletedTurnId: "desktop-result", lastCompletedTurnAt: completed!.lastCompletedTurnAt });
+      expect(f.bridge.session("local-native")?.lastCompletedTurnId).toBe("desktop-result");
     } finally { await f.close(); }
   });
 

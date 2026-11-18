@@ -642,8 +642,6 @@ export interface BridgeSessionInfo {
   lastActivityAt: number;
   /** Identity of the latest successful native turn result observed by the Bridge. */
   lastCompletedTurnId?: string;
-  /** Host observation time of the latest successful main turn result. */
-  lastCompletedTurnAt?: number;
   pendingCount: number;
   /** Queued command identities, when provided by the host. */
   pendingCommandIds?: string[];
@@ -939,6 +937,8 @@ export interface BridgeHistoryItem {
   requestId?: string;
   /** Last native delivery stage observed for this exact session and user UUID. */
   delivery?: BridgeDeliveryState;
+  /** Desktop observed an idle, drained queue after acknowledging this input. */
+  queueSettled?: true;
   attachments?: BridgeHistoryAttachment[];
   /**
    * Structured summary for file-change tool items (Codex). Lets clients

@@ -282,10 +282,24 @@ export async function verifyNativeQueueActions(page, host, steps, directory, rel
   assert.equal(await nextMessage.getByRole("button", { name: /^(立即发送|撤回)$/u }).count(), 2, "New received-only input remains actionable");
   assert.equal(await completedMessage.locator(".delivery-state").count(), 0, "A later native turn cannot revive an old received badge");
   assert.equal(await staleActions.count(), 0, "A later native turn cannot revive stale queue controls");
+  const waitingText = "上一轮完成时仍在等待的指令";
+  const waiting = await host.syncNativeQueue(await host.nativeApproval.enqueue(waitingText));
   await host.syncNativeQueue(await host.nativeApproval.event({ type: "message", message: {
-    type: "result", uuid: "correlated-next-result", user_message_uuid: next.receipt.messageId, is_error: false,
+    type: "user", uuid: waiting.receipt.messageId, message: { content: waitingText },
   } }));
+  const waitingMessage = page.locator("article.conversation-item.user").filter({ hasText: waitingText });
+  await waitingMessage.locator(".delivery-state.session-received").waitFor();
+  for (const message of [
+    { type: "assistant", uuid: "next-reply", message: { content: [{ type: "text", text: "上一轮的最终回复。" }] } },
+    { type: "result", uuid: "correlated-next-result", user_message_uuid: next.receipt.messageId, is_error: false },
+  ]) {
+    const events = await host.nativeApproval.message({ ...message, timestamp: Date.now() });
+    await host.syncNativeQueue({ events, history: await host.nativeApproval.history(), session: host.nativeApproval.session() });
+  }
   await nextMessage.locator(".delivery-state.completed").waitFor();
+  assert.equal(host.session.turnState, "running");
+  assert.equal(await waitingMessage.locator(".delivery-state.session-received").count(), 1, "Another input's completion preserves the waiting receipt");
+  assert.equal(await waitingMessage.getByRole("button", { name: /^(立即发送|撤回)$/u }).count(), 2);
   assert.equal(await completedMessage.locator(".delivery-state").count(), 0, "A matching result for another message does not revive the old received badge");
   await page.reload({ waitUntil: "domcontentloaded" });
   await openMobileSession(page);
@@ -293,5 +307,16 @@ export async function verifyNativeQueueActions(page, host, steps, directory, rel
   await page.getByText("原生回复已结束。", { exact: true }).waitFor();
   assert.equal(await completedMessage.locator(".delivery-state").count(), 0, "Reopening during a later turn keeps the old badge hidden");
   assert.equal(await staleActions.count(), 0, "Reopening during a later turn keeps the old controls hidden");
-  steps.push("an uncorrelated result leaves the stored receipt intact and the answered mobile bubble hides its stale badge and queue controls after reload and during the next turn");
+  await waitingMessage.locator(".conversation-bubble").tap();
+  await waitingMessage.getByRole("button", { name: "回退到这条消息之前", exact: true }).click();
+  const laterRewind = page.getByRole("dialog", { name: "回退会话", exact: true });
+  await laterRewind.getByRole("button", { name: "确认回退", exact: true }).click();
+  await laterRewind.waitFor({ state: "hidden" });
+  await eventually(() => waitingMessage.count(), 0, "Native rewind discarded the waiting input");
+  await host.syncNativeQueue(await host.nativeApproval.enqueue("回退后开始的第一轮"));
+  assert.equal(host.session.turnState, "running");
+  await completedMessage.waitFor();
+  assert.equal(await completedMessage.locator(".delivery-state").count(), 0, "The first active turn after rewind keeps the answered bubble clear");
+  assert.equal(await staleActions.count(), 0);
+  steps.push("received-only history hides stale controls after reload, later active turns and rewind, while another input's correlated result preserves a genuinely waiting input");
 }

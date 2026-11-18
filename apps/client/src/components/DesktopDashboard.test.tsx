@@ -2,6 +2,7 @@ import type { BridgeArtifactManifest, BridgeEvent, BridgeHistoryItem, BridgePerm
 import type { ComponentProps, ReactElement, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { downloadBridgeSessionFile } from "../lib/artifact-download.js";
+import { collectDiagnosticsStateSnapshot } from "../lib/diagnostics.js";
 import { AssistantMailProvider } from "./assistant/AssistantMailProvider.js";
 import { AssistantPage } from "./assistant/AssistantPage.js";
 import { ConversationDraftsProvider } from "./conversation/ConversationDraftsProvider.js";
@@ -1531,7 +1532,7 @@ describe("desktop conversation parity", () => {
 });
 
 describe("unified desktop and assistant conversation composition", () => {
-  it("shares drafts, history and live evidence across desktop tabs and stops reopening unmounted conversations", async () => {
+  it("shares drafts, history, evidence and transfers across desktop tabs and stops reopening unmounted conversations", async () => {
     snapshot.host.capabilities.push("plugin.assistant-mail.v1");
     snapshot.sessions = [
       snapshot.sessions[0]!,
@@ -1645,6 +1646,12 @@ describe("unified desktop and assistant conversation composition", () => {
     expect(composerInput().props.value).toBe("从会话页输入的草稿");
 
     composerInput().props.onChange("助理页修改后的草稿");
+    let finishDownload!: () => void;
+    vi.mocked(downloadBridgeSessionFile).mockImplementationOnce((_sessionId, _path, _request, onProgress) => {
+      onProgress(0.5);
+      return new Promise<void>((resolve) => { finishDownload = resolve; });
+    });
+    const download = elements(fullTree).find((element) => element.type === ConversationView)!.props.onDownloadSessionFile("A", "dist/report.zip");
     fullTree = fullDashboard.draw();
 
     // Delegated navigation to another session switches DesktopDashboard back to 会话 focused on Session B
@@ -1663,6 +1670,14 @@ describe("unified desktop and assistant conversation composition", () => {
     await settle();
     fullTree = fullDashboard.draw();
     expect(composerInput().props.value).toBe("助理页修改后的草稿");
+
+    elements(fullTree).find((element) => element.type === "button" && textContent(element) === "成果")!.props.onClick();
+    fullTree = fullDashboard.draw();
+    expect(elements(fullTree).find((element) => element.type === EvidencePanel)!.props.transfers).toEqual({ "file:dist/report.zip": 0.5 });
+    finishDownload();
+    await download;
+    fullTree = fullDashboard.draw();
+    expect(elements(fullTree).find((element) => element.type === EvidencePanel)!.props.transfers).toEqual({});
   });
 
   it("isolates retained and live event buffers across host switches without replaying old evidence or rewound events", async () => {
@@ -1913,6 +1928,9 @@ describe("unified desktop and assistant conversation composition", () => {
 
     expect(typeof resolveArtifactOpen).toBe("function");
     expect(typeof resolveSessionFileOpen).toBe("function");
+    const transfers = () => elements(standaloneTree).find((element) => element.type === ConversationView)!.props.renderEvidence({}).props.transfers;
+    standaloneTree = standalone.draw();
+    expect(transfers()).toEqual({ "art-1": 0, "file:dist/archive.zip": 0 });
 
     // 3) Switch active host from dl-host-1 to dl-host-2 BEFORE either transfer.open resolves
     standaloneTree = standalone.draw({
@@ -1922,10 +1940,12 @@ describe("unified desktop and assistant conversation composition", () => {
       onRefreshSnapshot: async () => undefined,
     });
     await settle();
+    expect(transfers()).toEqual({});
+    expect(collectDiagnosticsStateSnapshot().desktopConversations).toMatchObject({ artifactTransfersCount: 2 });
     host1Api.mockClear();
     host2Api.mockClear();
 
-    // 4) Resolve both delayed artifact.transfer.open responses from dl-host-1
+    // 4) Resolve the old host's open responses one at a time and observe cleanup
     resolveArtifactOpen({
       kind: "response",
       requestId: "open-art",
@@ -1943,6 +1963,10 @@ describe("unified desktop and assistant conversation composition", () => {
         },
       },
     });
+    await expect(artifactDownloadPromise).rejects.toThrow("主机已切换");
+    standaloneTree = standalone.draw();
+    expect(collectDiagnosticsStateSnapshot().desktopConversations).toMatchObject({ artifactTransfersCount: 1 });
+
     resolveSessionFileOpen({
       kind: "response",
       requestId: "open-file",
@@ -1961,13 +1985,22 @@ describe("unified desktop and assistant conversation composition", () => {
       },
     });
 
-    await expect(artifactDownloadPromise).rejects.toThrow("主机已切换");
     await settle();
     standaloneTree = standalone.draw();
+    expect(collectDiagnosticsStateSnapshot().desktopConversations).toMatchObject({ artifactTransfersCount: 0 });
+    expect(elements(standaloneTree).some((element) => element.props.role === "alert" && textContent(element).includes("主机已切换"))).toBe(true);
 
     // Neither host-2 nor host-1 receives read or close with stale transferIds after the host switch
     expect(host2Api).not.toHaveBeenCalled();
     expect(host1Api).not.toHaveBeenCalled();
+
+    standaloneTree = standalone.draw({
+      snapshot: host1Snapshot,
+      events: [],
+      apiRequest: host1Api,
+      onRefreshSnapshot: async () => undefined,
+    });
+    expect(transfers()).toEqual({});
   });
 });
 

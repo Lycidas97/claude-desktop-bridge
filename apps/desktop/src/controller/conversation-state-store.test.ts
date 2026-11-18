@@ -44,8 +44,22 @@ async function createStore(): Promise<{
 }
 
 describe("ConversationStateStore", () => {
-  it("persists display titles by full logical session ID without seeding provider_profiles or broker rows", async () => {
+  it("initializes a new database with exactly the four retained tables", async () => {
     const { store, databasePath } = await createStore();
+    try {
+      await store.initialize();
+    } finally {
+      store.close();
+    }
+    withDatabase(databasePath, (db) => {
+      expect(db.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name").all().map((row) => row.name))
+        .toEqual(["conversation_meta", "native_desktop_receipts", "session_titles", "session_visibility"]);
+      expect(db.prepare("SELECT value FROM conversation_meta WHERE key = 'version'").get()).toEqual({ value: "1" });
+    });
+  });
+
+  it("persists display titles by full logical session ID", async () => {
+    const { store } = await createStore();
     try {
       await store.initialize();
       expect(store.sessionTitle("native-1")).toBeUndefined();
@@ -61,31 +75,6 @@ describe("ConversationStateStore", () => {
       store.close();
       expect(() => store.setSessionTitle("native-1", "失败写入")).toThrow();
       expect(store.sessionTitle("native-1")).toBeUndefined();
-      expect(withDatabase(databasePath, (db) => db.prepare("SELECT id FROM provider_profiles").all())).toEqual([]);
-      expect(withDatabase(databasePath, (db) => db.prepare("SELECT session_id FROM bridge_sessions").all())).toEqual([]);
-      const tables = withDatabase(databasePath, (db) => (
-        db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>
-      )).map((row) => row.name);
-      expect(tables).toEqual(expect.arrayContaining([
-        "native_desktop_receipts",
-        "conversation_meta",
-        "provider_profiles",
-        "conversations",
-        "lanes",
-        "handoffs",
-        "bridge_sessions",
-        "session_configurations",
-        "turn_queue",
-        "completed_idempotency_keys",
-        "terminal_receipts",
-        "migration_markers",
-        "runtime_handoffs",
-        "runtime_goals",
-        "runtime_session_permissions",
-        "session_titles",
-        "session_visibility",
-        "desktop_archive_requests",
-      ]));
     } finally {
       store.close();
     }
@@ -174,7 +163,7 @@ describe("ConversationStateStore", () => {
     }
   });
 
-  it("preserves historical session visibility rows when opening the database", async () => {
+  it("preserves historical schema and rows when opening an existing database", async () => {
     const { store, databasePath } = await createStore();
     withDatabase(databasePath, (db) => db.exec(`
       CREATE TABLE session_visibility (
@@ -183,12 +172,42 @@ describe("ConversationStateStore", () => {
         updated_at INTEGER NOT NULL
       ) STRICT;
       INSERT INTO session_visibility VALUES ('native-1', 'archived', 10), ('native-2', 'deleted', 11);
+
+      CREATE TABLE runtime_handoffs (
+        id TEXT PRIMARY KEY,
+        state TEXT NOT NULL,
+        source_runtime TEXT NOT NULL,
+        source_session_id TEXT NOT NULL,
+        source_native_session_id TEXT,
+        target_runtime TEXT NOT NULL,
+        target_session_id TEXT,
+        target_native_session_id TEXT,
+        objective TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        plan_text TEXT,
+        package_encrypted BLOB,
+        error TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        expires_at INTEGER
+      ) STRICT;
+      CREATE INDEX runtime_handoffs_source ON runtime_handoffs(source_session_id, created_at DESC);
+      CREATE INDEX runtime_handoffs_target ON runtime_handoffs(target_session_id, created_at DESC);
+      INSERT INTO runtime_handoffs (
+        id, state, source_runtime, source_session_id, target_runtime, objective, summary, package_encrypted, created_at, updated_at
+      ) VALUES ('old-handoff', 'applied', 'claude', 'old-session', 'codex', 'Objective', 'Summary', X'0080FF', 12, 13);
     `));
+    const readHistoricalHandoffs = () => withDatabase(databasePath, (db) => ({
+      schema: db.prepare("SELECT name, sql FROM sqlite_schema WHERE tbl_name = 'runtime_handoffs' ORDER BY name").all(),
+      rows: db.prepare("SELECT * FROM runtime_handoffs ORDER BY id").all(),
+    }));
+    const historicalHandoffs = readHistoricalHandoffs();
     try {
       await store.initialize();
     } finally {
       store.close();
     }
+    expect(readHistoricalHandoffs()).toEqual(historicalHandoffs);
     expect(withDatabase(databasePath, (db) => db.prepare(
       "SELECT session_id, visibility, updated_at FROM session_visibility ORDER BY session_id",
     ).all())).toEqual([

@@ -253,10 +253,7 @@ export function MobileSettings({
         <SettingsGroup title="诊断与支持" titleId="mobile-support-title">
           <button type="button" className="mobile-settings-row" onClick={() => setDiagDialogOpen(true)}>
             <Activity size={18} aria-hidden="true" />
-            <div>
-              <strong>连接诊断与日志</strong>
-              <small>检查连接，记录和导出诊断日志</small>
-            </div>
+            <span><strong>连接诊断与日志</strong></span>
             {diagEnabled && <b className="settings-diag-badge">记录中</b>}
             <ChevronRight size={18} aria-hidden="true" />
           </button>

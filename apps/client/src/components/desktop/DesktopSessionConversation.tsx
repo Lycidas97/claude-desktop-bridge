@@ -1034,6 +1034,7 @@ export function DesktopSessionConversation({
   onSelectSession,
   onForkCreated,
   headerLeading,
+  conversationTabLabel,
   controller: externalController,
   conversationDrafts: externalDrafts,
   externalActionError,
@@ -1042,6 +1043,7 @@ export function DesktopSessionConversation({
   onSelectSession(sessionId: string): void | Promise<void>;
   onForkCreated?(parentSessionId: string, created: BridgeSessionInfo): void;
   headerLeading?: ReactNode | undefined;
+  conversationTabLabel?: string | undefined;
   controller?: DesktopConversationController | undefined;
   conversationDrafts?: ConversationDraftsController | undefined;
   externalActionError?: string | undefined;
@@ -1071,6 +1073,7 @@ export function DesktopSessionConversation({
   return (
     <ConversationView
       variant="desktop"
+      conversationTabLabel={conversationTabLabel}
       hostId={hostId}
       session={session}
       {...(headerLeading ? { headerLeading } : {})}

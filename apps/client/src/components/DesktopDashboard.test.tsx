@@ -1402,16 +1402,16 @@ describe("desktop conversation parity", () => {
     await openSessions();
 
     apiRequest.mockResolvedValueOnce({ kind: "response", requestId: "steer-uncertain", ok: true, result: { state: "uncertain" } });
-    await elements(tree).find((element) => element.type === "button" && element.props.children === "Send now")!.props.onClick();
+    await elements(tree).find((element) => element.type === "button" && element.props.children === "立即发送")!.props.onClick();
     await settle(); tree = sessions.draw();
     expect(apiRequest).toHaveBeenCalledExactlyOnceWith({ method: "turn.queue.steer", params: { sessionId: "A", commandId: "cmd-queued-1" } });
     expect(textContent(tree)).toContain("消息投递状态尚未确认，请同步状态后重试");
 
     apiRequest.mockClear();
     apiRequest.mockResolvedValueOnce({ kind: "response", requestId: "steer-ok", ok: true, result: { state: "queued" } });
-    await elements(tree).find((element) => element.type === "button" && element.props.children === "Send now")!.props.onClick();
+    await elements(tree).find((element) => element.type === "button" && element.props.children === "立即发送")!.props.onClick();
     await settle(); tree = sessions.draw();
-    expect(elements(tree).find((element) => element.type === "button" && element.props.children === "Send now")!.props.disabled).toBe(true);
+    expect(elements(tree).find((element) => element.type === "button" && element.props.children === "立即发送")!.props.disabled).toBe(true);
     const cancelBtn = elements(tree).find((element) => element.type === "button" && element.props.children === "撤回")!;
     expect(cancelBtn.props.disabled).toBe(false);
 

@@ -58,7 +58,6 @@ import {
 } from "../transport/controller-transport.js";
 import type { ConversationStateStore } from "./conversation-state-store.js";
 import {
-  BridgeRequestError,
   dispatchControllerRequest,
   errorResponse,
   type ControllerRpcHost,
@@ -320,14 +319,6 @@ export class DesktopController extends EventEmitter {
   async saveMagpieConnection(input: unknown): Promise<DesktopControlSnapshot> {
     await this.broker.saveMagpieConnection(input);
     return this.publish();
-  }
-
-  async setAnthropicApiKey(_value: string): Promise<DesktopControlSnapshot> {
-    throw new BridgeRequestError("UNSUPPORTED", "Claude 执行与认证由 Claude Desktop 管理。");
-  }
-
-  async removeAnthropicApiKey(): Promise<DesktopControlSnapshot> {
-    throw new BridgeRequestError("UNSUPPORTED", "Claude 执行与认证由 Claude Desktop 管理。");
   }
 
   async revokeDevice(deviceId: string): Promise<DesktopControlSnapshot> {

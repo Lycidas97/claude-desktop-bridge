@@ -39,8 +39,6 @@ export interface DesktopApi {
   setRelayUrl(url: string): Promise<DesktopControlSnapshot>;
   testMagpieConnection?(input: BridgeMagpieConnectionInput): Promise<BridgeMagpieConnectionTestResult>;
   saveMagpieConnection?(input: BridgeMagpieConnectionInput): Promise<DesktopControlSnapshot>;
-  setAnthropicApiKey(value: string): Promise<DesktopControlSnapshot>;
-  removeAnthropicApiKey(): Promise<DesktopControlSnapshot>;
   launchClaudeDesktop(): Promise<DesktopControlSnapshot>;
   quitClaudeDesktop(): Promise<DesktopControlSnapshot>;
   launchDesktopApp(runtimeId: BridgeDesktopRuntimeId): Promise<DesktopControlSnapshot>;

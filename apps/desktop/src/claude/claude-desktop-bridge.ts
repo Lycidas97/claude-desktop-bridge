@@ -490,10 +490,24 @@ export class ClaudeDesktopBridge extends EventEmitter {
     };
   }
 
-  private async hydrateContextModelFromTail(sessionId: string): Promise<void> {
+  private async hydrateContextModel(
+    sessionId: string,
+    nativeModel: string | undefined,
+    page?: { messages: readonly unknown[]; hasMore: boolean },
+  ): Promise<void> {
+    if (this.directModelDisplayName(nativeModel) || this.contextStates.get(sessionId)?.model) return;
+    const tailLimit = 20;
+    if (page) {
+      const pageModel = extractLatestTranscriptModel(page.messages);
+      if (pageModel) {
+        hydrateObservedContextModel(this.ensureContextState(sessionId), pageModel);
+        return;
+      }
+      if (!page.hasMore || page.messages.length >= tailLimit) return;
+    }
     if (!this.inspector.ready || !this.inspector.supports("getTranscriptPage")) return;
     try {
-      const tail = record(await this.inspector.call("getTranscriptPage", [sessionId, "", 20, { window: "accept" }]));
+      const tail = record(await this.inspector.call("getTranscriptPage", [sessionId, "", tailLimit, { window: "accept" }]));
       if (!Array.isArray(tail.messages) || tail.messages.length === 0) return;
       const tailModel = extractLatestTranscriptModel(tail.messages);
       if (tailModel) {
@@ -900,7 +914,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
   }
 
   async refreshDesktopSession(sessionId: string): Promise<void> {
-    await this.refreshSessionMetadata(this.desktopId(sessionId));
+    await this.refreshSessionMetadata(this.desktopId(sessionId), { includeContext: false });
   }
 
   private async readSessionTranscript(id: string) {
@@ -1035,7 +1049,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
     return { sessionId, messageId, scope, ...(prefill !== undefined ? { prefill } : {}) };
   }
 
-  async history(sessionId: string, cursor?: string, limit = 50): Promise<BridgeHistoryPage> {
+  async history(sessionId: string, cursor?: string, limit = 50, { hydrateModel = false } = {}): Promise<BridgeHistoryPage> {
     const id = this.desktopId(sessionId);
     const read = diagnostics.begin(cursor ? "history.cursor" : "history.initial", { cursor: Boolean(cursor), limit });
     try {
@@ -1043,7 +1057,8 @@ export class ClaudeDesktopBridge extends EventEmitter {
       const previousSession = !cursor ? JSON.stringify(this.session(sessionId)) : undefined;
       const page = record(await this.inspector.call("getTranscriptPage", [id, cursor ?? "", limit, { window: "accept" }]));
       if (!Array.isArray(page.messages)) throw new NativeCallError("Desktop returned an invalid transcript page");
-      const nextCursor = page.hasMore === true && typeof record(page.messages[0]).uuid === "string" ? String(record(page.messages[0]).uuid) : undefined;
+      const hasMore = page.hasMore === true;
+      const nextCursor = hasMore && typeof record(page.messages[0]).uuid === "string" ? String(record(page.messages[0]).uuid) : undefined;
       const firstPlan = nativePlanMessages(page.messages)[0]?.message.content[0];
       const plainLatestWithKnownPlan = !cursor && !firstPlan && this.messageProjection.get(sessionId)?.planObserved;
       let needsEarlierPlan = firstPlan
@@ -1119,6 +1134,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
           }
           this.applyTranscriptContextMessages(sessionId, combined);
         }
+        if (hydrateModel) await this.hydrateContextModel(id, this.native.get(id)?.model, { messages: page.messages, hasMore });
         this.projectSessions();
         if (JSON.stringify(this.session(sessionId)) !== previousSession) this.emit("changed");
       }
@@ -1132,7 +1148,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
         }
       }
       diag("history.messages", { messages: items.length });
-      return { sessionId, items, hasMore: page.hasMore === true, ...(nextCursor ? { nextCursor } : {}) };
+      return { sessionId, items, hasMore, ...(nextCursor ? { nextCursor } : {}) };
     } finally { read(); }
   }
 
@@ -1249,20 +1265,16 @@ export class ClaudeDesktopBridge extends EventEmitter {
     };
   }
 
-  private async refreshSessionMetadata(sessionId: string): Promise<NativeSession> {
+  private async refreshSessionMetadata(sessionId: string, { includeContext }: { includeContext: boolean }): Promise<NativeSession> {
     const previousSnapshot = JSON.stringify(this.session(sessionId));
     const native = nativeSession(await this.inspector.call("getSession", [sessionId]));
     await this.observeNativeSession(native);
-    if (native.turnRunning === true) {
-      const live = await this.readLiveContextUsage(sessionId);
-      if (live) this.applyLiveContextUsage(sessionId, live);
-    }
-    const rawTrimmed = native.model?.trim();
-    const needsTailModel = !rawTrimmed
-      || rawTrimmed.toLowerCase() === "default"
-      || !this.directModelDisplayName(rawTrimmed);
-    if (needsTailModel && !this.contextStates.get(sessionId)?.model) {
-      await this.hydrateContextModelFromTail(sessionId);
+    if (includeContext) {
+      if (native.turnRunning === true) {
+        const live = await this.readLiveContextUsage(sessionId);
+        if (live) this.applyLiveContextUsage(sessionId, live);
+      }
+      await this.hydrateContextModel(sessionId, native.model);
     }
     this.projectSessions();
     if (JSON.stringify(this.session(sessionId)) !== previousSnapshot) this.emit("changed");
@@ -1272,7 +1284,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
   async configuration(sessionId: string): Promise<BridgeSessionConfiguration> {
     const id = this.desktopId(sessionId);
     await this.refreshModelCatalog("retry-failed");
-    const native = await this.refreshSessionMetadata(id);
+    const native = await this.refreshSessionMetadata(id, { includeContext: true });
     const context = this.session(sessionId)?.contextUsage;
     const resolved = this.resolveSessionModel(sessionId, native.model);
     const fallbackLabel = resolved.modelDisplayName

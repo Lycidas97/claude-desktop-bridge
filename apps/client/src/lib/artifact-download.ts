@@ -1,6 +1,5 @@
-import { Capacitor } from "@capacitor/core";
+import { Capacitor, registerPlugin } from "@capacitor/core";
 import { Directory, Filesystem } from "@capacitor/filesystem";
-import { Share } from "@capacitor/share";
 import type {
   BridgeArtifactManifest,
   BridgeArtifactTransferChunk,
@@ -14,6 +13,8 @@ type RequestArtifact = (
   params: Record<string, unknown>,
   options?: { wait?: boolean; timeoutMs?: number },
 ) => Promise<BridgeResponse | undefined>;
+
+const BridgeFiles = registerPlugin<{ openFile(options: { path: string }): Promise<void> }>("BridgeFiles");
 
 let activeDownloadsCount = 0;
 let activeDownloadsCachedBytes = 0;
@@ -94,7 +95,7 @@ async function runArtifactTransfer(
   ));
   const transfer = opened.transfer;
   const chunks: Uint8Array[] = [];
-  const native = Capacitor.isNativePlatform();
+  const native = Capacitor.getPlatform() === "android";
   const filename = safeFilename(transfer.name);
   const nativePath = `bridge-evidence/${transfer.transferId}/${filename}`;
   let nativeFileCreated = false;
@@ -133,12 +134,7 @@ async function runArtifactTransfer(
     if (await sha256Hex(chunks) !== transfer.sha256) throw new Error("成果完整性校验失败");
     transferCompleted = true;
     if (native) {
-      const file = await Filesystem.getUri({ path: nativePath, directory: Directory.Cache });
-      await Share.share({
-        title: transfer.name,
-        dialogTitle: "选择打开方式",
-        files: [file.uri],
-      });
+      await BridgeFiles.openFile({ path: nativePath });
       return;
     }
     const blob = new Blob(

@@ -22,7 +22,8 @@ const nativeCap = vi.hoisted(() => ({
   },
 }));
 
-vi.mock("@capacitor/core", () => ({
+vi.mock("@capacitor/core", async (original) => ({
+  ...await original<typeof import("@capacitor/core")>(),
   Capacitor: {
     isNativePlatform: () => nativeCap.isNative,
     getPlatform: () => (nativeCap.isNative ? "android" : "web"),

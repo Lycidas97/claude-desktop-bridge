@@ -626,12 +626,14 @@ export function advancePairingSync(
   roomId: string,
   stage: PairingSyncStage,
   progress: number,
+  desktopName?: string,
 ): MobileBridgeState {
   if (!current.pairingSync || current.pairingSync.roomId !== roomId) return current;
   return {
     ...current,
     pairingSync: {
       ...current.pairingSync,
+      desktopName: desktopName ?? current.pairingSync.desktopName,
       stage,
       progress,
     },

@@ -176,6 +176,7 @@ describe("startup and network recovery", () => {
     await vi.waitFor(() => expect(paired).toBe(true));
     expect(bridgeVault.importPairing).toHaveBeenCalledOnce();
     expect(vi.mocked(bridgeVault.importPairing).mock.calls[0]?.[1]?.identity.desktopName).toBe(snapshot.host.name);
+    expect(harness.state.pairingSync).toMatchObject({ stage: "ready", desktopName: snapshot.host.name });
     expect(harness.requests.filter(request => request.method === "snapshot.get")).toHaveLength(1);
     const saved = await Promise.all(harness.messages.map(envelope => phone.decrypt(envelope)));
     expect(saved.some(message => message.payload.kind === "snapshot" && message.payload.snapshot.host.hostId === pairing.hostId)).toBe(true);

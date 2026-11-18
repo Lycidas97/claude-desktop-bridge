@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ARTIFACT_TRANSFER_TTL_MS, BridgeCrypto, type BridgeEvidenceBundle, type BridgeFileUploadInfo, type BridgeMethod } from "@bridge/protocol";
+import { ARTIFACT_TRANSFER_CHUNK_BYTES, ARTIFACT_TRANSFER_TTL_MS, BridgeCrypto, type BridgeEvidenceBundle, type BridgeFileUploadInfo, type BridgeMethod } from "@bridge/protocol";
 import { expect, it, vi } from "vitest";
 import { createControllerFixture } from "./controller-fixture.js";
 
@@ -53,6 +53,33 @@ it("writes a local upload to the session cwd and keeps the prefix cancellation f
     expect(await readFile(join(cwd, path))).toEqual(content);
     expect(await controller.dispatchLocal({ method: "file.upload.other" as BridgeMethod, params: { uploadId } }))
       .toMatchObject({ ok: true, result: { cancelled: true } });
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+it("rejects a late chunk and commit after the upload is cancelled", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "bridge-upload-rpc-"));
+  try {
+    const controller = createControllerFixture({ allSessions: () => [{ sessionId: "session-1", cwd }] });
+    const content = Buffer.alloc(ARTIFACT_TRANSFER_CHUNK_BYTES + 1, 0x61);
+    const opened = await controller.dispatchLocal({ method: "file.upload.open", params: {
+      sessionId: "session-1", name: "note.txt", size: content.length, sha256: createHash("sha256").update(content).digest("hex"),
+    } });
+    expect(opened).toMatchObject({ ok: true, result: { upload: { uploadId: expect.any(String), totalChunks: 2 } } });
+    const { uploadId, chunkBytes } = (opened.result as { upload: BridgeFileUploadInfo }).upload;
+    expect(await controller.dispatchLocal({ method: "file.upload.write", params: {
+      uploadId, index: 0, data: content.subarray(0, chunkBytes).toString("base64"),
+    } })).toMatchObject({ ok: true, result: { received: 1 } });
+    expect(await controller.dispatchLocal({ method: "file.upload.cancel", params: { uploadId } }))
+      .toMatchObject({ ok: true, result: { cancelled: true } });
+
+    const unavailable = { ok: false, error: { message: "Upload transfer expired or unavailable" } };
+    expect(await controller.dispatchLocal({ method: "file.upload.write", params: {
+      uploadId, index: 1, data: content.subarray(chunkBytes).toString("base64"),
+    } })).toMatchObject(unavailable);
+    expect(await controller.dispatchLocal({ method: "file.upload.commit", params: { uploadId } })).toMatchObject(unavailable);
+    await expect(readFile(join(cwd, ".bridge-uploads", uploadId, "note.txt"))).rejects.toMatchObject({ code: "ENOENT" });
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }

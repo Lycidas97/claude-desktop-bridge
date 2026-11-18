@@ -30,6 +30,26 @@ it("keeps picker labels and order, enriches from exact ID, same-window hash and 
   ]);
 });
 
+it("keeps effort within its route and leaves capacity unknown for a missing context variant", () => {
+  const base = { value: "claude/claude-sonnet-4-6", displayName: "Saved Sonnet" };
+  const long = { value: `${base.value}[1m]`, displayName: "Saved Sonnet · 1M" };
+  const otherRoute = { value: "anthropic/claude-sonnet-4-6", displayName: "Alternate route" };
+  const discovered: BridgeModelInfo[] = [
+    { ...otherRoute, maxInputTokens: 250_000, supportsEffort: false, declaredEffortLevels: ["ultra"] },
+    { value: `mythos-magpie-${magpieModelIdHash(base.value)}`, displayName: "Native alias", maxInputTokens: 200_000,
+      supportsEffort: true, supportedEffortLevels: ["high"], declaredEffortLevels: ["high", "max-plus"] },
+  ];
+
+  const routeEffort = { supportsEffort: true, supportedEffortLevels: ["high"], declaredEffortLevels: ["high", "max-plus"] };
+  expect(mergeModelCatalog([base, long], discovered)).toEqual([
+    { ...base, ...routeEffort, maxInputTokens: 200_000 },
+    { ...long, ...routeEffort },
+  ]);
+  expect(mergeModelCatalog([long], [{
+    ...discovered[0]!, value: `${otherRoute.value}[1m]`, maxInputTokens: 900_000,
+  }])).toEqual([{ ...long, maxInputTokens: 900_000 }]);
+});
+
 it("resolves an unset or default native model from observation, configured default, then picker order", () => {
   const first = { value: "fixture-provider/first", displayName: "First option" };
   const configured = { value: "fixture-provider/configured[1m]", displayName: "Configured 1M label" };

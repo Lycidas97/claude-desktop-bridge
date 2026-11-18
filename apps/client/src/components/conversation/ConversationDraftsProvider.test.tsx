@@ -170,8 +170,8 @@ describe("ConversationDraftsProvider", () => {
   let activeHostId: string | undefined;
   let handle: ConversationDraftsHandle;
 
-  function renderProvider(): ConversationDraftsController {
-    const element = runWithStore(providerStore, () => (
+  function renderProvider(store = providerStore): ConversationDraftsController {
+    const element = runWithStore(store, () => (
       ConversationDraftsProvider({ activeHostId, controllerRef: handle, children: null }) as ReactElement<{ value: ConversationDraftsController }>
     ));
     runtime.contextValue = element.props.value;
@@ -431,6 +431,152 @@ describe("ConversationDraftsProvider", () => {
       ]);
     } finally {
       unmountStore(firstStore);
+    }
+  });
+
+  it("does not restore a draft another window cleared after the edit was queued", () => {
+    vi.useFakeTimers();
+    stored.set(CONVERSATION_DRAFTS_STORAGE_KEY, JSON.stringify({
+      version: 1,
+      entries: [{ key: JSON.stringify(["host-a", "sess-A"]), text: "旧草稿", updatedAt: 1 }],
+    }));
+    const first = renderProvider().session("host-a", "sess-A");
+    const secondStore = createStore();
+    const reopenedStore = createStore();
+    try {
+      const second = renderProvider(secondStore).session("host-a", "sess-A");
+      expect(first.draft.text).toBe("旧草稿");
+      expect(second.draft.text).toBe("旧草稿");
+
+      first.setText("earlier edit");
+      second.setText("");
+      expect(stored.has(CONVERSATION_DRAFTS_STORAGE_KEY)).toBe(false);
+
+      vi.advanceTimersByTime(250);
+      expect(renderProvider(reopenedStore).session("host-a", "sess-A").draft.text).toBe("");
+
+      first.setText("new edit after the clear");
+      vi.advanceTimersByTime(250);
+      unmountStore(reopenedStore);
+      expect(renderProvider(reopenedStore).session("host-a", "sess-A").draft.text).toBe("new edit after the clear");
+    } finally {
+      unmountStore(reopenedStore);
+      unmountStore(secondStore);
+    }
+  });
+
+  it("saves edits made after another window clears the draft within the same write interval", () => {
+    vi.useFakeTimers();
+    const first = renderProvider().session("host-a", "sess-A");
+    first.setText("original draft");
+    vi.advanceTimersByTime(250);
+
+    const secondStore = createStore();
+    const reopenedStore = createStore();
+    try {
+      const second = renderProvider(secondStore).session("host-a", "sess-A");
+      first.setText("queued before clear");
+      vi.advanceTimersByTime(100);
+      second.setText("");
+      first.setText("new text after clear");
+      vi.advanceTimersByTime(150);
+
+      expect(renderProvider(reopenedStore).session("host-a", "sess-A").draft.text).toBe("new text after clear");
+    } finally {
+      unmountStore(reopenedStore);
+      unmountStore(secondStore);
+    }
+  });
+
+  it("saves a pending edit when another window's new draft evicts its old value at the storage cap", () => {
+    vi.useFakeTimers();
+    const first = renderProvider();
+    const oldest = first.session("host-a", "sess-0");
+    for (let index = 0; index < 100; index += 1) {
+      first.session("host-a", `sess-${index}`).setText(`draft-${index}`);
+    }
+    vi.advanceTimersByTime(250);
+
+    const secondStore = createStore();
+    const reopenedStore = createStore();
+    try {
+      renderProvider(secondStore).session("host-a", "sess-100").setText("new session draft");
+      vi.advanceTimersByTime(100);
+      oldest.setText("updated oldest draft");
+      vi.advanceTimersByTime(150);
+      expect(stored.get(CONVERSATION_DRAFTS_STORAGE_KEY)).not.toContain('"text":"draft-0"');
+
+      vi.advanceTimersByTime(100);
+      const reopened = renderProvider(reopenedStore);
+      expect(reopened.session("host-a", "sess-0").draft.text).toBe("updated oldest draft");
+      expect(reopened.session("host-a", "sess-100").draft.text).toBe("new session draft");
+    } finally {
+      unmountStore(reopenedStore);
+      unmountStore(secondStore);
+    }
+  });
+
+  it("bounds clear history and removes the forgotten host's records without clearing another host", () => {
+    vi.useFakeTimers();
+    const first = renderProvider();
+    first.session("host-a", "sess-A").setText("draft to clear before forgetting host A");
+    first.session("host-b", "sess-A").setText("draft B");
+    vi.advanceTimersByTime(250);
+    first.session("host-a", "sess-A").setText("");
+    const afterClear = [...stored];
+    for (let index = 0; index < 101; index += 1) {
+      first.resetSession("host-a", `never-drafted-${index}`);
+    }
+    expect([...stored]).toEqual(afterClear);
+
+    for (let index = 0; index < 100; index += 1) {
+      const session = first.session("host-a", `cleared-${index}`);
+      session.setText("draft to clear");
+      session.setText("");
+    }
+
+    const reopenedStore = createStore();
+    try {
+      const clearHistory = [...stored].filter(([key]) => key !== CONVERSATION_DRAFTS_STORAGE_KEY);
+      expect(clearHistory).toHaveLength(1);
+      expect(JSON.parse(clearHistory[0]![1])).toHaveLength(100);
+
+      const reopened = renderProvider(reopenedStore);
+      reopened.clearHost("host-a");
+      expect([...stored.keys()]).toEqual([CONVERSATION_DRAFTS_STORAGE_KEY]);
+      expect(JSON.parse(stored.get(CONVERSATION_DRAFTS_STORAGE_KEY)!).entries).toMatchObject([
+        { key: JSON.stringify(["host-b", "sess-A"]), text: "draft B" },
+      ]);
+    } finally {
+      unmountStore(reopenedStore);
+    }
+  });
+
+  it("removes a saved draft when storage has no space for the clear history", () => {
+    const initialText = "existing saved draft";
+    const key = JSON.stringify(["host-a", "sess-A"]);
+    const savedDrafts = JSON.stringify({ version: 1, entries: [{ key, text: initialText, updatedAt: 1 }] });
+    stored.set(CONVERSATION_DRAFTS_STORAGE_KEY, savedDrafts);
+    const quota = CONVERSATION_DRAFTS_STORAGE_KEY.length + savedDrafts.length;
+    vi.spyOn(localStorage, "setItem").mockImplementation((key, value) => {
+      const used = [...stored].reduce((size, [storedKey, storedValue]) => (
+        storedKey === key ? size : size + storedKey.length + storedValue.length
+      ), 0);
+      if (used + key.length + value.length > quota) {
+        throw new DOMException("Storage is full", "QuotaExceededError");
+      }
+      stored.set(key, value);
+    });
+
+    const session = renderProvider().session("host-a", "sess-A");
+    expect(session.draft.text).toBe(initialText);
+    session.setText("");
+
+    const reopenedStore = createStore();
+    try {
+      expect(renderProvider(reopenedStore).session("host-a", "sess-A").draft.text).toBe("");
+    } finally {
+      unmountStore(reopenedStore);
     }
   });
 

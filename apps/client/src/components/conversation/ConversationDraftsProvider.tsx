@@ -92,6 +92,8 @@ const MAX_SINGLE_IMAGE_BYTES = 4 * 1024 * 1024;
 const MAX_TOTAL_IMAGE_BYTES = 6 * 1024 * 1024;
 const HOST_SWITCH_UPLOAD_ERROR = "已切换电脑，上传已中断";
 export const CONVERSATION_DRAFTS_STORAGE_KEY = "bridge-conversation-drafts:v1";
+const DRAFT_CLEAR_HISTORY_KEY = "bridge-conversation-draft-clears:v1";
+const MAX_DRAFT_CLEAR_RECORDS = 100;
 const MAX_PERSISTED_DRAFTS = 100;
 const DRAFT_WRITE_INTERVAL_MS = 250;
 
@@ -100,6 +102,10 @@ interface PersistedDraftEntry {
   text: string;
   updatedAt: number;
 }
+
+type PendingDraftChange =
+  | { entry: PersistedDraftEntry; clearRevision: string | undefined }
+  | { hadText: boolean };
 
 function safeLocalStorage(): Pick<Storage, "getItem" | "setItem" | "removeItem"> | undefined {
   try {
@@ -164,26 +170,85 @@ function readPersistedDrafts(raw: string | null): Map<string, PersistedDraftEntr
   return drafts;
 }
 
+function readDraftClearHistory(): Map<string, string> {
+  const history = new Map<string, string>();
+  try {
+    const raw = safeLocalStorage()?.getItem(DRAFT_CLEAR_HISTORY_KEY);
+    const entries: unknown = raw ? JSON.parse(raw) : [];
+    if (Array.isArray(entries)) {
+      for (const entry of entries) {
+        if (Array.isArray(entry) && typeof entry[0] === "string" && typeof entry[1] === "string") {
+          history.set(entry[0], entry[1]);
+        }
+      }
+    }
+  } catch {
+    // Storage access can be blocked by browser settings.
+  }
+  return history;
+}
+
 function writePersistedDrafts(
-  changes: ReadonlyMap<string, PersistedDraftEntry | null>,
+  changes: ReadonlyMap<string, PendingDraftChange>,
   removedHostId?: string,
 ): void {
   const storage = safeLocalStorage();
   if (!storage) return;
   try {
     const drafts = readPersistedDrafts(storage.getItem(CONVERSATION_DRAFTS_STORAGE_KEY));
-    for (const [key, entry] of changes) {
-      if (entry) drafts.set(key, entry);
-      else drafts.delete(key);
+    const clearHistory = readDraftClearHistory();
+    let draftsChanged = false;
+    let historyChanged = false;
+    for (const [key, change] of changes) {
+      if (removedHostId !== undefined && keyBelongsToHost(key, removedHostId)) continue;
+      if ("entry" in change) {
+        const revision = clearHistory.get(key);
+        if (revision === undefined || revision === change.clearRevision) {
+          drafts.set(key, change.entry);
+          draftsChanged = true;
+        }
+      } else {
+        const deleted = drafts.delete(key);
+        draftsChanged ||= deleted;
+        if (deleted || change.hadText) {
+          clearHistory.delete(key);
+          clearHistory.set(key, crypto.randomUUID());
+          historyChanged = true;
+        }
+      }
     }
-    const entries = [...drafts.values()]
-      .filter(({ key }) => removedHostId === undefined || !keyBelongsToHost(key, removedHostId))
-      .sort((left, right) => right.updatedAt - left.updatedAt)
-      .slice(0, MAX_PERSISTED_DRAFTS);
-    if (entries.length === 0) {
-      storage.removeItem(CONVERSATION_DRAFTS_STORAGE_KEY);
-    } else {
-      storage.setItem(CONVERSATION_DRAFTS_STORAGE_KEY, JSON.stringify({ version: 1, entries }));
+    if (removedHostId !== undefined) {
+      for (const key of drafts.keys()) {
+        if (keyBelongsToHost(key, removedHostId)) {
+          drafts.delete(key);
+          draftsChanged = true;
+        }
+      }
+      for (const key of clearHistory.keys()) {
+        if (keyBelongsToHost(key, removedHostId)) {
+          clearHistory.delete(key);
+          historyChanged = true;
+        }
+      }
+    }
+    if (draftsChanged) {
+      const entries = [...drafts.values()]
+        .sort((left, right) => right.updatedAt - left.updatedAt)
+        .slice(0, MAX_PERSISTED_DRAFTS);
+      if (entries.length === 0) {
+        storage.removeItem(CONVERSATION_DRAFTS_STORAGE_KEY);
+      } else {
+        storage.setItem(CONVERSATION_DRAFTS_STORAGE_KEY, JSON.stringify({ version: 1, entries }));
+      }
+    }
+    if (historyChanged) {
+      // Persist the text removal first so it can free space for the clear history.
+      const entries = [...clearHistory].slice(-MAX_DRAFT_CLEAR_RECORDS);
+      if (entries.length === 0) {
+        storage.removeItem(DRAFT_CLEAR_HISTORY_KEY);
+      } else {
+        storage.setItem(DRAFT_CLEAR_HISTORY_KEY, JSON.stringify(entries));
+      }
     }
   } catch {
     // Storage quota or private-mode restrictions must not interrupt typing.
@@ -214,7 +279,7 @@ function stripHostKeys<T>(record: Record<string, T>, hostId: string): Record<str
 const ConversationDraftsContext = createContext<ConversationDraftsController | undefined>(undefined);
 
 function useConversationDraftsController(activeHostId: string | undefined, enabled: boolean): ConversationDraftsController {
-  const pendingDraftChangesRef = useRef(new Map<string, PersistedDraftEntry | null>());
+  const pendingDraftChangesRef = useRef(new Map<string, PendingDraftChange>());
   const lastStampRef = useRef(0);
   const [drafts, setDrafts] = useState<Record<string, ConversationDraftState>>(() => {
     const drafts: Record<string, ConversationDraftState> = {};
@@ -269,10 +334,13 @@ function useConversationDraftsController(activeHostId: string | undefined, enabl
     if (!enabled || updated.text === previous.text || !isValidDraftStorageKey(key)) return;
     if (updated.text.length > 0) {
       lastStampRef.current = Math.max(Date.now(), lastStampRef.current + 1);
-      pendingDraftChangesRef.current.set(key, { key, text: updated.text, updatedAt: lastStampRef.current });
+      pendingDraftChangesRef.current.set(key, {
+        entry: { key, text: updated.text, updatedAt: lastStampRef.current },
+        clearRevision: readDraftClearHistory().get(key),
+      });
       draftWriteTimerRef.current ??= setTimeout(flushPersistedDrafts, DRAFT_WRITE_INTERVAL_MS);
     } else {
-      pendingDraftChangesRef.current.set(key, null);
+      pendingDraftChangesRef.current.set(key, { hadText: true });
       flushPersistedDrafts();
     }
   }
@@ -407,14 +475,15 @@ function useConversationDraftsController(activeHostId: string | undefined, enabl
       controllersRef.current.delete(id);
     }
     updateEntries((current) => current.filter((entry) => entry.key !== key));
-    if (key in draftsRef.current) {
+    const previous = draftsRef.current[key];
+    if (previous) {
       const next = { ...draftsRef.current };
       delete next[key];
       draftsRef.current = next;
       setDrafts(next);
     }
     if (enabled && sessionId) {
-      pendingDraftChangesRef.current.set(key, null);
+      pendingDraftChangesRef.current.set(key, { hadText: Boolean(previous?.text) });
       flushPersistedDrafts();
     }
     setPromptErrors((current) => {

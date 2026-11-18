@@ -169,6 +169,7 @@ export function useMobileBridge() {
     nativeRelayCapabilityRef: { current: undefined },
     payloadDeflateRef: { current: false },
     pendingCompletionNotificationsRef: { current: new Set() },
+    foregroundSinceRef: { current: undefined },
     openedSessionRef: { current: undefined },
     handledCommandEvents: { current: new Set() },
     openingSessionsRef: { current: new Map() },
@@ -209,7 +210,10 @@ export function useMobileBridge() {
 
   const notifyCompletedTurns = useCallback(
     (events: BridgeEvent[], crypto: BridgeCrypto, options?: NotifyCompletedTurnsOptions) =>
-      notifyBridgeCompletedTurns(transportRefs, events, crypto, options),
+      notifyBridgeCompletedTurns(transportRefs, events, crypto, {
+        ...options,
+        foregroundSince: transportRefs.foregroundSinceRef.current,
+      }),
     [],
   );
 
@@ -271,7 +275,7 @@ export function useMobileBridge() {
 
   useEffect(() => onNativePushWake(() => reconnectAndResume()), [reconnectAndResume]);
 
-  useEffect(() => subscribeNetworkAndVisibilityWake(reconnectAndResume), [reconnectAndResume]);
+  useEffect(() => subscribeNetworkAndVisibilityWake(reconnectAndResume, transportRefs.foregroundSinceRef), [reconnectAndResume]);
 
   useEffect(() => subscribeCapacitorAppWake(reconnectAndResume), [reconnectAndResume]);
 

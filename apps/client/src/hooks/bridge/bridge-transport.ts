@@ -292,6 +292,7 @@ export interface BridgeTransportRefs {
   nativeRelayCapabilityRef: MutableRefObject<boolean | undefined>;
   payloadDeflateRef: MutableRefObject<boolean>;
   pendingCompletionNotificationsRef: MutableRefObject<Set<string>>;
+  foregroundSinceRef: MutableRefObject<number | undefined>;
 }
 
 export type ActiveTransportTeardownRefs = Pick<
@@ -573,6 +574,8 @@ export async function sendBridgeRequest(
 
 export interface NotifyCompletedTurnsOptions {
   fromResume?: boolean | undefined;
+  replayed?: boolean | undefined;
+  foregroundSince?: number | undefined;
   bootstrap?: boolean | undefined;
 }
 
@@ -658,16 +661,20 @@ export function notifyBridgeCompletedTurns(
   for (const id of pending) if (seen.has(id)) pending.delete(id);
   const notificationsEnabled = isSessionNotificationsEnabled();
   const isVisible = typeof document !== "undefined" && document.visibilityState === "visible";
+  const native = Capacitor.isNativePlatform();
   for (const event of completed) {
     if (seen.has(event.eventId) || pending.has(event.eventId)) continue;
     pending.add(event.eventId);
     if (options.bootstrap || !notificationsEnabled) continue;
     if (isEventNotificationStale(event)) continue;
     if (isVisible && isActivelyViewingSession(crypto.identity.roomId, event.sessionId)) continue;
+    if (native && isVisible && (
+      options.replayed || (options.fromResume && event.timestamp < (options.foregroundSince ?? Infinity))
+    )) continue;
     const title = refs.stateRef.current.snapshot?.sessions.find((session) => session.sessionId === event.sessionId)?.title
       ?? crypto.identity.desktopName;
     const body = formatCompletedTurnBody(event, events, stateEvents);
-    if (Capacitor.isNativePlatform()) {
+    if (native) {
       void showSessionNotification(
         { hostId: crypto.identity.roomId, ...(event.sessionId ? { sessionId: event.sessionId } : {}) },
         title,
@@ -939,6 +946,8 @@ export async function startBridgeConnection(
   desktopHomeRef.current = provisionalPairing ? undefined : storedHost?.desktopRelayUrl;
   sendAttemptedAtRef.current = undefined;
   let linkHasDesktop = false;
+  let relayReplayFrames = 0;
+  const relayReplayIds = new Set<string>();
   const learnHome = (url: string) => {
     if (!url.startsWith("ws://") && !url.startsWith("wss://")) return;
     if (desktopHomeRef.current === url) return;
@@ -1141,6 +1150,8 @@ export async function startBridgeConnection(
   socket.onFrame((frame) => {
     if (!isCurrent()) return;
     if (frame.type === "ready") {
+      relayReplayFrames = frame.queued;
+      relayReplayIds.clear();
       const desktopHere = frame.onlineDevices.some((device) => device.role === "desktop");
       linkHasDesktop = desktopHere;
       if (desktopHere) {
@@ -1151,6 +1162,12 @@ export async function startBridgeConnection(
       if (!desktopHere) {
         setState((current) => ({ ...current, desktopOnline: false }));
       }
+    }
+    // The relay sends exactly ready.queued stored frames before live delivery.
+    // Remember their IDs before asynchronous decryption and chunk assembly.
+    if (relayReplayFrames > 0 && (frame.type === "envelope" || frame.type === "envelope-chunk")) {
+      relayReplayFrames -= 1;
+      relayReplayIds.add(frame.type === "envelope" ? frame.envelope.id : frame.chunk.transferId);
     }
     if (frame.type === "presence" && frame.role === "desktop") {
       const wasOnline = linkHasDesktop;
@@ -1272,6 +1289,8 @@ export async function startBridgeConnection(
     }
     setState((current) => ({ ...current, desktopOnline: true, connectionIssue: undefined }));
     socket.ack([encrypted.id]);
+    const replayed = relayReplayIds.delete(encrypted.id)
+      || message.header.sentAt < (refs.foregroundSinceRef.current ?? -Infinity);
     const event = message.payload.kind === "event" ? message.payload.event : undefined;
     const incomingSnapshot = message.payload.kind === "snapshot" ? message.payload.snapshot
       : message.payload.kind === "response" && message.payload.ok
@@ -1335,16 +1354,18 @@ export async function startBridgeConnection(
       payloadDeflateRef.current = message.payload.snapshot.host.capabilities.includes(PAYLOAD_DEFLATE_CAPABILITY);
       void flushOutbox();
     }
-    if (event) notifyCompletedTurns([event], crypto, { bootstrap: isProvisionalPairing() });
+    if (event) notifyCompletedTurns([event], crypto, { replayed, bootstrap: isProvisionalPairing() });
     handlePayload(message.payload, encrypted, crypto);
     const isVisible = typeof document !== "undefined" && document.visibilityState === "visible";
-    if ((isNewPermission || isNewPrompt) && isVisible) {
+    const native = Capacitor.isNativePlatform();
+    const silentCatchUp = native && isVisible && (replayed || (message.payload.kind === "response" && incomingSnapshot));
+    if (!silentCatchUp && (isNewPermission || isNewPrompt) && isVisible) {
       navigator.vibrate?.([120, 60, 120]);
     }
     const isDesktopApp = typeof window !== "undefined" && Boolean(window.bridgeDesktop);
-    if (!isDesktopApp && !isProvisionalPairing() && isSessionNotificationsEnabled()) {
+    if (!silentCatchUp && !isDesktopApp && !isProvisionalPairing() && isSessionNotificationsEnabled()) {
       const sourceSessions = (incomingSnapshot ?? stateRef.current.snapshot)?.sessions;
-      if (Capacitor.isNativePlatform()) {
+      if (native) {
         for (const permission of newPermissions) {
           if (isVisible && isActivelyViewingSession(roomId, permission.sessionId)) continue;
           void showSessionNotification(
@@ -1547,6 +1568,7 @@ export function reconnectAndResumeBridge(
 
 export function subscribeNetworkAndVisibilityWake(
   reconnectAndResume: (networkChanged?: boolean) => void,
+  foregroundSinceRef: MutableRefObject<number | undefined>,
 ): () => void {
   const network = (navigator as Navigator & { connection?: EventTarget & { type?: string } }).connection;
   let networkType = network?.type;
@@ -1561,7 +1583,10 @@ export function subscribeNetworkAndVisibilityWake(
     if (navigator.onLine) reconnectAndResume(true);
   };
   const visibilityChanged = () => {
-    if (document.visibilityState === "visible") reconnectAndResume();
+    if (document.visibilityState === "visible") {
+      if (Capacitor.isNativePlatform()) foregroundSinceRef.current = Date.now();
+      reconnectAndResume();
+    }
   };
   window.addEventListener("online", online);
   network?.addEventListener("change", networkChanged);

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bridgeVault } from "../lib/vault.js";
 import { useMobileBridge, type BridgeMutableStore } from "./useMobileBridge.js";
 import { captureBridgeStoreRef } from "./useMobileBridge.test-harness.js";
+import { showSessionNotification } from "../lib/session-notifications.js";
 
 const harness = vi.hoisted(() => ({
   state: undefined as any,
@@ -158,6 +159,73 @@ describe("startup and network recovery", () => {
     expect(bridgeVault.listMessages).toHaveBeenCalledTimes(1);
     expect(decrypt.mock.calls.filter(([envelope]) => cached.includes(envelope))).toHaveLength(106);
     expect(harness.requests.filter(request => request.method === "snapshot.get")).toHaveLength(1);
+  });
+
+  it("applies the relay backlog silently in the foreground and still notifies live completions", async () => {
+    harness.native = true;
+    const backlog = await desktop.encrypt({ kind: "event", event: {
+      eventId: "backlog-completed", seq: 1, timestamp: Date.now() - 5_000,
+      origin: "claude-desktop", type: "turn.completed", sessionId: "native", data: {},
+    } }, "desktop", "mobile", Date.now() - 5_000, undefined, pairing.deviceId);
+    const live = await desktop.encrypt({ kind: "event", event: {
+      eventId: "live-completed", seq: 2, timestamp: Date.now(),
+      origin: "claude-desktop", type: "turn.completed", sessionId: "native", data: {},
+    } }, "desktop", "mobile", Date.now(), undefined, pairing.deviceId);
+    const receive = LocalWebSocket.prototype.receive;
+    vi.spyOn(LocalWebSocket.prototype, "receive").mockImplementation(function (this: LocalWebSocket, frame) {
+      if (frame.type !== "ready") return receive.call(this, frame);
+      receive.call(this, { ...frame, queued: 1 });
+      receive.call(this, { type: "envelope", envelope: backlog });
+    });
+    mount();
+    await vi.waitFor(() => expect(harness.state.events.map((event: { eventId: string }) => event.eventId)).toContain("backlog-completed"));
+    expect(showSessionNotification).not.toHaveBeenCalled();
+    LocalWebSocket.instances[0]!.receive({ type: "envelope", envelope: live });
+    await vi.waitFor(() => expect(showSessionNotification).toHaveBeenCalledOnce());
+  });
+
+  it("silences buffered completions on an open socket after returning to the foreground", async () => {
+    harness.native = true;
+    mount();
+    await vi.waitFor(() => expect(bridgeVault.saveMessage).toHaveBeenCalled());
+    const socket = LocalWebSocket.instances[0]!;
+    page.visibilityState = "hidden";
+    page.dispatchEvent(new Event("visibilitychange"));
+    const completedAt = Date.now();
+    const buffered = await desktop.encrypt({ kind: "event", event: {
+      eventId: "buffered-completed", seq: 1, timestamp: completedAt,
+      origin: "claude-desktop", type: "turn.completed", sessionId: "native", data: {},
+    } }, "desktop", "mobile", completedAt, undefined, pairing.deviceId);
+    vi.setSystemTime(completedAt + 1_000);
+    page.visibilityState = "visible";
+    page.dispatchEvent(new Event("visibilitychange"));
+    socket.receive({ type: "envelope", envelope: buffered });
+    await vi.waitFor(() => expect(harness.state.events).toContainEqual(expect.objectContaining({ eventId: "buffered-completed" })));
+    expect(showSessionNotification).not.toHaveBeenCalled();
+    const live = await desktop.encrypt({ kind: "event", event: {
+      eventId: "foreground-completed", seq: 2, timestamp: Date.now(),
+      origin: "claude-desktop", type: "turn.completed", sessionId: "native", data: {},
+    } }, "desktop", "mobile", Date.now(), undefined, pairing.deviceId);
+    socket.receive({ type: "envelope", envelope: live });
+    await vi.waitFor(() => expect(showSessionNotification).toHaveBeenCalledOnce());
+  });
+
+  it("restores a pending approval from foreground sync without alerting", async () => {
+    harness.native = true;
+    mount();
+    await vi.waitFor(() => expect(bridgeVault.saveMessage).toHaveBeenCalled());
+    const approval = {
+      requestId: "offline-approval", sessionId: "native", toolUseId: "tool-1", toolName: "Bash",
+      input: {}, createdAt: Date.now(), canAllowAlways: false,
+    };
+    page.visibilityState = "hidden";
+    page.dispatchEvent(new Event("visibilitychange"));
+    snapshot = { ...snapshot, latestSeq: 1, permissions: [approval] };
+    page.visibilityState = "visible";
+    page.dispatchEvent(new Event("visibilitychange"));
+    await vi.waitFor(() => expect(harness.state.permissions).toEqual([approval]));
+    expect(showSessionNotification).not.toHaveBeenCalled();
+    expect(navigator.vibrate).not.toHaveBeenCalled();
   });
 
   it("waits for an offline desktop to appear, then synchronizes once", async () => {

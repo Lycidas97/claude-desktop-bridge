@@ -695,8 +695,8 @@ describe("main-turn completion notifications", () => {
 
   it.each([
     { label: "hidden wake-resume", visibilityState: "hidden", activeSessionId: "session-1", shouldNotify: true },
-    { label: "visible wake-resume on home catalog", visibilityState: "visible", activeSessionId: undefined, shouldNotify: true },
-    { label: "visible wake-resume on another session", visibilityState: "visible", activeSessionId: "session-2", shouldNotify: true },
+    { label: "visible wake-resume on home catalog", visibilityState: "visible", activeSessionId: undefined, shouldNotify: false },
+    { label: "visible wake-resume on another session", visibilityState: "visible", activeSessionId: "session-2", shouldNotify: false },
     { label: "visible while actively viewing completed session", visibilityState: "visible", activeSessionId: "session-1", shouldNotify: false },
   ])("catches up from 90 when the refreshed snapshot is already 100 ($label)", async ({ visibilityState, activeSessionId, shouldNotify }) => {
     setActiveViewedSession(activeSessionId ? { hostId: "A", sessionId: activeSessionId } : undefined);
@@ -716,6 +716,19 @@ describe("main-turn completion notifications", () => {
     } else {
       expect(harness.notify).not.toHaveBeenCalled();
     }
+    bridge.backToHosts();
+  });
+
+  it("notifies a new completion first learned through foreground catch-up", async () => {
+    const bridge = await connect("visible");
+    harness.store!.foregroundSinceRef.current = Date.now();
+    const foregroundCompletion = { ...completion, timestamp: Date.now() + 1 };
+    harness.respond = async request => request.method === "events.resume"
+      ? { events: [foregroundCompletion], nextSeq: 95, latestSeq: 95 } : {};
+    await bridge.resolveUncertainDelivery("synthetic-command", "confirm");
+    expect(harness.notify).toHaveBeenCalledOnce();
+    receive(foregroundCompletion);
+    expect(harness.notify).toHaveBeenCalledOnce();
     bridge.backToHosts();
   });
 

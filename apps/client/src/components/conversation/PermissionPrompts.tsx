@@ -165,6 +165,12 @@ export function InteractivePromptCard({
               </button>
             ))}
           </div>
+          {answered && question.answer && !question.options.some(option => option.selected) && (
+            <p className="interactive-question-answer">{question.answer}</p>
+          )}
+          {answered && question.notes && (
+            <p className="interactive-question-answer">{question.notes}</p>
+          )}
         </div>
       ))}
     </section>

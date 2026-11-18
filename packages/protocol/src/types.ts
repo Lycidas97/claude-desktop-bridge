@@ -896,6 +896,7 @@ export interface BridgeInteractiveQuestion {
   multiSelect?: boolean;
   options: BridgeInteractiveQuestionOption[];
   answer?: string;
+  notes?: string;
 }
 
 export interface BridgeInteractivePrompt {

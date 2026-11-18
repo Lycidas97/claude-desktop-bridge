@@ -713,7 +713,7 @@ describe("Frontend pull-based diagnostics state gauges & redaction", () => {
       runtime.contexts.clear();
       const providerType = element.type as unknown as (props: any) => unknown;
       providerType(element.props);
-      controller = renderStore(consumerStore, () => useDesktopConversation(input));
+      controller = renderStore(consumerStore, useDesktopConversation);
     };
     renderBoth();
 

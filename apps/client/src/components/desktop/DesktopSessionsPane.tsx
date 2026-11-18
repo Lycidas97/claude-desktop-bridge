@@ -123,12 +123,7 @@ export function DesktopSessions({
   themeControl?: ThemeControl | undefined;
   renderRightCanvas?: ((headerLeading: ReactNode) => ReactNode) | undefined;
 }) {
-  const controller = useDesktopConversation({
-    snapshot,
-    events,
-    apiRequest,
-    onRefreshSnapshot,
-  });
+  const controller = useDesktopConversation();
   const conversationDrafts = useConversationDrafts(snapshot.host.hostId);
 
   const hostId = snapshot.host.hostId;
@@ -799,10 +794,7 @@ export function DesktopSessions({
               session={selected}
               snapshot={snapshot}
               events={hostEvents}
-              apiRequest={apiRequest}
-              onRefreshSnapshot={onRefreshSnapshot}
               headerLeading={sidebarToggleButton}
-              controller={controller}
               conversationDrafts={conversationDrafts}
               onSelectSession={selectSessionFromSidebar}
               onForkCreated={(parentSessionId) => {

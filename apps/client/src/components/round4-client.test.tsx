@@ -13,7 +13,7 @@ import { EmptyState } from "./common/EmptyState.js";
 import { IconButton } from "./common/IconButton.js";
 import { SelectMenu } from "./common/SelectMenu.js";
 import { Sheet, SheetAction } from "./common/Sheet.js";
-import { DesktopSessions } from "./desktop/DesktopSessionsPane.js";
+import { readDesktopConversationTestContext, renderDesktopSessions } from "./desktop/DesktopSessions.test-fixture.js";
 import { MobileWorkspace } from "./MobileWorkspace.js";
 import { MobileInspectorCallout } from "./mobile/MobileInspectorCallout.js";
 import { MobilePageHeader } from "./mobile/MobilePageHeader.js";
@@ -55,7 +55,7 @@ vi.mock("react", async (original) => ({
     return hooks.slots[index];
   },
   useMemo: (create: () => unknown) => create(),
-  useContext: () => undefined,
+  useContext: (context: unknown) => readDesktopConversationTestContext(context),
   useId: () => "mock-id",
   useEffect(effect: () => (() => void) | void, deps?: unknown[]) {
     const index = hooks.effectIndex++;
@@ -256,7 +256,7 @@ describe("Round 4 Client Deliverables", () => {
       function draw() {
         hooks.index = 0;
         hooks.effectIndex = 0;
-        const tree = DesktopSessions({
+        const tree = renderDesktopSessions({
           snapshot,
           events: [],
           apiRequest,
@@ -370,7 +370,7 @@ describe("Round 4 Client Deliverables", () => {
       function draw() {
         hooks.index = 0;
         hooks.effectIndex = 0;
-        const tree = DesktopSessions({
+        const tree = renderDesktopSessions({
           snapshot,
           events: [],
           apiRequest,

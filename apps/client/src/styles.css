@@ -2445,7 +2445,8 @@ button:disabled {
   display: flex;
 }
 
-.conversation-item:is(.show-message-utilities, :focus-visible, :has(:focus-visible)) {
+.conversation-item:is(.show-message-utilities, :focus-visible, :has(:focus-visible)),
+.desktop-conversation .conversation-item:focus-within {
   --message-actions-display: flex;
   --message-utilities-display: contents;
 }
@@ -7450,12 +7451,6 @@ button:disabled {
   pointer-events: none;
 }
 
-@media (hover: hover) and (pointer: fine) {
-  .desktop-conversation .conversation-item:hover {
-    --message-actions-display: flex;
-    --message-utilities-display: contents;
-  }
-}
 
 .desktop-devices-section .desktop-device-row {
   grid-template-columns: 20px minmax(0, 1fr) auto;

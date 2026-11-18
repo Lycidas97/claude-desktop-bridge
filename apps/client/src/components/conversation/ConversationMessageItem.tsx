@@ -101,6 +101,11 @@ export function ConversationMessageItem({
       className={`conversation-item ${item.role} ${item.live ? "live" : ""}${entering ? " is-entering" : ""}${latestMessage || actionsRevealed ? " show-message-utilities" : ""}`}
       data-stream-key={item.id}
       tabIndex={hasUtilities && !latestMessage ? 0 : undefined}
+      // Reveal on pointer movement so shifting history under a stationary cursor cannot expand a row.
+      onPointerMove={!revealActionsOnTap && hasUtilities && !latestMessage && !actionsRevealed ? (event) => {
+        if (event.pointerType === "mouse") setActionsRevealed(true);
+      } : undefined}
+      onPointerLeave={!revealActionsOnTap && actionsRevealed ? () => setActionsRevealed(false) : undefined}
       onClick={revealActionsOnTap && hasUtilities && !latestMessage ? (event) => {
         if (event.target instanceof Element && !event.target.closest("a, button, summary, input, select, textarea")
           && event.currentTarget.ownerDocument.getSelection()?.isCollapsed !== false) {

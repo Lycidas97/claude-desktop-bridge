@@ -377,8 +377,9 @@ export async function verifyDesktopConversation(page, host, steps, directory, vi
   await copyReply.waitFor({ state: "hidden" });
   await assistantBubble.press("Tab");
   await copyReply.waitFor();
+  assert.equal(await page.locator(":focus").getAttribute("class"), "markdown-file-link");
   await page.keyboard.press("Tab");
-  assert.equal(await copyReply.evaluate(button => button === document.activeElement), true);
+  assert.equal(await page.locator(":focus").getAttribute("aria-label"), "复制这条回复");
   await page.keyboard.press("Enter");
   await assistantBubble.getByRole("button", { name: "已复制", exact: true }).waitFor();
   assert.deepEqual(await page.evaluate(() => window.__desktopCopied), ["桌面端已接入共享叶子组件，可下载构建产物 [安装包下载](bundle.zip)。"]);

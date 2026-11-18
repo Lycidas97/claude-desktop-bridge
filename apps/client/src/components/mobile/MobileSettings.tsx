@@ -22,6 +22,8 @@ import {
 import {
   resolveClaudeRemoteActivationDetail,
   resolveClaudeRemoteActivationStatus,
+  useClaudeRemoteActivation,
+  type MobileInspectorCalloutProps,
 } from "./MobileInspectorCallout.js";
 import { MobilePageHeader } from "./MobilePageHeader.js";
 
@@ -39,7 +41,7 @@ export interface MobileClaudeRuntimeSettingsControl {
   desktopName: string;
   snapshot: BridgeHostSnapshot | undefined;
   connected: boolean;
-  onActivate(): Promise<void>;
+  onActivate: NonNullable<MobileInspectorCalloutProps["onActivate"]>;
 }
 
 export function MobileSettings({
@@ -69,18 +71,11 @@ export function MobileSettings({
   );
   const [requestingPermission, setRequestingPermission] = useState(false);
 
-  const [claudeBusy, setClaudeBusy] = useState(false);
-  const [claudeError, setClaudeError] = useState<string>();
-  const [claudeAttempted, setClaudeAttempted] = useState(false);
-
   const claudeStatus = resolveClaudeRemoteActivationStatus(claudeRuntime?.snapshot);
-  const claudeHostId = claudeRuntime?.snapshot?.host.hostId ?? claudeRuntime?.desktopName;
+  const { busy: claudeBusy, feedback: claudeFeedback, activate: activateClaude } = useClaudeRemoteActivation(
+    claudeRuntime?.onActivate, claudeRuntime?.snapshot,
+  );
   const computerHeadingName = providers?.desktopName ?? quota?.desktopName ?? claudeRuntime?.desktopName;
-
-  useEffect(() => {
-    setClaudeError(undefined);
-    setClaudeAttempted(false);
-  }, [claudeHostId]);
 
   useEffect(() => {
     let active = true;
@@ -105,13 +100,6 @@ export function MobileSettings({
     };
   }, []);
 
-  useEffect(() => {
-    if (!claudeStatus.nativeUnavailable) {
-      setClaudeError(undefined);
-      setClaudeAttempted(false);
-    }
-  }, [claudeStatus.nativeUnavailable]);
-
   async function handleRequestNotificationPermission(): Promise<void> {
     if (requestingPermission) return;
     setRequestingPermission(true);
@@ -123,31 +111,13 @@ export function MobileSettings({
     }
   }
 
-  async function handleActivateClaude(): Promise<void> {
-    if (!claudeRuntime || claudeBusy || claudeStatus.cannotActivate) return;
-    setClaudeBusy(true);
-    setClaudeError(undefined);
-    setClaudeAttempted(true);
-    try {
-      await claudeRuntime.onActivate();
-    } catch (reason) {
-      setClaudeError(reason instanceof Error ? reason.message : "开启调试端口失败");
-    } finally {
-      setClaudeBusy(false);
-    }
-  }
-
-  const showClaudeGuidance = Boolean(
-    claudeRuntime?.connected
-    && claudeRuntime.snapshot
-    && claudeStatus.nativeUnavailable
-    && (
-      claudeError
-      || claudeAttempted
+  const claudeGuidance = claudeRuntime?.connected && claudeRuntime.snapshot
+    ? claudeFeedback?.detail ?? (claudeStatus.nativeUnavailable && (
+      claudeStatus.cannotActivate
       || claudeStatus.inspector?.startup?.state === "accessibility-required"
       || claudeStatus.inspector?.startup?.state === "failed"
-    ),
-  );
+    ) ? resolveClaudeRemoteActivationDetail(claudeRuntime.snapshot) : undefined)
+    : undefined;
 
   return (
     <main className="mobile-workspace mobile-settings-page">
@@ -183,16 +153,16 @@ export function MobileSettings({
                         : claudeStatus.claudeApp?.state === "stopped"
                           ? "Claude Desktop 未启动"
                           : claudeStatus.portLabel === "已开启"
-                            ? "Claude Desktop 已就绪"
+                            ? (claudeStatus.nativeUnavailable ? "Claude 原生连接未就绪" : "Claude Desktop 已就绪")
                             : "调试端口未开启"}
                     </small>
                   </span>
-                  {claudeRuntime.connected && claudeRuntime.snapshot && claudeStatus.nativeUnavailable ? (
+                  {claudeRuntime.connected && claudeRuntime.snapshot && (claudeStatus.nativeUnavailable || claudeBusy) ? (
                     <button
                       type="button"
                       className="primary-button mobile-settings-compact-btn"
                       disabled={claudeBusy || claudeStatus.cannotActivate}
-                      onClick={() => void handleActivateClaude()}
+                      onClick={() => void activateClaude()}
                     >
                       {claudeBusy ? (
                         <>
@@ -202,7 +172,7 @@ export function MobileSettings({
                       ) : (
                         <>
                           <Play size={13} aria-hidden="true" />
-                          <span>{claudeStatus.claudeApp?.state === "stopped" ? "启动 Claude" : "开启调试端口"}</span>
+                          <span>{claudeStatus.claudeApp?.state === "stopped" ? "启动 Claude" : claudeStatus.buttonLabel}</span>
                         </>
                       )}
                     </button>
@@ -212,12 +182,9 @@ export function MobileSettings({
                     </span>
                   )}
                 </div>
-                {showClaudeGuidance && (
-                  <p className={claudeError ? "mobile-settings-row updater-error" : "mobile-settings-row detail-text"} role="status">
-                    {resolveClaudeRemoteActivationDetail(claudeRuntime.snapshot, {
-                      actionError: claudeError,
-                      attempted: claudeAttempted,
-                    })}
+                {claudeGuidance && (
+                  <p className={claudeFeedback?.error ? "mobile-settings-row updater-error" : "mobile-settings-row detail-text"} role="status">
+                    {claudeGuidance}
                   </p>
                 )}
               </>

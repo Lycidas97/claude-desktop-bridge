@@ -193,7 +193,7 @@ describe("MobileSessionCatalog empty states", () => {
       onCreateSession: vi.fn(),
       onLoadSessionConfiguration: vi.fn(),
       onConfigureSession: vi.fn(),
-      onDesktopAppAction: vi.fn(),
+      onActivateClaude: vi.fn(),
       onRefresh: vi.fn(),
       onBackToHosts: vi.fn(),
       onInspectConnection: vi.fn(),

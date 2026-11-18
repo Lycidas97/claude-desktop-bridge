@@ -156,14 +156,30 @@ export async function verifyRound4Boundaries(page, host, steps, directory, viewp
   await saveShot(page, "06-mobile-settings-notifications-inspector.png");
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "MobileSettings fits 390px viewport");
+  host.claudeActivationResult = {
+    inspectorState: "closed",
+    nativeReady: false,
+    detail: "请在电脑的辅助功能设置中授权 Bridge。",
+  };
+  await settingsContent.getByRole("button", { name: "开启调试端口", exact: true }).click();
+  await settingsContent.getByRole("status").getByText(host.claudeActivationResult.detail, { exact: true }).waitFor();
+  await saveShot(page, "06a-mobile-inspector-permission.png");
 
-  // Return to 会话 catalog and click 开启调试端口 on MobileInspectorCallout -> triggers desktop.app.launch and clears callout!
+  // The catalog reports a listening port and a still-disconnected runtime separately.
+  host.claudeActivationResult = { inspectorState: "listening", nativeReady: false, detail: "Claude 原生服务仍在启动。" };
   await page.locator(".m-header:visible").getByRole("button", { name: /^(?:返回|返回会话列表)$/u }).first().click();
-  await callout.waitFor();
   await callout.getByRole("button", { name: "开启调试端口", exact: true }).click();
-  await eventually(() => host.requests.some(r => r.method === "desktop.app.launch"), true, "Mobile callout triggers desktop.app.launch");
-  await eventually(() => callout.count(), 0, "Mobile callout disappears once port 9229 is listening and runtime is ready");
-  steps.push("Mobile inspector callout and MobileSettings 9229 + 任务通知 controls render and trigger remote activation cleanly");
+  await callout.getByText("调试端口已开启，Claude 原生连接未就绪。Claude 原生服务仍在启动。", { exact: true }).waitFor();
+
+  // A ready snapshot arrives before the NewChatCanvas launch reply.
+  host.claudeActivationResult = undefined;
+  await drawer.locator('button[aria-label^="新建会话"]').first().click();
+  await mobileNewChat.getByRole("button", { name: "开启调试端口", exact: true }).click();
+  await mobileNewChat.getByRole("status").getByText("调试端口已开启，Claude 原生连接已就绪。", { exact: true }).waitFor();
+  assert.equal(await mobileNewChat.getByRole("button", { name: "开启调试端口", exact: true }).count(), 0);
+  await saveShot(page, "06b-mobile-inspector-ready.png");
+  await openMobileDrawer(page);
+  steps.push("Mobile Settings shows the launch reply's permission failure, the catalog distinguishes an open port from native readiness, and NewChatCanvas keeps the success reply visible");
 
   // 4. Desktop (1280x820): sidebar ... menu (重命名 + 移动到分组), NewChatCanvas title, mouse drag + dynamic unsectioned drop zone!
   const desktop = await page.context().newPage();

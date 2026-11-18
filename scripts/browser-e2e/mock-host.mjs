@@ -503,6 +503,10 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
           break;
         case "desktop.app.launch":
         case "claude.desktop.launch":
+          if (request.method === "desktop.app.launch" && host.claudeActivationResult) {
+            result = { desktopApps: snapshot.desktopApps, claudeActivation: host.claudeActivationResult };
+            break;
+          }
           snapshot.claudeDesktop = { state: "running", detail: "Claude Desktop 正在运行。", canLaunch: false, canQuit: true };
           snapshot.desktopApps = [{ id: "claude-desktop", name: "Claude Desktop", state: "running", detail: "Claude Desktop 正在运行。", canLaunch: false, canQuit: true }];
           snapshot.claudeInspector = {
@@ -517,7 +521,7 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
             desktopIntegration: { state: "ready", detail: "隔离 Native 宿主", enabled: true, canRestart: false },
           };
           result = request.method === "desktop.app.launch"
-            ? { desktopApps: snapshot.desktopApps }
+            ? { desktopApps: snapshot.desktopApps, claudeActivation: { inspectorState: "listening", nativeReady: true } }
             : { claudeDesktop: snapshot.claudeDesktop };
           await host.send({ kind: "snapshot", snapshot });
           break;

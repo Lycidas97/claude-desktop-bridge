@@ -3,7 +3,7 @@ import type {
   BridgeArtifactPreview,
   BridgeAttachment,
   BridgeBackgroundTask,
-  BridgeDesktopAppStatus,
+  BridgeClaudeActivationResult,
   BridgeDesktopRuntimeId,
   BridgeDirectoryListing,
   BridgeEvidenceDetailPage,
@@ -149,7 +149,7 @@ export function MobileWorkspace({
   onArchiveSession,
   onRenameSession,
   onDeleteSession,
-  onDesktopAppAction,
+  onActivateClaude,
   onRefresh,
   onBackToHosts,
   onRetry,
@@ -237,10 +237,7 @@ export function MobileWorkspace({
   onArchiveSession?(sessionId: string, archived: boolean): Promise<void>;
   onRenameSession?(sessionId: string, title: string): Promise<void>;
   onDeleteSession?(sessionId: string): Promise<void>;
-  onDesktopAppAction(
-    runtimeId: BridgeDesktopRuntimeId,
-    action: "launch" | "quit",
-  ): Promise<BridgeDesktopAppStatus[]>;
+  onActivateClaude(): Promise<BridgeClaudeActivationResult | undefined>;
   onRefresh(sessionId?: string): Promise<boolean>;
   onBackToHosts(): void;
   onRetry(): Promise<void>;
@@ -738,13 +735,6 @@ export function MobileWorkspace({
     onMoveSessionSection: onMoveSessionSection ? moveSessionToSection : undefined,
   });
 
-  const activateClaudeRemote = onDesktopAppAction
-    ? async () => {
-        await onDesktopAppAction("claude-desktop", "launch");
-        await onRefresh();
-      }
-    : undefined;
-
   function closeRename(): void {
     if (sessionActionBusy) return;
     setRenameOpen(false);
@@ -1027,7 +1017,7 @@ export function MobileWorkspace({
         sessionDrag={sessionDrag}
         manualSections={manualSections}
         sessionActionError={!menuSession && !renameOpen ? sessionActionError : undefined}
-        onActivateClaude={activateClaudeRemote}
+        onActivateClaude={onActivateClaude}
       />
     );
   }
@@ -1140,7 +1130,7 @@ export function MobileWorkspace({
               onConfigureSession={onConfigureSession}
               onCreateSession={onCreateSession}
               onSessionCreated={handleNewChatCreated}
-              {...(activateClaudeRemote ? { onActivateClaude: activateClaudeRemote } : {})}
+              onActivateClaude={onActivateClaude}
             />
           </main>
         )}

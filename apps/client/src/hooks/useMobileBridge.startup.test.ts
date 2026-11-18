@@ -172,9 +172,10 @@ describe("startup and network recovery", () => {
     harness.hosts = [];
     const bridge = mount();
     let paired: boolean | undefined;
-    void bridge.pair(pairing).then(result => { paired = result; });
+    void bridge.pair({ ...pairing, desktopName: "我的电脑" }).then(result => { paired = result; });
     await vi.waitFor(() => expect(paired).toBe(true));
     expect(bridgeVault.importPairing).toHaveBeenCalledOnce();
+    expect(vi.mocked(bridgeVault.importPairing).mock.calls[0]?.[1]?.identity.desktopName).toBe(snapshot.host.name);
     expect(harness.requests.filter(request => request.method === "snapshot.get")).toHaveLength(1);
     const saved = await Promise.all(harness.messages.map(envelope => phone.decrypt(envelope)));
     expect(saved.some(message => message.payload.kind === "snapshot" && message.payload.snapshot.host.hostId === pairing.hostId)).toBe(true);

@@ -3,6 +3,7 @@ import {
   BridgeCrypto,
   PAIRING_SCHEMA_VERSION,
   PROTOCOL_VERSION,
+  buildPairingQrUrl,
   buildPairingUrl,
   decodeUtf8,
   decodePairingBundle,
@@ -157,6 +158,52 @@ describe("BridgeCrypto v3", () => {
     expect(encoded.length).toBeLessThan(500);
     expect(encoded.length).toBeLessThan(legacyEncoded.length * 0.65);
     expect(decodePairingBundle(encoded)).toEqual(pairing);
+  });
+
+  it("keeps the single-relay QR below the full link's size without changing its credentials or expiry", async () => {
+    const { pairing, crypto } = await BridgeCrypto.createDesktop("wss://relay.example/bridge/ws", "工作室的 Mac");
+    pairing.iceServers = [{ urls: "stun:stun.cloudflare.com:3478" }];
+    const link = buildPairingUrl("https://relay.example/app?source=desktop", pairing);
+    const qr = buildPairingQrUrl(link)!;
+    const compact = pairingBundleFromUrl(qr)!;
+
+    expect(qr.length).toBeLessThan(link.length * 0.8);
+    expect(qr.split("#")[0]).toBe(link.split("#")[0]);
+    expect(pairingBundleFromUrl(link)).toEqual(pairing);
+    expect(compact).toMatchObject({
+      hostId: pairing.hostId, roomId: pairing.roomId, deviceId: pairing.deviceId,
+      pairingEpoch: pairing.pairingEpoch, secret: pairing.secret,
+      createdAt: pairing.createdAt, expiresAt: pairing.expiresAt,
+      relayUrl: pairing.relayUrl, serviceOrigin: pairing.serviceOrigin,
+      desktopName: "我的电脑", iceServers: [],
+    });
+    const wire = JSON.parse(decodeUtf8(fromBase64Url(new URL(qr).hash.slice("#/pair/".length))));
+    expect(wire).toEqual(["b4q", pairing.hostId, pairing.pairingEpoch, pairing.roomId, pairing.deviceId,
+      pairing.secret, pairing.expiresAt, pairing.relayUrl]);
+    expect((await BridgeCrypto.fromPairing(compact)).identity.authToken).toBe(crypto.identity.authToken);
+    await expect(BridgeCrypto.fromPairing(pairingBundleFromUrl(buildPairingQrUrl(buildPairingUrl(link, {
+      ...pairing, expiresAt: 1_000,
+    }))!)!)).rejects.toThrow("Pairing code has expired");
+  });
+
+  it("preserves the active and fallback relay routes and explicit connection settings in the QR", async () => {
+    const { pairing } = await BridgeCrypto.createDevicePairing({
+      hostId: "paired-desktop",
+      roomId: "paired-room",
+      pairingEpoch: 7,
+      relayUrl: "wss://relay.example/ws",
+      desktopName: "Studio Mac",
+      serviceOrigin: "https://custom.example",
+      relayEndpoints: [
+        { id: "public", kind: "public-relay", url: "wss://relay.example/ws", priority: 20 },
+        { id: "lan", kind: "lan-relay", url: "ws://192.168.1.32:8788/ws", priority: 10 },
+      ],
+      activeEndpoint: "public",
+      iceServers: [{ urls: "turn:turn.example:3478", username: "test", credential: "test-secret" }],
+    });
+    const link = buildPairingUrl("https://bridge.example", pairing);
+    expect(pairingBundleFromUrl(buildPairingQrUrl(link)!)).toEqual({ ...pairing, desktopName: "我的电脑" });
+    expect(pairingBundleFromUrl("https://bridge.example/#/pair/AAAA")).toBeUndefined();
   });
 
   it("rejects malformed compact pairing payloads", () => {

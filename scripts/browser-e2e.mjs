@@ -19,6 +19,7 @@ import { verifyRound4Boundaries, verifyRound5Ux } from "./browser-e2e/scenarios/
 import { verifyDesktopDiagnostics, verifyDesktopQuota, verifyDesktopConversation } from "./browser-e2e/scenarios/desktop.mjs";
 import { verifyMobileSafeArea } from "./browser-e2e/scenarios/mobile-safe-area.mjs";
 import { verifyAssistantMail } from "./browser-e2e/scenarios/assistant-mail.mjs";
+import { scanDesktopPairingQr } from "./browser-e2e/scenarios/pairing-qr.mjs";
 
 // This is an isolated host fixture, not a Desktop or model integration test.
 // Run via npm run test:browser after protocol/relay have been built. CHROME_PATH
@@ -40,7 +41,7 @@ let vite;
 let browser;
 let baseUrl;
 const nativeHosts = [];
-const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "round4-boundaries", "round5-ux", "desktop-diagnostics", "desktop-quota", "desktop-conversation", "mobile-safe-area", "assistant-mail"];
+const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "round4-boundaries", "round5-ux", "desktop-diagnostics", "desktop-quota", "desktop-conversation", "mobile-safe-area", "assistant-mail", "pairing-qr"];
 const scenarios = process.env.BRIDGE_E2E_SCENARIOS ? process.env.BRIDGE_E2E_SCENARIOS.split(",") : allScenarios;
 assert.ok(scenarios.every(scenario => allScenarios.includes(scenario)), "BRIDGE_E2E_SCENARIOS must name existing scenarios");
 const themes = process.env.BRIDGE_QA_THEME ? [process.env.BRIDGE_QA_THEME] : ["light", "dark"];
@@ -115,9 +116,8 @@ async function runScenario(theme, scenario, mockHostRuntime) {
       errors.push(`browser runtime: ${error.stack}`);
     });
     if (enableTrace) await context.tracing.start({ screenshots: true, snapshots: true, sources: true });
-    // Visiting the real pairing URL imports identity via the production hook and
-    // stores it in this context's own IndexedDB; no vault or hook is replaced.
-    await page.goto(buildPairingUrl(baseUrl, host.pairing), { waitUntil: "domcontentloaded" });
+    if (scenario === "pairing-qr") await scanDesktopPairingQr(context, page, host, steps, baseUrl);
+    else await page.goto(buildPairingUrl(baseUrl, host.pairing), { waitUntil: "domcontentloaded" });
     await page.locator(".mobile-home-catalog").waitFor();
     await page.locator(`.mobile-home-catalog [data-session-id="${sessionId}"]`).waitFor({ state: "attached" });
     await eventually(() => host.requests.some((request) => request.method === "snapshot.get"), true, "Pairing requires an encrypted snapshot handshake");
@@ -146,7 +146,7 @@ async function runScenario(theme, scenario, mockHostRuntime) {
     else if (scenario === "round4-boundaries") await verifyRound4Boundaries(page, host, steps, directory, viewports, theme, baseUrl);
     else if (scenario === "round5-ux") await verifyRound5Ux(page, host, steps, directory, viewports, theme);
     else if (scenario === "delivery-approval-reconnect") await verifyDelivery(page, host, steps, relayPeers);
-    else await verifyRename(page, host, scenario === "rename-list" ? "list" : "chat", steps);
+    else if (scenario !== "pairing-qr") await verifyRename(page, host, scenario === "rename-list" ? "list" : "chat", steps);
     if (!["assistant-mail", "round5-ux"].includes(scenario)) assert.equal(host.requests.some(request => request.method.startsWith("plugin.assistant-mail.")), false, "Hosts without the capability receive no assistant mail RPC");
     assert.deepEqual(errors, [], "Browser runtime, console, network isolation, or host errors");
   } catch (error) {

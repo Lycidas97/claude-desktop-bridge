@@ -1,9 +1,10 @@
-import type {
-  BridgeDeviceInfo,
-  ClaudeDesktopDeveloperSettings,
-  ClaudeDesktopProfile,
-  DesktopApi,
-  DesktopControlSnapshot,
+import {
+  buildPairingQrUrl,
+  type BridgeDeviceInfo,
+  type ClaudeDesktopDeveloperSettings,
+  type ClaudeDesktopProfile,
+  type DesktopApi,
+  type DesktopControlSnapshot,
 } from "@bridge/protocol";
 import { Activity, ChevronRight, Clipboard, Download, Play, Power, QrCode, RefreshCw, Smartphone, Trash2 } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
@@ -122,7 +123,13 @@ export function DesktopDevices({
       {snapshot.pairingUrl && snapshot.pairingExpiresAt && (
         <section className="device-pairing-band" aria-label="手机扫码配对">
           <div className="qr-wrap">
-            <QRCodeSVG value={snapshot.pairingUrl} size={104} level="M" marginSize={2} title="手机配对二维码" />
+            <QRCodeSVG
+              value={buildPairingQrUrl(snapshot.pairingUrl) ?? snapshot.pairingUrl}
+              size={104}
+              level="M"
+              marginSize={4}
+              title="手机配对二维码"
+            />
           </div>
           <div className="device-pairing-copy">
             <div className="device-pairing-title-row">

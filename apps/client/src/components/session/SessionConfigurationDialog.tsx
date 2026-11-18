@@ -251,16 +251,14 @@ export function SessionConfigurationDialog({
             {(outputStyles.length > 0 || outputStyle) && (
               <div className="session-model-field">
                 <span>输出风格</span>
-                {outputStyles.length > 0 ? (
-                  <SelectMenu
-                    ariaLabel="输出风格"
-                    value={outputStyle ?? ""}
-                    placeholder={outputStyle ?? "默认"}
-                    options={outputStyles.map((style) => ({ value: style, label: style === "default" ? "默认" : style }))}
-                    disabled={saving}
-                    onChange={setOutputStyle}
-                  />
-                ) : <div>{outputStyle === "default" ? "默认" : outputStyle}</div>}
+                <SelectMenu
+                  ariaLabel="输出风格"
+                  value={outputStyle ?? ""}
+                  placeholder={outputStyle && outputStyle !== "default" ? outputStyle : "默认"}
+                  options={outputStyles.map((style) => ({ value: style, label: style === "default" ? "默认" : style }))}
+                  disabled={saving || !outputStyles.length}
+                  onChange={setOutputStyle}
+                />
               </div>
             )}
 

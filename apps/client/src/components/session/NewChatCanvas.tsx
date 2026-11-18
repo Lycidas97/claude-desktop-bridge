@@ -797,6 +797,17 @@ export function NewChatCanvas({
               </div>
             )}
 
+            <div className="new-chat-config-row">
+              <span className="new-chat-config-label">授权模式</span>
+              <SelectMenu<BridgeSDKPermissionMode>
+                ariaLabel="授权模式"
+                value={permissionMode}
+                disabled={!connected || locked}
+                options={PERMISSION_MODE_OPTIONS}
+                onChange={choosePermissionMode}
+              />
+            </div>
+
             {outputStyles.length > 0 && (
               <div className="new-chat-config-row">
                 <span className="new-chat-config-label">输出风格</span>
@@ -812,17 +823,6 @@ export function NewChatCanvas({
                 />
               </div>
             )}
-
-            <div className="new-chat-config-row">
-              <span className="new-chat-config-label">授权模式</span>
-              <SelectMenu<BridgeSDKPermissionMode>
-                ariaLabel="授权模式"
-                value={permissionMode}
-                disabled={!connected || locked}
-                options={PERMISSION_MODE_OPTIONS}
-                onChange={choosePermissionMode}
-              />
-            </div>
           </div>
 
           {groupUnavailable && (

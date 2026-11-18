@@ -2465,6 +2465,10 @@ button:disabled {
   visibility: hidden;
 }
 
+.conversation-item.user .conversation-message-actions:has(> .delivery-state:not(.completed):last-child) {
+  --message-action-inset: 0px;
+}
+
 .conversation-message-actions .delivery-state {
   margin: 0;
 }

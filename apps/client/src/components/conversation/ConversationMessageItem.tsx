@@ -113,6 +113,22 @@ export function ConversationMessageItem({
       {item.role === "user" ? <div className="conversation-bubble">{content}</div> : content}
       {(hasUtilities || item.delivery) && (
         <div className="conversation-message-actions">
+          {hasUtilities && (
+            <div className="conversation-message-utilities">
+              {copyable && <MessageCopyButton text={item.text} label={item.role === "assistant" ? "复制这条回复" : "复制这条消息"} />}
+              {canRewind && (
+                <button
+                  type="button"
+                  className="message-copy-button"
+                  aria-label="回退到这条消息之前"
+                  disabled={rewindDisabled}
+                  onClick={() => onRewind(item.id)}
+                >
+                  回退
+                </button>
+              )}
+            </div>
+          )}
           {item.delivery && (
             <span className={`delivery-state ${item.delivery}`} role="status">
               {!online && (messageQueued || item.delivery === "queued") ? "上次同步时已排队"
@@ -144,22 +160,6 @@ export function ConversationMessageItem({
               {label}
             </button>
           ))}
-          {hasUtilities && (
-            <div className="conversation-message-utilities">
-              {copyable && <MessageCopyButton text={item.text} label={item.role === "assistant" ? "复制这条回复" : "复制这条消息"} />}
-              {canRewind && (
-                <button
-                  type="button"
-                  className="message-copy-button"
-                  aria-label="回退到这条消息之前"
-                  disabled={rewindDisabled}
-                  onClick={() => onRewind(item.id)}
-                >
-                  回退
-                </button>
-              )}
-            </div>
-          )}
         </div>
       )}
       {queueAction?.error && <div className="delivery-error-detail" role="alert">{queueAction.error}</div>}

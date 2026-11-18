@@ -329,6 +329,16 @@ export async function verifyDesktopConversation(page, host, steps, directory, vi
   viewports.push({ page: "desktop-conversation-parity", ...page.viewportSize() });
   await page.screenshot({ path: resolve(directory, "desktop-conversation-parity.png"), fullPage: true });
 
+  await host.emit("assistant.completed", { text: "排队消息之后的回复" }, { itemId: "after-desktop-queue" });
+  await stream.getByText("排队消息之后的回复", { exact: true }).waitFor();
+  await sidebar.hover();
+  await queuedBubble.getByRole("button", { name: "复制这条消息", exact: true }).waitFor({ state: "hidden" });
+  assert.equal(await queuedBubble.evaluate(message => {
+    const bubble = message.querySelector(".conversation-bubble");
+    const withdraw = message.querySelector(".queued-cancel-button");
+    return withdraw.getBoundingClientRect().right - parseFloat(getComputedStyle(withdraw).paddingRight) - bubble.getBoundingClientRect().right;
+  }), 0, "The older queue actions align with the bubble edge while copy is hidden");
+
   await queuedBubble.getByRole("button", { name: "立即发送", exact: true }).click();
   await eventually(() => host.nativeApproval.calls.filter(call => call.method === "promoteQueuedMessage").length, 1, "Desktop 立即发送 calls promoteQueuedMessage once");
   assert.deepEqual(host.nativeApproval.calls.find(call => call.method === "promoteQueuedMessage").args, [sessionId, queuedSeed.receipt.messageId]);
@@ -337,7 +347,13 @@ export async function verifyDesktopConversation(page, host, steps, directory, vi
   await queuedBubble.getByRole("button", { name: "撤回", exact: true }).click();
   await queuedBubble.getByRole("status").filter({ hasText: "已取消" }).waitFor();
   assert.equal(await queuedBubble.getByRole("button", { name: "撤回", exact: true }).count(), 0);
-  steps.push("Desktop queued bubble renders WCAG-compliant 立即发送 and 撤回 actions with status announcements");
+  await sidebar.hover();
+  assert.equal(await queuedBubble.evaluate(message => {
+    const bubble = message.querySelector(".conversation-bubble");
+    const status = message.querySelector(".delivery-state");
+    return status.getBoundingClientRect().right - bubble.getBoundingClientRect().right;
+  }), 0, "The older cancelled status aligns with the bubble edge");
+  steps.push("Desktop 立即发送, 撤回, and the cancelled status align with the bubble edge while older utilities are hidden");
 
   await eventually(() => stream.locator(".task-plan-card").count(), 1, "Desktop stream renders TaskPlanCard");
   assert.equal(await stream.locator(".task-plan-progress").innerText(), "1/2 已完成");

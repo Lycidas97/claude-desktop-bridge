@@ -13,7 +13,7 @@ import {
 import { diag, diagnostics } from "../app/diag.js";
 import { ClaudeDesktopInspector, InspectorDisconnectedError, NativeCallError, type NativeSectionCatalog } from "./claude-desktop-inspector.js";
 import type { ConversationStateStore, NativeDesktopReceipt } from "../controller/conversation-state-store.js";
-import { readClaudeTranscriptBackgroundTasks, readClaudeTranscriptSubagents, scanClaudeContextFromMessages, visibleMessage } from "../transcript/claude-history.js";
+import { readClaudeTranscriptBackgroundTasks, readClaudeTranscriptSubagents, visibleMessage } from "../transcript/claude-history.js";
 import { extractToolCallDetailFromMessages, readSubagentToolCallDetail, summarizeNativeToolInput } from "../transcript/transcript-tool-detail.js";
 import { claudeRuntimePaths } from "../app/platform.js";
 import type { SessionEventLog, BridgeEventDraft } from "../controller/session-event-log.js";
@@ -49,16 +49,15 @@ import {
   hydrateObservedContextModel,
   parseLiveContextUsage,
   projectedContextUsage,
-  projectContextMessages,
   savedModelOption,
   type NativeContextState,
 } from "./native-context-usage.js";
+import { readNativeHistoryPage } from "./native-history-pagination.js";
 import {
   enrichNativeSubagentItems,
   extractNativeImageAttachment,
   nativeHistoryItems,
   nativeItemEventDraft,
-  nativePlanMessages,
   type NativeMessageProjection,
 } from "./native-history-projection.js";
 
@@ -1055,36 +1054,13 @@ export class ClaudeDesktopBridge extends EventEmitter {
     try {
       if (!this.inspector.ready) throw new InspectorDisconnectedError("Claude Desktop history is unavailable while inspector is disconnected");
       const previousSession = !cursor ? JSON.stringify(this.session(sessionId)) : undefined;
-      const page = record(await this.inspector.call("getTranscriptPage", [id, cursor ?? "", limit, { window: "accept" }]));
-      if (!Array.isArray(page.messages)) throw new NativeCallError("Desktop returned an invalid transcript page");
-      const hasMore = page.hasMore === true;
-      const nextCursor = hasMore && typeof record(page.messages[0]).uuid === "string" ? String(record(page.messages[0]).uuid) : undefined;
-      const firstPlan = nativePlanMessages(page.messages)[0]?.message.content[0];
-      const plainLatestWithKnownPlan = !cursor && !firstPlan && this.messageProjection.get(sessionId)?.planObserved;
-      let needsEarlierPlan = firstPlan
-        ? !(firstPlan.name === "mcp__ccd_turn__update_plan" && ["first_task", "new_task"].includes(String(record(firstPlan.input).scope)))
-        : !cursor && !plainLatestWithKnownPlan;
-      const context: unknown[] = [];
-      const olderPages: unknown[][] = [];
-      let before = nextCursor;
-      while (needsEarlierPlan && before) {
-        diagnostics.count("history.planPage");
-        const older = record(await this.inspector.call("getTranscriptPage", [id, before, limit, { window: "accept" }]));
-        if (!Array.isArray(older.messages)) throw new NativeCallError("Desktop returned an invalid transcript page");
-        if (!cursor) olderPages.unshift(projectContextMessages(older.messages));
-        for (const message of nativePlanMessages(older.messages).reverse()) {
-          const block = message.message.content[0]!;
-          context.unshift(message);
-          if (block.name === "mcp__ccd_turn__wrap_up" || ["first_task", "new_task"].includes(String(record(block.input).scope))) {
-            needsEarlierPlan = false;
-            break;
-          }
-        }
-        before = older.hasMore === true && typeof record(older.messages[0]).uuid === "string" ? String(record(older.messages[0]).uuid) : undefined;
-      }
+      const { page, earlierPlanMessages, readContextMessages } = await readNativeHistoryPage(
+        this.inspector, id, cursor, limit, () => this.messageProjection.get(sessionId)?.planObserved,
+      );
+      const { hasMore, nextCursor } = page;
       const liveProjection = this.messageProjection.get(sessionId) ?? {};
       const projection: NativeMessageProjection = { ...(liveProjection.questionAnswers ? { questionAnswers: liveProjection.questionAnswers } : {}) };
-      nativeHistoryItems(sessionId, context, projection);
+      nativeHistoryItems(sessionId, earlierPlanMessages, projection);
       const items = nativeHistoryItems(sessionId, page.messages, projection);
       const localSubagents = await this.enrichSubagentItems(sessionId, items);
       if (projection.questions?.size || projection.questionAnswers?.size) {
@@ -1118,23 +1094,9 @@ export class ClaudeDesktopBridge extends EventEmitter {
         if (live) {
           this.applyLiveContextUsage(sessionId, live);
         } else {
-          let combined: unknown[] = [...olderPages.flat(), ...page.messages];
-          let scan = scanClaudeContextFromMessages(combined);
-          // Preserve estimated usage at session.open's 18-message default when plan recovery was skipped.
-          const canLookBack = plainLatestWithKnownPlan || (page.messages.length >= limit && limit >= 20);
-          for (let hop = 0; !scan.anchored && before && canLookBack && hop < 8; hop += 1) {
-            diagnostics.count("history.planPage");
-            const older = record(await this.inspector.call("getTranscriptPage", [id, before, Math.max(limit, 100), { window: "accept" }]));
-            if (!Array.isArray(older.messages)) break;
-            combined = [...projectContextMessages(older.messages), ...combined];
-            scan = scanClaudeContextFromMessages(combined);
-            before = older.hasMore === true && typeof record(older.messages[0]).uuid === "string"
-              ? String(record(older.messages[0]).uuid)
-              : undefined;
-          }
-          this.applyTranscriptContextMessages(sessionId, combined);
+          this.applyTranscriptContextMessages(sessionId, await readContextMessages());
         }
-        if (hydrateModel) await this.hydrateContextModel(id, this.native.get(id)?.model, { messages: page.messages, hasMore });
+        if (hydrateModel) await this.hydrateContextModel(id, this.native.get(id)?.model, page);
         this.projectSessions();
         if (JSON.stringify(this.session(sessionId)) !== previousSession) this.emit("changed");
       }

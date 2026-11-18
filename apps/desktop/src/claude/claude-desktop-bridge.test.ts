@@ -3106,10 +3106,16 @@ describe("Claude native relay", () => {
         });
       }
 
-      const page = await f.bridge.history("local-native", cursor, 1);
-      expect(page).toMatchObject({ hasMore: true, nextCursor: "ordinary-0", items: [{ id: "ordinary-0", text: "Page 0" }] });
+      const controller = createControllerFixture({ broker: f.bridge, eventLog: f.eventLog });
+      const page = await controller.handleRequest({
+        kind: "request", requestId: "history", idempotencyKey: "history", method: "session.history", params: { sessionId: "local-native", cursor, limit: 1 },
+      }, "mobile", "phone");
+      expect(page).toMatchObject({ history: { hasMore: true, nextCursor: "ordinary-0", items: [{ id: "ordinary-0", text: "Page 0" }] } });
       if (!cursor) expect(f.bridge.session("local-native")?.contextUsage).toMatchObject({ totalTokens: 64_200, maxTokens: 1_000_000, estimated: false });
-      expect(f.native.calls.filter(call => call.method === "getTranscriptPage").map(call => call.args[1])).toEqual([cursor ?? ""]);
+      expect(f.native.calls.filter(call => ["getTranscriptPage", "getContextUsage"].includes(call.method))).toEqual([
+        { method: "getTranscriptPage", args: ["local-native", cursor ?? "", 1, { window: "accept" }] },
+        ...(cursor ? [] : [{ method: "getContextUsage", args: ["local-native"] }]),
+      ]);
     } finally { await f.close(); }
   });
 
@@ -3256,13 +3262,21 @@ describe("Claude native relay", () => {
       f.native.pages.set(cursor ?? "", { messages: [text, advance], hasMore: true });
       f.native.pages.set("latest-text", { messages: [child, continuation], hasMore: true });
       f.native.pages.set("child-initial", { messages: [old, initial], hasMore: true });
-      const history = await f.bridge.history("local-native", cursor, 2);
-      expect(history).toMatchObject({ hasMore: true, nextCursor: "latest-text", items: [
+      f.native.contextUsage = { totalTokens: 64_200, rawMaxTokens: 1_000_000 };
+      const controller = createControllerFixture({ broker: f.bridge, eventLog: f.eventLog });
+      const response = await controller.handleRequest({
+        kind: "request", requestId: "history", idempotencyKey: "history", method: "session.history", params: { sessionId: "local-native", cursor, limit: 2 },
+      }, "mobile", "phone");
+      expect(response).toMatchObject({ history: { hasMore: true, nextCursor: "latest-text", items: [
         { id: "latest-text", text: "Visible latest text" },
         { id: "plan:current-plan", taskPlan: { id: "current-plan", items: [{ content: "Read", status: "completed" }, { content: "Verify", status: "in_progress" }] } },
-      ] });
-      expect(history.items).toHaveLength(2);
-      expect(f.native.calls.filter(call => call.method === "getTranscriptPage").map(call => call.args[1])).toEqual([cursor ?? "", "latest-text", "child-initial"]);
+      ] } });
+      expect(f.native.calls.filter(call => ["getTranscriptPage", "getContextUsage"].includes(call.method))).toEqual([
+        { method: "getTranscriptPage", args: ["local-native", cursor ?? "", 2, { window: "accept" }] },
+        { method: "getTranscriptPage", args: ["local-native", "latest-text", 2, { window: "accept" }] },
+        { method: "getTranscriptPage", args: ["local-native", "child-initial", 2, { window: "accept" }] },
+        ...(cursor ? [] : [{ method: "getContextUsage", args: ["local-native"] }]),
+      ]);
       expect(f.native.calls.some(call => call.method === "getTranscript")).toBe(false);
     } finally { await f.close(); }
   });
@@ -3275,12 +3289,30 @@ describe("Claude native relay", () => {
       const advance = planMessage("orphan-advance", { advance: true }, 30);
       f.native.pages.set("", { messages: [advance], hasMore: true });
       f.native.pages.set("orphan-advance", { messages: [initial, wrap], hasMore: true });
-      const history = await f.bridge.history("local-native", undefined, 1);
-      expect(history.items).toEqual([]);
-      expect(history.nextCursor).toBe("orphan-advance");
+      const controller = createControllerFixture({ broker: f.bridge, eventLog: f.eventLog });
+      const response = await controller.handleRequest({
+        kind: "request", requestId: "history", idempotencyKey: "history", method: "session.history", params: { sessionId: "local-native", limit: 1 },
+      }, "mobile", "phone");
+      expect(response).toMatchObject({ history: { hasMore: true, nextCursor: "orphan-advance", items: [] } });
       expect(f.native.calls.filter(call => call.method === "getTranscriptPage").map(call => call.args[1])).toEqual(["", "orphan-advance"]);
       await f.message(planMessage("later-orphan", { advance: true }, 40));
       expect(f.eventLog.replay(0).filter(event => event.data.taskPlan)).toEqual([]);
+    } finally { await f.close(); }
+  });
+
+  it("rejects a malformed plan lookback page before querying live context usage", async () => {
+    const f = await fixture();
+    try {
+      f.native.pages.set("", { messages: [planMessage("advance", { advance: true })], hasMore: true });
+      f.native.pages.set("advance", { hasMore: true });
+      const controller = createControllerFixture({ broker: f.bridge, eventLog: f.eventLog });
+      await expect(controller.handleRequest({
+        kind: "request", requestId: "history", idempotencyKey: "history", method: "session.history", params: { sessionId: "local-native", limit: 1 },
+      }, "mobile", "phone")).rejects.toThrow(new NativeCallError("Desktop returned an invalid transcript page"));
+      expect(f.native.calls.filter(call => ["getTranscriptPage", "getContextUsage"].includes(call.method))).toEqual([
+        { method: "getTranscriptPage", args: ["local-native", "", 1, { window: "accept" }] },
+        { method: "getTranscriptPage", args: ["local-native", "advance", 1, { window: "accept" }] },
+      ]);
     } finally { await f.close(); }
   });
 
@@ -4299,6 +4331,52 @@ describe("Claude native relay", () => {
       expect(settings).toMatchObject({ configuration: { context }, session: { contextUsage: context } });
       expect(f.native.calls.filter(call => ["getTranscriptPage", "getContextUsage"].includes(call.method))).toEqual([
         { method: "getContextUsage", args: ["local-native"] },
+      ]);
+    } finally { await f.close(); }
+  });
+
+  it.each([
+    { source: "the plan page", usagePage: 0, reads: 0 },
+    { source: "a malformed estimate page", usagePage: null, reads: 1 },
+    { source: "the eighth estimate page", usagePage: 8, reads: 8 },
+    { source: "the unread ninth estimate page", usagePage: 9, reads: 8 },
+  ])("preserves the history cursor and bounds context lookback with $source", async ({ usagePage, reads }) => {
+    const f = await fixture();
+    try {
+      const model = "claude-sonnet-4-5";
+      f.native.sessions[0]!.model = model;
+      const usage = { id: "main-turn", model, usage: { input_tokens: 12_000, output_tokens: 400 } };
+      const plan = planMessage("plan", { scope: "first_task", items: [{ content: "Read", status: "in_progress" }] }, 10);
+      f.native.pages.set("", { hasMore: true, messages: [
+        ...Array.from({ length: 19 }, (_, index) => ({ type: "user", uuid: `hidden-${index}`, isMeta: true })),
+        planMessage("advance", { advance: true }, 20),
+      ] });
+      f.native.pages.set("hidden-0", { hasMore: true, messages: [
+        { type: "assistant", uuid: "older-0", message: usagePage === 0 ? usage : {} }, plan,
+      ] });
+      for (let index = 0; index < 9; index += 1) {
+        f.native.pages.set(`older-${index}`, usagePage === null && index === 0 ? { hasMore: true } : {
+          hasMore: true, messages: [{ type: "assistant", uuid: `older-${index + 1}`, message: usagePage === index + 1 ? usage : {} }],
+        });
+      }
+
+      const controller = createControllerFixture({ broker: f.bridge, eventLog: f.eventLog });
+      const response = await controller.handleRequest({
+        kind: "request", requestId: "open", idempotencyKey: "open", method: "session.open", params: { sessionId: "local-native", limit: 20 },
+      }, "mobile", "phone");
+      expect(response).toMatchObject({ history: { hasMore: true, nextCursor: "hidden-0", items: [
+        { id: "plan:plan", taskPlan: { items: [{ content: "Read", status: "completed" }] } },
+      ] } });
+      if (usagePage === 0 || usagePage === 8) {
+        expect(response).toMatchObject({ session: { contextUsage: { totalTokens: 12_400, model, estimated: true } } });
+      } else {
+        expect(response).not.toHaveProperty("session.contextUsage");
+      }
+      expect(f.native.calls.filter(call => ["getTranscriptPage", "getContextUsage"].includes(call.method))).toEqual([
+        { method: "getTranscriptPage", args: ["local-native", "", 20, { window: "accept" }] },
+        { method: "getTranscriptPage", args: ["local-native", "hidden-0", 20, { window: "accept" }] },
+        { method: "getContextUsage", args: ["local-native"] },
+        ...Array.from({ length: reads }, (_, index) => ({ method: "getTranscriptPage", args: ["local-native", `older-${index}`, 100, { window: "accept" }] })),
       ]);
     } finally { await f.close(); }
   });

@@ -69,6 +69,21 @@ describe("SessionFamilyList", () => {
     expect(elements(row(tree)).find(element => String(element.props.className).startsWith("session-state-dot"))?.props.className).toBe(`session-state-dot ${tone}`);
   });
 
+  it("shows an accessible completion dot only for a new result on an idle active row", () => {
+    const completed = { ...session, lastCompletedTurnId: "new-result" };
+    const families = groupProjectSessionFamilies([completed]);
+    const props = { families, flat: true };
+    const unread = renderToStaticMarkup(render({ ...props, seenCompletions: { root: "old-result" } }));
+    expect(unread).toContain("session-state-dot completed");
+    expect(unread).toContain("已完成，未查看");
+    expect(renderToStaticMarkup(render({ ...props, seenCompletions: { root: "new-result" } }))).not.toContain("已完成，未查看");
+    expect(renderToStaticMarkup(render({ ...props, permissions: [permission] }))).not.toContain("已完成，未查看");
+    expect(renderToStaticMarkup(render({ ...props, archivedList: true }))).not.toContain("已完成，未查看");
+    for (const state of [{ turnState: "running" as const }, { pendingCount: 1 }, { runningSubagents: { count: 1, lastUpdatedAt: Date.now() } }]) {
+      expect(renderToStaticMarkup(render({ ...props, families: groupProjectSessionFamilies([{ ...completed, ...state }]) }))).not.toContain("已完成，未查看");
+    }
+  });
+
   it("retains pending messages alongside a running Native turn and permission priority", () => {
     const families = groupProjectSessionFamilies<BridgeSessionInfo>([{ ...session, turnState: "running", ownership: "DESKTOP_NATIVE_RUNNING", pendingCount: 2 }]);
     const running = renderToStaticMarkup(render({ families }));

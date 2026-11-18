@@ -666,8 +666,12 @@ export function useMobileBridge() {
       reasoningEffort?: string | null;
       fast?: boolean | null;
       permissionMode?: BridgeSDKPermissionMode;
+      outputStyle?: string;
     },
   ): Promise<BridgeSessionConfiguration> => {
+    if (change.outputStyle !== undefined && !stateRef.current.snapshot?.host.capabilities.includes("session.output-style.v1")) {
+      throw new Error("当前电脑不支持设置输出风格。");
+    }
     const response = await sendRequest("session.configure", { sessionId, ...change }, {
       wait: true,
       timeoutMs: 45_000,

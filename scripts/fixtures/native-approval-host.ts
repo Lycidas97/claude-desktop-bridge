@@ -68,6 +68,8 @@ export async function startNativeApprovalHost(options: {
   const native = {
     sessionId: options.sessionId, cwd: commandCwd, harnessCwd, title: options.title, model: nativeModelIds[0]!,
     turnRunning: false,
+    outputStyle: "default",
+    availableOutputStyles: ["default", "Explanatory", "Fixture personal style", "Fixture project style"],
     prs: [] as BridgePullRequest[],
     pendingRefusalFallbackPrompt: undefined as Record<string, unknown> | undefined,
     pendingAutoModeServerFallbackPrompt: undefined as Record<string, unknown> | undefined,
@@ -116,7 +118,7 @@ export async function startNativeApprovalHost(options: {
   const unsupportedMethods = new Set<string>();
   const inspector = Object.assign(new EventEmitter(), {
     ready: true,
-    supports: (method: string) => !unsupportedMethods.has(method) && ["getAll", "getSession", "getTranscript", "getTranscriptPage", "resolveSessionFileQuietly", "getSupportedCommands", "respondToToolPermission", "setPermissionMode", "setModel", "setEffort", "canRewindTo", "rewindFiles", "rewindV2", "sendMessage", "promoteQueuedMessage", "sendSteeredNow", "cancelQueuedMessage", "interrupt", "start", "updateSession", "getPrOverview", "getPrChecks", "setBoundPrAutoFix", "setAutoFixOwnPrsWanted", "armAutoFixOnNextPr", "getGitInfo", ...Object.values(nativeDialogs).map(dialog => dialog.method), ...(saveTrustSupported ? ["saveTrust"] : [])].includes(method),
+    supports: (method: string) => !unsupportedMethods.has(method) && ["getAll", "getSession", "getTranscript", "getTranscriptPage", "resolveSessionFileQuietly", "getSupportedCommands", "respondToToolPermission", "setPermissionMode", "setModel", "setEffort", "applyFlagSettings", "listGlobalOutputStyles", "canRewindTo", "rewindFiles", "rewindV2", "sendMessage", "promoteQueuedMessage", "sendSteeredNow", "cancelQueuedMessage", "interrupt", "start", "updateSession", "getPrOverview", "getPrChecks", "setBoundPrAutoFix", "setAutoFixOwnPrsWanted", "armAutoFixOnNextPr", "getGitInfo", ...Object.values(nativeDialogs).map(dialog => dialog.method), ...(saveTrustSupported ? ["saveTrust"] : [])].includes(method),
     async inputQueueDrained(id: string) { return id === options.sessionId && !native.turnRunning && queued.size === 0; },
     async prPreferences(id: string) {
       return id === options.sessionId ? { ...preferences, nextOwnPrArmed: nextPrBranch !== undefined } : undefined;
@@ -302,6 +304,14 @@ export async function startNativeApprovalHost(options: {
         return;
       }
       if (method === "setEffort") return;
+      if (method === "listGlobalOutputStyles") return { builtIns: ["Explanatory"], customs: ["Fixture personal style"] };
+      if (method === "applyFlagSettings") {
+        const target = nativeSessions.find(candidate => candidate.sessionId === args[0]);
+        const { outputStyle } = args[1] as { outputStyle: string };
+        assert.ok(target?.availableOutputStyles.includes(outputStyle), "Native setter takes a session catalog entry");
+        target.outputStyle = outputStyle;
+        return;
+      }
       if (method === "setPermissionMode") {
         native.permissionMode = args[1] as BridgeSDKPermissionMode;
         options.onModeChanged?.(native.permissionMode);
@@ -460,7 +470,8 @@ export async function startNativeApprovalHost(options: {
     profile() {
       const session = broker.session(options.sessionId)!;
       return { model: session.model, modelDisplayName: session.modelDisplayName, effort: session.effort,
-        nativePermissionMode: session.nativePermissionMode, nativePermissionModeChange: session.nativePermissionModeChange };
+        nativePermissionMode: session.nativePermissionMode, nativePermissionModeChange: session.nativePermissionModeChange,
+        outputStyle: session.outputStyle };
     },
     async projectCatalog() {
       const project = join(options.directory, "claude-desktop-bridge");

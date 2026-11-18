@@ -170,7 +170,7 @@ test("packaged QA distinguishes a ready Native host with no active sessions", as
 
 test("packaged QA keeps Native configuration/evidence checks with optional runtime capabilities", async () => {
   const snapshot = nativeSnapshot();
-  snapshot.host.capabilities.push("session.rewind.v1", "session.rename.v1", "workspace.trust.v1", "prompt.native.v1", "pr.autofix.v1");
+  snapshot.host.capabilities.push("session.rewind.v1", "session.rename.v1", "session.output-style.v1", "workspace.trust.v1", "prompt.native.v1", "pr.autofix.v1");
   snapshot.runtime.state = "ready";
   snapshot.runtime.desktopIntegration.state = "ready";
   snapshot.runtimes[0].state = "ready";

@@ -43,7 +43,7 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
       online: true,
       lastSeenAt: now,
       version: "1.1.1",
-      capabilities: ["claude.native-relay.v1", "session.rename.v1", "runtime.adapter.v1", ...(native ? ["directory.browse.v1", "workspace.trust.v1", "session.commands.v1", "session.command.v1", "session.rewind.v1", "plugin.magpie-quota.v1", "turn.queue.steer.v1", "turn.queue.cancel.v1", "artifact.transfer.stat.v1", "artifact.transfer.relative-link.v1", "section.rename.v1", "section.delete.v1", "transcript.toolDetail.v1", "system.update.v1", "prompt.native.v1", "pr.autofix.v1"] : [])],
+      capabilities: ["claude.native-relay.v1", "session.rename.v1", "runtime.adapter.v1", ...(native ? ["directory.browse.v1", "workspace.trust.v1", "session.commands.v1", "session.command.v1", "session.rewind.v1", "session.output-style.v1", "plugin.magpie-quota.v1", "turn.queue.steer.v1", "turn.queue.cancel.v1", "artifact.transfer.stat.v1", "artifact.transfer.relative-link.v1", "section.rename.v1", "section.delete.v1", "transcript.toolDetail.v1", "system.update.v1", "prompt.native.v1", "pr.autofix.v1"] : [])],
     },
     ...(native ? {
       updater: {
@@ -558,11 +558,16 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
             : readResult;
           break;
         }
-        case "session.configure":
+        case "session.configure": {
           result = await host.nativeApproval.configuration(request);
-          Object.assign(session, host.nativeApproval.profile());
+          if (request.params.sessionId === sessionId) Object.assign(session, host.nativeApproval.profile());
+          else if (result.session) {
+            const target = snapshot.sessions.find(candidate => candidate.sessionId === result.session.sessionId);
+            if (target) target.outputStyle = result.session.outputStyle;
+          }
           await host.send({ kind: "snapshot", snapshot });
           break;
+        }
         case "session.list": result = { sessions: snapshot.sessions }; break;
         case "project.list": result = { projects: snapshot.projects }; break;
         case "session.open": {

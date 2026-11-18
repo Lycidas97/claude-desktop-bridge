@@ -5,7 +5,7 @@ const STREAM = "__claudeBridgeNativeStreamV1";
 const METHODS = new Set([
   "getAll", "getSession", "start", "saveTrust", "forkSession", "startBtwChild", "updateSession", "archive", "unarchive", "delete",
   "sendMessage", "sendSteeredNow", "promoteQueuedMessage", "cancelQueuedMessage", "interrupt", "stopTask", "setModel", "setEffort",
-  "setPermissionMode", "getContextUsage", "getSupportedCommands", "getTranscript", "getTranscriptPage",
+  "setPermissionMode", "applyFlagSettings", "listGlobalOutputStyles", "getContextUsage", "getSupportedCommands", "getTranscript", "getTranscriptPage",
   "getTranscriptTail", "respondToToolPermission", "findLocalSessionIdForBridgeId", "getAvailableCodeModels",
   "resolveSessionFileQuietly",
   "canRewindTo", "rewindV2", "rewindFiles",

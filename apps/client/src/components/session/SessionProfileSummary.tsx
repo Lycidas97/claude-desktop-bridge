@@ -36,11 +36,11 @@ export function SessionProfileSummary({
   const modelText = formatSessionModelLabel(session);
   const effortLabel = formatSessionEffortLabel(session.effort ?? session.reasoningEffort);
   const modeLabel = session.nativePermissionMode ? HEADER_MODE_LABELS[session.nativePermissionMode] : undefined;
-  const metaParts: Array<{ text: string; bypass?: boolean }> = [
+  const outputStyle = session.outputStyle === "default" ? undefined : session.outputStyle;
+  const metaParts: Array<{ text: string; className?: string }> = [
     ...(effortLabel ? [{ text: effortLabel }] : []),
-    ...(modeLabel
-      ? [{ text: modeLabel, ...(session.nativePermissionMode === "bypassPermissions" ? { bypass: true } : {}) }]
-      : []),
+    ...(modeLabel ? [{ text: modeLabel, className: session.nativePermissionMode === "bypassPermissions" ? "is-bypass" : "" }] : []),
+    ...(outputStyle ? [{ text: outputStyle, className: "is-output-style" }] : []),
   ];
 
   return (
@@ -56,7 +56,7 @@ export function SessionProfileSummary({
               <Fragment key={index}>
                 {index > 0 && <span className="session-profile-sep"> · </span>}
                 <span
-                  className={`session-profile-part${part.bypass ? " is-bypass" : ""}`}
+                  className={`session-profile-part${part.className ? ` ${part.className}` : ""}`}
                 >
                   {part.text}
                 </span>

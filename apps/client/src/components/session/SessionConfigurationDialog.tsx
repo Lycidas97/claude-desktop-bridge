@@ -52,6 +52,7 @@ export interface SessionConfigurationChange {
   effort?: string | null;
   reasoningEffort?: string | null;
   permissionMode?: BridgeSDKPermissionMode | undefined;
+  outputStyle?: string;
 }
 
 export function SessionConfigurationDialog({
@@ -71,6 +72,7 @@ export function SessionConfigurationDialog({
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("medium");
   const [nativePermissionMode, setNativePermissionMode] = useState<BridgeSDKPermissionMode>();
+  const [outputStyle, setOutputStyle] = useState<string>();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [confirmFullAccess, setConfirmFullAccess] = useState(false);
@@ -92,6 +94,7 @@ export function SessionConfigurationDialog({
         setModel(next.model ?? next.availableModels[0]?.value ?? "");
         setEffort(next.reasoningEffort ?? next.effort ?? next.availableReasoningEfforts?.[0] ?? next.availableEffortLevels[0] ?? "medium");
         setNativePermissionMode(next.nativePermissionMode);
+        setOutputStyle(next.outputStyle);
         setError(undefined);
       })
       .catch((reason: unknown) => {
@@ -114,6 +117,27 @@ export function SessionConfigurationDialog({
   }, [confirmFullAccess, saving]);
 
   const modelOptions = configuration?.availableModels ?? [];
+  const outputStyles = configuration?.availableOutputStyles ?? [];
+  const loadReadyStyles = !loading && configuration && outputStyles.length === 0 && session.outputStyleCatalogReady === true;
+  useEffect(() => {
+    if (!loadReadyStyles) return;
+    let active = true;
+    void onLoad()
+      .then(({ availableOutputStyles, outputStyle }) => {
+        if (!active || !availableOutputStyles?.length) return;
+        setConfiguration((current) => {
+          if (!current) return current;
+          const { outputStyle: _previous, ...settings } = current;
+          return { ...settings, availableOutputStyles, ...(outputStyle ? { outputStyle } : {}) };
+        });
+        setOutputStyle(outputStyle);
+      })
+      .catch((reason: unknown) => {
+        if (active) setError(reason instanceof Error ? reason.message : "输出风格读取失败");
+      });
+    return () => { active = false; };
+  }, [session.sessionId, loadReadyStyles]);
+
   const selectedModel = useMemo(
     () => modelOptions.find((candidate) => candidate.value === model),
     [model, modelOptions],
@@ -136,6 +160,7 @@ export function SessionConfigurationDialog({
       setModel(next.model ?? next.availableModels[0]?.value ?? "");
       setEffort(next.reasoningEffort ?? next.effort ?? next.availableReasoningEfforts?.[0] ?? next.availableEffortLevels[0] ?? "medium");
       setNativePermissionMode(next.nativePermissionMode);
+      setOutputStyle(next.outputStyle);
       if (change.model !== null) onClose();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "会话配置保存失败");
@@ -144,14 +169,24 @@ export function SessionConfigurationDialog({
     }
   }
 
-  function saveSelectedConfiguration(): Promise<void> {
-    return save({
-      ...(modelOptions.length ? { model } : {}),
+  async function saveSelectedConfiguration(): Promise<void> {
+    const modelChanged = modelOptions.length > 0 && model !== (configuration?.model ?? modelOptions[0]?.value);
+    const styleChanged = Boolean(outputStyle && outputStyle !== configuration?.outputStyle);
+    const loadedEffort = configuration?.reasoningEffort ?? configuration?.effort
+      ?? configuration?.availableReasoningEfforts?.[0] ?? configuration?.availableEffortLevels[0] ?? "medium";
+    // Preserve the existing effort downgrade on a model change or an explicit effort save.
+    const effortChanged = shownEffort !== loadedEffort && (!styleChanged || modelChanged || effort !== loadedEffort);
+    const change: SessionConfigurationChange = {
+      ...(modelChanged ? { model } : {}),
+      ...(styleChanged && outputStyle ? { outputStyle } : {}),
       ...(nativeRuntime ? {
-        ...(effortLevels.length && selectedModel?.supportsEffort !== false ? { reasoningEffort: shownEffort } : {}),
-        ...(claudeSession && nativePermissionMode ? { permissionMode: nativePermissionMode } : {}),
+        ...(effortChanged && effortLevels.length && selectedModel?.supportsEffort !== false ? { reasoningEffort: shownEffort } : {}),
+        ...(claudeSession && nativePermissionMode && nativePermissionMode !== configuration?.nativePermissionMode
+          ? { permissionMode: nativePermissionMode } : {}),
       } : { effort: selectedModel?.supportsEffort === false ? null : shownEffort }),
-    });
+    };
+    if (Object.keys(change).length) await save(change);
+    else onClose();
   }
 
   const appliesAfterTurn = session.turnState === "running" || configuration?.appliesAfterTurn;
@@ -242,6 +277,20 @@ export function SessionConfigurationDialog({
               </div>
             )}
 
+            {(outputStyles.length > 0 || outputStyle) && (
+              <div className="session-model-field">
+                <span>输出风格</span>
+                <SelectMenu
+                  ariaLabel="输出风格"
+                  value={outputStyle ?? ""}
+                  placeholder={outputStyle && outputStyle !== "default" ? outputStyle : "默认"}
+                  options={outputStyles.map((style) => ({ value: style, label: style === "default" ? "默认" : style }))}
+                  disabled={saving || !outputStyles.length}
+                  onChange={setOutputStyle}
+                />
+              </div>
+            )}
+
             {configuration?.context && configuration.context.totalTokens > 0 && (() => {
               const context = configuration.context;
               const hasCapacity = typeof context.maxTokens === "number" && context.maxTokens > 0
@@ -285,7 +334,7 @@ export function SessionConfigurationDialog({
               <button
                 type="button"
                 className="primary-button"
-                disabled={saving || (!modelOptions.length && !effortLevels.length && !configuration?.nativePermissionMode)}
+                disabled={saving || (!modelOptions.length && !effortLevels.length && !configuration?.nativePermissionMode && !outputStyles.length)}
                 onClick={() => {
                   if (claudeSession && nativePermissionMode === "bypassPermissions" && configuration?.nativePermissionMode !== "bypassPermissions") setConfirmFullAccess(true);
                   else void saveSelectedConfiguration();

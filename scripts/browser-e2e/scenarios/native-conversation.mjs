@@ -171,6 +171,21 @@ export async function verifyNativeMessages(page, host, steps, directory) {
   assert.equal((await configuration.innerText()).includes("Desktop did not apply"), false);
   await page.screenshot({ path: resolve(directory, "native-gemini-preferred-context.png"), fullPage: true });
   steps.push("Gemini saves through the real Native facade when Desktop prefers 1M, and reopening configuration shows its observed model and context without a false failure");
+
+  const styleSelect = configuration.getByRole("combobox", { name: "输出风格", exact: true });
+  await eventually(() => customSelectValue(styleSelect), "default", "Existing session initially displays Desktop's current style");
+  await selectCustomOption(page, styleSelect, "Fixture project style");
+  const beforeStyleSave = host.nativeApproval.calls.length;
+  await configuration.getByRole("button", { name: "保存配置", exact: true }).click();
+  await configuration.waitFor({ state: "hidden" });
+  assert.equal(host.nativeApproval.calls.slice(beforeStyleSave).some(call => ["setModel", "setEffort", "setPermissionMode"].includes(call.method)), false);
+  assert.deepEqual(host.nativeApproval.calls.filter(call => call.method === "applyFlagSettings").at(-1).args,
+    [sessionId, { outputStyle: "Fixture project style" }]);
+  await settingsButton.getByText("Fixture project style", { exact: true }).waitFor();
+  await settingsButton.click();
+  await eventually(() => customSelectValue(styleSelect), "Fixture project style", "Reopened settings read back the session's custom style");
+  await page.screenshot({ path: resolve(directory, "native-output-style.png"), fullPage: true });
+  steps.push("Existing session applies a project style through Desktop and shows it in the header and settings");
 }
 
 export async function verifyHistoryPagination(page, host, steps, directory) {

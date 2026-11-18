@@ -48,6 +48,8 @@ class NativeDesktop extends EventEmitter {
   btwResult: Record<string, unknown> = { status: "started", sessionId: "local-child" };
   codeModels: string[] = [];
   applyModel = true;
+  applyOutputStyle = true;
+  globalOutputStyles: { builtIns: string[]; customs: string[] } = { builtIns: [], customs: [] };
   normalizeModel: ((model: string) => string) | undefined;
   sentModels: unknown[] = [];
   canRewind = true;
@@ -122,6 +124,13 @@ class NativeDesktop extends EventEmitter {
     if (["promoteQueuedMessage", "sendSteeredNow", "cancelQueuedMessage"].includes(method)) return this.queueResult;
     if (method === "getAvailableCodeModels") return this.codeModels;
     if (method === "setModel" && session && this.applyModel) session.model = this.codeModels.length && !this.codeModels.some(model => model.replace(/\[1m\]$/iu, "") === String(args[1]).replace(/\[1m\]$/iu, "")) ? "default" : this.normalizeModel?.(String(args[1])) ?? args[1];
+    if (method === "listGlobalOutputStyles") return this.globalOutputStyles;
+    if (method === "applyFlagSettings" && session) {
+      const { outputStyle } = args[1] as { outputStyle: string };
+      if (!(session.availableOutputStyles as string[] | undefined)?.includes(outputStyle)) throw new NativeCallError("Style not available");
+      if (this.applyOutputStyle) session.outputStyle = outputStyle;
+      return;
+    }
     if (method === "setPermissionMode" && session) {
       if (this.permissionModeResult && this.applyPermissionMode) session.permissionMode = args[1];
       return this.permissionModeResult;
@@ -2310,6 +2319,44 @@ describe("Claude native relay", () => {
       delete f.native.sessions[0]!.permissionMode;
       await f.bridge.refreshRuntime();
       expect(f.bridge.session("local-native")).not.toHaveProperty("nativePermissionMode");
+    } finally { await f.close(); }
+  });
+
+  it("waits for the new Native session's catalog before applying a preselected output style", async () => {
+    const f = await fixture();
+    try {
+      f.native.globalOutputStyles = { builtIns: ["Concise"], customs: ["Personal notes"] };
+      expect((await f.bridge.defaultConfiguration()).availableOutputStyles).toEqual(["Concise", "Personal notes"]);
+      const created = await f.bridge.createSession("/project");
+      const pending = f.bridge.configureSession({ sessionId: created.sessionId, outputStyle: "Concise" });
+      expect(f.native.calls.some(call => call.method === "applyFlagSettings")).toBe(false);
+      const session = f.native.sessions.find(entry => entry.sessionId === created.sessionId)!;
+      session.availableOutputStyles = ["default", "concise", "Project notes"];
+      f.native.emit("event", { type: "session_updated", sessionId: created.sessionId, session: structuredClone(session) });
+      await expect(pending).resolves.toMatchObject({ outputStyle: "concise", availableOutputStyles: session.availableOutputStyles });
+      expect(f.native.calls.filter(call => call.method === "applyFlagSettings")).toEqual([
+        { method: "applyFlagSettings", args: [created.sessionId, { outputStyle: "concise" }] },
+      ]);
+      expect(f.bridge.session(created.sessionId)).toMatchObject({ outputStyle: "concise", outputStyleCatalogReady: true });
+      expect(f.bridge.session("local-native")?.outputStyle).toBeUndefined();
+    } finally { await f.close(); }
+  });
+
+  it("uses Native readback for an active session's next-turn style and rejects an unavailable or unapplied style", async () => {
+    const f = await fixture();
+    try {
+      const session = f.native.sessions[0]!;
+      Object.assign(session, { turnRunning: true, availableOutputStyles: ["default", "Project notes"], outputStyle: "default" });
+      await expect(f.bridge.configureSession({
+        sessionId: "local-native", outputStyle: "Unknown", model: "other-model", effort: "high", permissionMode: "plan",
+      })).rejects.toThrow("此会话不提供输出风格");
+      expect(f.native.calls.filter(call => ["applyFlagSettings", "setModel", "setEffort", "setPermissionMode"].includes(call.method))).toEqual([]);
+      await expect(f.bridge.configureSession({ sessionId: "local-native", outputStyle: "Project notes" })).resolves.toMatchObject({
+        appliesAfterTurn: true, outputStyle: "Project notes",
+      });
+      f.native.applyOutputStyle = false;
+      await expect(f.bridge.configureSession({ sessionId: "local-native", outputStyle: "default" })).rejects.toThrow("未应用输出风格");
+      expect(f.native.calls.some(call => call.method === "interrupt" || call.method === "sendMessage")).toBe(false);
     } finally { await f.close(); }
   });
 

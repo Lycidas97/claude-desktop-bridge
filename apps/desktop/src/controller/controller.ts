@@ -202,7 +202,7 @@ export class DesktopController extends EventEmitter {
     }
   }
 
-  async snapshot(forceDesktopApps = false): Promise<ControllerSnapshot> {
+  async snapshot(): Promise<ControllerSnapshot> {
     if (!this.config) throw new Error("Desktop controller is not initialized");
     const currentPairing = this.currentPairingDeviceId
       ? this.config.devices.find((device) => device.deviceId === this.currentPairingDeviceId && !device.revokedAt)
@@ -279,7 +279,7 @@ export class DesktopController extends EventEmitter {
       launchAtLogin: this.config.launchAtLogin,
       diagnosticsEnabled: diagnostics.enabled,
       managedDesktopEnabled: this.config.managedDesktopEnabled,
-      ...await this.desktopAppSnapshot(forceDesktopApps),
+      ...await this.desktopAppSnapshot(),
       ...(this.assistantMailCoordinator ? { assistantMail: this.assistantMailCoordinator.snapshot() } : {}),
       ...(this.updater ? { updater: this.updater.snapshot() } : {}),
       ...(this.inspectorStatus ? { claudeInspector: this.inspectorStatus } : {}),
@@ -392,13 +392,7 @@ export class DesktopController extends EventEmitter {
     return this.projectDesktopAppStatus("claude-desktop", await this.claudeDesktop.status(force));
   }
 
-  private async desktopAppSnapshot(force: boolean): Promise<Pick<ControllerSnapshot, "claudeDesktop" | "desktopApps">> {
-    if (force) {
-      // Action replies have always converted failed probes into unavailable app statuses.
-      const desktopApps = await this.desktopAppStatuses(true);
-      const { id, name, ...claudeDesktop } = desktopApps.find((app) => app.id === "claude-desktop")!;
-      return { claudeDesktop, desktopApps };
-    }
+  private async desktopAppSnapshot(): Promise<Pick<ControllerSnapshot, "claudeDesktop" | "desktopApps">> {
     const claudeDesktop = await this.claudeDesktopStatus();
     return { claudeDesktop, desktopApps: await this.desktopAppStatuses(false, claudeDesktop) };
   }
@@ -473,7 +467,7 @@ export class DesktopController extends EventEmitter {
         }
       }
       const integration = runtimeId === "claude-desktop" ? this.broker.runtimeStatus().desktopIntegration : undefined;
-      const snapshot = await this.publish(true);
+      const snapshot = await this.publish();
       await this.broadcast({ kind: "snapshot", snapshot });
       if (!integration) return { snapshot };
       const nativeReady = integration.state === "ready";
@@ -504,7 +498,7 @@ export class DesktopController extends EventEmitter {
       ?? (runtimeId === "claude-desktop" ? this.claudeDesktop : undefined);
     if (!lifecycle) throw new Error("未知 Desktop 应用");
     await lifecycle.quit();
-    const snapshot = await this.publish(true);
+    const snapshot = await this.publish();
     await this.broadcast({ kind: "snapshot", snapshot });
     return snapshot;
   }
@@ -860,10 +854,10 @@ export class DesktopController extends EventEmitter {
     ]);
   }
 
-  private async publish(forceDesktopApps = false): Promise<ControllerSnapshot> {
+  private async publish(): Promise<ControllerSnapshot> {
     const published = diagnostics.begin("publish");
     try {
-      const [snapshot] = await Promise.all([this.snapshot(forceDesktopApps), this.publishPermissions()]);
+      const [snapshot] = await Promise.all([this.snapshot(), this.publishPermissions()]);
       diag("publish.snapshot", { sessions: snapshot.sessions.length });
       this.emit("snapshot", snapshot);
       // Catalog metadata and global runtime changes need a complete snapshot.

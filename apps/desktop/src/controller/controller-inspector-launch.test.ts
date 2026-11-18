@@ -114,31 +114,28 @@ describe("DesktopController app status snapshots", () => {
 
     expect(result).toEqual({ desktopApps: [expect.objectContaining({ state: "stopped" })] });
     expect(broadcast).toHaveBeenCalledWith({ kind: "snapshot", snapshot: expect.objectContaining(result) });
-    expect(status).toHaveBeenCalledExactlyOnceWith(true);
+    expect(status).toHaveBeenCalledExactlyOnceWith(false);
   });
 
-  it("publishes and returns unavailable when the post-action status probe fails", async () => {
-    const { controller, status, broadcast } = createHarness({ initialAppState: "running" });
+  it.each(["claude.desktop.quit", "quitDesktopApp"] as const)("%s keeps the lifecycle-confirmed quit status", async (entry) => {
+    const { controller, status } = createHarness({ initialAppState: "running" });
     const readStatus = status.getMockImplementation()!;
-    status.mockImplementation(async (force) => {
-      if (force) throw new Error("Status probe failed");
-      return readStatus(force);
-    });
+    status.mockImplementation(async (force) => force
+      ? { state: "unavailable", detail: "Process enumeration failed", canLaunch: false, canQuit: false }
+      : readStatus(force));
 
-    const result = await controller.handleRequest({
-      kind: "request",
-      requestId: "req-quit",
-      idempotencyKey: "idem-quit",
-      method: "desktop.app.quit",
-      params: { runtimeId: "claude-desktop" },
-    }, "mobile");
+    const result = entry === "claude.desktop.quit"
+      ? await controller.handleRequest({
+          kind: "request",
+          requestId: "req-legacy-quit",
+          idempotencyKey: "idem-legacy-quit",
+          method: entry,
+          params: {},
+        }, "mobile")
+      : await controller.quitDesktopApp("claude-desktop");
 
-    const claudeDesktop = { state: "unavailable", detail: "Status probe failed", canLaunch: false, canQuit: false };
-    const desktopApps = [{ id: "claude-desktop", name: "Claude Desktop", ...claudeDesktop }];
-    expect(result).toEqual({ desktopApps });
-    expect(broadcast).toHaveBeenCalledWith({
-      kind: "snapshot", snapshot: expect.objectContaining({ claudeDesktop, desktopApps }),
-    });
+    expect(result).toMatchObject({ claudeDesktop: { state: "stopped" } });
+    expect(status).toHaveBeenCalledExactlyOnceWith(false);
   });
 });
 
@@ -179,7 +176,7 @@ describe("DesktopController launchDesktopApp + explicit inspector enablement", (
       desktopApps,
       claudeActivation: { inspectorState: "listening", nativeReady: true },
     });
-    expect(status).toHaveBeenCalledExactlyOnceWith(true);
+    expect(status).toHaveBeenCalledExactlyOnceWith(false);
     expect(launch).toHaveBeenCalledExactlyOnceWith({ activate: true });
     expect(enableInspector).toHaveBeenCalledOnce();
     expect(refreshRuntime).toHaveBeenCalledTimes(2);
@@ -263,7 +260,7 @@ describe("DesktopController launchDesktopApp + explicit inspector enablement", (
 
   it("skips menu automation when port 9229 is already listening", async () => {
     const enableInspector = vi.fn<() => Promise<BridgeInspectorStatus>>();
-    const { controller, launch } = createHarness({
+    const { controller, launch, status } = createHarness({
       initialInspector: { platform: "win32", state: "listening", port: 9229, pollIntervalMs: 3_000, clients: [], alerts: [] },
       enableInspector,
       runtimeStates: ["ready"],
@@ -272,6 +269,7 @@ describe("DesktopController launchDesktopApp + explicit inspector enablement", (
     await controller.launchClaudeDesktop();
     expect(launch).toHaveBeenCalledExactlyOnceWith();
     expect(enableInspector).not.toHaveBeenCalled();
+    expect(status).toHaveBeenCalledExactlyOnceWith(false);
   });
 
   it("exposes canLaunch: true when Claude Desktop is already running with port 9229 closed so UI buttons can trigger explicit enablement", async () => {

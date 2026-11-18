@@ -1,10 +1,10 @@
 import { EventEmitter, once } from "node:events";
 import { appendFile, rm, mkdir, mkdtemp, readFile, readdir, symlink, writeFile } from "node:fs/promises";
 import * as platform from "../app/platform.js";
-import { BridgeCrypto, isEncryptedEnvelope } from "@bridge/protocol";
+import { BridgeCrypto, isEncryptedEnvelope, type BridgeArtifactTransferInfo } from "@bridge/protocol";
 import { EvidenceManager } from "../evidence/evidence-manager.js";
 import { EvidenceStore } from "../evidence/evidence-store.js";
-import { DesktopController } from "../controller/controller.js";
+import { createControllerFixture } from "../controller/controller-fixture.js";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -1507,9 +1507,9 @@ describe("Claude native relay", () => {
       await writeFile(join(readCwd, relativePath), "{\"source\":\"execution directory\"}");
       Object.assign(f.native.sessions[0]!, { cwd: project, ...(mode !== "plain" ? { harnessCwd } : {}) });
       await f.bridge.refreshRuntime();
-      const controller = Object.assign(Object.create(DesktopController.prototype), { broker: f.bridge, evidence, allSessions: () => f.bridge.listSessions() });
+      const controller = createControllerFixture({ broker: f.bridge, evidence });
       for (const path of [relativePath, `./${relativePath}`, `${relativePath}:12:3`, join(readCwd, relativePath)]) {
-        const { transfer } = await controller.handleRequest({ kind: "request", requestId: "preview", idempotencyKey: "preview", method: "artifact.transfer.open", params: { sessionId: "local-native", path, purpose: "text-preview" } }, "mobile", "phone");
+        const { transfer } = await controller.handleRequest({ kind: "request", requestId: "preview", idempotencyKey: "preview", method: "artifact.transfer.open", params: { sessionId: "local-native", path, purpose: "text-preview" } }, "mobile", "phone") as { transfer: BridgeArtifactTransferInfo };
         expect(transfer).toMatchObject({ name: "report.json", mimeType: "text/plain" });
         expect(Buffer.from(evidence.readTransfer(transfer.transferId, 0, "phone").data, "base64").toString()).toBe("{\"source\":\"execution directory\"}");
         evidence.closeTransfer(transfer.transferId, "phone");
@@ -2407,7 +2407,7 @@ describe("Claude native relay", () => {
   it("keeps task detail reads optional and lets conversation opening finish independently", async () => {
     const f = await fixture();
     try {
-      const controller = Object.assign(Object.create(DesktopController.prototype), { broker: f.bridge, eventLog: f.eventLog, allSessions: () => f.bridge.listSessions() });
+      const controller = createControllerFixture({ broker: f.bridge, eventLog: f.eventLog });
       const tasks = [{ id: "shell", kind: "bash" as const, description: "Build", state: "completed" as const, startedAt: 1, updatedAt: 2 }];
       let release!: (value: typeof tasks) => void;
       const details = vi.spyOn(f.bridge, "backgroundTaskDetails").mockImplementation(() => new Promise<typeof tasks>(resolve => { release = resolve; }));
@@ -2419,9 +2419,9 @@ describe("Claude native relay", () => {
       const pending = controller.handleRequest({ ...request, params: { ...request.params, includeBackgroundTasks: true } }, "mobile", "phone");
       await vi.waitFor(() => expect(details).toHaveBeenCalledExactlyOnceWith("local-native"));
       const opened = await controller.handleRequest({ ...request, method: "session.open" }, "mobile", "phone");
-      expect(opened.history.items).toEqual([]);
+      expect(opened).toHaveProperty("history.items", []);
       release(tasks);
-      expect((await pending).session.backgroundTasks).toEqual(tasks);
+      expect(await pending).toHaveProperty("session.backgroundTasks", tasks);
       expect(history).toHaveBeenCalledTimes(1);
       expect(f.bridge.listSessions()[0]?.backgroundTasks).toBeUndefined();
     } finally { await f.close(); }
@@ -3859,15 +3859,10 @@ describe("Claude native relay", () => {
     try {
       f.native.sessions[0]!.pendingToolPermissions = [{ requestId: "manual-permission", sessionId: "local-native", toolName: "Bash", input: {} }];
       await f.bridge.refreshRuntime();
-      const controller = Object.assign(Object.create(DesktopController.prototype), {
-        broker: f.bridge,
-        eventLog: f.eventLog,
-        lastPublishedPermissions: new Map(),
-      });
-      const publishPermissions = () => (controller as unknown as { publishPermissions(): Promise<void> }).publishPermissions();
-      await publishPermissions();
+      const controller = createControllerFixture({ broker: f.bridge, eventLog: f.eventLog });
+      await controller.publishPermissions();
       const passive: Array<Promise<void>> = [];
-      f.bridge.on("changed", () => { passive.push(publishPermissions()); });
+      f.bridge.on("changed", () => { passive.push(controller.publishPermissions()); });
       expect(await f.bridge.resolvePermission("manual-permission", "allow-once", undefined, undefined, { deviceId: "phone-1", name: "Phone" })).toBe(true);
       await Promise.all(passive);
       const resolved = f.eventLog.replay().filter(event => event.type === "permission.resolved" && event.data.requestId === "manual-permission");
@@ -3948,15 +3943,11 @@ describe("Claude native relay", () => {
         }],
         hasMore: false,
       };
-      const controller = Object.assign(Object.create(DesktopController.prototype), {
-        broker: f.bridge,
-        eventLog: f.eventLog,
-        allSessions: () => f.bridge.listSessions(),
-      });
+      const controller = createControllerFixture({ broker: f.bridge, eventLog: f.eventLog });
       const openedLive = await controller.handleRequest({
         kind: "request", requestId: "open-live", idempotencyKey: "open-live", method: "session.open", params: { sessionId: "local-native" },
       }, "mobile", "phone");
-      expect(openedLive.session?.contextUsage).toEqual({
+      expect(openedLive).toHaveProperty("session.contextUsage", {
         totalTokens: 64_200,
         maxTokens: 1_000_000,
         percentage: 6.4,

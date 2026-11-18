@@ -7,7 +7,7 @@ import type { BridgeInspectorStatus } from "@bridge/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createNativeSectionFixture } from "../../../../scripts/fixtures/native-section-store.js";
 import { assistantMailPage } from "../controller/assistant-mail.js";
-import { DesktopController } from "../controller/controller.js";
+import { createControllerFixture } from "../controller/controller-fixture.js";
 import { ConversationStateStore } from "../controller/conversation-state-store.js";
 import { SessionEventLog } from "../controller/session-event-log.js";
 import {
@@ -310,7 +310,7 @@ describe("Round-4 Boundary 2A.1: Inspector checkbox toggle serialization & dedup
       launch,
       quit: vi.fn(),
     };
-    const controller = Object.assign(Object.create(DesktopController.prototype), new EventEmitter(), {
+    const controller = createControllerFixture({
       config: {
         devices: [],
         relayEndpoints: [],
@@ -350,12 +350,7 @@ describe("Round-4 Boundary 2A.1: Inspector checkbox toggle serialization & dedup
         permissionsList: () => [],
       },
       eventLog: { latestSeq: () => 0, append: vi.fn(async () => undefined) },
-      lastPublishedSessionKey: "",
-      lastPublishedSessions: new Map(),
-      lastPublishedPermissions: new Map(),
-      onlineDevices: new Set(),
-      broadcast: vi.fn(async () => undefined),
-    }) as DesktopController;
+    });
     controller.attachInspectorEnabler(enableInspector);
 
     const p1 = controller.launchDesktopApp("claude-desktop");

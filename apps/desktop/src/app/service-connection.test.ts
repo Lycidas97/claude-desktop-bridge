@@ -9,7 +9,7 @@ import { build } from "esbuild";
 import { afterEach, expect, it, vi } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
 import { DesktopServiceClient, connectDesktopService, serveDesktopService, type ServiceController } from "./service-connection.js";
-import { DesktopController } from "../controller/controller.js";
+import { createControllerFixture } from "../controller/controller-fixture.js";
 import { DesktopConfigRepository } from "../transport/config.js";
 import { diagnostics } from "./diag.js";
 import { AssistantMailService } from "../../../../plugins/assistant-mail/desktop.js";
@@ -84,7 +84,7 @@ it("toggles the unified recorder and persisted profile through the authenticated
   const repository = new DesktopConfigRepository(configPath, { available: () => true, protect: value => value, unprotect: value => value }, defaults);
   const config = await repository.loadOrCreate();
   diagnostics.start(join(root, "diagnostics", "trace.sqlite"));
-  const controller = Object.assign(Object.create(DesktopController.prototype), new EventEmitter(), {
+  const controller = createControllerFixture({
     config, repository, publish: async () => ({ diagnosticsEnabled: diagnostics.enabled }),
   });
   const addressPath = join(root, "address.json");

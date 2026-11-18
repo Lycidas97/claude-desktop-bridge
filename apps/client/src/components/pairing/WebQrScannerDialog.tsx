@@ -37,6 +37,7 @@ export function WebQrScannerDialog({
   const readerRef = useRef<HTMLDivElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const [ready, setReady] = useState(false);
+  const [waitingForCode, setWaitingForCode] = useState(false);
 
   useEffect(() => registerMobileBackHandler(() => {
     onCancel();
@@ -46,6 +47,7 @@ export function WebQrScannerDialog({
   useEffect(() => {
     let active = true;
     let handled = false;
+    let guidanceTimer: number | undefined;
 
     void (async () => {
       try {
@@ -69,22 +71,28 @@ export function WebQrScannerDialog({
             active = false;
             void stopScanner(scanner).finally(() => onResult(value));
           },
-          () => undefined,
+          () => {
+            if (!active || guidanceTimer !== undefined) return;
+            const video = readerRef.current?.querySelector("video");
+            if (video && stageRef.current) {
+              const { width, height } = video.getBoundingClientRect();
+              const layout = qrScannerLayout(width, height);
+              stageRef.current.style.aspectRatio = layout.aspectRatio;
+              if (layout.guideSize > 0) {
+                stageRef.current.style.setProperty("--qr-guide-size", `${layout.guideSize}px`);
+              }
+            }
+            setReady(true);
+            guidanceTimer = window.setTimeout(() => {
+              if (active) setWaitingForCode(true);
+            }, 4_000);
+          },
         );
         if (!active) {
           await stopScanner(scanner);
           return;
         }
-        const video = readerRef.current?.querySelector("video");
-        if (video && stageRef.current) {
-          const layout = qrScannerLayout(video.clientWidth, video.clientHeight);
-          stageRef.current.style.aspectRatio = layout.aspectRatio;
-          if (layout.guideSize > 0) {
-            stageRef.current.style.setProperty("--qr-guide-size", `${layout.guideSize}px`);
-          }
-        }
         await tuneQrScannerCamera(scanner);
-        setReady(true);
       } catch {
         if (active) onError();
       }
@@ -92,6 +100,7 @@ export function WebQrScannerDialog({
 
     return () => {
       active = false;
+      window.clearTimeout(guidanceTimer);
       const scanner = scannerRef.current;
       if (scanner) void stopScanner(scanner);
     };
@@ -113,7 +122,9 @@ export function WebQrScannerDialog({
         <span className="qr-scanner-guide" aria-hidden="true" />
       </div>
       <p className="qr-scanner-status" aria-live="polite">
-        {ready ? "将电脑上的配对二维码放入框内" : "正在打开相机"}
+        {!ready ? "正在打开相机" : waitingForCode
+          ? "没有识别到二维码。请靠近电脑屏幕，或返回粘贴配对链接。"
+          : "将电脑上的配对二维码放入框内"}
       </p>
     </section>
   );

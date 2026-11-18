@@ -11,6 +11,7 @@ import {
   bridgeEndpoint,
   isBridgeEndpoint,
   normalizeBridgeEndpoints,
+  relayPathForUrl,
   selectBridgeEndpoint,
 } from "./endpoints.js";
 import {
@@ -27,7 +28,7 @@ import {
   type PairingBundle,
   type StoredIdentity,
 } from "./types.js";
-import { normalizeBridgeIceServers } from "./ice.js";
+import { normalizeBridgeIceServers, preferredBridgeIceServers } from "./ice.js";
 
 const DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const PAIRING_TTL_MS = 10 * 60 * 1000;
@@ -44,8 +45,8 @@ export const PAYLOAD_DEFLATE_SUPPORTED = (() => {
     throw error;
   }
 })();
-// Pairing QR codes use this compact tuple; legacy pairing objects are intentionally rejected.
 const COMPACT_PAIRING_MARKER = "b4";
+const PAIRING_QR_MARKER = "b4q";
 
 type CompactEndpointKind = 0 | 1 | 2;
 type CompactPairingEndpoint = [
@@ -136,6 +137,15 @@ function compactPairingBundle(pairing: PairingBundle): CompactPairingBundle {
 }
 
 function expandCompactPairingBundle(value: unknown): unknown {
+  if (Array.isArray(value) && value[0] === PAIRING_QR_MARKER) {
+    const [, hostId, epoch, roomId, deviceId, secret, expiresAt, relay, origin = "", ice = []] = value;
+    if (value.length < 8 || value.length > 10 || !Number.isSafeInteger(expiresAt)) {
+      throw new Error("Invalid pairing bundle");
+    }
+    const endpoints = typeof relay === "string" ? [["relay", compactEndpointKind(relayPathForUrl(relay)), relay, 0]] : relay;
+    value = [COMPACT_PAIRING_MARKER, hostId, epoch, roomId, deviceId, secret, "我的电脑",
+      expiresAt - PAIRING_TTL_MS, expiresAt, origin, endpoints, ice];
+  }
   if (!Array.isArray(value) || value[0] !== COMPACT_PAIRING_MARKER || value.length !== 12) {
     return value;
   }
@@ -619,14 +629,27 @@ export function buildPairingUrl(baseUrl: string, pairing: PairingBundle): string
   return base.toString();
 }
 
+export function buildPairingQrUrl(pairingUrl: string): string | undefined {
+  const pairing = pairingBundleFromUrl(pairingUrl);
+  if (!pairing) return undefined;
+  const [, hostId, epoch, roomId, deviceId, secret, , , expiresAt, origin, endpoints, ice] = compactPairingBundle(pairing);
+  const relay = endpoints.length === 1 && endpoints[0]![1] === compactEndpointKind(relayPathForUrl(pairing.relayUrl))
+    ? pairing.relayUrl
+    : endpoints;
+  const qr = [
+    PAIRING_QR_MARKER, hostId, epoch, roomId, deviceId, secret, expiresAt, relay,
+    ...(preferredBridgeIceServers(pairing.iceServers, []).length ? [origin, ice] : origin ? [origin] : []),
+  ];
+  const url = new URL(pairingUrl);
+  url.hash = `/pair/${toBase64Url(utf8(JSON.stringify(qr)))}`;
+  return url.toString();
+}
+
 export function pairingBundleFromUrl(value: string): PairingBundle | undefined {
-  let url: URL;
   try {
-    url = new URL(value);
+    const match = new URL(value).hash.match(/^#\/?pair\/([A-Za-z0-9_-]+)$/u);
+    return match?.[1] ? decodePairingBundle(match[1]) : undefined;
   } catch {
     return undefined;
   }
-  const match = url.hash.match(/^#\/?pair\/([A-Za-z0-9_-]+)$/u);
-  if (!match?.[1]) return undefined;
-  return decodePairingBundle(match[1]);
 }

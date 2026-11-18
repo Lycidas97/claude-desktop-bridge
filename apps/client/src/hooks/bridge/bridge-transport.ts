@@ -1653,7 +1653,8 @@ export async function pairBridgeHost(
       timeoutMs: 20_000,
     });
     const verifiedSnapshot = confirmedPairingSnapshot(pairing, response);
-    setState((current) => advancePairingSync(current, crypto.identity.roomId, "syncing", 56));
+    crypto.identity.desktopName = verifiedSnapshot.host.name;
+    setState((current) => advancePairingSync(current, crypto.identity.roomId, "syncing", 56, verifiedSnapshot.host.name));
     await bridgeVault.importPairing(pairing, crypto);
     clearPendingPairingInstanceId(pairing.roomId, pairing.deviceId);
     cryptoByRoomRef.current.set(crypto.identity.roomId, crypto);

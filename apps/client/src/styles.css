@@ -834,8 +834,11 @@ button:disabled {
 .qr-scanner-reader {
   position: absolute;
   inset: 0;
-  width: 100%;
-  height: 100%;
+  /* html5-qrcode sizes its decoding canvas from the video's layout width. */
+  width: 200%;
+  height: 200%;
+  transform: scale(0.5);
+  transform-origin: top left;
   border: 0 !important;
 }
 

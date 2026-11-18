@@ -347,7 +347,7 @@ export async function verifyNativeBoundaries(page, host, steps, directory) {
     { ...tool("child-plan", { scope: "first_task", items: [{ content: "子代理内部计划", status: "in_progress" }] }), isSidechain: true },
     { ...tool("child-wrap", { recap: "Child done" }, "mcp__ccd_turn__wrap_up"), isSidechain: true },
     ...["isCompactSummary", "isMeta", "isSynthetic", "isVisibleInTranscriptOnly"].map(flag => ({ type: "user", uuid: `hidden-${flag}`, [flag]: true, message: { content: "INTERNAL_COMPACT_SUMMARY_MUST_STAY_HIDDEN" } })),
-    { type: "assistant", uuid: "boundary-files", timestamp: Date.now(), message: { id: "boundary-files", content: [{ type: "text", text: `[相对报告](report.json) · [绝对报告](<${host.nativeApproval.harnessCwd}/report.json:12:3>) · [说明预览](<说明 notes.md>) · [长文预览](${markdownName}) · [空文件预览](empty.txt)` }] } },
+    { type: "assistant", uuid: "boundary-files", timestamp: Date.now(), message: { id: "boundary-files", content: [{ type: "text", text: `[相对报告](report.json) · [子目录报告](shell-report.txt) · [绝对报告](<${host.nativeApproval.harnessCwd}/report.json:12:3>) · [说明预览](<说明 notes.md>) · [长文预览](${markdownName}) · [空文件预览](empty.txt)` }] } },
   ];
   for (const message of initial) await host.nativeApproval.message(message);
   const subagentStartAt = Date.now() - 30_000;
@@ -458,6 +458,14 @@ export async function verifyNativeBoundaries(page, host, steps, directory) {
     if (label === "相对报告") await page.screenshot({ path: resolve(directory, "native-worktree-report.png"), fullPage: true });
     await page.getByRole("button", { name: "关闭查看器", exact: true }).click();
   }
+  const requestStart = host.requests.length;
+  await stream.getByRole("button", { name: "子目录报告", exact: true }).click();
+  await page.locator("#text-preview-content").getByText("Report from the shell subdirectory").waitFor();
+  const shellOpens = host.requests.slice(requestStart).filter(request => request.method === "artifact.transfer.open");
+  assert.equal(shellOpens[0]?.params.purpose, "stat");
+  assert.ok(shellOpens.length >= 2 && shellOpens.slice(1).every(request => request.params.purpose === "text-preview"));
+  assert.ok(shellOpens.every(request => request.params.resolveRelativeLink === true));
+  await page.getByRole("button", { name: "关闭查看器", exact: true }).click();
   await stream.getByRole("button", { name: "说明预览", exact: true }).click();
   await page.locator(".media-viewer").getByRole("heading", { name: "Worktree preview", exact: true }).waitFor();
   await page.getByRole("button", { name: "复制文件内容", exact: true }).click();

@@ -869,7 +869,7 @@ export class EvidenceManager {
     if (!sourcePath && isRelative) {
       const rootBase = rootPath.split(sep).at(-1);
       if (rootBase && (expanded.startsWith(`${rootBase}/`) || expanded.startsWith(`${rootBase}\\`))) {
-        sourcePath = await realpath(resolve(rootPath, "..", expanded)).catch(() => undefined);
+        sourcePath = await realpath(resolve(readRoot, expanded.slice(rootBase.length + 1))).catch(() => undefined);
       }
       if (!sourcePath) {
         const nativePath = await resolveRelativePath?.(expanded);

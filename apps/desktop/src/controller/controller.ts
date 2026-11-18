@@ -227,6 +227,7 @@ export class DesktopController extends EventEmitter {
           "artifact.preview.v1",
           "artifact.transfer.v1",
           "artifact.transfer.stat.v1",
+          "artifact.transfer.relative-link.v1",
           "artifact.text-preview.v1",
           "workspace.upload.v1",
           "claude.native-relay.v1",

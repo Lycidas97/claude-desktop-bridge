@@ -1400,8 +1400,9 @@ describe("desktop conversation parity", () => {
     }
   });
 
-  it("confirms workspace non-media file downloads and surfaces transfer errors", async () => {
+  it.each([true, false])("confirms workspace non-media file downloads and surfaces transfer errors (relative link support: %s)", async (supportsRelativeLinks) => {
     const { downloadBridgeSessionFile } = await import("../lib/artifact-download.js");
+    if (supportsRelativeLinks) snapshot.host.capabilities.push("artifact.transfer.relative-link.v1");
     history = [{ id: "file-msg", sessionId: "A", role: "assistant", text: "See [bundle.bin](dist/bundle.bin)", createdAt: 1, origin: "claude-desktop" }];
     await openSessions();
     const msg = elements(tree).find((element) => element.type === ConversationMessageItem)!;
@@ -1414,7 +1415,7 @@ describe("desktop conversation parity", () => {
     vi.mocked(downloadBridgeSessionFile).mockRejectedValueOnce(new Error("工作区文件不存在"));
     dialog.props.onConfirm();
     await settle(); tree = sessions.draw();
-    expect(downloadBridgeSessionFile).toHaveBeenCalledWith("A", "dist/bundle.bin", expect.any(Function), expect.any(Function));
+    expect(downloadBridgeSessionFile).toHaveBeenCalledWith("A", "dist/bundle.bin", expect.any(Function), expect.any(Function), supportsRelativeLinks ? true : undefined);
     expect(textContent(tree)).toContain("工作区文件不存在");
   });
 

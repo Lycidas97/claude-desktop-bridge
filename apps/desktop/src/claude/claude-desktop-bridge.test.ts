@@ -1511,7 +1511,7 @@ describe("Claude native relay", () => {
       Object.assign(f.native.sessions[0]!, { cwd: project, ...(mode !== "plain" ? { harnessCwd } : {}) });
       await f.bridge.refreshRuntime();
       const controller = Object.assign(Object.create(DesktopController.prototype), { broker: f.bridge, evidence, allSessions: () => f.bridge.listSessions() });
-      for (const path of [relativePath, `./${relativePath}`, `${relativePath}:12:3`, join(readCwd, relativePath)]) {
+      for (const path of [relativePath, `./${relativePath}`, `${relativePath}:12:3`, `repo/${relativePath}`, join(readCwd, relativePath)]) {
         const { transfer } = await controller.handleRequest({ kind: "request", requestId: "preview", idempotencyKey: "preview", method: "artifact.transfer.open", params: { sessionId: "local-native", path, purpose: "text-preview" } }, "mobile", "phone");
         expect(transfer).toMatchObject({ name: "report.json", mimeType: "text/plain" });
         expect(Buffer.from(evidence.readTransfer(transfer.transferId, 0, "phone").data, "base64").toString()).toBe("{\"source\":\"execution directory\"}");
@@ -1537,9 +1537,11 @@ describe("Claude native relay", () => {
       Object.assign(f.native.sessions[0]!, { cwd: project });
       await f.bridge.refreshRuntime();
       f.native.resolvedSessionFiles.set(name, join(subdirectory, name));
+      f.native.resolvedSessionFiles.set(`output/${name}`, join(subdirectory, name));
       const controller = createControllerFixture({ broker: f.bridge, evidence, allSessions: () => f.bridge.listSessions() });
-      expect(await controller.handleRequest({ kind: "request", requestId: "stat", idempotencyKey: "stat", method: "artifact.transfer.open", params: { sessionId: "local-native", path: name, purpose: "stat" } }, "mobile", "phone")).toMatchObject({ metadata: { name, size: Buffer.byteLength(contents) } });
-      const { transfer } = await controller.handleRequest({ kind: "request", requestId: "preview", idempotencyKey: "preview", method: "artifact.transfer.open", params: { sessionId: "local-native", path: `${name}:12:3`, purpose: "text-preview" } }, "mobile", "phone") as { transfer: BridgeArtifactTransferInfo };
+      await expect(controller.handleRequest({ kind: "request", requestId: "sidebar", idempotencyKey: "sidebar", method: "artifact.transfer.open", params: { sessionId: "local-native", path: `output/${name}`, purpose: "stat" } }, "mobile", "phone")).rejects.toThrow("文件不存在或无法读取");
+      expect(await controller.handleRequest({ kind: "request", requestId: "stat", idempotencyKey: "stat", method: "artifact.transfer.open", params: { sessionId: "local-native", path: name, purpose: "stat", resolveRelativeLink: true } }, "mobile", "phone")).toMatchObject({ metadata: { name, size: Buffer.byteLength(contents) } });
+      const { transfer } = await controller.handleRequest({ kind: "request", requestId: "preview", idempotencyKey: "preview", method: "artifact.transfer.open", params: { sessionId: "local-native", path: `${name}:12:3`, purpose: "text-preview", resolveRelativeLink: true } }, "mobile", "phone") as { transfer: BridgeArtifactTransferInfo };
       expect(Buffer.from(evidence.readTransfer(transfer.transferId, 0, "phone").data, "base64").toString()).toBe(contents);
       expect(f.native.calls.filter(call => call.method === "resolveSessionFileQuietly").map(call => call.args)).toEqual([["local-native", name], ["local-native", name]]);
     } finally { await evidence.close(); await f.close(); }
@@ -1562,7 +1564,7 @@ describe("Claude native relay", () => {
       await f.bridge.refreshRuntime();
       f.native.resolvedSessionFiles.set(name, resolved);
       const controller = createControllerFixture({ broker: f.bridge, evidence, allSessions: () => f.bridge.listSessions() });
-      await expect(controller.handleRequest({ kind: "request", requestId: "preview", idempotencyKey: "preview", method: "artifact.transfer.open", params: { sessionId: "local-native", path: name, purpose: "text-preview" } }, "mobile", "phone")).rejects.toThrow(parentCheckout ? "工作树之外" : "项目目录之外");
+      await expect(controller.handleRequest({ kind: "request", requestId: "preview", idempotencyKey: "preview", method: "artifact.transfer.open", params: { sessionId: "local-native", path: name, purpose: "text-preview", resolveRelativeLink: true } }, "mobile", "phone")).rejects.toThrow(parentCheckout ? "工作树之外" : "项目目录之外");
     } finally { await evidence.close(); await f.close(); }
   });
 

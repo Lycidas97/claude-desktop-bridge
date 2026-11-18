@@ -187,7 +187,7 @@ export function MobileWorkspace({
   onLoadEvidenceDetails?(evidenceId: string, kind: "tools" | "artifacts", cursor?: string): Promise<BridgeEvidenceDetailPage>;
   onPreviewArtifact(artifactId: string): Promise<BridgeArtifactPreview>;
   onDownloadArtifact(artifact: BridgeArtifactManifest): Promise<void>;
-  onDownloadSessionFile?(sessionId: string, filePath: string): Promise<void>;
+  onDownloadSessionFile?(sessionId: string, filePath: string, resolveRelativeLink?: true): Promise<void>;
   onUploadFile?: UploadFileHandler;
   onSendTurn(sessionId: string, text: string, attachments: BridgeAttachment[], mailRefId?: string): Promise<{ requestId: string } | void>;
   onInterruptTurn(sessionId: string, commandId?: string): Promise<void>;

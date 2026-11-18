@@ -54,6 +54,8 @@ export async function startNativeApprovalHost(options: {
   await writeFile(join(commandCwd, "report.json"), "{\"source\":\"wrong project root\"}");
   await writeFile(join(harnessCwd, "report.json"), "{\"source\":\"worktree\",\"checked\":9}\n");
   await writeFile(join(harnessCwd, "说明 notes.md"), "# Worktree preview\n\nNative file routing verified.\n");
+  await mkdir(join(harnessCwd, "shell-work"));
+  await writeFile(join(harnessCwd, "shell-work", "shell-report.txt"), "Report from the shell subdirectory\n");
   await mkdir(commandHome, { recursive: true });
   const savedModels = [
     { model: "synthetic-model", label: "隔离模型 · 标准", description: "Private fixture metadata" },
@@ -114,7 +116,7 @@ export async function startNativeApprovalHost(options: {
   const unsupportedMethods = new Set<string>();
   const inspector = Object.assign(new EventEmitter(), {
     ready: true,
-    supports: (method: string) => !unsupportedMethods.has(method) && ["getAll", "getSession", "getTranscript", "getTranscriptPage", "getSupportedCommands", "respondToToolPermission", "setPermissionMode", "setModel", "setEffort", "canRewindTo", "rewindFiles", "rewindV2", "sendMessage", "promoteQueuedMessage", "sendSteeredNow", "cancelQueuedMessage", "interrupt", "start", "updateSession", "getPrOverview", "getPrChecks", "setBoundPrAutoFix", "setAutoFixOwnPrsWanted", "armAutoFixOnNextPr", "getGitInfo", ...Object.values(nativeDialogs).map(dialog => dialog.method), ...(saveTrustSupported ? ["saveTrust"] : [])].includes(method),
+    supports: (method: string) => !unsupportedMethods.has(method) && ["getAll", "getSession", "getTranscript", "getTranscriptPage", "resolveSessionFileQuietly", "getSupportedCommands", "respondToToolPermission", "setPermissionMode", "setModel", "setEffort", "canRewindTo", "rewindFiles", "rewindV2", "sendMessage", "promoteQueuedMessage", "sendSteeredNow", "cancelQueuedMessage", "interrupt", "start", "updateSession", "getPrOverview", "getPrChecks", "setBoundPrAutoFix", "setAutoFixOwnPrsWanted", "armAutoFixOnNextPr", "getGitInfo", ...Object.values(nativeDialogs).map(dialog => dialog.method), ...(saveTrustSupported ? ["saveTrust"] : [])].includes(method),
     async prPreferences(id: string) {
       return id === options.sessionId ? { ...preferences, nextOwnPrArmed: nextPrBranch !== undefined } : undefined;
     },
@@ -136,6 +138,9 @@ export async function startNativeApprovalHost(options: {
       if (rewindCompleted && method === rewindReadbackFailure) {
         failedRewindReadbacks.push(method);
         throw new InspectorDisconnectedError(`Synthetic ${method} disconnected after successful rewind`);
+      }
+      if (method === "resolveSessionFileQuietly") {
+        return args[0] === options.sessionId && args[1] === "shell-report.txt" ? join(harnessCwd, "shell-work", "shell-report.txt") : null;
       }
       if (method === "getGitInfo") {
         assert.deepEqual(args, [harnessCwd]);

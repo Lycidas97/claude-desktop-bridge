@@ -20,8 +20,17 @@ export interface MediaTarget {
   artifactId?: string;
   sessionId?: string;
   path?: string;
+  resolveRelativeLink?: true;
   dataUrl?: string;
   nativeImage?: BridgeNativeImageRef;
+}
+
+export function mediaFileParams(target: Pick<MediaTarget, "artifactId" | "sessionId" | "path" | "resolveRelativeLink">) {
+  return target.artifactId ? { artifactId: target.artifactId } : {
+    sessionId: target.sessionId,
+    path: target.path?.trim().replace(/:\d+(?::\d+)?$/u, ""),
+    ...(target.resolveRelativeLink ? { resolveRelativeLink: true } : {}),
+  };
 }
 
 export function formatBytes(value: number): string {
@@ -112,8 +121,7 @@ export async function openMediaTransfer(target: MediaTarget, request: MediaReque
     "artifact.transfer.open",
     {
       ...(target.nativeImage ? { sessionId: target.sessionId, nativeImage: target.nativeImage }
-        : target.artifactId ? { artifactId: target.artifactId }
-        : { sessionId: target.sessionId, path: target.path?.trim().replace(/:\d+(?::\d+)?$/u, "") }),
+        : mediaFileParams(target)),
       ...(target.kind === "text" ? { purpose: "text-preview" } : {}),
     },
     { wait: true, timeoutMs: 60_000 },

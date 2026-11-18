@@ -788,7 +788,9 @@ async function dispatchControllerRequestInner(
     const session = host.allSessions().find((candidate) => candidate.sessionId === sessionId);
     if (!session) throw new Error("Session not found");
     const readCwd = host.broker.executionCwd(sessionId);
-    const resolveRelativePath = (path: string) => host.broker.resolveSessionFile(sessionId, path);
+    const resolveRelativePath = params.resolveRelativeLink === true
+      ? (path: string) => host.broker.resolveSessionFile(sessionId, path)
+      : undefined;
     if (params.purpose === "stat") {
       return { metadata: await host.evidence.fileTransferMetadata(session.cwd, filePath, readCwd, resolveRelativePath) };
     }

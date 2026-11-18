@@ -181,6 +181,7 @@ export async function downloadBridgeSessionFile(
   filePath: string,
   request: RequestArtifact,
   onProgress: (progress: number) => void,
+  resolveRelativeLink?: true,
 ): Promise<void> {
-  await runArtifactTransfer({ sessionId, path: filePath }, request, onProgress);
+  await runArtifactTransfer({ sessionId, path: filePath, ...(resolveRelativeLink ? { resolveRelativeLink } : {}) }, request, onProgress);
 }

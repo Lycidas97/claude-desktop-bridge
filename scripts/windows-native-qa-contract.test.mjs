@@ -23,7 +23,7 @@ function nativeSnapshot() {
       pairingEpoch: 1,
       capabilities: [
         "evidence.v1", "evidence.details.v1", "artifact.preview.v1",
-        "artifact.transfer.v1", "artifact.text-preview.v1", "workspace.upload.v1",
+        "artifact.transfer.v1", "artifact.transfer.relative-link.v1", "artifact.text-preview.v1", "workspace.upload.v1",
         "claude.native-relay.v1",
         "directory.browse.v1", "runtime.adapter.v1", "session.visibility.v1",
         "session.commands.v1", "session.command.v1", "subagent.stop.v1",

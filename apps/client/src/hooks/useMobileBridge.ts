@@ -339,10 +339,10 @@ export function useMobileBridge() {
   );
 
   const downloadSessionFile = useCallback(
-    async (sessionId: string, filePath: string) => {
+    async (sessionId: string, filePath: string, resolveRelativeLink?: true) => {
       transferGaugesRef.current.activeDownloads += 1;
       try {
-        await downloadBridgeSessionPathFile(artifactCtx, sessionId, filePath);
+        await downloadBridgeSessionPathFile(artifactCtx, sessionId, filePath, resolveRelativeLink);
       } finally {
         transferGaugesRef.current.activeDownloads = Math.max(0, transferGaugesRef.current.activeDownloads - 1);
       }

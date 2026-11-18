@@ -139,7 +139,7 @@ export interface ConversationViewProps {
   resolveMailRefId?: (() => string | undefined) | undefined;
   onOpenSession(sessionId: string): Promise<void>;
   onLoadOlderHistory(sessionId: string): Promise<void>;
-  onDownloadSessionFile?: ((sessionId: string, filePath: string) => Promise<void>) | undefined;
+  onDownloadSessionFile?: ((sessionId: string, filePath: string, resolveRelativeLink?: true) => Promise<void>) | undefined;
   onUploadFile?: UploadFileHandler | undefined;
   onSendTurn(
     sessionId: string,
@@ -250,7 +250,10 @@ export function ConversationView({
   const sessionDraft = conversationDrafts.session(hostId, session.sessionId, onUploadFile);
   const { draftKey, draft, promptReplies: sessionPromptReplies, queuedActions, fileUploads, updateDraft } = sessionDraft;
   const { text, attachments, sending, imageError } = draft;
-  const files = useSessionFileDownload(session.sessionId, isMobile, onDownloadSessionFile);
+  const files = useSessionFileDownload(
+    session.sessionId, isMobile, onDownloadSessionFile,
+    snapshot?.host.capabilities.includes("artifact.transfer.relative-link.v1") ?? false,
+  );
 
   const [internalSessionView, setInternalSessionView] = useState<"conversation" | "evidence">("conversation");
   const [internalForkChainOpen, setInternalForkChainOpen] = useState(

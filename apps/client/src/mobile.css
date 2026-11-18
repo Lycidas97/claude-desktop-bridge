@@ -390,6 +390,11 @@
   --row-title-line-height: 1.38;
 }
 
+.mobile-home-catalog.is-flat-tree .session-row-copy small {
+  color: color-mix(in srgb, var(--muted) 70%, var(--text));
+  font-size: var(--m-fs-footnote);
+}
+
 .mobile-home-catalog.is-flat-tree .session-row-v2,
 .mobile-home-catalog.is-flat-tree .session-row-hit {
   min-height: 42px;

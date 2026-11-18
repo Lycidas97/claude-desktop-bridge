@@ -1,3 +1,39 @@
+## 1.3.6
+
+- Keep conversation state steady across streaming and navigation: preserve
+  thumbnails while a reply streams, show history before the evidence list on
+  desktop, keep the first evidence page updating live on mobile, collapse old
+  message actions and merge the queued-delivery hint, and persistently
+  collapse stale received receipts after the native queue drains so restart
+  or rewind does not bring them back.
+- Fix conversation controls across both surfaces: show free-text answers and
+  notes in question cards, expand AskUserQuestion's selected "Other" option,
+  keep Native prompt sheets opaque during entrance, preserve draft clears
+  across batched writes, keep the SelectMenu highlight across option
+  refreshes, restore session activity and unread completion markers, and
+  unify session action completion and navigation.
+- Improve layout and readability: space mobile delivery rows below message
+  bubbles, keep mobile session profile and metadata lines readable, prevent
+  mobile settings overscroll, hold the mobile page scale during pinch,
+  distinguish desktop assistant message tabs, trim redundant settings and
+  conversation copy, and surface the result of opening Claude's debug port.
+- Fix desktop and native behavior: resolve relative-path file previews
+  requested from the phone, open the replacement session exactly once after a
+  desktop reset, load session history without a model catalog lookup, skip
+  unnecessary plan lookback, retain discovered title models across Magpie
+  modes, route automatic titles through Desktop gateway discovery, surface
+  unexpected subagent transcript errors, initialize only retained
+  conversation tables, and preserve pairing when config migration fails.
+- Reduce work per update: reuse gateway configuration within each refresh,
+  group queued receipts once per session projection, scope task transcript
+  lookup to the selected session, coalesce conversation draft persistence,
+  and remove duplicate state reads for snapshot and action replies.
+- Maintenance: retire the unused local API key interface, consolidate
+  controller assembly and desktop/phone startup, assemble mobile bridge tests
+  through the named store hook, and prune redundant retired-RPC and fixture
+  assertions. Windows packaged QA now waits for its process and recycles the
+  run's temporary directory; docs and model lists are refreshed.
+
 ## 1.3.5
 
 - Unify conversation rendering across mobile, desktop and Assistant workspaces

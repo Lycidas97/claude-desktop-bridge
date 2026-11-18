@@ -14,19 +14,17 @@ Android is the native phone client. The generic mobile Web client remains availa
 
 ## Versions and downloads
 
-**The current public release is [v1.3.1](https://github.com/Lycidas97/claude-desktop-bridge/releases/tag/v1.3.1). The setup steps below describe that release.** Download desktop and mobile packages from this fork, preferably from the same version.
+**The current public release is [v1.3.6](https://github.com/Lycidas97/claude-desktop-bridge/releases/tag/v1.3.6). The setup steps below describe that release.** Download desktop and mobile packages from this fork, preferably from the same version.
 
-| Platform | v1.3.1 download | Installation and validation |
+| Platform | v1.3.6 download | Installation and validation |
 | --- | --- | --- |
-| macOS | [Desktop ZIP](https://github.com/Lycidas97/claude-desktop-bridge/releases/download/v1.3.1/Bridge-1.3.1-macos-adhoc.zip) | Extract and use the enclosed installer. Ad-hoc signed, without Apple notarization; the main desktop validation platform |
-| Android 8.0+ | [APK](https://github.com/Lycidas97/claude-desktop-bridge/releases/download/v1.3.1/Bridge-1.3.1-android-debug.apk) | Uses the repository's fixed debug signing key; allow installation from the app used to download it |
-| Windows | [Installer ZIP](https://github.com/Lycidas97/claude-desktop-bridge/releases/download/v1.3.1/Bridge-1.3.1-windows-installer-ci.zip) | CI build; see the included `windows-release-evidence.json` for signing status. Native connectivity has not completed live-device validation |
+| macOS | [Desktop ZIP](https://github.com/Lycidas97/claude-desktop-bridge/releases/download/v1.3.6/Bridge-1.3.6-macos-adhoc.zip) | Extract and use the enclosed installer. Ad-hoc signed, without Apple notarization; the main desktop validation platform |
+| Android 8.0+ | [APK](https://github.com/Lycidas97/claude-desktop-bridge/releases/download/v1.3.6/Bridge-1.3.6-android-debug.apk) | Uses the repository's fixed debug signing key; allow installation from the app used to download it |
+| Windows | [Installer ZIP](https://github.com/Lycidas97/claude-desktop-bridge/releases/download/v1.3.6/Bridge-1.3.6-windows-installer-ci.zip) | CI build; see the included `windows-release-evidence.json` for signing status. Native connectivity has not completed live-device validation |
 
 The release also includes `SHA256SUMS.txt` and `SOURCE_COMMIT.txt`. Successful builds do not establish live-device validation on every platform. Android system back navigation has been tested in an Android 16 emulator.
 
-The source is preparing a **1.3.2 candidate**: focusing on Claude Desktop only, fixing task completion notifications, confirming size before previews larger than 1 MiB, keeping connection status visible beside long computer names, showing actual subagent response models, displaying live session context usage, remembering font size, creating and moving native Sections from mobile (plus optional folder creation inside the Browse Computer picker), and fixing the disabled Mac configuration button while reorganizing desktop and mobile Settings by task. These changes are not in the 1.3.1 packages; file-size checks, Section moves and directory creation also require a desktop update. Version 1.3.1 still contains independent Codex / Hermes / DSH adapters, which are outside this recommended setup path. Gemini, Antigravity and Magpie models and quota features inside Claude Desktop belong to the Desktop integration, rather than those independent agents.
-
-Until 1.3.2 is tagged, the steps below retain the controls of the published 1.3.1 packages (the candidate reorganizes desktop Settings under **Claude Integration / Connection and Startup**) alongside the manual setup fallback. See the [Changelog](CHANGELOG.md) for details. Technical documents track the source and may describe candidate changes.
+1.3.6 collects the conversation and desktop fixes since 1.3.5: relative-path file previews, a single replacement-session open after a desktop reset, leaner native history reads, received-receipt labels that stay collapsed once the queue drains, and mobile layout and question-card fixes. See the [Changelog](CHANGELOG.md) for details; technical documents track the source.
 
 ## What you need
 
@@ -52,7 +50,7 @@ Launch Claude Desktop / Claude-3p at least once and finish signing in, then open
 
 This requires two settings: allowing Desktop developer tools, then enabling its main-process debugger.
 
-1. In Bridge, open **Settings → Diagnostics and About → Claude Desktop developer tools (设置 → 诊断与关于 → Claude Desktop 开发者工具)**. If both `Claude` and `Claude-3p` are detected, select the profile you actually use.
+1. In Bridge, open **Settings → Claude Integration → Claude Desktop developer tools (设置 → Claude 接入 → Claude Desktop 开发者工具)**. If both `Claude` and `Claude-3p` are detected, select the profile you actually use.
 2. Check whether `allowDevTools` is `true` in `developer_settings.json`. **Enable (一键开启)** only writes this field; **it does not open the inspector or guarantee a macOS permission prompt**. If the button is disabled or the check fails, use the manual instructions below.
 3. Desktop loads the changed configuration on its next launch. Wait for active tasks to finish, then quit and reopen Claude Desktop / Claude-3p. Bridge does not restart it for you.
 4. In Desktop's native menu, choose **Developer → Enable Main Process Debugger**. The default local address is `127.0.0.1:9229`. Account/workspace policies may restrict the menu, and the native action may open a Chrome debugger page.
@@ -78,7 +76,7 @@ Check that the JSON is valid, reopen Desktop, then enable the main-process debug
 
 </details>
 
-**Automatic attempt in 1.3.1:** on macOS, the background service attempts the same native menu once per newly discovered Desktop process. Grant Bridge access under **System Settings → Privacy & Security → Accessibility**, and allow Bridge to control System Events under **Automation**, if that entry appears. These permissions concern menu automation and are separate from JSON file access. An already-open port is skipped. After an actual action fails, or you close the debugger manually, Bridge does not repeat the attempt within that Desktop process, even if Bridge restarts. You can still use Desktop's native menu directly. First-time permission prompts and a full restart cycle have not completed installed-app end-to-end validation.
+**Automatic attempt:** on macOS, the background service attempts the same native menu once per newly discovered Desktop process. Grant Bridge access under **System Settings → Privacy & Security → Accessibility**, and allow Bridge to control System Events under **Automation**, if that entry appears. These permissions concern menu automation and are separate from JSON file access. An already-open port is skipped. After an actual action fails, or you close the debugger manually, Bridge does not repeat the attempt within that Desktop process, even if Bridge restarts. You can still use Desktop's native menu directly. First-time permission prompts and a full restart cycle have not completed installed-app end-to-end validation.
 
 **Keep port 9229 local.** This debugger can evaluate code in the process. It is not the phone's connection address and must not be forwarded to the internet or exposed through the relay. Connection monitoring provides alerts; it does not block other local processes.
 
@@ -120,7 +118,7 @@ Closing the Bridge window leaves background connectivity running, so the phone c
 
 ## Files and quota
 
-| Type | Support in 1.3.1 |
+| Type | Support |
 | --- | --- |
 | Images | Previews in conversations and evidence, including scaled images |
 | PDF | Embedded viewer using encrypted chunked transfers |

@@ -14,19 +14,17 @@ Bridge 把 Claude Desktop 的本地 Code 会话带到手机：接着聊、排队
 
 ## 版本与下载
 
-**当前正式版是 [v1.3.1](https://github.com/Lycidas97/claude-desktop-bridge/releases/tag/v1.3.1)，下方上手步骤以该版为准。** 请从本 fork 下载电脑端和手机端，尽量使用同一版本。
+**当前正式版是 [v1.3.6](https://github.com/Lycidas97/claude-desktop-bridge/releases/tag/v1.3.6)，下方上手步骤以该版为准。** 请从本 fork 下载电脑端和手机端，尽量使用同一版本。
 
-| 平台 | v1.3.1 下载 | 安装与验证范围 |
+| 平台 | v1.3.6 下载 | 安装与验证范围 |
 | --- | --- | --- |
-| macOS | [电脑端 ZIP](https://github.com/Lycidas97/claude-desktop-bridge/releases/download/v1.3.1/Bridge-1.3.1-macos-adhoc.zip) | 解压后使用内含安装包。ad-hoc 签名，未经 Apple 公证；主要验证平台 |
-| Android 8.0+ | [APK](https://github.com/Lycidas97/claude-desktop-bridge/releases/download/v1.3.1/Bridge-1.3.1-android-debug.apk) | 使用仓库固定 debug 签名；需允许当前下载来源安装应用 |
-| Windows | [安装包 ZIP](https://github.com/Lycidas97/claude-desktop-bridge/releases/download/v1.3.1/Bridge-1.3.1-windows-installer-ci.zip) | CI 构建；签名状态见包内 `windows-release-evidence.json`，原生连接未完成实机验收 |
+| macOS | [电脑端 ZIP](https://github.com/Lycidas97/claude-desktop-bridge/releases/download/v1.3.6/Bridge-1.3.6-macos-adhoc.zip) | 解压后使用内含安装包。ad-hoc 签名，未经 Apple 公证；主要验证平台 |
+| Android 8.0+ | [APK](https://github.com/Lycidas97/claude-desktop-bridge/releases/download/v1.3.6/Bridge-1.3.6-android-debug.apk) | 使用仓库固定 debug 签名；需允许当前下载来源安装应用 |
+| Windows | [安装包 ZIP](https://github.com/Lycidas97/claude-desktop-bridge/releases/download/v1.3.6/Bridge-1.3.6-windows-installer-ci.zip) | CI 构建；签名状态见包内 `windows-release-evidence.json`，原生连接未完成实机验收 |
 
 发布页同时提供 `SHA256SUMS.txt` 与 `SOURCE_COMMIT.txt`。构建成功不代表所有平台均完成实机验证；Android 系统返回流程已在 Android 16 模拟器中验证。
 
-当前源码正在准备 **1.3.2 候选版**：收敛为仅适配 Claude Desktop、修复任务完成通知、增加大于 1 MiB 文件预览前的大小确认、长电脑名下的连接状态展示、子代理实际响应模型、会话实时上下文水位展示、保存字号、手机端新建与移动原生 Section（含浏览电脑目录时按需新建文件夹），以及修复 Mac 新用户配置按钮置灰并按任务归类重排桌面 / 手机设置。这些还不是 1.3.1 发布包的能力；其中文件大小检查、Section 移动与按需新建文件夹需要同时升级电脑端。1.3.1 仍含独立 Codex / Hermes / DSH 适配器，本文不将其作为推荐上手路径。Claude Desktop 内部的 Gemini、Antigravity、Magpie 模型与额度功能属于 Desktop 接入，不等同于这些独立 Agent。
-
-在 1.3.2 正式发布前，下方上手步骤仍保留已发布 1.3.1 的界面入口（候选版桌面设置已归入“设置 → Claude 接入 / 连接与启动”等分组）与手动回退方式。完整变更见 [Changelog](CHANGELOG.md)；技术文档随源码维护，可能描述候选版。
+1.3.6 汇总 1.3.5 之后的会话与桌面修复：相对路径文件预览、桌面重置后的单次新会话打开、原生历史读取优化、已接收标签在队列清空后的持久收起，以及手机端布局与提问卡片修正。完整变更见 [Changelog](CHANGELOG.md)；技术文档随源码维护。
 
 ## 开始前准备什么
 
@@ -50,7 +48,7 @@ Bridge 把 Claude Desktop 的本地 Code 会话带到手机：接着聊、排队
 
 这一步包含两个设置：允许 Desktop 显示开发者工具，以及开启主进程调试端口。
 
-1. 在 Bridge 打开 **设置 → 诊断与关于 → Claude Desktop 开发者工具**。如果同时检测到 `Claude` 与 `Claude-3p`，选择实际使用的配置目录。
+1. 在 Bridge 打开 **设置 → Claude 接入 → Claude Desktop 开发者工具**。如果同时检测到 `Claude` 与 `Claude-3p`，选择实际使用的配置目录。
 2. 检查 `developer_settings.json` 中的 `allowDevTools` 是否为 `true`。“一键开启”只负责写入这个字段；**它不等于开启 inspector，也不保证弹出 macOS 权限请求**。按钮置灰或检查失败时，按下方手动配置。
 3. 配置变更需要在 Desktop 下一次启动时加载。等当前任务结束，退出并重新打开 Claude Desktop / Claude-3p；Bridge 不会替你重启它。
 4. 在 Desktop 的原生菜单选择 **Developer → Enable Main Process Debugger**。默认连接地址为本机 `127.0.0.1:9229`。菜单可能受账号 / 工作区策略限制，原生操作也可能打开 Chrome 调试页。
@@ -76,7 +74,7 @@ Bridge 把 Claude Desktop 的本地 Code 会话带到手机：接着聊、排队
 
 </details>
 
-**1.3.1 的自动开启尝试：** macOS 后台发现新的 Desktop 进程后，会尝试通过同一个原生菜单开启一次 inspector。它需要你在 **系统设置 → 隐私与安全性 → 辅助功能**中允许 Bridge，并在**自动化**中允许 Bridge 控制 System Events（若系统显示了此项）。这些是菜单自动化权限，与 JSON 文件写入分开。已开放的端口会跳过；实际操作失败或你手动关闭后，同一个 Desktop 进程中不会反复尝试，重启 Bridge 也不会重试。此时可直接使用 Desktop 原生菜单。首次授权弹窗与完整重启流程尚未完成已安装应用的端到端验收。
+**自动开启尝试：** macOS 后台发现新的 Desktop 进程后，会尝试通过同一个原生菜单开启一次 inspector。它需要你在 **系统设置 → 隐私与安全性 → 辅助功能**中允许 Bridge，并在**自动化**中允许 Bridge 控制 System Events（若系统显示了此项）。这些是菜单自动化权限，与 JSON 文件写入分开。已开放的端口会跳过；实际操作失败或你手动关闭后，同一个 Desktop 进程中不会反复尝试，重启 Bridge 也不会重试。此时可直接使用 Desktop 原生菜单。首次授权弹窗与完整重启流程尚未完成已安装应用的端到端验收。
 
 **请保持 9229 仅供本机访问。** 它是有进程求值能力的调试端口，不应作为手机连接地址、转发到公网或暴露给中继。连接监测只提供提醒，不会阻止其他本机进程连接。
 
@@ -118,7 +116,7 @@ Claude 的任务、队列和审批由 Desktop 管理，Bridge 不另起 Claude S
 
 ## 文件与额度
 
-| 类型 | 1.3.1 支持范围 |
+| 类型 | 支持范围 |
 | --- | --- |
 | 图片 | 对话与成果内预览，可使用缩放图像 |
 | PDF | 客户端内嵌查看，通过加密分块通道读取 |

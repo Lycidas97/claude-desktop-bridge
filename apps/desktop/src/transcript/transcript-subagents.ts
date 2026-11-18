@@ -631,9 +631,14 @@ export async function readClaudeTranscriptSubagents(
   return [...byKey.entries()]
     .map(([key, subagent]) => {
       const task = parent.taskStates.get(subagent.agentId);
-      if (task && subagent.state === "running" && task.at >= subagent.startedAt) {
-        if (task.state !== "running") return { ...subagent, state: task.state, updatedAt: Math.max(subagent.updatedAt, task.at) };
-        if (subagentProcessLive(subagent.startedAt, liveSince)) return subagent;
+      if (task && task.at >= subagent.startedAt) {
+        if (task.state !== "running") {
+          if (subagent.state === "running" || (subagent.state === "stopped" && task.at > subagent.updatedAt)) {
+            return { ...subagent, state: task.state, updatedAt: Math.max(subagent.updatedAt, task.at) };
+          }
+        } else if (subagent.state === "running" && subagentProcessLive(subagent.startedAt, liveSince)) {
+          return subagent;
+        }
       }
       if (subagent.state === "running" && !withChildFile.has(key) && !subagentProcessLive(subagent.startedAt, liveSince)) {
         return { ...subagent, state: "stopped" as const };

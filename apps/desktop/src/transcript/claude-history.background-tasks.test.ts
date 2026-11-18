@@ -349,9 +349,9 @@ describe("background shells and agents", () => {
         type: "tool_result", tool_use_id: "agent-call", is_error: true, content: "[Request interrupted by user for tool use]",
       }] } },
     ]);
-    const [task] = await tasks(run.transcript);
-    expect(task).toMatchObject({ id: "agent-call", state: "stopped", subagent: { state: "stopped" } });
-    expect(task?.subagent?.reportText).toBeUndefined();
+    const [agent] = await readClaudeTranscriptSubagents(run.transcript, 0);
+    expect(agent).toMatchObject({ toolUseId: "agent-call", state: "stopped" });
+    expect(agent).not.toHaveProperty("reportText");
   });
 
   it("keeps the selected task when an unrelated sidechain tool result has a non-string ID", async () => {

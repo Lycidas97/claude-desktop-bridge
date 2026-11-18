@@ -921,6 +921,24 @@ describe("Claude transcript history", () => {
       expect(await state(transcript, 0)).toBe(status);
     });
 
+    it.each([
+      { parentAt: 19_999, state: "failed", updatedAt: 19_999 },
+      { parentAt: 14_999, state: "stopped", updatedAt: 15_000 },
+    ])("reconciles a compacted agent failure at $parentAt with a child interruption", async ({ parentAt, state, updatedAt }) => {
+      const transcript = await fixture({ childMeta: {} });
+      await appendFile(join(transcript.replace(/\.jsonl$/u, ""), "subagents", "agent-child.jsonl"), "\n" + line({
+        type: "user", timestamp: new Date(15_000).toISOString(),
+        message: { content: [{ type: "text", text: "[Request interrupted by user]" }] },
+      }));
+      await appendFile(transcript, "\n" + [
+        line({ type: "system", subtype: "compact_boundary", timestamp: new Date(20_000).toISOString() }),
+        line({ type: "attachment", timestamp: new Date(parentAt).toISOString(), attachment: {
+          type: "task_status", taskId: "child", taskType: "local_agent", status: "failed",
+        } }),
+      ].join("\n"));
+      expect(await readClaudeTranscriptSubagents(transcript, 0)).toMatchObject([{ state, updatedAt }]);
+    });
+
     it("keeps new child activity after compaction live without reviving its old parent", async () => {
       const transcript = await fixture({ childMeta: {} });
       await appendFile(transcript, "\n" + line({ type: "system", subtype: "compact_boundary", timestamp: new Date(20_000).toISOString() }));

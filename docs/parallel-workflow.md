@@ -69,7 +69,7 @@ Every status change is an explicit `SendMessage`:
 | `UI REVIEWED #<n> <sha>: CLEAN` or `…: <k> BLOCKER, <m> NIT` + model | `ui-review` → fork and reviewer |
 | `NIT FIX OK #<n> <sha>` / `MERGE OK #<n> <sha>`: that SHA becomes the reviewed SHA | reviewer → fork |
 | `CI REQUEST #<n> <sha>` | reviewer → patrol |
-| `CI GREEN #<n> <sha>` / `CI FAILED #<n> <sha>` + failing step and log path | patrol → reviewer |
+| `CI GREEN #<n> <sha>` / `CI FAILED #<n> <sha>` + failing step and log path | patrol → reviewer and fork |
 | `MERGED #<n> <sha>` + 0–2 verified candidate lessons | reviewer → patrol |
 | `BLOCKED <reason>` | any → patrol |
 | `TAKEN OVER <PRs>` | new owner → old owner |
@@ -109,9 +109,10 @@ Flag only defects with a concrete trigger. After a `[BLOCKER]` round, re-review 
 ## CI (patrol)
 
 - When the last verdict on a SHA is CLEAN, `NIT FIX OK`, or a `MERGE OK` that **After merge** step 2 does not exempt, the reviewer sends `CI REQUEST #<n> <sha>` to the patrol. Docs-only PRs skip CI.
-- The patrol runs `npm run ci:local` as a background command in the PR's fork worktree, only while its tree is clean and `HEAD` equals that SHA. At most 3 runs go at once on the Mac; further requests queue in merge order. The run publishes `ci/local-distributed` itself; nobody edits the PR body for it.
-- The patrol sends `CI GREEN` or `CI FAILED` with the failing step and log path to the reviewer, without diagnosing the failure.
-- On `CI FAILED`, a failure that needs a code change is a `[BLOCKER]` round. Otherwise the reviewer may send `CI REQUEST` once more for the unchanged head; a second failure with the same cause goes to Astra for diagnosis instead of a third run.
+- The patrol runs `npm run ci:local` as a background command in the PR's fork worktree, only while its tree is clean and `HEAD` equals that SHA. At most 3 runs go at once on the Mac; further requests queue in merge order. The run publishes `ci/local-distributed` itself.
+- If every check passed and only the status POST failed (the log reports `Failed to publish ci/local-distributed`), the patrol runs `npm run ci:local -- --publish` in the same clean worktree at that SHA instead of a new run (`docs/testing.md` **CI**), then reports.
+- The patrol sends `CI GREEN` or `CI FAILED` with the failing step and log path to the reviewer and the fork, without diagnosing the failure. The fork records the result in the PR body, replacing `ci:local — pending review`; editing the body leaves the head unchanged.
+- On `CI FAILED` from a failed check, a failure that needs a code change is a `[BLOCKER]` round. Otherwise the reviewer may send `CI REQUEST` once more for the unchanged head; a second failure with the same cause goes to Astra for diagnosis instead of a third run.
 
 ## Merge (reviewer)
 

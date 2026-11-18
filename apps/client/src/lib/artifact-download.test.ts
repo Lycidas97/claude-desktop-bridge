@@ -54,6 +54,7 @@ function downloadRequest(name = "report.docx", mimeType = "application/octet-str
 it.each([
   ["short filename", "report.docx", "report.docx"],
   ["long filename", `${"x".repeat(160)}.DOCX`, `${"x".repeat(155)}.DOCX`],
+  ["multibyte filename", `${"文".repeat(100)}.docx`, `${"文".repeat(51)}.docx`],
 ])("opens an Android download with a %s and preserves the extension", async (_label, name, cacheName) => {
   native.platform = "android";
   const request = downloadRequest(name);

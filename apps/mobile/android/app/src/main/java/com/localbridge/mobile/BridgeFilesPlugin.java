@@ -40,6 +40,10 @@ public class BridgeFilesPlugin extends Plugin {
             Intent view = new Intent(Intent.ACTION_VIEW)
                 .setDataAndType(uri, mimeType)
                 .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            if (view.resolveActivity(context.getPackageManager()) == null) {
+                call.reject("没有可打开此文件的应用。请安装支持该文件类型的应用后重新下载。");
+                return;
+            }
             getActivity().startActivity(Intent.createChooser(view, "选择打开方式")
                 .putExtra(Intent.EXTRA_AUTO_LAUNCH_SINGLE_CHOICE, false));
             call.resolve();

@@ -40,15 +40,19 @@ function base64Bytes(value: string): Uint8Array {
 
 function safeFilename(value: string): string {
   const normalized = value.replace(/[\\/:*?"<>|\u0000-\u001f]/gu, "_").trim();
-  const maxLength = 160;
-  if (normalized.length > maxLength) {
-    const dot = normalized.lastIndexOf(".");
-    if (dot > 0 && normalized.length - dot < maxLength) {
-      const extension = normalized.slice(dot);
-      return normalized.slice(0, maxLength - extension.length) + extension;
+  const encoder = new TextEncoder();
+  const budget = new Uint8Array(160);
+  const { read } = encoder.encodeInto(normalized, budget);
+  if (read === normalized.length) return normalized || "Bridge-artifact";
+  const dot = normalized.lastIndexOf(".");
+  if (dot > 0) {
+    const extension = normalized.slice(dot);
+    const stemBudget = budget.length - encoder.encode(extension).length;
+    if (stemBudget > 0) {
+      return normalized.slice(0, encoder.encodeInto(normalized, budget.subarray(0, stemBudget)).read) + extension;
     }
   }
-  return normalized.slice(0, maxLength) || "Bridge-artifact";
+  return normalized.slice(0, read);
 }
 
 function delay(ms: number): Promise<void> {

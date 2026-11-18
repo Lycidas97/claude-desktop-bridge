@@ -2927,6 +2927,40 @@ describe("Claude native relay", () => {
     } finally { await f.close(); }
   });
 
+  it("projects a native task stop on the next detail read while the session process stays alive", async () => {
+    const f = await fixture();
+    try {
+      const transcriptPath = join(f.directory, "stop-session.jsonl");
+      const childDir = join(f.directory, "stop-session", "subagents");
+      await mkdir(childDir, { recursive: true });
+      await writeFile(transcriptPath, "");
+      await writeFile(join(childDir, "agent-native-task.jsonl"), JSON.stringify({
+        type: "assistant", timestamp: new Date(10_000).toISOString(), message: { stop_reason: null, content: [] },
+      }) + "\n");
+      f.options.scanCatalog.mockResolvedValue({ projects: [], sessions: [{
+        ...f.bridge.session("local-native")!, sessionId: "stop-session", desktopSessionId: "local-native", transcriptPath,
+        transcriptMtimeMs: 0, processAlive: true, desktopProcessAlive: true, bridgeProcessAlive: false,
+        processOverlap: false, activeTask: false,
+        activeProcesses: [{ startedAt: 1_000, processAlive: true, entrypoint: "claude-desktop-3p", source: "process" }],
+      }], observedAt: 0 });
+      const nativeCall = f.native.call.bind(f.native);
+      const call = vi.spyOn(f.native, "call").mockImplementation(async (method, args) => {
+        if (method === "stopTask") await writeFile(join(childDir, "agent-native-task.meta.json"), JSON.stringify({ stoppedByUser: true }));
+        return nativeCall(method, args);
+      });
+      expect(await f.bridge.backgroundTaskDetails("local-native")).toMatchObject([{ taskId: "native-task", state: "running" }]);
+      expect(f.bridge.session("local-native")?.runningSubagents?.count).toBe(1);
+
+      await f.bridge.stopSubagent("local-native", "native-task");
+      expect(call).toHaveBeenCalledWith("stopTask", ["local-native", "native-task"]);
+      const changed = vi.fn();
+      f.bridge.on("changed", changed);
+      expect(await f.bridge.backgroundTaskDetails("local-native")).toMatchObject([{ taskId: "native-task", state: "stopped" }]);
+      expect(f.bridge.session("local-native")?.runningSubagents).toBeUndefined();
+      expect(changed).toHaveBeenCalledTimes(1);
+    } finally { await f.close(); }
+  });
+
   it("preserves full multi-thousand-character subagent reports without truncation over short native summaries", async () => {
     const f = await fixture();
     try {

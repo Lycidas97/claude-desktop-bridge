@@ -92,6 +92,7 @@ const MAX_SINGLE_IMAGE_BYTES = 4 * 1024 * 1024;
 const MAX_TOTAL_IMAGE_BYTES = 6 * 1024 * 1024;
 const HOST_SWITCH_UPLOAD_ERROR = "已切换电脑，上传已中断";
 export const CONVERSATION_DRAFTS_STORAGE_KEY = "bridge-conversation-drafts:v1";
+const DRAFT_CLEAR_STORAGE_PREFIX = "bridge-conversation-draft-clear:v1:";
 const MAX_PERSISTED_DRAFTS = 100;
 const DRAFT_WRITE_INTERVAL_MS = 250;
 
@@ -103,7 +104,7 @@ interface PersistedDraftEntry {
 
 interface PendingDraftWrite {
   entry: PersistedDraftEntry;
-  wasPersisted: boolean;
+  clearRevision: string | null;
 }
 
 function safeLocalStorage(): Pick<Storage, "getItem" | "setItem" | "removeItem"> | undefined {
@@ -169,14 +170,12 @@ function readPersistedDrafts(raw: string | null): Map<string, PersistedDraftEntr
   return drafts;
 }
 
-function loadPersistedDrafts(): Map<string, PersistedDraftEntry> {
-  let raw: string | null | undefined;
+function readDraftClearRevision(key: string): string | null {
   try {
-    raw = safeLocalStorage()?.getItem(CONVERSATION_DRAFTS_STORAGE_KEY);
+    return safeLocalStorage()?.getItem(DRAFT_CLEAR_STORAGE_PREFIX + key) ?? null;
   } catch {
-    raw = null; // Storage access can be blocked by browser settings.
+    return null; // Storage access can be blocked by browser settings.
   }
-  return readPersistedDrafts(raw ?? null);
 }
 
 function writePersistedDrafts(
@@ -187,19 +186,35 @@ function writePersistedDrafts(
   if (!storage) return;
   try {
     const drafts = readPersistedDrafts(storage.getItem(CONVERSATION_DRAFTS_STORAGE_KEY));
+    const clearedKeys: string[] = [];
     for (const [key, change] of changes) {
-      if (!change) drafts.delete(key);
-      // An entry cleared since this edit batch began must stay cleared.
-      else if (!change.wasPersisted || drafts.has(key)) drafts.set(key, change.entry);
+      if (!change) {
+        drafts.delete(key);
+        clearedKeys.push(key);
+      } else if (storage.getItem(DRAFT_CLEAR_STORAGE_PREFIX + key) === change.clearRevision) {
+        drafts.set(key, change.entry);
+      }
+    }
+    if (removedHostId !== undefined) {
+      for (const key of drafts.keys()) {
+        if (keyBelongsToHost(key, removedHostId)) {
+          drafts.delete(key);
+          clearedKeys.push(key);
+        }
+      }
     }
     const entries = [...drafts.values()]
-      .filter(({ key }) => removedHostId === undefined || !keyBelongsToHost(key, removedHostId))
       .sort((left, right) => right.updatedAt - left.updatedAt)
       .slice(0, MAX_PERSISTED_DRAFTS);
     if (entries.length === 0) {
       storage.removeItem(CONVERSATION_DRAFTS_STORAGE_KEY);
     } else {
       storage.setItem(CONVERSATION_DRAFTS_STORAGE_KEY, JSON.stringify({ version: 1, entries }));
+    }
+    // Keep explicit clears separate from capacity eviction in the text store.
+    for (const key of clearedKeys) {
+      const revisionKey = DRAFT_CLEAR_STORAGE_PREFIX + key;
+      storage.setItem(revisionKey, String((Number(storage.getItem(revisionKey)) || 0) + 1));
     }
   } catch {
     // Storage quota or private-mode restrictions must not interrupt typing.
@@ -235,7 +250,13 @@ function useConversationDraftsController(activeHostId: string | undefined, enabl
   const [drafts, setDrafts] = useState<Record<string, ConversationDraftState>>(() => {
     const drafts: Record<string, ConversationDraftState> = {};
     if (!enabled) return drafts;
-    for (const { key, text, updatedAt } of loadPersistedDrafts().values()) {
+    let raw: string | null | undefined;
+    try {
+      raw = safeLocalStorage()?.getItem(CONVERSATION_DRAFTS_STORAGE_KEY);
+    } catch {
+      return drafts;
+    }
+    for (const { key, text, updatedAt } of readPersistedDrafts(raw ?? null).values()) {
       drafts[key] = { text, attachments: [], sending: false };
       lastStampRef.current = Math.max(lastStampRef.current, updatedAt);
     }
@@ -281,7 +302,7 @@ function useConversationDraftsController(activeHostId: string | undefined, enabl
       lastStampRef.current = Math.max(Date.now(), lastStampRef.current + 1);
       pendingDraftChangesRef.current.set(key, {
         entry: { key, text: updated.text, updatedAt: lastStampRef.current },
-        wasPersisted: pendingDraftChangesRef.current.get(key)?.wasPersisted ?? loadPersistedDrafts().has(key),
+        clearRevision: readDraftClearRevision(key),
       });
       draftWriteTimerRef.current ??= setTimeout(flushPersistedDrafts, DRAFT_WRITE_INTERVAL_MS);
     } else {

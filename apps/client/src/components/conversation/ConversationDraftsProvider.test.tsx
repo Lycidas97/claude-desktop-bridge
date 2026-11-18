@@ -465,6 +465,57 @@ describe("ConversationDraftsProvider", () => {
     }
   });
 
+  it("saves edits made after another window clears the draft within the same write interval", () => {
+    vi.useFakeTimers();
+    const first = renderProvider().session("host-a", "sess-A");
+    first.setText("original draft");
+    vi.advanceTimersByTime(250);
+
+    const secondStore = createStore();
+    const reopenedStore = createStore();
+    try {
+      const second = renderProvider(secondStore).session("host-a", "sess-A");
+      first.setText("queued before clear");
+      vi.advanceTimersByTime(100);
+      second.setText("");
+      first.setText("new text after clear");
+      vi.advanceTimersByTime(150);
+
+      expect(renderProvider(reopenedStore).session("host-a", "sess-A").draft.text).toBe("new text after clear");
+    } finally {
+      unmountStore(reopenedStore);
+      unmountStore(secondStore);
+    }
+  });
+
+  it("saves a pending edit when another window's new draft evicts its old value at the storage cap", () => {
+    vi.useFakeTimers();
+    const first = renderProvider();
+    const oldest = first.session("host-a", "sess-0");
+    for (let index = 0; index < 100; index += 1) {
+      first.session("host-a", `sess-${index}`).setText(`draft-${index}`);
+    }
+    vi.advanceTimersByTime(250);
+
+    const secondStore = createStore();
+    const reopenedStore = createStore();
+    try {
+      renderProvider(secondStore).session("host-a", "sess-100").setText("new session draft");
+      vi.advanceTimersByTime(100);
+      oldest.setText("updated oldest draft");
+      vi.advanceTimersByTime(150);
+      expect(stored.get(CONVERSATION_DRAFTS_STORAGE_KEY)).not.toContain('"text":"draft-0"');
+
+      vi.advanceTimersByTime(100);
+      const reopened = renderProvider(reopenedStore);
+      expect(reopened.session("host-a", "sess-0").draft.text).toBe("updated oldest draft");
+      expect(reopened.session("host-a", "sess-100").draft.text).toBe("new session draft");
+    } finally {
+      unmountStore(reopenedStore);
+      unmountStore(secondStore);
+    }
+  });
+
   it.each(["pagehide", "visibilitychange"])("flushes pending text immediately on %s", (event) => {
     vi.useFakeTimers();
     const page = new EventTarget();

@@ -85,15 +85,16 @@ export function savedModelOption(models: readonly BridgeModelInfo[] | undefined,
   return base ? { ...base, value: `${base.value}[1m]`, displayName: `${base.displayName} · 1M` } : undefined;
 }
 
+function formatModelIdLabel(model: string): string | undefined {
+  return model.includes("/") || /^(?:claude|gpt|gemini)-/iu.test(model)
+    ? humanizeUpstreamModelId(model)
+    : humanizeMagpieAnthropicModel(model);
+}
+
 export function directModelDisplayName(model: string | undefined, models: readonly BridgeModelInfo[] | undefined): string | undefined {
   const trimmed = model?.trim();
   if (!trimmed || trimmed.toLowerCase() === "default") return undefined;
-  const saved = savedModelOption(models, trimmed);
-  if (saved) return saved.displayName;
-  if (trimmed.includes("/") || /^(?:claude|gpt|gemini)-/iu.test(trimmed)) {
-    return humanizeUpstreamModelId(trimmed);
-  }
-  return humanizeMagpieAnthropicModel(trimmed);
+  return savedModelOption(models, trimmed)?.displayName ?? formatModelIdLabel(trimmed);
 }
 
 export function resolveSessionModel({ nativeModel, contextModel, models, defaultModel }: {
@@ -109,14 +110,10 @@ export function resolveSessionModel({ nativeModel, contextModel, models, default
 } {
   const trimmedNative = nativeModel?.trim();
   const explicitNative = trimmedNative && trimmedNative.toLowerCase() !== "default" ? trimmedNative : undefined;
-  const trimmedContext = contextModel?.trim();
-  const observedModel = trimmedContext && trimmedContext.toLowerCase() !== "default" && !parseMagpieSyntheticModelId(trimmedContext)
-    ? trimmedContext
-    : undefined;
 
   if (explicitNative) {
     const saved = savedModelOption(models, explicitNative);
-    const directDisplay = saved?.displayName ?? directModelDisplayName(explicitNative, models);
+    const directDisplay = saved?.displayName ?? formatModelIdLabel(explicitNative);
     if (directDisplay) {
       return {
         sessionModel: explicitNative,
@@ -125,20 +122,25 @@ export function resolveSessionModel({ nativeModel, contextModel, models, default
         ...(saved ? { extraOption: saved } : {}),
       };
     }
-    if (observedModel) {
-      const effectiveContext = /\[1m\]$/iu.test(explicitNative) && !/\[1m\]$/iu.test(observedModel)
-        ? `${observedModel}[1m]`
-        : observedModel;
-      const contextSaved = savedModelOption(models, effectiveContext);
-      const contextDisplay = contextSaved?.displayName ?? humanizeUpstreamModelId(effectiveContext);
-      return {
-        sessionModel: explicitNative,
-        configModel: contextSaved?.value ?? explicitNative,
-        ...(contextDisplay ? { modelDisplayName: contextDisplay } : {}),
-        ...(contextSaved ? { extraOption: contextSaved } : {}),
-      };
-    }
-    return { sessionModel: explicitNative, configModel: explicitNative };
+  }
+
+  const trimmedContext = contextModel?.trim();
+  const observedModel = trimmedContext && trimmedContext.toLowerCase() !== "default" && !parseMagpieSyntheticModelId(trimmedContext)
+    ? trimmedContext
+    : undefined;
+  if (explicitNative) {
+    if (!observedModel) return { sessionModel: explicitNative, configModel: explicitNative };
+    const effectiveContext = /\[1m\]$/iu.test(explicitNative) && !/\[1m\]$/iu.test(observedModel)
+      ? `${observedModel}[1m]`
+      : observedModel;
+    const contextSaved = savedModelOption(models, effectiveContext);
+    const contextDisplay = contextSaved?.displayName ?? humanizeUpstreamModelId(effectiveContext);
+    return {
+      sessionModel: explicitNative,
+      configModel: contextSaved?.value ?? explicitNative,
+      ...(contextDisplay ? { modelDisplayName: contextDisplay } : {}),
+      ...(contextSaved ? { extraOption: contextSaved } : {}),
+    };
   }
 
   const fallbackRaw = observedModel ?? defaultModel ?? models?.[0]?.value;

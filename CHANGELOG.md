@@ -35,6 +35,17 @@
   process and recycles the run's temporary directory; standalone packaged QA
   keeps its own GUID scratch cleanup. Docs and model lists are refreshed.
 
+- Opt-in Native conflict-evidence probes (`BRIDGE_NATIVE_CONFLICT_PROBES=1`)
+  still fail as described in #352 and remain skipped by the default suites. On
+  macOS Claude Desktop 5.11492.5, `LocalSessions.sendMessage` reports a
+  refusal as a thrown error under `rejectUndelivered`, so the probes' resolved
+  `{ delivered: false }` shape is not produced by this interface; a real
+  queued-message withdrawal followed by a same-UUID `result` was not
+  reproduced (late `result` events carried the previous turn's UUID, and the
+  observed `close` carried no `withdrawnUuids`). Evidence covers this Desktop
+  build only; SSH relays, other Desktop versions and same-UUID error results
+  remain unverified. Related contract tests pass 32/32.
+
 ## 1.3.5
 
 - Unify conversation rendering across mobile, desktop and Assistant workspaces

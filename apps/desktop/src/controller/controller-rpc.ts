@@ -37,7 +37,7 @@ import type { DesktopUpdater } from "../updater/desktop-updater.js";
 import type { AssistantMailCoordinator } from "./assistant-mail.js";
 import { BridgeRequestError, stringParam } from "./request-error.js";
 
-export { BridgeRequestError, stringParam };
+export { stringParam };
 
 export function runtimeIdParam(
   params: Record<string, unknown>,

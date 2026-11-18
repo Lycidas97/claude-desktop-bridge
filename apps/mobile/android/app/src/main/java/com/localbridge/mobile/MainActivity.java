@@ -13,6 +13,7 @@ public class MainActivity extends BridgeActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         registerPlugin(BridgeUpdaterPlugin.class);
+        registerPlugin(BridgeFilesPlugin.class);
         super.onCreate(savedInstanceState);
     }
 

@@ -1,6 +1,5 @@
-import { Capacitor } from "@capacitor/core";
+import { Capacitor, registerPlugin } from "@capacitor/core";
 import { Directory, Filesystem } from "@capacitor/filesystem";
-import { Share } from "@capacitor/share";
 import type {
   BridgeArtifactManifest,
   BridgeArtifactTransferChunk,
@@ -14,6 +13,8 @@ type RequestArtifact = (
   params: Record<string, unknown>,
   options?: { wait?: boolean; timeoutMs?: number },
 ) => Promise<BridgeResponse | undefined>;
+
+const BridgeFiles = registerPlugin<{ openFile(options: { path: string; mimeType: string }): Promise<void> }>("BridgeFiles");
 
 let activeDownloadsCount = 0;
 let activeDownloadsCachedBytes = 0;
@@ -39,7 +40,19 @@ function base64Bytes(value: string): Uint8Array {
 
 function safeFilename(value: string): string {
   const normalized = value.replace(/[\\/:*?"<>|\u0000-\u001f]/gu, "_").trim();
-  return normalized.slice(0, 160) || "Bridge-artifact";
+  const encoder = new TextEncoder();
+  const budget = new Uint8Array(160);
+  const { read } = encoder.encodeInto(normalized, budget);
+  if (read === normalized.length) return normalized || "Bridge-artifact";
+  const dot = normalized.lastIndexOf(".");
+  if (dot > 0) {
+    const extension = normalized.slice(dot);
+    const stemBudget = budget.length - encoder.encode(extension).length;
+    if (stemBudget > 0) {
+      return normalized.slice(0, encoder.encodeInto(normalized, budget.subarray(0, stemBudget)).read) + extension;
+    }
+  }
+  return normalized.slice(0, read);
 }
 
 function delay(ms: number): Promise<void> {
@@ -94,7 +107,7 @@ async function runArtifactTransfer(
   ));
   const transfer = opened.transfer;
   const chunks: Uint8Array[] = [];
-  const native = Capacitor.isNativePlatform();
+  const native = Capacitor.getPlatform() === "android";
   const filename = safeFilename(transfer.name);
   const nativePath = `bridge-evidence/${transfer.transferId}/${filename}`;
   let nativeFileCreated = false;
@@ -133,12 +146,7 @@ async function runArtifactTransfer(
     if (await sha256Hex(chunks) !== transfer.sha256) throw new Error("成果完整性校验失败");
     transferCompleted = true;
     if (native) {
-      const file = await Filesystem.getUri({ path: nativePath, directory: Directory.Cache });
-      await Share.share({
-        title: transfer.name,
-        dialogTitle: "选择打开方式",
-        files: [file.uri],
-      });
+      await BridgeFiles.openFile({ path: nativePath, mimeType: transfer.mimeType });
       return;
     }
     const blob = new Blob(

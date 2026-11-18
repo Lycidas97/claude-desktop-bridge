@@ -60,6 +60,8 @@ const EMPTY_PREVIEWS: Record<string, BridgeArtifactPreview> = {};
 const EMPTY_TRANSFERS: Record<string, number> = {};
 const EMPTY_HOST_EVENTS: BridgeEvent[] = [];
 
+type DesktopEvidenceState = SessionEvidenceState & { openedIds?: ReadonlySet<string> };
+
 export function unwrap<T>(response: BridgeResponse): T {
   if (!response.ok) {
     throw Object.assign(
@@ -84,7 +86,7 @@ export interface DesktopConversationController {
   selectedSessionFor(hostId: string): string | undefined;
   selectSession(hostId: string, sessionId: string | undefined): void;
   historyFor(sessionId: string, hostId?: string): SessionHistoryState | undefined;
-  evidenceFor(sessionId: string, hostId?: string): SessionEvidenceState | undefined;
+  evidenceFor(sessionId: string, hostId?: string): DesktopEvidenceState | undefined;
   artifactPreviews: Record<string, BridgeArtifactPreview>;
   artifactTransfers: Record<string, number>;
   mountSession(sessionId: string, hostId?: string): () => void;
@@ -159,7 +161,7 @@ function useDesktopConversationController(
 
   const [selectedByHost, setSelectedByHost] = useState<Record<string, string | undefined>>({});
   const [histories, setHistories] = useState<Record<string, SessionHistoryState>>({});
-  const [evidence, setEvidence] = useState<Record<string, SessionEvidenceState>>({});
+  const [evidence, setEvidence] = useState<Record<string, DesktopEvidenceState>>({});
   const [artifactPreviewsByHost, setArtifactPreviewsByHost] = useState<Record<string, Record<string, BridgeArtifactPreview>>>({});
   const [artifactTransfersByHost, setArtifactTransfersByHost] = useState<Record<string, Record<string, number>>>({});
 
@@ -220,7 +222,7 @@ function useDesktopConversationController(
   }
 
   function updateEvidence(
-    change: (current: Record<string, SessionEvidenceState>) => Record<string, SessionEvidenceState>,
+    change: (current: Record<string, DesktopEvidenceState>) => Record<string, DesktopEvidenceState>,
   ): void {
     setEvidence((current) => {
       const next = change(current);
@@ -291,10 +293,14 @@ function useDesktopConversationController(
         response.ok ? response.result as { evidence: BridgeEvidencePage } : undefined
       ), () => undefined).then((result) => {
         if (openSeqRef.current.get(key) !== seq) return;
-        updateEvidence((current) => applyEvidencePageResult(current, key, result?.evidence, {
-          hasMoreOnError: false,
-          itemsAtRequestStart,
-        }));
+        updateEvidence((current) => {
+          const next = applyEvidencePageResult(current, key, result?.evidence, { hasMoreOnError: false, itemsAtRequestStart });
+          const opened = next[key]!;
+          // The reducer keeps post-request live summaries by reference.
+          const previousItems = new Set(current[key]?.items);
+          const openedIds = new Set(opened.items.filter((item) => item.state !== "collecting" && !previousItems.has(item)).map((item) => item.id));
+          return openedIds.size ? { ...next, [key]: { ...opened, openedIds } } : next;
+        });
       }),
     ]);
     return historyOpened && openSeqRef.current.get(key) === seq;
@@ -1049,6 +1055,7 @@ export function DesktopSessionConversation({
   const assistantMail = useAssistantMail();
 
   const hostId = snapshot.host.hostId;
+  const evidence = controller.evidenceFor(session.sessionId, hostId);
 
   useEffect(() => controller.mountSession(session.sessionId, hostId), [hostId, session.sessionId]);
 
@@ -1080,7 +1087,8 @@ export function DesktopSessionConversation({
       }}
       conversationDrafts={conversationDrafts}
       history={controller.historyFor(session.sessionId, hostId)}
-      evidence={controller.evidenceFor(session.sessionId, hostId)}
+      evidence={evidence}
+      openedEvidenceIds={evidence?.openedIds}
       renderEvidence={(panel) => (
         <EvidencePanel
           {...panel}

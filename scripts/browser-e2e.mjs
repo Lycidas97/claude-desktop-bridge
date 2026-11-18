@@ -132,7 +132,7 @@ async function runScenario(theme, scenario, mockHostRuntime) {
     else if (scenario === "desktop-diagnostics") await verifyDesktopDiagnostics(page, host, steps, baseUrl);
     else if (scenario === "desktop-quota") await verifyDesktopQuota(page, host, steps, directory, viewports, baseUrl);
     else if (scenario === "desktop-conversation") await verifyDesktopConversation(page, host, steps, directory, viewports, baseUrl);
-    else if (scenario === "native-approvals") await verifyNativeApprovals(page, host, steps, directory, baseUrl, relayPeers);
+    else if (scenario === "native-approvals") await verifyNativeApprovals(page, host, steps, directory, baseUrl, serverRoutes);
     else if (scenario === "native-prompts-pr") await verifyNativePromptsPr(page, host, steps, directory, baseUrl);
     else if (scenario === "native-messages") await verifyNativeMessages(page, host, steps, directory);
     else if (scenario === "history-pagination") await verifyHistoryPagination(page, host, steps, directory);

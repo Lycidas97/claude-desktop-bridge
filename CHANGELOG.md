@@ -1,3 +1,36 @@
+## 1.3.6
+
+- Choose an output style per session. Preselect a built-in or global personal
+  style when creating a session. Choose project and plugin styles in session
+  settings after the session initializes. Changes apply from the next reply.
+- Show Android’s system app chooser after saving a download so it can be opened
+  in a compatible app. Preserve the file extension and report when no viewer is
+  available.
+- Make desktop pairing QR codes easier to scan with a shorter payload and better
+  camera detection. Phones that support Pairing V4 can also paste the full pairing
+  link. Use the full link with Bridge 1.3.5. Keep the existing pairings when a
+  valid desktop configuration cannot be saved during migration.
+- Preview relative file links opened from phone conversations. Show desktop
+  history while the evidence list loads, preserve thumbnails while replies
+  stream, and keep the first page of mobile evidence current during loading.
+  Open the replacement session only once after a desktop reset. After a fork,
+  open the new session only once. If session deletion fails, keep the confirmation
+  dialog open so the user can retry.
+- Keep old message actions tucked away and show queue status below the message.
+  Keep received receipts collapsed once the native queue drains, including after
+  restart or rewind. Restore session activity and unread completion markers,
+  preserve cleared drafts, and keep selection highlights across option refreshes.
+- Expand the custom answer field when “Other” is selected and show free-text
+  answers and notes with the selected options in question history. Keep prompt
+  sheets opaque as they open.
+- Improve mobile session metadata and delivery-row spacing, keep the mobile page
+  scale fixed during a pinch, and prevent settings overscroll. Distinguish
+  assistant message tabs on desktop and show the outcome of opening Claude’s
+  debug port from the phone.
+- Load native history without a model catalog lookup or unnecessary plan
+  lookback. Preserve discovered models for automatic session titles across
+  Magpie modes, and reduce repeated gateway, receipt, transcript and state work.
+
 ## 1.3.5
 
 - Unify conversation rendering across mobile, desktop and Assistant workspaces

@@ -24,7 +24,7 @@ Android is the native phone client. The generic mobile Web client remains availa
 
 The release also includes `SHA256SUMS.txt` and `SOURCE_COMMIT.txt`. Successful builds do not establish live-device validation on every platform. Android system back navigation has been tested in an Android 16 emulator.
 
-**Fixes merged after v1.3.5 have not entered a public release yet**, including relative-path file previews, a single replacement-session open after a desktop reset, leaner native history reads, received-receipt labels that stay collapsed once the queue drains, mobile layout and question-card fixes, and per-session output styles. The [latest release](https://github.com/Lycidas97/claude-desktop-bridge/releases/latest) remains authoritative for released capabilities; the Changelog and technical documents track the source.
+**1.3.6** adds per-session output styles, makes pairing QR codes easier to scan, and opens Android’s system app chooser after a download. It also fixes relative-path file previews on the phone, duplicate replacement-session opens after a desktop reset, and received-receipt labels reappearing after the queue drains. See the [1.3.6 changelog](CHANGELOG.md#136).
 
 ## What you need
 
@@ -91,7 +91,7 @@ Initial pairing passes the computer's connection information to the phone. To ch
 ### 4. Pair your phone and open a session
 
 1. In desktop Bridge, open **Settings → Phone pairing and devices → Add phone (设置 → 手机配对与设备 → 添加手机)** to generate a one-time QR code.
-2. On first launch, choose **Scan QR code (扫描二维码)** on the phone, allow camera access and scan it. Alternatively, paste the pairing link copied on the computer. To add another computer later, use “+” on the phone's Computers page.
+2. On first launch, choose **Scan QR code (扫描二维码)** on the phone, allow camera access and scan it. Any client that supports Pairing V4 can also paste the full pairing link from the computer. Use this method on Bridge 1.3.5. To add another computer later, use “+” on the phone's Computers page.
 3. The QR code is valid for ten minutes and binds to the first phone installation that uses it. Generate another code after expiry or for another phone. Pairing links contain device authorization information; do not share them publicly.
 4. After pairing, select an existing desktop Code session in the session directory. Confirm that its history loads before sending an instruction.
 5. To start new work, use **New session (新建会话)** at the top of the session drawer, or “+” beside a project group, enter a title and choose a working folder on the computer. Browse into the folder before confirming it; project grouping and the actual working directory are separate choices.
@@ -106,7 +106,7 @@ The phone's home screen is the session list. The top-left menu opens the drawer,
 | Prepare the next instruction | Queue input during a task, or steer it immediately when Desktop supports that operation. Use **Send now** or withdraw eligible native messages before processing starts; Desktop decides whether an action is still valid |
 | Answer questions and approvals | Respond through the session's live question or approval controls. Single choice, multiple selection, text and approval options depend on the request. Resolved requests are dismissed across devices; historical cards cannot be resubmitted as live approvals |
 | Change model or effort | Session row or conversation header “⋯” → Session settings (会话设置). Models, context capacity and how changes take effect come from Desktop |
-| Choose a reply style | **Output style (输出风格)** in session settings. Requires a build after v1.3.5. Built-in styles are available out of the box; personal styles must first exist under `~/.claude/output-styles` on the computer. The selection applies from the next reply, while a reply already running on Desktop keeps the old style. The new-session page can preselect it |
+| Choose a reply style | With Bridge 1.3.6 or later on both the computer and phone, choose **Output style (输出风格)** in session settings. The new-session page can preselect built-in styles or personal styles from `~/.claude/output-styles` on the computer. Choose project and plugin styles in session settings after the session initializes. Changes apply from the next reply |
 | Enable the debug port from the phone | **Settings → Claude debug port (9229)** on the phone actively asks the desktop to attempt the inspector through the native menu. Desktop account/workspace policies and macOS Accessibility/Automation permissions still apply. Unlike the background automatic attempt, which does not retry within a Desktop process after a manual close, the phone can ask again |
 | Rewind a conversation or files | Choose Rewind (回退) beside a sent message, preview and select the scope. Conversation rewind stops active work, removes the selected message and later conversation, and returns the text to the composer; add attachments again. Conversation-only rewind keeps current files. File restoration depends on Desktop checkpoints and busy state, and overwrites the files listed in the preview |
 | Create a branch | Session “⋯” → Fork. Desktop decides the history boundary. **Branches share the working directory; a fork does not copy or roll back project files** |

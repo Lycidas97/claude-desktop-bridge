@@ -101,6 +101,11 @@ interface PersistedDraftEntry {
   updatedAt: number;
 }
 
+interface PendingDraftWrite {
+  entry: PersistedDraftEntry;
+  wasPersisted: boolean;
+}
+
 function safeLocalStorage(): Pick<Storage, "getItem" | "setItem" | "removeItem"> | undefined {
   try {
     const descriptor = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
@@ -164,17 +169,28 @@ function readPersistedDrafts(raw: string | null): Map<string, PersistedDraftEntr
   return drafts;
 }
 
+function loadPersistedDrafts(): Map<string, PersistedDraftEntry> {
+  let raw: string | null | undefined;
+  try {
+    raw = safeLocalStorage()?.getItem(CONVERSATION_DRAFTS_STORAGE_KEY);
+  } catch {
+    raw = null; // Storage access can be blocked by browser settings.
+  }
+  return readPersistedDrafts(raw ?? null);
+}
+
 function writePersistedDrafts(
-  changes: ReadonlyMap<string, PersistedDraftEntry | null>,
+  changes: ReadonlyMap<string, PendingDraftWrite | null>,
   removedHostId?: string,
 ): void {
   const storage = safeLocalStorage();
   if (!storage) return;
   try {
     const drafts = readPersistedDrafts(storage.getItem(CONVERSATION_DRAFTS_STORAGE_KEY));
-    for (const [key, entry] of changes) {
-      if (entry) drafts.set(key, entry);
-      else drafts.delete(key);
+    for (const [key, change] of changes) {
+      if (!change) drafts.delete(key);
+      // An entry cleared since this edit batch began must stay cleared.
+      else if (!change.wasPersisted || drafts.has(key)) drafts.set(key, change.entry);
     }
     const entries = [...drafts.values()]
       .filter(({ key }) => removedHostId === undefined || !keyBelongsToHost(key, removedHostId))
@@ -214,18 +230,12 @@ function stripHostKeys<T>(record: Record<string, T>, hostId: string): Record<str
 const ConversationDraftsContext = createContext<ConversationDraftsController | undefined>(undefined);
 
 function useConversationDraftsController(activeHostId: string | undefined, enabled: boolean): ConversationDraftsController {
-  const pendingDraftChangesRef = useRef(new Map<string, PersistedDraftEntry | null>());
+  const pendingDraftChangesRef = useRef(new Map<string, PendingDraftWrite | null>());
   const lastStampRef = useRef(0);
   const [drafts, setDrafts] = useState<Record<string, ConversationDraftState>>(() => {
     const drafts: Record<string, ConversationDraftState> = {};
     if (!enabled) return drafts;
-    let raw: string | null | undefined;
-    try {
-      raw = safeLocalStorage()?.getItem(CONVERSATION_DRAFTS_STORAGE_KEY);
-    } catch {
-      return drafts;
-    }
-    for (const { key, text, updatedAt } of readPersistedDrafts(raw ?? null).values()) {
+    for (const { key, text, updatedAt } of loadPersistedDrafts().values()) {
       drafts[key] = { text, attachments: [], sending: false };
       lastStampRef.current = Math.max(lastStampRef.current, updatedAt);
     }
@@ -269,7 +279,10 @@ function useConversationDraftsController(activeHostId: string | undefined, enabl
     if (!enabled || updated.text === previous.text || !isValidDraftStorageKey(key)) return;
     if (updated.text.length > 0) {
       lastStampRef.current = Math.max(Date.now(), lastStampRef.current + 1);
-      pendingDraftChangesRef.current.set(key, { key, text: updated.text, updatedAt: lastStampRef.current });
+      pendingDraftChangesRef.current.set(key, {
+        entry: { key, text: updated.text, updatedAt: lastStampRef.current },
+        wasPersisted: pendingDraftChangesRef.current.get(key)?.wasPersisted ?? loadPersistedDrafts().has(key),
+      });
       draftWriteTimerRef.current ??= setTimeout(flushPersistedDrafts, DRAFT_WRITE_INTERVAL_MS);
     } else {
       pendingDraftChangesRef.current.set(key, null);

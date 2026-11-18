@@ -170,8 +170,8 @@ describe("ConversationDraftsProvider", () => {
   let activeHostId: string | undefined;
   let handle: ConversationDraftsHandle;
 
-  function renderProvider(): ConversationDraftsController {
-    const element = runWithStore(providerStore, () => (
+  function renderProvider(store = providerStore): ConversationDraftsController {
+    const element = runWithStore(store, () => (
       ConversationDraftsProvider({ activeHostId, controllerRef: handle, children: null }) as ReactElement<{ value: ConversationDraftsController }>
     ));
     runtime.contextValue = element.props.value;
@@ -431,6 +431,37 @@ describe("ConversationDraftsProvider", () => {
       ]);
     } finally {
       unmountStore(firstStore);
+    }
+  });
+
+  it("does not restore a draft another window cleared after the edit was queued", () => {
+    vi.useFakeTimers();
+    stored.set(CONVERSATION_DRAFTS_STORAGE_KEY, JSON.stringify({
+      version: 1,
+      entries: [{ key: JSON.stringify(["host-a", "sess-A"]), text: "旧草稿", updatedAt: 1 }],
+    }));
+    const first = renderProvider().session("host-a", "sess-A");
+    const secondStore = createStore();
+    const reopenedStore = createStore();
+    try {
+      const second = renderProvider(secondStore).session("host-a", "sess-A");
+      expect(first.draft.text).toBe("旧草稿");
+      expect(second.draft.text).toBe("旧草稿");
+
+      first.setText("earlier edit");
+      second.setText("");
+      expect(stored.has(CONVERSATION_DRAFTS_STORAGE_KEY)).toBe(false);
+
+      vi.advanceTimersByTime(250);
+      expect(renderProvider(reopenedStore).session("host-a", "sess-A").draft.text).toBe("");
+
+      first.setText("new edit after the clear");
+      vi.advanceTimersByTime(250);
+      unmountStore(reopenedStore);
+      expect(renderProvider(reopenedStore).session("host-a", "sess-A").draft.text).toBe("new edit after the clear");
+    } finally {
+      unmountStore(reopenedStore);
+      unmountStore(secondStore);
     }
   });
 

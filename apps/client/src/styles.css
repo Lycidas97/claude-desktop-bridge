@@ -2437,22 +2437,32 @@ button:disabled {
   justify-content: flex-end;
   align-items: center;
   gap: 4px;
-  /* The copy button keeps its 44px touch area; its padding lines the label up with the bubble's edge. */
-  margin: -4px -8px -8px 0;
+  margin: -4px var(--message-action-inset, 0px) -8px 0;
 }
 
-.conversation-message-actions:has(> :is(.delivery-state:not(.completed), .queued-steer-button, .queued-cancel-button)) {
+.conversation-message-actions:has(> .delivery-state:not(.completed)) {
   display: flex;
 }
 
-.conversation-item:is(.show-message-utilities, :focus-visible, :has(:focus-visible)),
-.desktop-conversation .conversation-item:focus-within {
+.conversation-message-actions:has(> .message-copy-button) {
+  --message-action-inset: -8px;
+}
+
+.conversation-item:is(.show-message-utilities, :focus-visible, :has(:focus-visible)) > .conversation-message-actions:has(> .conversation-message-utilities),
+.desktop-conversation .conversation-message-actions:has(> .conversation-message-utilities) {
   --message-actions-display: flex;
   --message-utilities-display: contents;
+  /* Align the padded button label with the bubble edge. */
+  --message-action-inset: -8px;
 }
 
 .conversation-message-utilities {
   display: var(--message-utilities-display, none);
+}
+
+/* Keep the row in place while a desktop pointer moves between messages. */
+.desktop-conversation .conversation-item:not(.show-message-utilities, :hover, :focus-within) .conversation-message-utilities {
+  visibility: hidden;
 }
 
 .conversation-message-actions .delivery-state {

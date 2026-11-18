@@ -182,6 +182,11 @@ export async function verifyNativeQueueActions(page, host, steps, directory, rel
   assert.equal(await page.getByRole("button", { name: "立即发送", exact: true }).count(), 0);
   assert.equal(await page.getByRole("button", { name: "撤回", exact: true }).count(), 0);
   assert.equal(await page.getByRole("status", { name: "消息排队状态" }).count(), 0);
+  assert.equal(await historyMessage.evaluate(message => {
+    const bubble = message.querySelector(".conversation-bubble");
+    const status = message.querySelector(".delivery-state");
+    return status.getBoundingClientRect().right - bubble.getBoundingClientRect().right;
+  }), 0, "A standalone delivery status aligns with its bubble edge");
   await page.screenshot({ path: resolve(directory, "queue-terminal-states.png"), fullPage: true });
   steps.push("fresh history reconciles a missed rekey into one cached bubble; steered 立即发送 uses its native UUID; completed events preceding a delayed cancel true remain completed; successful cancels persist and queue actions never resubmit or interrupt");
 

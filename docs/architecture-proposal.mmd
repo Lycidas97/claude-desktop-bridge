@@ -1,0 +1,53 @@
+flowchart TB
+    subgraph Client["客户端：手机 / Electron renderer"]
+        Pages["普通会话页 · 助理页 · 未来业务页面"]
+        View["共享 ConversationView"]
+        Drafts["稳定草稿与附件 owner"]
+        Mobile["手机数据适配<br/>状态转换 · E2EE 请求 / 恢复"]
+        Local["桌面数据适配<br/>本地 IPC · 加载状态"]
+        Pages -->|"组合"| View
+        Drafts -->|"按 host + session 提供"| View
+        Mobile -->|"数据与动作"| View
+        Local -->|"数据与动作"| View
+    end
+
+    Network["Relay / LAN / WebRTC<br/>仅传 E2EE 密文"]
+
+    subgraph Host["Desktop 后台服务：service-runtime 创建与关闭资源"]
+        RemoteEntry["远程入口<br/>设备鉴权 · 解密 · 校验"]
+        LocalEntry["本地入口<br/>来源 / token / 方法约束"]
+        Request["现有 RPC 分发与操作处理<br/>按入口保留权限边界"]
+        Management["本地管理操作<br/>配对 · 设置 · 诊断"]
+        Native["原生 broker / inspector 适配"]
+        Receipts["投递收据<br/>幂等键 · requestId · 投递状态"]
+        Business["业务服务与私有存储<br/>邮件 · 后续业务"]
+        Evidence["被动成果采集<br/>清单 · 预览 · 传输"]
+        Sync["事件 / 快照同步<br/>seq · 发布判定 · 恢复"]
+        MailTools["邮件窄工具入口<br/>独立 token · 限定业务方法"]
+
+        RemoteEntry --> Request
+        LocalEntry --> Request
+        LocalEntry --> Management
+        Request --> Native
+        Request --> Business
+        Request --> Evidence
+        Native -->|"调用前记录 / 原生事件推进"| Receipts
+        Native -->|"原生事件"| Sync
+        Native -->|"被动采集"| Evidence
+        Receipts -. "投递状态投影" .-> Sync
+        Business -->|"已提交的业务变化"| Sync
+        Evidence -->|"成果变化"| Sync
+        MailTools --> Business
+    end
+
+    Desktop["Claude Desktop / LocalSessions<br/>唯一会话执行、排队、权限与历史权威"]
+    MCP["项目 MCP 适配器"]
+
+    Mobile <-->|"密文"| Network
+    Network <-->|"密文"| RemoteEntry
+    Local <-->|"本地请求 / 响应"| LocalEntry
+    Native <-->|"明确原生操作 / 事件"| Desktop
+    Desktop -->|"调用业务工具"| MCP
+    MCP -->|"业务请求"| MailTools
+    Sync -. "发布投影" .-> RemoteEntry
+    Sync -. "发布投影" .-> LocalEntry

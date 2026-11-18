@@ -17,6 +17,10 @@
 3. **Scroll & streaming stability**: Opening or streaming a session must preserve upward-scrolled reading position during assistant deltas and history pagination, and must not trigger mid-stream `onOpenSession` re-fetch loops when `contextUsage` is temporarily absent.
 4. **Visual restraint**: Do not add redundant subtitles, secondary descriptions, or explanatory callouts; keep long host names, status badges, and persistent appearance font-size scales balanced across `375x812` mobile and desktop viewports in both light and dark themes.
 
+## Review Checks for Conversation Loading
+- Keep scroll anchoring and card entry animation markers in UI-owned state so shared reducers can rebuild pages from their declared fields. Verify that a late first evidence page inserting a card above the reader preserves the reading position.
+- Give the initial load of a reset replacement session a single owner. Verify one `session.open` for the replacement once the session list has refreshed and the conversation has mounted.
+
 ## Minimum Verification
 ```bash
 npm run ci:run -- test -w @bridge/client

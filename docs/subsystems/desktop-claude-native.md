@@ -16,6 +16,10 @@
 4. **Avoid mid-stream session re-open**: Do not trigger redundant `LocalSessions` session open/refresh loops while an assistant turn is actively streaming.
 5. **Pre-1.3 connector retirement**: `connector.ts` (`removeLegacyConnector`) safely removes pre-1.3 Bridge MCP/hook entries: it writes `.bridge-backup` and removes only hooks matching exact `/hooks/claude-permission` + `X-Bridge-Permission-Host: $BRIDGE_PERMISSION_HOST` + `allowedEnvVars`. The former `legacy/` tree was deleted in #51; do not recreate it.
 
+## Review Checks for Native History
+- Hold the model catalog response pending and verify `session.open` can return the latest history page. Verify catalog refresh and retry through session settings separately.
+- Assert a single native page read for a plain older page that needs no plan recovery, and for a plain first page with live plan and context usage already available. Check the returned items and native cursor. Exercise cross-page plan recovery and transcript context fallback in separate cases.
+
 ## Minimum Verification
 ```bash
 npm run ci:run -- test -w @bridge/desktop

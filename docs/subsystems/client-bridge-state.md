@@ -16,6 +16,9 @@
 3. **Atomic replacement pairing**: `vault.ts` and `confirmedPairingSnapshot` must never overwrite or delete an existing paired host identity until the new pairing's encrypted `snapshot.get` response matches the expected `hostId` and `pairingEpoch`.
 4. **Per-host / per-session draft isolation & no legacy auto-resend**: Drafts and attachments stay strictly scoped to `(hostId, sessionId)`. Cached legacy `bridgeExecutionRequested` entries must never be automatically resent.
 
+## Review Checks for Evidence Loading
+- Apply the same freshness rule on desktop and mobile. In both entry points, hold an older `evidence.list` response until after a newer live event for the same bundle and verify the newer summary survives with the response's pagination intact.
+
 ## Minimum Verification
 ```bash
 npm run ci:run -- test -w @bridge/client

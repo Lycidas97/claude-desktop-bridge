@@ -14,7 +14,7 @@ if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.me
   const mode = process.argv[2];
   const npm = (...args) => [process.execPath, [process.env.npm_execpath, ...args]];
   const commands = mode === 'verify'
-    ? [npm('run', 'typecheck'), npm('test'), npm('run', 'build')]
+    ? [npm('run', 'lint'), npm('run', 'typecheck'), npm('test'), npm('run', 'build')]
     : mode === 'browser'
       ? [npm('run', 'build', '-w', '@bridge/protocol'), npm('run', 'build', '-w', '@bridge/relay'),
         [process.execPath, ['scripts/browser-e2e.mjs']]]

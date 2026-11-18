@@ -275,7 +275,7 @@ async function runCli() {
         results.push(`macOS audit:runtime (${tAudit}s)`);
 
         const tVerify = await runPrefixed("MAC", "npm", ["run", "verify"]);
-        results.push(`macOS verify: typecheck + 5 Vitest suites + full build (${tVerify}s)`);
+        results.push(`macOS verify: lint + typecheck + tests + full build (${tVerify}s)`);
 
         const [tBrowser, tService] = await Promise.all([
           runPrefixed("MAC", "npm", ["run", "test:browser:nobuild"], { extraEnv: browserEnv }),

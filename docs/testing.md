@@ -9,8 +9,9 @@ without a cleanup preload. Validation requires `/usr/bin/trash` on macOS,
 | --- | --- |
 | `npm test` | Six sequential Vitest suites in the order listed under Reports, with at most two workers per suite |
 | `npm run typecheck` | Workspaces that define `typecheck`, followed by `plugins/magpie-quota` and `plugins/assistant-mail` |
-| `npm run verify` | Root typecheck, `npm test`, then the root build. Stops at the first failing stage |
-| `npm run test:infra` | Runner and cleanup behavior, packaged QA contracts, and release workflow checks |
+| `npm run lint` | Project-specific static checks in [scripts/lint.mjs](../scripts/lint.mjs). Desktop controller tests use the real constructor through the fixture or directly |
+| `npm run verify` | Root lint, typecheck, `npm test`, then the root build. Stops at the first failing stage |
+| `npm run test:infra` | Runner and cleanup behavior, lint rule examples, packaged QA contracts, and release workflow checks |
 | `npm run test:browser` | Builds protocol and relay, then runs the self-contained browser fixture. `npm run test:browser:nobuild` reuses existing builds |
 | `npm run ci:run -- run test:desktop:service` | After a current Desktop build: real compiled Electron UI/service with isolated Native fixture; on macOS also verifies developer settings, real random TCP/lsof/proc_pidpath, ASAR helper, injected warning UI, and completed background scans after window close |
 | `npm run ci:local` | Concurrent local distributed CI across Mac (`test:infra`, `audit:runtime`, `verify`, `test:browser:nobuild`, `test:desktop:service`) and `ssh win` (up to 4 parallel isolated slots `D:\work\ci-slot-<n>`: Windows `test:infra` and `npm test`, NSIS installer + packaged QA, and Android API 36 debug APK + DEX/cert + WHPX emulator WebView pairing smoke), recording a receipt in `<git-common-dir>/local-ci/` and publishing `ci/local-distributed = success` to `Lycidas97/claude-desktop-bridge` (`npm run ci:local -- --publish` publishes a saved receipt after `git push` or clean squash merge) |

@@ -167,7 +167,7 @@ test('the installed Vitest accepts the worker/report flags with the recycle prel
   }
 });
 
-test('verify runs typecheck, tests and full build with inherited environment, and propagates failure', async () => {
+test('verify runs lint, typecheck, tests and full build with inherited environment, and propagates failure', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'bridge verify 测试-'));
   try {
     const fixture = join(directory, 'npm.mjs');
@@ -176,7 +176,7 @@ test('verify runs typecheck, tests and full build with inherited environment, an
       import { appendFileSync } from 'node:fs';
       appendFileSync(process.env.EVENTS, JSON.stringify({ args: process.argv.slice(2), extra: process.env.EXTRA,
         options: process.env.NODE_OPTIONS }) + '\\n');
-      process.exitCode = process.argv[2] === process.env.FAIL_ON ? 19 : 0;
+      process.exitCode = process.argv.slice(2).join(' ') === process.env.FAIL_ON ? 19 : 0;
     `);
     const env = { ...process.env, npm_execpath: fixture, EVENTS: events, EXTRA: 'retained',
       NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --trace-warnings` };
@@ -186,12 +186,12 @@ test('verify runs typecheck, tests and full build with inherited environment, an
     await copyFile(new URL('./recycle-cleanup.cjs', import.meta.url), join(directory, 'recycle-cleanup.cjs'));
     assert.equal(spawnSync(process.execPath, [runner, 'verify'], { env }).status, 0);
     const records = (await readFile(events, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
-    assert.deepEqual(records.map(record => record.args), [['run', 'typecheck'], ['test'], ['run', 'build']]);
+    assert.deepEqual(records.map(record => record.args), [['run', 'lint'], ['run', 'typecheck'], ['test'], ['run', 'build']]);
     assert.ok(records.every(record => record.extra === 'retained' && record.options.includes('--trace-warnings')
       && record.options.includes('recycle-cleanup.cjs')));
     await writeFile(events, '');
-    assert.equal(spawnSync(process.execPath, [runner, 'verify'], { env: { ...env, FAIL_ON: 'test' } }).status, 19);
-    assert.equal((await readFile(events, 'utf8')).trim().split('\n').length, 2);
+    assert.equal(spawnSync(process.execPath, [runner, 'verify'], { env: { ...env, FAIL_ON: 'run lint' } }).status, 19);
+    assert.deepEqual(JSON.parse((await readFile(events, 'utf8')).trim()).args, ['run', 'lint']);
     assert.equal(spawnSync(process.execPath, [runner, 'npm', 'test'], { env: { ...env, FAIL_ON: 'test' } }).status, 19);
     assert.equal(spawnSync(process.execPath, [runner, 'verify'], {
       env: { ...env, npm_execpath: join(directory, 'missing.mjs') },

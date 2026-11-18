@@ -55,6 +55,7 @@ vi.mock("electron", async () => {
     app, BrowserWindow, Tray,
     dialog: { showErrorBox: vi.fn(), showOpenDialog: vi.fn(), showMessageBox: vi.fn(), showSaveDialog: vi.fn() },
     protocol: { registerSchemesAsPrivileged: vi.fn() }, ipcMain: { handle: vi.fn() },
+    contextBridge: { exposeInMainWorld: vi.fn() }, ipcRenderer: { invoke: vi.fn() },
     Menu: { buildFromTemplate: vi.fn(() => ({ getMenuItemById: vi.fn(() => ({ checked: false })) })) },
     nativeImage: { createFromPath: vi.fn(() => ({ resize: vi.fn(), setTemplateImage: vi.fn() })) },
     nativeTheme: { get shouldUseDarkColors() { return mocks.shouldUseDarkColors; }, themeSource: "system" as "system" | "light" | "dark" },
@@ -131,6 +132,23 @@ it("exposes the native directory picker only through trusted local renderer IPC"
   expect(() => choose({ senderFrame: { url: "https://untrusted.invalid" } } as Electron.IpcMainInvokeEvent, "/initial")).toThrow("Untrusted renderer");
   await expect(choose(event, 42)).rejects.toThrow("initialPath must be a string");
   expect(dialog.showOpenDialog).toHaveBeenCalledTimes(2);
+});
+
+it("keeps standalone API key operations out of the Desktop IPC surface", async () => {
+  process.argv = originalArgv;
+  const { EventEmitter } = await import("node:events");
+  const { contextBridge, ipcMain } = await import("electron");
+  mocks.connect.mockResolvedValueOnce(Object.assign(new EventEmitter(), { call: vi.fn(async () => ({ launchAtLogin: false, sessions: [] })), close: vi.fn() }));
+  await import("./main.js");
+  await vi.waitFor(() => expect(ipcMain.handle).toHaveBeenCalledWith("bridge:request", expect.any(Function)));
+  expect(ipcMain.handle).not.toHaveBeenCalledWith("bridge:set-anthropic-api-key", expect.any(Function));
+  expect(ipcMain.handle).not.toHaveBeenCalledWith("bridge:remove-anthropic-api-key", expect.any(Function));
+
+  await import("./preload.js");
+  expect(contextBridge.exposeInMainWorld).toHaveBeenCalledExactlyOnceWith("bridgeDesktop", expect.objectContaining({ getSnapshot: expect.any(Function) }));
+  const api = vi.mocked(contextBridge.exposeInMainWorld).mock.calls[0]![1];
+  expect(api).not.toHaveProperty("setAnthropicApiKey");
+  expect(api).not.toHaveProperty("removeAnthropicApiKey");
 });
 
 it("checks and enables developer settings through trusted local IPC without calling the background service", async () => {

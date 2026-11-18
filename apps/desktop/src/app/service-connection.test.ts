@@ -115,7 +115,10 @@ it("requires the local bearer token and refuses non-allowlisted methods", async 
     const browser = new WebSocket(`ws://127.0.0.1:${port}`, { headers: { Authorization: `Bearer ${token}`, Origin: "https://example.com" } });
     expect(await new Promise<string>((resolve) => browser.once("error", (error) => resolve(error.message)))).toContain("401");
     await client.connect();
-    await expect((client.call as (method: string) => Promise<unknown>)("close")).rejects.toThrow("Unknown service method");
+    const call = client.call.bind(client) as (method: string, ...args: unknown[]) => Promise<unknown>;
+    await expect(call("close")).rejects.toThrow("Unknown service method");
+    await expect(call("setAnthropicApiKey", "unused")).rejects.toThrow("Unknown service method");
+    await expect(call("removeAnthropicApiKey")).rejects.toThrow("Unknown service method");
     await expect(client.call("setLaunchAtLogin", "false" as unknown as boolean)).rejects.toThrow("Expected one boolean");
     await expect(client.call("setDiagnosticsEnabled", "false" as unknown as boolean)).rejects.toThrow("Expected one boolean");
   } finally { client.close(); await server.close(); }

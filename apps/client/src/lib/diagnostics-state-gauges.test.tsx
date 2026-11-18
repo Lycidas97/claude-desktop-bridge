@@ -25,8 +25,8 @@ import {
   type DesktopConversationController,
 } from "../components/desktop/DesktopSessionConversation.js";
 import type { MediaRequest } from "./media-preview.js";
-import { useMobileBridge, type BridgeMutableStore } from "../hooks/useMobileBridge.js";
-import { captureBridgeStoreRef } from "../hooks/useMobileBridge.test-harness.js";
+import { useMobileBridge } from "../hooks/useMobileBridge.js";
+import type { BridgeMutableStore } from "../hooks/bridge/useMobileBridgeStore.js";
 import { collectDiagnosticsStateSnapshot } from "./diagnostics.js";
 
 interface HookStore {
@@ -94,7 +94,7 @@ vi.mock("react", async (original) => ({
   useRef(initial: unknown) {
     const store = runtime.currentStore!;
     const index = store.index++;
-    store.slots[index] ??= captureBridgeStoreRef(initial, bridgeStore => { store.bridgeStore = bridgeStore; });
+    store.slots[index] ??= { current: initial };
     return store.slots[index];
   },
   useCallback(fn: unknown, deps?: unknown[]) {
@@ -149,6 +149,17 @@ vi.mock("react", async (original) => ({
     });
   },
 }));
+
+vi.mock("../hooks/bridge/useMobileBridgeStore.js", async (importOriginal) => {
+  const { useMobileBridgeStore } = await importOriginal<typeof import("../hooks/bridge/useMobileBridgeStore.js")>();
+  return {
+    useMobileBridgeStore() {
+      const bridge = useMobileBridgeStore();
+      runtime.currentStore!.bridgeStore = bridge.store;
+      return bridge;
+    },
+  };
+});
 
 vi.mock("../components/evidence/MediaPreviewProvider.js", async (original) => ({
   ...await original<typeof import("../components/evidence/MediaPreviewProvider.js")>(),
@@ -713,7 +724,7 @@ describe("Frontend pull-based diagnostics state gauges & redaction", () => {
       runtime.contexts.clear();
       const providerType = element.type as unknown as (props: any) => unknown;
       providerType(element.props);
-      controller = renderStore(consumerStore, () => useDesktopConversation(input));
+      controller = renderStore(consumerStore, useDesktopConversation);
     };
     renderBoth();
 

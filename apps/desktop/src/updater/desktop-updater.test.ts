@@ -9,7 +9,6 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_GITHUB_RELEASES_PAGE_URL } from "@bridge/protocol";
 import { DesktopController } from "../controller/controller.js";
-import { BridgeRequestError } from "../controller/controller-rpc.js";
 import {
   DesktopUpdater,
   type DesktopUpdaterPlatform,
@@ -269,7 +268,6 @@ describe("DesktopUpdater lightweight version checker & browser jump", () => {
     });
     expect(response.ok).toBe(false);
     expect(response.error?.code).toBe("UNSUPPORTED");
-    expect(BridgeRequestError).toBeDefined();
   });
 
   it("defaults unconfigured prerelease builds to prerelease channel while respecting release defaults and explicit saved stable channel", async () => {

@@ -54,10 +54,11 @@ export function ConversationMessageItem({
 }: ConversationMessageItemProps) {
   const [actionsRevealed, setActionsRevealed] = useState(false);
   const messageQueued = isQueuedConversationMessage(item, session);
+  const delivery = item.delivery === "session-received" && item.queueSettled ? undefined : item.delivery;
   const canActOnQueued = Boolean(
     item.role === "user"
     && item.commandId
-    && (messageQueued || item.delivery === "submitted" || item.delivery === "session-received")
+    && (messageQueued || delivery === "submitted" || delivery === "session-received")
     && desktopRuntimeId(session) === "claude-desktop"
     && canSend,
   );
@@ -111,7 +112,7 @@ export function ConversationMessageItem({
       )}
       {/* A sent message's bubble holds only what was sent; status and copy sit under it. */}
       {item.role === "user" ? <div className="conversation-bubble">{content}</div> : content}
-      {(hasUtilities || item.delivery) && (
+      {(hasUtilities || delivery) && (
         <div className="conversation-message-actions">
           {hasUtilities && (
             <div className="conversation-message-utilities">
@@ -129,10 +130,10 @@ export function ConversationMessageItem({
               )}
             </div>
           )}
-          {item.delivery && (
-            <span className={`delivery-state ${item.delivery}`} role="status">
-              {!online && (messageQueued || item.delivery === "queued") ? "上次同步时已排队"
-                : messageQueued ? "已排队" : deliveryLabel(item.delivery)}
+          {delivery && (
+            <span className={`delivery-state ${delivery}`} role="status">
+              {!online && (messageQueued || delivery === "queued") ? "上次同步时已排队"
+                : messageQueued ? "已排队" : deliveryLabel(delivery)}
             </span>
           )}
           {canActOnQueued && ([

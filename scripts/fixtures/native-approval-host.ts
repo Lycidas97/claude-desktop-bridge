@@ -115,6 +115,7 @@ export async function startNativeApprovalHost(options: {
   const inspector = Object.assign(new EventEmitter(), {
     ready: true,
     supports: (method: string) => !unsupportedMethods.has(method) && ["getAll", "getSession", "getTranscript", "getTranscriptPage", "getSupportedCommands", "respondToToolPermission", "setPermissionMode", "setModel", "setEffort", "canRewindTo", "rewindFiles", "rewindV2", "sendMessage", "promoteQueuedMessage", "sendSteeredNow", "cancelQueuedMessage", "interrupt", "start", "updateSession", "getPrOverview", "getPrChecks", "setBoundPrAutoFix", "setAutoFixOwnPrsWanted", "armAutoFixOnNextPr", "getGitInfo", ...Object.values(nativeDialogs).map(dialog => dialog.method), ...(saveTrustSupported ? ["saveTrust"] : [])].includes(method),
+    async inputQueueDrained(id: string) { return id === options.sessionId && !native.turnRunning && queued.size === 0; },
     async prPreferences(id: string) {
       return id === options.sessionId ? { ...preferences, nextOwnPrArmed: nextPrBranch !== undefined } : undefined;
     },
@@ -230,7 +231,7 @@ export async function startNativeApprovalHost(options: {
         }
         if (args[0] === options.sessionId) {
           assert.equal(typeof args[7], "string");
-          queued.add(args[7] as string);
+          if (target.turnRunning || reportQueued) queued.add(args[7] as string);
           messages.push({ type: "user", uuid: args[7], timestamp: Date.now(), message: { content: args[1] } });
           return reportQueued ? { delivered: true, queued: true } : { delivered: true };
         }

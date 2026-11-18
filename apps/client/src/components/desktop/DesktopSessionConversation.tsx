@@ -156,10 +156,7 @@ export interface DesktopConversationController {
 
 const DesktopConversationContext = createContext<DesktopConversationController | undefined>(undefined);
 
-function useDesktopConversationController(
-  input: DesktopConversationInput,
-  enabled: boolean,
-): DesktopConversationController {
+function useDesktopConversationController(input: DesktopConversationInput): DesktopConversationController {
   const latestRef = useRef(input);
   latestRef.current = input;
 
@@ -381,7 +378,6 @@ function useDesktopConversationController(
   }
 
   useEffect(() => {
-    if (!enabled) return;
     const hostId = input.snapshot.host.hostId;
     const hostEvents = filterEvents(input.events, hostId);
     const keyForSession = (sessionId: string) => conversationDraftKey(hostId, sessionId);
@@ -428,7 +424,7 @@ function useDesktopConversationController(
         });
       }
     }
-  }, [enabled, input.events, input.snapshot.host.hostId]);
+  }, [input.events, input.snapshot.host.hostId]);
 
   async function loadOlderHistory(
     sessionId: string,
@@ -657,7 +653,6 @@ function useDesktopConversationController(
   };
 
   useEffect(() => {
-    if (!enabled) return;
     return registerDiagnosticsStateProvider("desktopConversations", () => {
       const currentInput = latestRef.current;
       const bufferedByHost = currentInput.eventsByHost ?? {
@@ -726,7 +721,7 @@ function useDesktopConversationController(
         activeUploads: activeUploadsRef.current,
       };
     });
-  }, [enabled]);
+  }, []);
 
   const currentHostId = input.snapshot.host.hostId;
   const stableActions = useRef<Pick<
@@ -1024,10 +1019,7 @@ export function DesktopConversationProvider({
   onRefreshSnapshot,
   children,
 }: DesktopConversationInput & { children: ReactNode }) {
-  const controller = useDesktopConversationController(
-    { snapshot, events, eventsByHost, apiRequest, onRefreshSnapshot },
-    true,
-  );
+  const controller = useDesktopConversationController({ snapshot, events, eventsByHost, apiRequest, onRefreshSnapshot });
   return (
     <DesktopConversationContext.Provider value={controller}>
       {children}
@@ -1035,42 +1027,32 @@ export function DesktopConversationProvider({
   );
 }
 
-export function useDesktopConversation(
-  input: DesktopConversationInput,
-  externalController?: DesktopConversationController,
-): DesktopConversationController {
-  const context = useContext(DesktopConversationContext);
-  const fallback = useDesktopConversationController(input, context === undefined && !externalController);
-  return externalController ?? context ?? fallback;
+export function useDesktopConversation(): DesktopConversationController {
+  const controller = useContext(DesktopConversationContext);
+  if (!controller) throw new Error("Desktop conversations require DesktopConversationProvider");
+  return controller;
 }
 
 export function DesktopSessionConversation({
   session,
   snapshot,
   events,
-  apiRequest,
-  onRefreshSnapshot,
   onSelectSession,
   onForkCreated,
   headerLeading,
   conversationTabLabel,
-  controller: externalController,
   conversationDrafts: externalDrafts,
   externalActionError,
-}: DesktopConversationInput & {
+}: Pick<DesktopConversationInput, "snapshot" | "events"> & {
   session: BridgeSessionInfo;
   onSelectSession(sessionId: string): void | Promise<void>;
   onForkCreated?(parentSessionId: string, created: BridgeSessionInfo): void;
   headerLeading?: ReactNode | undefined;
   conversationTabLabel?: string | undefined;
-  controller?: DesktopConversationController | undefined;
   conversationDrafts?: ConversationDraftsController | undefined;
   externalActionError?: string | undefined;
 }) {
-  const controller = useDesktopConversation(
-    { snapshot, events, apiRequest, onRefreshSnapshot },
-    externalController,
-  );
+  const controller = useDesktopConversation();
   const fallbackDrafts = useConversationDrafts(snapshot.host.hostId);
   const conversationDrafts = externalDrafts ?? fallbackDrafts;
   const assistantMail = useAssistantMail();

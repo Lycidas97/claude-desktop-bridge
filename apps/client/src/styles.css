@@ -1495,8 +1495,7 @@ button:disabled {
   border-color: var(--accent);
 }
 
-.session-model-field small,
-.session-effort-field small {
+.session-model-field small {
   min-height: 15px;
   color: var(--muted);
   font-size: calc(11px * var(--font-scale));

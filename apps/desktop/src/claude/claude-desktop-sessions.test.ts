@@ -428,6 +428,7 @@ describe("Claude Desktop session catalog", () => {
       bundle: true,
       platform: "node",
       format: "esm",
+      alias: { "@bridge/protocol": fileURLToPath(new URL("../../../../packages/protocol/src/index.ts", import.meta.url)) },
       external: ["node:fs/promises"],
       plugins: [{
         name: "pause-fs-promises",

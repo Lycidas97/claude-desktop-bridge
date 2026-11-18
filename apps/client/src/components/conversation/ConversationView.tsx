@@ -125,6 +125,7 @@ export interface ConversationViewProps {
   onRetry?: (() => Promise<void>) | undefined;
   history: SessionHistoryState | undefined;
   evidence: SessionEvidenceState | undefined;
+  openedEvidenceIds?: ReadonlySet<string> | undefined;
   renderEvidence(props: Pick<ComponentProps<typeof EvidencePanel>,
     "variant" | "sessionId" | "cwd" | "state" | "conversationItems" | "fileChanges"
     | "online" | "onRequestSessionFileDownload" | "onResolvedFileCountChange"
@@ -210,6 +211,7 @@ export function ConversationView({
   onRetry,
   history,
   evidence,
+  openedEvidenceIds,
   renderEvidence,
   permissions,
   events,
@@ -648,6 +650,7 @@ export function ConversationView({
     sessionId: session.sessionId,
     sessionView: effectiveSessionView,
     history,
+    openedEvidenceIds,
     timelineStreamKeys,
     streamKeys,
     onLoadOlderHistory,
@@ -826,7 +829,7 @@ export function ConversationView({
             <EvidenceInlineSummary
               evidence={node.evidence}
               key={`evidence:${node.evidence.id}`}
-              entering={streamEntering(`evidence:${node.evidence.id}`)}
+              entering={!openedEvidenceIds?.has(node.evidence.id) && streamEntering(`evidence:${node.evidence.id}`)}
               onOpen={() => setSessionView("evidence")}
             />
           );

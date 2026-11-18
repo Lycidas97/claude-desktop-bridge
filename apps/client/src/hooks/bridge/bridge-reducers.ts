@@ -1676,10 +1676,10 @@ export function applyEvidenceEventToPages(
   return {
     ...evidence,
     [key]: {
+      ...existing,
       status: "ready",
       items: mergeEvidence(existing?.items ?? [], [item]),
       hasMore: existing?.hasMore ?? false,
-      ...(existing?.nextCursor ? { nextCursor: existing.nextCursor } : {}),
     },
   };
 }
@@ -1694,18 +1694,18 @@ export function applyEvidencePageResult(
   page?: BridgeEvidencePage,
   options: ApplyEvidencePageOptions = {},
 ): Record<string, SessionEvidenceState> {
-  const existing = evidence[sessionId];
+  const { nextCursor: previousCursor, items = [], hasMore = false, ...existing }: Partial<SessionEvidenceState> = evidence[sessionId] ?? {};
   if (!page || options.error) {
-    const items = existing?.items ?? [];
     const status: SessionEvidenceState["status"] =
       options.forceErrorStatus || items.length === 0 ? "error" : "ready";
-    const nextCursor = options.preserveCursorOnError ? existing?.nextCursor : undefined;
+    const nextCursor = options.preserveCursorOnError ? previousCursor : undefined;
     return {
       ...evidence,
       [sessionId]: {
+        ...existing,
         status,
         items,
-        hasMore: options.hasMoreOnError ?? (existing?.hasMore ?? false),
+        hasMore: options.hasMoreOnError ?? hasMore,
         ...(nextCursor ? { nextCursor } : {}),
       },
     };
@@ -1713,9 +1713,10 @@ export function applyEvidencePageResult(
   return {
     ...evidence,
     [sessionId]: {
+      ...existing,
       status: "ready",
-      items: mergeEvidence(existing?.items ?? [], page.items, options.itemsAtRequestStart),
-      hasMore: options.mergeHasMore ? Boolean(existing?.hasMore || page.hasMore) : page.hasMore,
+      items: mergeEvidence(items, page.items, options.itemsAtRequestStart),
+      hasMore: (options.mergeHasMore && hasMore) || page.hasMore,
       ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
     },
   };

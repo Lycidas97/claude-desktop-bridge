@@ -903,22 +903,20 @@ it("renders composer context usage only when present and degrades cleanly for un
 });
 
 describe("desktop conversation parity", () => {
-  it("opens 50 history items, preserves cursor/items on paging error, and deduplicates retried older pages", async () => {
+  it.each(["ready", "error"])("shows history and retries paging while evidence is pending, then evidence becomes %s", async (evidenceStatus) => {
     history = [
       { id: "m-2", sessionId: "A", role: "user", text: "Recent question", createdAt: 20, origin: "claude-desktop" },
       { id: "m-3", sessionId: "A", role: "assistant", text: "Recent answer", createdAt: 30, origin: "claude-desktop" },
     ];
-    let finishEvidence!: () => void;
-    const firstEvidence = new Promise<void>((resolve) => { finishEvidence = resolve; });
+    let finishEvidence!: (response: BridgeResponse) => void;
+    const firstEvidence = new Promise<BridgeResponse>((resolve) => { finishEvidence = resolve; });
     apiRequest.mockImplementation(async ({ method }) => {
-      if (method === "evidence.list") await firstEvidence;
+      if (method === "evidence.list") return firstEvidence;
       return {
         kind: "response",
         requestId: "page",
         ok: true,
-        result: method === "session.open"
-          ? { history: { items: history, hasMore: true, nextCursor: "m-2" } }
-          : { evidence: { items: [], hasMore: false } },
+        result: { history: { items: history, hasMore: true, nextCursor: "m-2" } },
       };
     });
     dashboard = renderer(DesktopDashboard, {
@@ -931,13 +929,22 @@ describe("desktop conversation parity", () => {
     sessions = renderer(child.type as (props: any) => ReactNode, sessionsProps);
     sessions.draw(); await settle(); tree = sessions.draw();
     expect(apiRequest).toHaveBeenCalledWith({ method: "evidence.list", params: { sessionId: "A", limit: 30 } });
-    expect(elements(tree).some((element) => element.type === ConversationMessageItem)).toBe(false);
-    finishEvidence();
-    await settle(); tree = sessions.draw();
-
     expect(apiRequest).toHaveBeenCalledWith({ method: "session.open", params: { sessionId: "A", limit: 50 } });
-    apiRequest.mockClear();
+    const messageIds = () => elements(tree).filter((element) => element.type === ConversationMessageItem).map((element) => element.props.item.id);
+    expect(messageIds()).toEqual(["m-2", "m-3"]);
+    expect(textContent(tree)).not.toContain("正在加载最新对话…");
 
+    function switchView(label: string) {
+      const navigation = elements(tree).find((element) => element.props["aria-label"] === "会话视图")!;
+      elements(navigation).find((element) => element.type === "button" && textContent(element).includes(label))!.props.onClick();
+      tree = sessions.draw();
+    }
+    const evidenceState = () => elements(tree).find((element) => element.type === EvidencePanel)!.props.state;
+    switchView("成果");
+    expect(evidenceState().status).toBe("loading");
+    switchView("对话");
+
+    apiRequest.mockClear();
     const loadOlder = () => elements(tree).find((element) => element.props.className === "load-older-button")!;
     expect(textContent(loadOlder())).toContain("加载更早消息");
 
@@ -947,7 +954,7 @@ describe("desktop conversation parity", () => {
     expect(apiRequest).toHaveBeenCalledExactlyOnceWith({ method: "session.history", params: { sessionId: "A", cursor: "m-2", limit: 50 } });
     expect(textContent(loadOlder())).toContain("重试加载更早消息");
     expect(elements(tree).some((element) => element.props.role === "alert" && element.props.children === "历史读取超时")).toBe(true);
-    expect(elements(tree).filter((element) => element.type === ConversationMessageItem).map((element) => element.props.item.id)).toEqual(["m-2", "m-3"]);
+    expect(messageIds()).toEqual(["m-2", "m-3"]);
 
     apiRequest.mockResolvedValueOnce({
       kind: "response",
@@ -967,7 +974,19 @@ describe("desktop conversation parity", () => {
     await settle(); tree = sessions.draw();
     expect(apiRequest).toHaveBeenLastCalledWith({ method: "session.history", params: { sessionId: "A", cursor: "m-2", limit: 50 } });
     expect(elements(tree).some((element) => element.props.className === "load-older-button")).toBe(false);
-    expect(elements(tree).filter((element) => element.type === ConversationMessageItem).map((element) => element.props.item.id)).toEqual(["m-1", "m-2", "m-3"]);
+    expect(messageIds()).toEqual(["m-1", "m-2", "m-3"]);
+
+    finishEvidence(evidenceStatus === "ready"
+      ? { kind: "response", requestId: "evidence", ok: true, result: { evidence: { items: [{
+        id: "evidence-1", sessionId: "A", startedAt: 1, status: "completed", tools: [], artifacts: [],
+      }], hasMore: false } } }
+      : { kind: "response", requestId: "evidence", ok: false, error: { code: "EVIDENCE_ERR", message: "成果读取超时", retryable: true } });
+    await settle(); tree = sessions.draw();
+    switchView("成果");
+    expect(evidenceState().status).toBe(evidenceStatus);
+    expect(evidenceState().items.map((item: { id: string }) => item.id)).toEqual(evidenceStatus === "ready" ? ["evidence-1"] : []);
+    switchView("对话");
+    expect(messageIds()).toEqual(["m-1", "m-2", "m-3"]);
   });
 
   it("groups consecutive tool rows, preserves group identity across backward paging, and forwards transcript.toolDetail.v1", async () => {
@@ -1087,6 +1106,59 @@ describe("desktop conversation parity", () => {
     expect(fakeStream.scrollTop).toBe(350);
   });
 
+  it("keeps the reading position when the first evidence page inserts a card above it", async () => {
+    let finishHistory!: (response: BridgeResponse) => void;
+    const openingHistory = new Promise<BridgeResponse>((resolve) => { finishHistory = resolve; });
+    let finishEvidence!: (response: BridgeResponse) => void;
+    const openingEvidence = new Promise<BridgeResponse>((resolve) => { finishEvidence = resolve; });
+    apiRequest.mockImplementation(({ method }) => method === "session.open" ? openingHistory : openingEvidence);
+    await openSessions();
+
+    const streamDiv = () => elements(tree).find((element) => typeof element.props.className === "string" && element.props.className.includes("desktop-conversation-stream"))!;
+    let anchorContentTop = 290;
+    const fakeStream = {
+      scrollTop: 0,
+      scrollHeight: 800,
+      clientHeight: 300,
+      getBoundingClientRect: () => ({ top: 0, bottom: 300 }),
+      querySelectorAll: () => [{
+        dataset: { streamKey: "m-1" },
+        getBoundingClientRect: () => ({ top: 210 - fakeStream.scrollTop, bottom: 270 - fakeStream.scrollTop }),
+      }, {
+        dataset: { streamKey: "m-2" },
+        getBoundingClientRect: () => ({ top: anchorContentTop - fakeStream.scrollTop, bottom: anchorContentTop - fakeStream.scrollTop + 60 }),
+      }],
+    };
+    streamDiv().props.ref.current = fakeStream;
+    finishHistory({ kind: "response", requestId: "history", ok: true, result: { history: { hasMore: false, items: [
+      { id: "m-1", sessionId: "A", turnId: "t-1", role: "assistant", text: "Changed files", createdAt: 10, origin: "claude-desktop" },
+      { id: "m-2", sessionId: "A", turnId: "t-2", role: "user", text: "Reading here", createdAt: 20, origin: "claude-desktop" },
+    ] } } });
+    await settle(); tree = sessions.draw();
+    fakeStream.scrollTop = 250;
+    streamDiv().props.onScroll();
+
+    anchorContentTop += 100;
+    fakeStream.scrollHeight += 100;
+    const collecting = { id: "live-bundle", sessionId: "A", turnId: "t-2", startedAt: 21, state: "collecting", changeCount: 1, tools: [], artifacts: [] };
+    finishEvidence({ kind: "response", requestId: "evidence", ok: true, result: { evidence: { hasMore: false, items: [
+      { id: "bundle", sessionId: "A", turnId: "t-1", startedAt: 9, completedAt: 11, state: "completed", changeCount: 1, tools: [], artifacts: [] },
+      collecting,
+    ] } } });
+    await settle(); tree = sessions.draw();
+    const evidenceCard = elements(tree).find((element) => element.key === "evidence:bundle");
+    expect(evidenceCard).toBeDefined();
+    expect.soft(fakeStream.scrollTop).toBe(350);
+    expect(evidenceCard!.props.entering).toBe(false);
+    expect(elements(tree).find((element) => element.key === "evidence:live-bundle")).toBeUndefined();
+
+    tree = sessions.draw({ ...sessionsProps, events: [{
+      eventId: "live-evidence-ready", seq: 1, timestamp: 22, sessionId: "A", origin: "claude-host", type: "evidence.ready",
+      data: { evidence: { ...collecting, state: "completed", completedAt: 22 } },
+    }] });
+    expect(elements(tree).find((element) => element.key === "evidence:live-bundle")?.props.entering).toBe(true);
+  });
+
   it("polls background task details, opens focused task sheet, and confirms subagent stop scopes", async () => {
     snapshot.host.capabilities.push("subagent.stop.v1", "transcript.toolDetail.v1");
     snapshot.runtime.desktopIntegration.state = "ready";
@@ -1189,7 +1261,7 @@ describe("desktop conversation parity", () => {
   it("keeps live evidence that arrives while history is still opening", async () => {
     let finishHistory!: (value: BridgeResponse) => void;
     const openingHistory = new Promise<BridgeResponse>((resolve) => { finishHistory = resolve; });
-    const bundle = { id: "bundle", sessionId: "A", startedAt: 10, artifactCount: 0, tools: [], artifacts: [] };
+    const bundle = { id: "bundle", sessionId: "A", turnId: "t-1", state: "completed", startedAt: 10, artifactCount: 0, tools: [], artifacts: [] };
     apiRequest.mockImplementation(({ method }) => method === "session.open" ? openingHistory : Promise.resolve({
       kind: "response", requestId: "evidence", ok: true,
       result: { evidence: { items: [bundle], hasMore: true, nextCursor: "older" } },
@@ -1204,7 +1276,9 @@ describe("desktop conversation parity", () => {
     tree = sessions.draw({ ...sessionsProps, events: [update] });
     expect(page().items[0].artifactCount).toBe(1);
 
-    finishHistory({ kind: "response", requestId: "history", ok: true, result: { history: { items: [], hasMore: false } } });
+    finishHistory({ kind: "response", requestId: "history", ok: true, result: { history: { items: [
+      { id: "m-1", sessionId: "A", turnId: "t-1", role: "assistant", text: "Finished", createdAt: 10, origin: "claude-desktop" },
+    ], hasMore: false } } });
     await settle();
     const delta: BridgeEvent = {
       eventId: "delta-after-opening", seq: 2, timestamp: 12, sessionId: "A", origin: "claude-host", type: "assistant.delta",
@@ -1212,6 +1286,10 @@ describe("desktop conversation parity", () => {
     };
     tree = sessions.draw({ ...sessionsProps, events: [update, delta] });
     expect(page()).toMatchObject({ items: [expect.objectContaining({ artifactCount: 1 })], hasMore: true, nextCursor: "older" });
+
+    elements(tree).find((element) => element.type === "button" && textContent(element) === "对话")!.props.onClick();
+    tree = sessions.draw();
+    expect(elements(tree).find((element) => element.key === "evidence:bundle")?.props.entering).toBe(false);
   });
 
   it("pages legacy artifact details and passes opaque cursors to capable hosts", async () => {
@@ -2287,7 +2365,10 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
           result: { mailPage: { cards: mailCards } },
         };
       }
-      return { kind: "response", requestId: "ok", ok: true, result: {} };
+      return { kind: "response", requestId: "ok", ok: true, result:
+        req.method === "session.open" ? { history: { items: [], hasMore: false } }
+          : req.method === "evidence.list" ? { evidence: { items: [], hasMore: false } } : {},
+      };
     });
     const createPairing = vi.fn(async () => ({
       ...snapshot,

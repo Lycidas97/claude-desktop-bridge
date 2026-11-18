@@ -254,6 +254,11 @@ export function stoppableBridgeTask(
   return sessions.find(canStopBridgeTask);
 }
 
+export function isQueuedConversationMessage(item: ConversationItem, session: BridgeSessionInfo): boolean {
+  return (item.delivery === "queued" || item.delivery === "host-received")
+    && Boolean(item.commandId && session.pendingCommandIds?.includes(item.commandId));
+}
+
 export function deliveryLabel(state: BridgeDeliveryState): string {
   if (state === "local-saved") return "已保存到手机";
   if (state === "relay-received") return "已送达中继，等待电脑接收";

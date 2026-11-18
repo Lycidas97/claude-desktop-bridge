@@ -479,7 +479,6 @@ export function App() {
           <section className="mobile-settings-content">
             <div className="mobile-empty-directory">
               <h2>选择一台电脑开始</h2>
-              <p>连接已配对的电脑，查看项目与会话。</p>
               <button type="button" className="primary-button" onClick={() => setTab("computers")}>选择电脑</button>
             </div>
           </section>

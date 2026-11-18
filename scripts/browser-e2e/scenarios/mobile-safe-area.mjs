@@ -105,7 +105,7 @@ export async function verifyMobileSafeArea(page, steps, directory, viewports) {
   // resolved browser policy as well as the bounds reached by touch scrolling.
   assert.equal(await settings.evaluate(element => getComputedStyle(element).overscrollBehaviorY), "none", "Settings disables vertical rubber-banding and scroll chaining at the boundary");
   steps.push("Touch scrolling moves within settings and stops at the content end with vertical overscroll disabled");
-  await page.getByRole("button", { name: /连接诊断与日志/u }).click();
+  await page.getByRole("button", { name: "连接诊断与日志", exact: true }).click();
   await page.getByRole("dialog", { name: "连接诊断与日志导出", exact: true }).waitFor();
   steps.push("The final settings diagnostics button opens its dialog after scrolling to the bottom");
   await emulation.detach();

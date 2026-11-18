@@ -1,8 +1,8 @@
 # Bridge 目标架构提案
 
-状态：已完成候选设计与独立源码可行性审查；设计快照和实施任务已发布到 [全局架构总览 Issue](https://github.com/Lycidas97/claude-desktop-bridge/issues/199)，尚未启动产品实现。关系图见 [architecture-proposal.mmd](architecture-proposal.mmd)。
+状态：`e58eddb2e3d50f3b13749da8a2bede74a8c24e50` 源码基线下的历史设计快照；候选设计与独立源码可行性审查已完成，实施任务见 [全局架构总览 Issue](https://github.com/Lycidas97/claude-desktop-bridge/issues/199)（已关闭，迁移进度以其正文清单为准）。关系图见 [architecture-proposal.mmd](architecture-proposal.mmd)。
 
-源码基线：`e58eddb2e3d50f3b13749da8a2bede74a8c24e50`。当前实现见 [ARCHITECTURE.md](ARCHITECTURE.md)，安全边界见 [SECURITY.md](SECURITY.md)。本文讨论目标职责、依赖和迁移，不替代当前实现说明。
+现行实现见 [ARCHITECTURE.md](ARCHITECTURE.md)，安全边界见 [SECURITY.md](SECURITY.md)。本文讨论目标职责、依赖和迁移，不替代当前实现说明。
 
 关系图表达模块协作、请求与事件通路，不表示 import 依赖或严格的执行时序。图中的请求处理是现有能力的职责集合，不要求新增统一转发层。
 

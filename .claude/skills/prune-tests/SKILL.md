@@ -18,7 +18,7 @@ Prune tests that depend on:
 
 For example:
 
-- A feature was removed, and tests assert it's gone. Removed code never changes, so they can't catch a regression.
+- A feature was removed, and tests assert only that its old entry point is absent. Removed code never changes, so they can't catch a regression. Keep a negative assertion that guards a behavior contract, such as a schema test that fails if a retired table is recreated.
 - A module was moved, and a test asserts it's absent from its old path.
 
 **Nothing:** no change to the code can make it fail, so it has no reason of its own to change.
@@ -34,7 +34,7 @@ For example:
 For example:
 
 - The expected value is derived from the same logic as the code, so a wrong result still passes.
-- It asserts private state, internal call order, or which helper was invoked.
+- It asserts private state, internal call order, or which helper was invoked. Keep an I/O or call-count assertion that the behavior contract makes observable, such as a single native page read for a plain page.
 
 **2. Prune**
 

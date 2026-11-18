@@ -13,7 +13,7 @@
 | [#215](https://github.com/Lycidas97/claude-desktop-bridge/issues/215) · [#216](https://github.com/Lycidas97/claude-desktop-bridge/issues/216) | 同步待办与日程，再交付统一提案、确认和按后端执行 |
 | [#217](https://github.com/Lycidas97/claude-desktop-bridge/issues/217) | 实测记忆文件能力、专职子代理与原生压缩归因，逐步启用维护 |
 
-线上 [#212](https://github.com/Lycidas97/claude-desktop-bridge/issues/212) 和 #222 仍有 `stage1-locked` 旧条款。采用这版规格时同步统一档位与验收矩阵。阶段 1–2 只为已交付的业务建表，记忆与偏好留到阶段 3。
+阶段 1–2 只为已交付的业务建表，记忆与偏好留到阶段 3。
 
 ## 数据与模块归属
 

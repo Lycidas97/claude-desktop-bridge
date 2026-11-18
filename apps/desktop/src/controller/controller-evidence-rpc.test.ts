@@ -9,10 +9,16 @@ import { createControllerFixture } from "./controller-fixture.js";
 it("returns evidence lists, summaries and detail pages through local RPC", async () => {
   const bundle: BridgeEvidenceBundle = {
     id: "evidence-1", sessionId: "session-1", source: "bridge-host", confidence: "exact", state: "ready",
-    startedAt: 1, toolCount: 0, changeCount: 0, artifactCount: 0, tools: [], artifacts: [], warnings: [],
+    startedAt: 1, toolCount: 0, changeCount: 1, artifactCount: 1, tools: [], warnings: [],
+    artifacts: [{
+      id: "artifact-1", evidenceId: "evidence-1", relativePath: "output/note.txt", name: "note.txt",
+      kind: "text", changeKind: "created", mimeType: "text/plain", size: 1,
+      availability: "current-file", previewMode: "text", downloadAllowed: true,
+    }],
   };
-  const list = { sessionId: "session-1", items: [bundle], hasMore: false };
-  const page = { evidenceId: bundle.id, kind: "artifacts", items: [], hasMore: false };
+  const summary = { ...bundle, artifacts: [], detailsAvailable: true };
+  const list = { sessionId: "session-1", items: [summary], hasMore: false };
+  const page = { evidenceId: bundle.id, kind: "artifacts", items: bundle.artifacts, hasMore: false };
   const evidence = {
     list: vi.fn().mockReturnValue(list), get: vi.fn().mockReturnValue(bundle), details: vi.fn().mockReturnValue(page),
   };
@@ -22,7 +28,7 @@ it("returns evidence lists, summaries and detail pages through local RPC", async
     .toMatchObject({ ok: true, result: { evidence: list } });
   expect(evidence.list).toHaveBeenCalledWith("session-1", "next", 30);
   expect(await controller.dispatchLocal({ method: "evidence.get", params: { evidenceId: bundle.id } }))
-    .toMatchObject({ ok: true, result: { evidence: { ...bundle, detailsAvailable: true } } });
+    .toMatchObject({ ok: true, result: { evidence: summary } });
   expect(evidence.get).toHaveBeenCalledWith(bundle.id);
   expect(await controller.dispatchLocal({ method: "evidence.details", params: { evidenceId: bundle.id, kind: "artifacts", limit: 5 } }))
     .toMatchObject({ ok: true, result: { page } });
@@ -78,7 +84,10 @@ it("dispatches phone transfers and uploads for the paired owner with the existin
     closeTransfer: vi.fn().mockReturnValue(true), preview: vi.fn().mockResolvedValue(preview),
   };
   const upload = { uploadId: "upload-1" };
-  const uploads = { open: vi.fn().mockResolvedValue(upload) };
+  const file = { ...upload, path: ".bridge-uploads/upload-1/note.txt" };
+  const uploads = {
+    open: vi.fn().mockResolvedValue(upload), write: vi.fn().mockReturnValue(1), commit: vi.fn().mockResolvedValue(file),
+  };
   const sendToDevice = vi.fn().mockResolvedValue("response");
   const ack = vi.fn();
   const controller = createControllerFixture({
@@ -93,6 +102,8 @@ it("dispatches phone transfers and uploads for the paired owner with the existin
     ["artifact.transfer.close", { transferId: transfer.transferId }, { closed: true }, true, ARTIFACT_TRANSFER_TTL_MS],
     ["artifact.preview", { artifactId: "artifact-1" }, { preview }, false, ARTIFACT_TRANSFER_TTL_MS],
     ["file.upload.open", uploadParams, { upload }, true, undefined],
+    ["file.upload.write", { uploadId: upload.uploadId, index: 0, data: "YQ==" }, { received: 1 }, true, undefined],
+    ["file.upload.commit", { uploadId: upload.uploadId }, { file }, true, undefined],
   ] as const) {
     const envelope = await phone.encrypt({ kind: "request", requestId: method, idempotencyKey: method, method, params }, "mobile", "desktop");
     await controller.receiveMessage(await desktopCrypto.decrypt(envelope), envelope);
@@ -107,4 +118,6 @@ it("dispatches phone transfers and uploads for the paired owner with the existin
   expect(evidence.closeTransfer).toHaveBeenCalledExactlyOnceWith(transfer.transferId, pairing.deviceId);
   expect(evidence.preview).toHaveBeenCalledExactlyOnceWith("artifact-1");
   expect(uploads.open).toHaveBeenCalledExactlyOnceWith({ ...uploadParams, owner: pairing.deviceId, cwd: "/project" });
+  expect(uploads.write).toHaveBeenCalledExactlyOnceWith(upload.uploadId, 0, "YQ==", pairing.deviceId);
+  expect(uploads.commit).toHaveBeenCalledExactlyOnceWith(upload.uploadId, pairing.deviceId);
 });

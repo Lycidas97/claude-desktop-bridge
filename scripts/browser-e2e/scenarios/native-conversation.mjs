@@ -228,7 +228,8 @@ export async function verifyHistoryPagination(page, host, steps, directory) {
     host.snapshot.sessions.find(session => session.sessionId === sessionId).lastCompletedTurnId = "result-during-pagination";
     await host.send({ kind: "snapshot", snapshot: host.snapshot });
     await page.waitForFunction(({ key, id }) => JSON.parse(localStorage.getItem(key) ?? "{}")[id] === "result-during-pagination", { key: `bridge-seen-session-completions:${host.pairing.roomId}`, id: sessionId });
-    await stream.evaluate(root => { root.scrollTop = 0; });
+    // Update the scroll handler's anchor before releasing the pending page.
+    await stream.evaluate(root => { root.scrollTop = 0; root.dispatchEvent(new Event("scroll")); });
     steps.push("the visible conversation acknowledges a completion while the older page is pending");
   } finally {
     host.historyGate = undefined;

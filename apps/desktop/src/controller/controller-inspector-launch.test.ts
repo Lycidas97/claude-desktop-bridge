@@ -1,4 +1,4 @@
-import type { BridgeInspectorStatus } from "@bridge/protocol";
+import type { BridgeInspectorStatus, DesktopControlSnapshot } from "@bridge/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { createControllerFixture } from "./controller-fixture.js";
 
@@ -19,16 +19,21 @@ function createHarness(options: {
     if (runtimeIndex + 1 < states.length) runtimeIndex += 1;
     return states[runtimeIndex] !== "unavailable";
   });
+  let observation = 0;
+  const status = vi.fn(async (_force?: boolean): Promise<DesktopControlSnapshot["claudeDesktop"]> => ({
+    state: appState,
+    detail: `Observation ${++observation}`,
+    canLaunch: appState === "stopped",
+    canQuit: appState === "running",
+  }));
   const claudeDesktop = {
     definition: { id: "claude-desktop" as const, displayName: "Claude Desktop" },
-    status: vi.fn(async () => ({
-      state: appState,
-      detail: appState === "running" ? "Claude Desktop 正在运行。" : "Claude Desktop 已退出。",
-      canLaunch: appState === "stopped",
-      canQuit: appState === "running",
-    })),
+    status,
     launch,
-    quit: vi.fn(),
+    quit: vi.fn(async () => {
+      appState = "stopped";
+      return { state: appState, detail: "Claude Desktop 已退出。", canLaunch: true, canQuit: false };
+    }),
   };
 
   const runtimeAttachSleep = vi.fn(async () => undefined);
@@ -81,8 +86,61 @@ function createHarness(options: {
   if (options.enableInspector) {
     controller.attachInspectorEnabler(options.enableInspector);
   }
-  return { controller, launch, refreshRuntime, broadcast, runtimeAttachSleep };
+  return { controller, launch, status, refreshRuntime, broadcast, runtimeAttachSleep };
 }
+
+describe("DesktopController app status snapshots", () => {
+  it("uses a single passive status read for both snapshot fields", async () => {
+    const { controller, status } = createHarness({});
+
+    const snapshot = await controller.snapshot();
+
+    expect(status).toHaveBeenCalledExactlyOnceWith(false);
+    expect(snapshot.desktopApps).toEqual([
+      { id: "claude-desktop", name: "Claude Desktop", ...snapshot.claudeDesktop },
+    ]);
+  });
+
+  it("returns the published app status after quit", async () => {
+    const { controller, status, broadcast } = createHarness({ initialAppState: "running" });
+
+    const result = await controller.handleRequest({
+      kind: "request",
+      requestId: "req-quit",
+      idempotencyKey: "idem-quit",
+      method: "desktop.app.quit",
+      params: { runtimeId: "claude-desktop" },
+    }, "mobile");
+
+    expect(result).toEqual({ desktopApps: [expect.objectContaining({ state: "stopped" })] });
+    expect(broadcast).toHaveBeenCalledWith({ kind: "snapshot", snapshot: expect.objectContaining(result) });
+    expect(status).toHaveBeenCalledExactlyOnceWith(true);
+  });
+
+  it("publishes and returns unavailable when the post-action status probe fails", async () => {
+    const { controller, status, broadcast } = createHarness({ initialAppState: "running" });
+    const readStatus = status.getMockImplementation()!;
+    status.mockImplementation(async (force) => {
+      if (force) throw new Error("Status probe failed");
+      return readStatus(force);
+    });
+
+    const result = await controller.handleRequest({
+      kind: "request",
+      requestId: "req-quit",
+      idempotencyKey: "idem-quit",
+      method: "desktop.app.quit",
+      params: { runtimeId: "claude-desktop" },
+    }, "mobile");
+
+    const claudeDesktop = { state: "unavailable", detail: "Status probe failed", canLaunch: false, canQuit: false };
+    const desktopApps = [{ id: "claude-desktop", name: "Claude Desktop", ...claudeDesktop }];
+    expect(result).toEqual({ desktopApps });
+    expect(broadcast).toHaveBeenCalledWith({
+      kind: "snapshot", snapshot: expect.objectContaining({ claudeDesktop, desktopApps }),
+    });
+  });
+});
 
 describe("DesktopController launchDesktopApp + explicit inspector enablement", () => {
   it("launches/activates Claude Desktop, enables port 9229, retries broker attach, and broadcasts ready snapshot", async () => {
@@ -95,7 +153,7 @@ describe("DesktopController launchDesktopApp + explicit inspector enablement", (
       alerts: [],
       startup: { state: "attempted", recordedAt: 100, detail: "已通过原生菜单请求开启主进程调试。" },
     }));
-    const { controller, launch, refreshRuntime, broadcast, runtimeAttachSleep } = createHarness({
+    const { controller, launch, status, refreshRuntime, broadcast, runtimeAttachSleep } = createHarness({
       initialInspector: {
         platform: "darwin",
         state: "closed",
@@ -116,10 +174,12 @@ describe("DesktopController launchDesktopApp + explicit inspector enablement", (
       params: { runtimeId: "claude-desktop" },
     }, "mobile");
 
+    const desktopApps = [expect.objectContaining({ id: "claude-desktop", state: "running", detail: "Observation 1" })];
     expect(result).toEqual({
-      desktopApps: [expect.objectContaining({ id: "claude-desktop", state: "running" })],
+      desktopApps,
       claudeActivation: { inspectorState: "listening", nativeReady: true },
     });
+    expect(status).toHaveBeenCalledExactlyOnceWith(true);
     expect(launch).toHaveBeenCalledExactlyOnceWith({ activate: true });
     expect(enableInspector).toHaveBeenCalledOnce();
     expect(refreshRuntime).toHaveBeenCalledTimes(2);
@@ -132,6 +192,7 @@ describe("DesktopController launchDesktopApp + explicit inspector enablement", (
       kind: "snapshot",
       snapshot: expect.objectContaining({
         claudeInspector: expect.objectContaining({ state: "listening" }),
+        desktopApps,
       }),
     });
   });
@@ -223,7 +284,7 @@ describe("DesktopController launchDesktopApp + explicit inspector enablement", (
       alerts: [],
       startup: { state: "attempted", recordedAt: 200, detail: "已通过原生菜单请求开启主进程调试。" },
     }));
-    const { controller, launch } = createHarness({
+    const { controller, launch, status } = createHarness({
       initialAppState: "running",
       initialInspector: { platform: "darwin", state: "closed", port: 9229, pollIntervalMs: 3_000, clients: [], alerts: [] },
       enableInspector,
@@ -233,6 +294,7 @@ describe("DesktopController launchDesktopApp + explicit inspector enablement", (
     const before = await controller.snapshot();
     expect(before.claudeDesktop).toMatchObject({ state: "running", canLaunch: true, canQuit: true });
     expect(before.desktopApps?.[0]).toMatchObject({ id: "claude-desktop", state: "running", canLaunch: true, canQuit: true });
+    status.mockClear();
     await expect(controller.handleRequest({
       kind: "request",
       requestId: "status-1",
@@ -251,6 +313,8 @@ describe("DesktopController launchDesktopApp + explicit inspector enablement", (
     }, "mobile")).resolves.toEqual({
       desktopApps: [expect.objectContaining({ id: "claude-desktop", state: "running", canLaunch: true })],
     });
+
+    expect(status.mock.calls).toEqual([[true], [true]]);
 
     const after = await controller.launchDesktopApp("claude-desktop");
     expect(launch).toHaveBeenCalledExactlyOnceWith({ activate: true });

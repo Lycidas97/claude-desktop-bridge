@@ -135,8 +135,10 @@ export function errorResponse(requestId: string, error: unknown): BridgeResponse
   };
 }
 
+export type ControllerSnapshot = DesktopControlSnapshot & { desktopApps: BridgeDesktopAppStatus[] };
+
 export interface DesktopAppLaunchOutcome {
-  snapshot: DesktopControlSnapshot;
+  snapshot: ControllerSnapshot;
   claudeActivation?: BridgeDesktopAppLaunchResult["claudeActivation"];
 }
 
@@ -158,7 +160,7 @@ export interface ControllerRpcHost {
   quitClaudeDesktop(): Promise<DesktopControlSnapshot>;
   desktopAppStatuses(force?: boolean): Promise<BridgeDesktopAppStatus[]>;
   launchDesktopAppWithResult(runtimeId: BridgeDesktopRuntimeId): Promise<DesktopAppLaunchOutcome>;
-  quitDesktopApp(runtimeId: BridgeDesktopRuntimeId): Promise<DesktopControlSnapshot>;
+  quitDesktopApp(runtimeId: BridgeDesktopRuntimeId): Promise<ControllerSnapshot>;
   desktopRuntimes(): BridgeDesktopRuntime[];
   allProjects(): DesktopControlSnapshot["projects"];
   allSessions(): BridgeSessionInfo[];
@@ -217,17 +219,16 @@ async function dispatchControllerRequestInner(
   if (request.method === "desktop.app.launch") {
     const runtimeId = runtimeIdParam(params, "runtimeId");
     if (!runtimeId) throw new Error("desktop.app.launch 缺少 runtimeId");
-    const { claudeActivation } = await host.launchDesktopAppWithResult(runtimeId);
+    const { snapshot, claudeActivation } = await host.launchDesktopAppWithResult(runtimeId);
     return {
-      desktopApps: await host.desktopAppStatuses(true),
+      desktopApps: snapshot.desktopApps,
       ...(claudeActivation ? { claudeActivation } : {}),
     } satisfies BridgeDesktopAppLaunchResult;
   }
   if (request.method === "desktop.app.quit") {
     const runtimeId = runtimeIdParam(params, "runtimeId");
     if (!runtimeId) throw new Error("desktop.app.quit 缺少 runtimeId");
-    await host.quitDesktopApp(runtimeId);
-    return { desktopApps: await host.desktopAppStatuses(true) };
+    return { desktopApps: (await host.quitDesktopApp(runtimeId)).desktopApps };
   }
   if (request.method === "snapshot.get") return { snapshot: await host.snapshot() };
   if (request.method === "runtime.list") return { runtimes: host.desktopRuntimes() };

@@ -45,7 +45,9 @@ it("keeps effort within its route and leaves capacity unknown for a missing cont
     { ...base, ...routeEffort, maxInputTokens: 200_000 },
     { ...long, ...routeEffort },
   ]);
-  expect(mergeModelCatalog([long], [discovered[0]!])).toEqual([long]);
+  expect(mergeModelCatalog([long], [{
+    ...discovered[0]!, value: `${otherRoute.value}[1m]`, maxInputTokens: 900_000,
+  }])).toEqual([{ ...long, maxInputTokens: 900_000 }]);
 });
 
 it("resolves an unset or default native model from observation, configured default, then picker order", () => {

@@ -47,6 +47,7 @@ import {
   conversationItems,
   conversationTimeline,
   groupTimelineTools,
+  isQueuedConversationMessage,
   runtimeSupports,
   type ConversationItem,
 } from "../../lib/conversation-timeline.js";
@@ -73,7 +74,7 @@ import { BackgroundTaskMarker, BackgroundTasksSheet, findBackgroundTask } from "
 import { useConversationDrafts } from "./ConversationDraftsProvider.js";
 
 type ConversationDraftsValue = ReturnType<typeof useConversationDrafts>;
-import { ConversationMessageItem, isQueuedConversationMessage } from "./ConversationMessageItem.js";
+import { ConversationMessageItem } from "./ConversationMessageItem.js";
 import { ConversationToolGroup } from "./ConversationToolGroup.js";
 import { ForkChainBar } from "./ForkChainBar.js";
 import { NativePromptCard } from "./NativePromptCard.js";
@@ -422,10 +423,17 @@ export function ConversationView({
   const displayNodes = useMemo(() => groupTimelineTools(timeline), [timeline]);
   const latestMessage = displayNodes.filter((node) => node.kind === "message" && !node.item.sessionNotice
     && (node.item.role === "user" || node.item.role === "assistant")).at(-1);
-  const hasInlineQueue = effectiveSessionView === "conversation" && displayNodes.some((node) => node.kind === "message"
-    && node.item.role === "user" && !node.item.sessionNotice
-    && (node.item.delivery === "queued" || isQueuedConversationMessage(node.item, session)));
-  const showQueueBanner = !hasInlineQueue && session.pendingCount > 0
+  const inlineQueuedIds = new Set<string>();
+  if (effectiveSessionView === "conversation" && session.pendingCount > 0) {
+    for (const node of displayNodes) {
+      if (node.kind === "message" && node.item.role === "user" && !node.item.sessionNotice
+        && node.item.commandId && isQueuedConversationMessage(node.item, session)) {
+        inlineQueuedIds.add(node.item.commandId);
+      }
+    }
+  }
+  const missingQueuedCount = session.pendingCount - inlineQueuedIds.size;
+  const showQueueBanner = missingQueuedCount > 0
     && session.desktopHandoff?.state !== "close-desktop" && session.desktopHandoff?.state !== "desktop-inbox";
 
   const toolGroupKeysRef = useRef<{ sessionId?: string | undefined; byToolId: Map<string, string> }>({ byToolId: new Map() });
@@ -458,7 +466,7 @@ export function ConversationView({
     session,
     sessions,
     items,
-    showQueueActivity: !hasInlineQueue && !showQueueBanner,
+    showQueueActivity: inlineQueuedIds.size === 0 && !showQueueBanner,
     pollEnabled: visible && effectiveSessionView === "conversation" && isNativeReady
       && runtimeId === "claude-desktop" && (history?.status === "ready" || Boolean(history?.items.length)),
     onLoadBackgroundTasks,
@@ -1131,8 +1139,8 @@ export function ConversationView({
         <div className="session-channel-warning message-queue-status" role="status" aria-label="消息排队状态">
           <LoaderCircle size={17} aria-hidden="true" />
           <span>{isOnline
-            ? `${sessionQueueLabel(session)} · ${session.pendingCount} 条`
-            : `上次同步时有 ${session.pendingCount} 条消息排队`}</span>
+            ? `${sessionQueueLabel(session)} · ${inlineQueuedIds.size ? "另有 " : ""}${missingQueuedCount} 条`
+            : `上次同步时${inlineQueuedIds.size ? "另" : ""}有 ${missingQueuedCount} 条消息排队`}</span>
           {menu.canSync && (
             <button
               type="button"

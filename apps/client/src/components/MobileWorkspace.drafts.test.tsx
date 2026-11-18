@@ -1516,12 +1516,48 @@ describe("actions on messages already queued in native Desktop", () => {
     expect(props.onInterruptTurn).not.toHaveBeenCalled();
   });
 
-  it.each(["offline", "disconnected"])("disables both actions while %s", status => {
+  it.each(["offline", "disconnected"])("disables both actions and labels the last known queue state while %s", status => {
     queued();
     props = status === "offline" ? { ...props, desktopOnline: false } : { ...props, connection: "closed" };
     draw();
     expect(actions()).toHaveLength(2);
     expect(actions().every(element => element.props.disabled && element.props.title.includes("离线"))).toBe(true);
+    expect(elements(tree).find(element => element.props.className === "delivery-state queued")?.props.children).toBe("上次同步时已排队");
+    expect(elements(tree).some(element => element.props["aria-label"] === "消息排队状态")).toBe(false);
+  });
+
+  it("counts only the pending messages whose bubbles are missing", () => {
+    queued();
+    props = { ...props, snapshot: { ...props.snapshot!, sessions: props.snapshot!.sessions.map(session => session.sessionId === "A"
+      ? { ...session, turnState: "queued", pendingCount: 2, pendingCommandIds: ["queued-command", "second-command"] } : session) } };
+    draw();
+    const banner = () => elements(tree).find(element => element.props["aria-label"] === "消息排队状态");
+    expect(elements(tree).find(element => element.props.className === "delivery-state queued")?.props.children).toBe("已排队");
+    expect(elements(banner()).find(element => element.type === "span")?.props.children).toBe("消息排队中 · 另有 1 条");
+
+    props = { ...props, localTurns: [...props.localTurns, { ...props.localTurns[0]!, requestId: "second-request",
+      commandId: "second-command", idempotencyKey: "second-key", createdAt: 11 }] };
+    draw();
+    expect(banner()).toBeUndefined();
+  });
+
+  it("keeps the running tool and its timer when a follow-up queues, then includes it once started", () => {
+    queued();
+    props = { ...props, snapshot: { ...props.snapshot!, sessions: props.snapshot!.sessions.map(session => session.sessionId === "A"
+      ? { ...session, turnState: "running", executionStage: "running" } : session) },
+    histories: { ...props.histories, A: { status: "ready", hasMore: false, items: [
+      { id: "active-user", sessionId: "A", role: "user", text: "开始当前任务", createdAt: 100, origin: "claude-desktop" },
+      { id: "active-command", sessionId: "A", role: "tool", toolName: "Command", text: "", state: "running", createdAt: 200, origin: "claude-desktop" },
+    ] } }, localTurns: props.localTurns.map(turn => ({ ...turn, createdAt: 300 })) };
+    draw();
+    const activity = () => elements(tree).find(element => element.type === SessionActivityIndicator)!.props.activity;
+    expect(activity()).toEqual({ kind: "running", label: "正在运行 · Command", since: 100 });
+
+    props = { ...props, snapshot: { ...props.snapshot!, sessions: props.snapshot!.sessions.map(session => session.sessionId === "A"
+      ? { ...session, pendingCount: 0, pendingCommandIds: [] } : session) },
+    localTurns: props.localTurns.map(turn => ({ ...turn, delivery: "running" })) };
+    draw();
+    expect(activity()).toEqual({ kind: "thinking", label: "思考中", since: 300 });
   });
 
   it("offers host-received compatibility only while the command is confirmed pending", () => {

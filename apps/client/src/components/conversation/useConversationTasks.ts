@@ -1,6 +1,6 @@
 import type { BridgeBackgroundTask, BridgeSessionInfo } from "@bridge/protocol";
 import { useEffect, useMemo, useState } from "react";
-import { stoppableBridgeTask, type ConversationItem } from "../../lib/conversation-timeline.js";
+import { isQueuedConversationMessage, stoppableBridgeTask, type ConversationItem } from "../../lib/conversation-timeline.js";
 import { sessionActivity } from "../../lib/session-activity.js";
 import { findBackgroundTask } from "./BackgroundTasks.js";
 
@@ -65,20 +65,24 @@ export function useConversationTasks({ draftKey, session, sessions, items, showQ
 
   const selectedTaskDetails = backgroundTaskDetails?.key === draftKey ? backgroundTaskDetails : undefined;
   const activityTasks = selectedTaskDetails?.tasks ?? session.backgroundTasks;
-  const activity = useMemo(() => sessionActivity(
-    session,
-    selectedTaskDetails?.error ? items.map((item) => {
-      const subagent = item.subagent;
-      if (subagent?.state !== "running") return item;
-      const task = findBackgroundTask(activityTasks, subagent);
-      return task && task.state !== "running"
-        && (!subagent.workflowRunId || task.workflow?.agents.some((agent) => agent.agentId === subagent.agentId))
-        ? { ...item, subagent: { ...subagent, state: task.state } }
-        : item;
-    }) : items,
-    selectedTaskDetails?.error ? undefined : activityTasks,
-    showQueueActivity,
-  ), [activityTasks, items, selectedTaskDetails?.error, session, showQueueActivity]);
+  const activity = useMemo(() => {
+    const activityItems = items.filter(item => item.role !== "user"
+      || (item.delivery !== "queued" && !isQueuedConversationMessage(item, session)));
+    return sessionActivity(
+      session,
+      selectedTaskDetails?.error ? activityItems.map((item) => {
+        const subagent = item.subagent;
+        if (subagent?.state !== "running") return item;
+        const task = findBackgroundTask(activityTasks, subagent);
+        return task && task.state !== "running"
+          && (!subagent.workflowRunId || task.workflow?.agents.some((agent) => agent.agentId === subagent.agentId))
+          ? { ...item, subagent: { ...subagent, state: task.state } }
+          : item;
+      }) : activityItems,
+      selectedTaskDetails?.error ? undefined : activityTasks,
+      showQueueActivity,
+    );
+  }, [activityTasks, items, selectedTaskDetails?.error, session, showQueueActivity]);
 
   const backgroundTasks = activityTasks ?? [];
   const runningBackgroundTasks = backgroundTasks.filter((task) => task.state === "running").length;

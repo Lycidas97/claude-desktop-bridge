@@ -1,6 +1,6 @@
 import type { BridgeSessionInfo } from "@bridge/protocol";
 import { useState, type ReactNode } from "react";
-import { deliveryLabel, formatTime, type ConversationItem } from "../../lib/conversation-timeline.js";
+import { deliveryLabel, formatTime, isQueuedConversationMessage, type ConversationItem } from "../../lib/conversation-timeline.js";
 import { desktopRuntimeId } from "../../lib/runtime-labels.js";
 import { MarkdownText } from "../common/MarkdownText.js";
 import { MessageCopyButton } from "../common/MessageCopyButton.js";
@@ -11,11 +11,6 @@ export interface QueuedTurnActionState {
   state: "pending" | "requested" | "error";
   action: "steer" | "cancel";
   error?: string | undefined;
-}
-
-export function isQueuedConversationMessage(item: ConversationItem, session: BridgeSessionInfo): boolean {
-  return (item.delivery === "queued" || item.delivery === "host-received")
-    && Boolean(item.commandId && session.pendingCommandIds?.includes(item.commandId));
 }
 
 export interface ConversationMessageItemProps {
@@ -120,7 +115,8 @@ export function ConversationMessageItem({
         <div className="conversation-message-actions">
           {item.delivery && (
             <span className={`delivery-state ${item.delivery}`} role="status">
-              {messageQueued ? "已排队" : deliveryLabel(item.delivery)}
+              {!online && (messageQueued || item.delivery === "queued") ? "上次同步时已排队"
+                : messageQueued ? "已排队" : deliveryLabel(item.delivery)}
             </span>
           )}
           {canActOnQueued && ([

@@ -45,7 +45,8 @@ function elements(node: ReactNode): ReactElement<Record<string, any>>[] {
 let tree: ReactElement;
 function draw() {
   hooks.index = 0; hooks.effectIndex = 0;
-  tree = App() as ReactElement;
+  const mobileApp = App();
+  tree = (mobileApp.type as (props: unknown) => ReactElement)(mobileApp.props);
   hooks.pending.splice(0).forEach(effect => effect());
 }
 function component(type: unknown) { return elements(tree).find(element => element.type === type); }

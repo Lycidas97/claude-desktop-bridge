@@ -30,12 +30,11 @@ import {
   type BridgeSessionRewindResult,
   type BridgeSessionRewindScope,
   type BridgeSlashCommandCatalog,
-  type BridgeTransport,
   type ClaudeDesktopAppStatus,
   type EncryptedEnvelope,
   type PairingBundle,
 } from "@bridge/protocol";
-import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
+import { useCallback, useEffect } from "react";
 import { getActiveArtifactDownloadGauges } from "../lib/artifact-download.js";
 import {
   diagLog,
@@ -58,7 +57,6 @@ import {
   uploadBridgeSessionFile,
 } from "./bridge/bridge-artifacts.js";
 import {
-  INITIAL_STATE,
   applyPrAutoFixToSnapshot,
   applyProjectCatalogPatchToState,
   applySessionResultToState,
@@ -66,7 +64,6 @@ import {
   isClaudeNativeRelay,
   snapshotWithClaudeDesktop,
   syncActiveHostRuntimeSummary,
-  type MobileBridgeState,
   type PairingConnectionPhase,
   type PendingResponse,
 } from "./bridge/bridge-reducers.js";
@@ -91,9 +88,9 @@ import {
   subscribeCapacitorAppWake,
   subscribeNetworkAndVisibilityWake,
   syncBridgeDiagnostics,
-  type BridgeTransportRefs,
   type StoredHostState,
 } from "./bridge/bridge-transport.js";
+import { useMobileBridgeStore } from "./bridge/useMobileBridgeStore.js";
 
 export {
   EMPTY_ACTIVE_HOST_STATE,
@@ -142,43 +139,10 @@ export {
   type StoredHostSnapshotInput,
 } from "./bridge/bridge-reducers.js";
 
-export interface BridgeMutableStore extends BridgeTransportRefs {
-  openedSessionRef: MutableRefObject<string | undefined>;
-  handledCommandEvents: MutableRefObject<Set<string>>;
-  openingSessionsRef: MutableRefObject<Map<string, { socket: BridgeTransport | undefined; task: Promise<void> }>>;
-  loadingHistoryRef: MutableRefObject<Map<string, BridgeTransport | undefined>>;
-  transferGaugesRef: MutableRefObject<{ activeUploads: number; activeDownloads: number }>;
-}
-
 export function useMobileBridge() {
-  const [state, setState] = useState<MobileBridgeState>(INITIAL_STATE);
-  const storeRef = useRef<BridgeMutableStore | undefined>(undefined);
-  storeRef.current ??= {
-    setState,
-    stateRef: { current: state },
-    cryptoRef: { current: undefined },
-    cryptoByRoomRef: { current: new Map() },
-    socketRef: { current: undefined },
-    connectionTimerRef: { current: undefined },
-    pairingSyncTimerRef: { current: undefined },
-    pendingResponsesRef: { current: new Map() },
-    envelopeRequestsRef: { current: new Map() },
-    desktopHomeRef: { current: undefined },
-    linkGateRef: { current: () => true },
-    sendAttemptedAtRef: { current: undefined },
-    nativeRelayCapabilityRef: { current: undefined },
-    payloadDeflateRef: { current: false },
-    pendingCompletionNotificationsRef: { current: new Set() },
-    openedSessionRef: { current: undefined },
-    handledCommandEvents: { current: new Set() },
-    openingSessionsRef: { current: new Map() },
-    loadingHistoryRef: { current: new Map() },
-    transferGaugesRef: { current: { activeUploads: 0, activeDownloads: 0 } },
-  };
-  const transportRefs = storeRef.current;
-  transportRefs.setState = setState;
-  transportRefs.stateRef.current = state;
+  const { state, store: transportRefs } = useMobileBridgeStore();
   const {
+    setState,
     stateRef,
     cryptoRef,
     socketRef,

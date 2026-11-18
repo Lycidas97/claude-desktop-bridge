@@ -126,6 +126,7 @@ interface InspectorTransport {
     eventStreamWaiting: boolean;
     supportedMethods: number;
   };
+  inputQueueDrained?(sessionId: string): Promise<boolean>;
   sections?(sessionIds: string[]): Promise<NativeSectionCatalog | undefined>;
   prPreferences?(sessionId: string): Promise<{ onlyOwnPrs: boolean; nextOwnPrArmed: boolean } | undefined>;
   promptChoices?(sessionId: string, promptId: string): Promise<string[] | undefined>;
@@ -212,6 +213,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
   private readonly permissions = new Map<string, BridgePermissionInfo>();
   private readonly prompts = new Map<string, BridgePendingPrompt>();
   private readonly prPreferences = new Map<string, { onlyOwnPrs: boolean; nextOwnPrArmed: boolean }>();
+  private readonly receivedInputs = new Map<string, Set<NativeDesktopReceipt>>();
   private readonly receipts = new Map<string, NativeDesktopReceipt>();
   private readonly messageProjection = new Map<string, NativeMessageProjection>();
   private readonly contextStates = new Map<string, NativeContextState>();
@@ -296,6 +298,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
         this.options.conversationState.saveNativeDesktopReceipt(receipt);
       }
       this.receipts.set(receipt.commandId, receipt);
+      if (receipt.state === "session-received" && !receipt.queueSettled) this.trackReceivedInput(receipt);
     }
     await this.options.magpieConnection?.initialize();
     await this.refreshRuntime();
@@ -537,11 +540,41 @@ export class ClaudeDesktopBridge extends EventEmitter {
     this.models = mergeModelCatalog(saved, discovered);
   }
 
+  private trackReceivedInput(receipt: NativeDesktopReceipt): void {
+    const inputs = this.receivedInputs.get(receipt.sessionId);
+    if (inputs) inputs.add(receipt);
+    else this.receivedInputs.set(receipt.sessionId, new Set([receipt]));
+  }
+
+  private async settleReceivedInputs(session: NativeSession): Promise<void> {
+    const inputs = this.receivedInputs.get(session.sessionId);
+    if (!inputs || session.turnRunning !== false) return;
+    // Only settle acknowledgements that predate the Native read. New input can arrive during IPC.
+    for (const receipt of inputs) if (receipt.state !== "session-received") inputs.delete(receipt);
+    const received = [...inputs];
+    const drained = received.length > 0 && await this.inspector.inputQueueDrained?.(session.sessionId).catch(error => {
+      if (error instanceof InspectorDisconnectedError) return false;
+      throw error;
+    });
+    if (drained) {
+      for (const receipt of received) {
+        if (!inputs.delete(receipt) || receipt.state !== "session-received") continue;
+        receipt.queueSettled = true;
+        this.options.conversationState.saveNativeDesktopReceipt(receipt);
+        await this.record({ sessionId: receipt.sessionId, itemId: receipt.messageId, origin: "claude-desktop", type: "message.delivery", data: { commandId: receipt.commandId, messageId: receipt.messageId, delivery: receipt.state, queueSettled: true } });
+      }
+    }
+    if (!inputs.size) this.receivedInputs.delete(session.sessionId);
+  }
+
   private async observeNativeSession(session: NativeSession): Promise<void> {
     if (!this.projectDirectories.has(session.cwd)) this.projectDirectories.set(session.cwd, await discoverClaudeProjectDirectory(session.cwd));
     this.native.set(session.sessionId, session);
     if (session.turnRunning) this.ensureContextState(session.sessionId, session.model ?? "default");
-    else this.compactingSessions.delete(session.sessionId);
+    else {
+      this.compactingSessions.delete(session.sessionId);
+      await this.settleReceivedInputs(session);
+    }
     const previous = this.promptsList(session.sessionId);
     const current = await nativePendingPrompts(session, this.inspector);
     for (const prompt of previous) this.prompts.delete(prompt.promptId);
@@ -1080,6 +1113,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
           item.delivery = receipt.state === "dispatching" ? "host-received" : receipt.state;
           item.commandId = receipt.commandId;
           item.requestId = receipt.requestId;
+          if (receipt.queueSettled) item.queueSettled = true;
         }
       }
       diag("history.messages", { messages: items.length });
@@ -1473,7 +1507,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
 
   async steerQueuedTurn(sessionId: string, commandId: string): Promise<NativeDesktopReceipt> {
     const receipt = this.receipts.get(commandId);
-    if (!receipt || receipt.sessionId !== sessionId || !["submitted", "session-received", "queued"].includes(receipt.state)) throw new NativeCallError("这条消息当前不可调整，或已经开始处理");
+    if (!receipt || receipt.sessionId !== sessionId || (receipt.state === "session-received" && receipt.queueSettled) || !["submitted", "session-received", "queued"].includes(receipt.state)) throw new NativeCallError("这条消息当前不可调整，或已经开始处理");
     if (!receipt.queueMode) throw new NativeCallError("这条旧消息缺少原生发送通道，请在桌面端使用 Send now");
     const accepted = await this.inspector.call(receipt.queueMode === "steered" ? "sendSteeredNow" : "promoteQueuedMessage", [this.desktopId(sessionId), receipt.messageId]);
     if (accepted !== true) throw new NativeCallError("无法立即发送：消息已被处理，或当前不可操作");
@@ -1482,7 +1516,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
 
   async cancelQueuedTurn(sessionId: string, commandId: string): Promise<NativeDesktopReceipt> {
     const receipt = this.receipts.get(commandId);
-    if (!receipt || receipt.sessionId !== sessionId || !["submitted", "session-received", "queued"].includes(receipt.state)) throw new NativeCallError("这条消息当前不可调整，或已经开始处理");
+    if (!receipt || receipt.sessionId !== sessionId || (receipt.state === "session-received" && receipt.queueSettled) || !["submitted", "session-received", "queued"].includes(receipt.state)) throw new NativeCallError("这条消息当前不可调整，或已经开始处理");
     if (await this.inspector.call("cancelQueuedMessage", [this.desktopId(sessionId), receipt.messageId]) !== true) throw new NativeCallError("无法撤回：消息已被处理，或当前不可操作");
     if (["completed", "failed", "cancelled"].includes(receipt.state)) return receipt;
     receipt.state = "cancelled";
@@ -1513,6 +1547,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
     const messages = Array.isArray(result) ? result : record(result).messages;
     if (!Array.isArray(messages) || !messages.some(message => record(message).uuid === receipt.messageId)) throw new NativeCallError("Desktop has not confirmed this message UUID");
     receipt.state = "session-received";
+    this.trackReceivedInput(receipt);
     delete receipt.error;
     this.options.conversationState.saveNativeDesktopReceipt(receipt);
     return receipt;
@@ -1755,6 +1790,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
       const receipt = [...this.receipts.values()].find(candidate => candidate.sessionId === sessionId && candidate.messageId === message.uuid);
       if (receipt && ["dispatching", "submitted", "uncertain"].includes(receipt.state)) {
         receipt.state = "session-received";
+        this.trackReceivedInput(receipt);
         delete receipt.error;
         this.options.conversationState.saveNativeDesktopReceipt(receipt);
       }
@@ -1836,6 +1872,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
       }
       if (message.type === "result") {
         if (!message.parent_tool_use_id && message.isSyntheticResult !== true && message.is_error === false) {
+          await this.settleReceivedInputs(this.native.get(sessionId)!);
           this.lastCompletedTurns.set(sessionId, typeof message.uuid === "string" ? message.uuid : commandUuids.at(-1) ?? randomUUID());
         }
         const context = this.contextStates.get(sessionId);

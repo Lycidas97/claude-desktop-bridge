@@ -225,6 +225,7 @@ export function nativeItemEventDraft(
       text: item.text,
       ...(item.attachments ? { attachments: item.attachments } : {}),
       ...(receipt ? { commandId: receipt.commandId, requestId: receipt.requestId, messageId: receipt.messageId, delivery: receipt.state === "dispatching" ? "host-received" : receipt.state } : {}),
+      ...(receipt?.queueSettled ? { queueSettled: true } : {}),
       ...(item.toolName ? { toolName: item.toolName } : {}),
       ...(item.interactivePrompt ? { interactivePrompt: item.interactivePrompt } : {}),
       ...(item.taskPlan ? { taskPlan: item.taskPlan, taskPlanSource: "native-main" } : {}),

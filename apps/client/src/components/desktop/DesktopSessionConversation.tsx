@@ -260,48 +260,44 @@ function useDesktopConversationController(
       },
     }));
 
-    try {
-      const request = latestRef.current.apiRequest;
-      const [result, evidenceResult] = await Promise.all([
-        request({
-          method: "session.open",
-          params: { sessionId, limit: HISTORY_PAGE_SIZE },
-        }).then((response) => unwrap<{ history: BridgeHistoryPage }>(response)),
-        request({
-          method: "evidence.list",
-          params: { sessionId, limit: EVIDENCE_PAGE_SIZE },
-        }).then((response) => (
-          response.ok ? response.result as { evidence: BridgeEvidencePage } : undefined
-        )).catch(() => undefined),
-      ]);
-      if (openSeqRef.current.get(key) !== seq) return false;
-      updateHistories((current) => ({
-        ...current,
-        [key]: projectHistoryPage(result.history),
-      }));
-      updateEvidence((current) => applyEvidencePageResult(current, key, evidenceResult?.evidence, {
-        hasMoreOnError: false,
-        itemsAtRequestStart,
-      }));
-      return true;
-    } catch (failure) {
-      if (openSeqRef.current.get(key) !== seq) return false;
-      const errorMessage = failure instanceof Error ? failure.message : "会话读取失败";
-      updateHistories((current) => ({
-        ...current,
-        [key]: {
-          status: "error",
-          items: current[key]?.items ?? [],
-          hasMore: false,
-          error: errorMessage,
-        },
-      }));
-      updateEvidence((current) => applyEvidencePageResult(current, key));
-      if (propagateError) {
-        throw new Error(errorMessage);
-      }
-      return false;
-    }
+    const request = latestRef.current.apiRequest;
+    const [historyOpened] = await Promise.all([
+      request({
+        method: "session.open",
+        params: { sessionId, limit: HISTORY_PAGE_SIZE },
+      }).then((response) => unwrap<{ history: BridgeHistoryPage }>(response)).then(({ history }) => {
+        if (openSeqRef.current.get(key) !== seq) return false;
+        updateHistories((current) => ({ ...current, [key]: projectHistoryPage(history) }));
+        return true;
+      }, (failure) => {
+        if (openSeqRef.current.get(key) !== seq) return false;
+        const errorMessage = failure instanceof Error ? failure.message : "会话读取失败";
+        updateHistories((current) => ({
+          ...current,
+          [key]: {
+            status: "error",
+            items: current[key]?.items ?? [],
+            hasMore: false,
+            error: errorMessage,
+          },
+        }));
+        if (propagateError) throw new Error(errorMessage);
+        return false;
+      }),
+      request({
+        method: "evidence.list",
+        params: { sessionId, limit: EVIDENCE_PAGE_SIZE },
+      }).then((response) => (
+        response.ok ? response.result as { evidence: BridgeEvidencePage } : undefined
+      ), () => undefined).then((result) => {
+        if (openSeqRef.current.get(key) !== seq) return;
+        updateEvidence((current) => applyEvidencePageResult(current, key, result?.evidence, {
+          hasMoreOnError: false,
+          itemsAtRequestStart,
+        }));
+      }),
+    ]);
+    return historyOpened && openSeqRef.current.get(key) === seq;
   }
 
   async function openSession(

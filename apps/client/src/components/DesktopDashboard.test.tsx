@@ -903,22 +903,20 @@ it("renders composer context usage only when present and degrades cleanly for un
 });
 
 describe("desktop conversation parity", () => {
-  it("opens 50 history items, preserves cursor/items on paging error, and deduplicates retried older pages", async () => {
+  it.each(["ready", "error"])("shows history and retries paging while evidence is pending, then evidence becomes %s", async (evidenceStatus) => {
     history = [
       { id: "m-2", sessionId: "A", role: "user", text: "Recent question", createdAt: 20, origin: "claude-desktop" },
       { id: "m-3", sessionId: "A", role: "assistant", text: "Recent answer", createdAt: 30, origin: "claude-desktop" },
     ];
-    let finishEvidence!: () => void;
-    const firstEvidence = new Promise<void>((resolve) => { finishEvidence = resolve; });
+    let finishEvidence!: (response: BridgeResponse) => void;
+    const firstEvidence = new Promise<BridgeResponse>((resolve) => { finishEvidence = resolve; });
     apiRequest.mockImplementation(async ({ method }) => {
-      if (method === "evidence.list") await firstEvidence;
+      if (method === "evidence.list") return firstEvidence;
       return {
         kind: "response",
         requestId: "page",
         ok: true,
-        result: method === "session.open"
-          ? { history: { items: history, hasMore: true, nextCursor: "m-2" } }
-          : { evidence: { items: [], hasMore: false } },
+        result: { history: { items: history, hasMore: true, nextCursor: "m-2" } },
       };
     });
     dashboard = renderer(DesktopDashboard, {
@@ -931,13 +929,22 @@ describe("desktop conversation parity", () => {
     sessions = renderer(child.type as (props: any) => ReactNode, sessionsProps);
     sessions.draw(); await settle(); tree = sessions.draw();
     expect(apiRequest).toHaveBeenCalledWith({ method: "evidence.list", params: { sessionId: "A", limit: 30 } });
-    expect(elements(tree).some((element) => element.type === ConversationMessageItem)).toBe(false);
-    finishEvidence();
-    await settle(); tree = sessions.draw();
-
     expect(apiRequest).toHaveBeenCalledWith({ method: "session.open", params: { sessionId: "A", limit: 50 } });
-    apiRequest.mockClear();
+    const messageIds = () => elements(tree).filter((element) => element.type === ConversationMessageItem).map((element) => element.props.item.id);
+    expect(messageIds()).toEqual(["m-2", "m-3"]);
+    expect(textContent(tree)).not.toContain("正在加载最新对话…");
 
+    function switchView(label: string) {
+      const navigation = elements(tree).find((element) => element.props["aria-label"] === "会话视图")!;
+      elements(navigation).find((element) => element.type === "button" && textContent(element).includes(label))!.props.onClick();
+      tree = sessions.draw();
+    }
+    const evidenceState = () => elements(tree).find((element) => element.type === EvidencePanel)!.props.state;
+    switchView("成果");
+    expect(evidenceState().status).toBe("loading");
+    switchView("对话");
+
+    apiRequest.mockClear();
     const loadOlder = () => elements(tree).find((element) => element.props.className === "load-older-button")!;
     expect(textContent(loadOlder())).toContain("加载更早消息");
 
@@ -947,7 +954,7 @@ describe("desktop conversation parity", () => {
     expect(apiRequest).toHaveBeenCalledExactlyOnceWith({ method: "session.history", params: { sessionId: "A", cursor: "m-2", limit: 50 } });
     expect(textContent(loadOlder())).toContain("重试加载更早消息");
     expect(elements(tree).some((element) => element.props.role === "alert" && element.props.children === "历史读取超时")).toBe(true);
-    expect(elements(tree).filter((element) => element.type === ConversationMessageItem).map((element) => element.props.item.id)).toEqual(["m-2", "m-3"]);
+    expect(messageIds()).toEqual(["m-2", "m-3"]);
 
     apiRequest.mockResolvedValueOnce({
       kind: "response",
@@ -967,7 +974,19 @@ describe("desktop conversation parity", () => {
     await settle(); tree = sessions.draw();
     expect(apiRequest).toHaveBeenLastCalledWith({ method: "session.history", params: { sessionId: "A", cursor: "m-2", limit: 50 } });
     expect(elements(tree).some((element) => element.props.className === "load-older-button")).toBe(false);
-    expect(elements(tree).filter((element) => element.type === ConversationMessageItem).map((element) => element.props.item.id)).toEqual(["m-1", "m-2", "m-3"]);
+    expect(messageIds()).toEqual(["m-1", "m-2", "m-3"]);
+
+    finishEvidence(evidenceStatus === "ready"
+      ? { kind: "response", requestId: "evidence", ok: true, result: { evidence: { items: [{
+        id: "evidence-1", sessionId: "A", startedAt: 1, status: "completed", tools: [], artifacts: [],
+      }], hasMore: false } } }
+      : { kind: "response", requestId: "evidence", ok: false, error: { code: "EVIDENCE_ERR", message: "成果读取超时", retryable: true } });
+    await settle(); tree = sessions.draw();
+    switchView("成果");
+    expect(evidenceState().status).toBe(evidenceStatus);
+    expect(evidenceState().items.map((item: { id: string }) => item.id)).toEqual(evidenceStatus === "ready" ? ["evidence-1"] : []);
+    switchView("对话");
+    expect(messageIds()).toEqual(["m-1", "m-2", "m-3"]);
   });
 
   it("groups consecutive tool rows, preserves group identity across backward paging, and forwards transcript.toolDetail.v1", async () => {
@@ -2287,7 +2306,10 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
           result: { mailPage: { cards: mailCards } },
         };
       }
-      return { kind: "response", requestId: "ok", ok: true, result: {} };
+      return { kind: "response", requestId: "ok", ok: true, result:
+        req.method === "session.open" ? { history: { items: [], hasMore: false } }
+          : req.method === "evidence.list" ? { evidence: { items: [], hasMore: false } } : {},
+      };
     });
     const createPairing = vi.fn(async () => ({
       ...snapshot,

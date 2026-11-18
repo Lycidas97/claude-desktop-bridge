@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync, StatementSync } from "node:sqlite";
 import { afterEach, expect, it, vi } from "vitest";
-import { DesktopController } from "../controller/controller.js";
+import { createControllerFixture } from "../controller/controller-fixture.js";
 import { MemoryRecorder } from "./memory-recorder.js";
 
 const roots: string[] = [];
@@ -16,11 +16,19 @@ function fixture() {
 }
 function db(recorder: MemoryRecorder): DatabaseSync { return (recorder as unknown as { database: DatabaseSync }).database; }
 function diagnostics(recorder: MemoryRecorder) {
-  return DesktopController.prototype.diagnostics.call({
-    config: { relayUrl: "ws://127.0.0.1/ws", devices: [] }, relayConnectUrl: "ws://127.0.0.1/ws", app: { getVersion: () => "1.3.3" },
-    broker: { runtimeStatus: () => ({ state: "ready" }) }, desktopRuntimes: () => [], allProjects: () => [],
-    allSessions: () => [], claudePermissions: () => [], eventLog: { latestSeq: () => 0 }, memoryRecorder: recorder,
-  } as unknown as DesktopController);
+  return createControllerFixture({
+    config: { relayUrl: "ws://127.0.0.1/ws", devices: [] },
+    app: { getVersion: () => "1.3.3" },
+    broker: {
+      runtimeStatus: () => ({ state: "ready" }),
+      capabilities: () => [],
+      listProjects: () => [],
+      listSessions: () => [],
+      permissionsList: () => [],
+    },
+    eventLog: { latestSeq: () => 0 },
+    memoryRecorder: recorder,
+  }).diagnostics();
 }
 afterEach(() => {
   vi.restoreAllMocks(); vi.useRealTimers();

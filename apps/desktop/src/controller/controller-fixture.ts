@@ -14,6 +14,8 @@ type Dependencies = {
   RTCPeerConnectionImpl?: unknown;
   desktopAppControls?: ReadonlyMap<string, Stub<ControllerArguments[7]>>;
   conversationState?: Stub<NonNullable<ControllerArguments[10]>> | undefined;
+  updater?: ControllerArguments[11];
+  memoryRecorder?: ControllerArguments[12];
 };
 
 type Internals = {
@@ -26,6 +28,7 @@ type Internals = {
   lastPublishedSessions: DesktopController["lastPublishedSessions"];
   onlineDevices: DesktopController["onlineDevices"];
   publish: DesktopController["publish"];
+  publishPermissions: DesktopController["publishPermissions"];
   publishTimer: DesktopController["publishTimer"];
   receiveMessage: DesktopController["receiveMessage"];
   rejectUnknownDevice: DesktopController["rejectUnknownDevice"];
@@ -42,11 +45,11 @@ export function createControllerFixture<T extends Dependencies & Record<string, 
   const {
     app = {}, repository = {}, pairingBaseUrl = "http://127.0.0.1", relayConnectUrl = "ws://127.0.0.1",
     broker = {}, eventLog = {}, evidence = {}, claudeDesktop = {}, RTCPeerConnectionImpl,
-    desktopAppControls, conversationState, ...overrides
+    desktopAppControls, conversationState, updater, memoryRecorder, ...overrides
   } = fields;
   const args = [
     app, repository, pairingBaseUrl, relayConnectUrl, broker, eventLog, evidence, claudeDesktop,
-    RTCPeerConnectionImpl, desktopAppControls, conversationState,
+    RTCPeerConnectionImpl, desktopAppControls, conversationState, updater, memoryRecorder,
   ] as unknown as ControllerArguments;
   return Object.assign(new DesktopController(...args), overrides) as unknown as Fixture<T>;
 }

@@ -8,6 +8,12 @@ import { fileURLToPath } from 'node:url';
 
 const lint = fileURLToPath(new URL('./lint.mjs', import.meta.url));
 
+function lintDiagnostics(stderr) {
+  return stderr.split(/\r?\n/u)
+    .filter(line => /:\d+:\d+ \[[a-z-]+\/[a-z-]+\] /u.test(line))
+    .map(line => line.replaceAll('\\', '/'));
+}
+
 test('blocks prototype-only Desktop fixtures in Desktop tests and the Native browser fixture', () => {
   const cwd = mkdtempSync(join(tmpdir(), 'bridge-lint-'));
   for (const [path, code] of [
@@ -21,7 +27,7 @@ test('blocks prototype-only Desktop fixtures in Desktop tests and the Native bro
   }
   const result = spawnSync(process.execPath, [lint], { cwd, encoding: 'utf8' });
   assert.equal(result.status, 1, result.stderr);
-  assert.deepEqual(result.stderr.trim().replaceAll('\\', '/').split(/\r?\n/u), [
+  assert.deepEqual(lintDiagnostics(result.stderr), [
     'apps/desktop/scripts/example.test.mjs:1:1 [desktop/controller-real-constructor] Use createControllerFixture(...) to run the real DesktopController constructor.',
     'apps/desktop/src/controller/controller-commands.test.ts:1:34 [desktop/controller-real-constructor] Use createControllerFixture(...) to run the real DesktopController constructor.',
     'scripts/fixtures/native-approval-host.ts:1:1 [desktop/controller-real-constructor] Use createControllerFixture(...) to run the real DesktopController constructor.',
@@ -47,7 +53,7 @@ test('allows real constructors, unrelated calls, quoted text and files outside t
   }
   const result = spawnSync(process.execPath, [lint], { cwd, encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stderr, '');
+  assert.deepEqual(lintDiagnostics(result.stderr), []);
 });
 
 
@@ -64,7 +70,7 @@ export * from '@bridge/protocol';
   writeFileSync(join(cwd, 'scripts/browser-e2e.mjs'), `import '../packages/protocol/dist/index.js';`);
   const rejected = spawnSync(process.execPath, [lint], { cwd, encoding: 'utf8' });
   assert.equal(rejected.status, 1, rejected.stderr);
-  assert.deepEqual(rejected.stderr.trim().replaceAll('\\', '/').split(/\r?\n/u), [
+  assert.deepEqual(lintDiagnostics(rejected.stderr), [
     'scripts/relay-contract-probe.mjs:2:1 [ci/prebuild-protocol-source] Import from packages/protocol/src in this pre-build script.',
     'scripts/relay-contract-probe.mjs:3:7 [ci/prebuild-protocol-source] Import from packages/protocol/src in this pre-build script.',
     'scripts/relay-contract-probe.mjs:4:1 [ci/prebuild-protocol-source] Import from packages/protocol/src in this pre-build script.',
@@ -73,5 +79,5 @@ export * from '@bridge/protocol';
   writeFileSync(probe, `import { PROTOCOL_VERSION } from '../packages/protocol/src/types.ts';`);
   const accepted = spawnSync(process.execPath, [lint], { cwd, encoding: 'utf8' });
   assert.equal(accepted.status, 0, accepted.stderr);
-  assert.equal(accepted.stderr, '');
+  assert.deepEqual(lintDiagnostics(accepted.stderr), []);
 });

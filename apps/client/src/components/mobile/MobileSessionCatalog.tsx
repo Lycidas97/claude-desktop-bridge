@@ -1,4 +1,5 @@
 import type {
+  BridgeClaudeActivationResult,
   BridgeHostSnapshot,
   BridgePermissionInfo,
   BridgeProjectInfo,
@@ -121,7 +122,7 @@ export interface MobileSessionCatalogProps {
   sessionDrag?: SessionSectionDragController | undefined;
   manualSections?: readonly BridgeProjectInfo[] | undefined;
   sessionActionError?: string | undefined;
-  onActivateClaude?: (() => Promise<void>) | undefined;
+  onActivateClaude?: (() => Promise<BridgeClaudeActivationResult | undefined>) | undefined;
 }
 
 export function MobileSessionCatalog({

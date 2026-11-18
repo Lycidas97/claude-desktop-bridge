@@ -434,7 +434,7 @@ export function App() {
                     onDeleteSession: mobile.deleteSession,
                   }
                 : {})}
-              onDesktopAppAction={mobile.controlDesktopApp}
+              onActivateClaude={mobile.activateClaudeRemote}
               onRefresh={mobile.refresh}
               onBackToHosts={() => {
                 setComputerDetailsHostId(undefined);
@@ -545,10 +545,7 @@ export function App() {
               desktopName: mobile.state.desktopName ?? "我的电脑",
               snapshot,
               connected: mobile.state.connection === "connected" && mobile.state.desktopOnline,
-              onActivate: async () => {
-                await mobile.controlDesktopApp("claude-desktop", "launch");
-                await mobile.refresh();
-              },
+              onActivate: mobile.activateClaudeRemote,
             },
           } : {})}
           {...(quotaDeclared ? { quota: { desktopName: mobile.state.desktopName ?? "我的电脑", onOpen: () => setQuotaOpen(true) } } : {})}

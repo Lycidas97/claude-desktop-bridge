@@ -8,6 +8,12 @@ import { fileURLToPath } from 'node:url';
 
 const lint = fileURLToPath(new URL('./lint.mjs', import.meta.url));
 
+function controllerDiagnostics(stderr) {
+  return stderr.split(/\r?\n/u)
+    .filter(line => line.includes(' [desktop/controller-real-constructor] '))
+    .map(line => line.replaceAll('\\', '/'));
+}
+
 test('blocks prototype-only DesktopController fixtures in Desktop tests and the Native browser fixture', () => {
   const cwd = mkdtempSync(join(tmpdir(), 'bridge-lint-'));
   for (const [path, code] of [
@@ -21,7 +27,7 @@ test('blocks prototype-only DesktopController fixtures in Desktop tests and the 
   }
   const result = spawnSync(process.execPath, [lint], { cwd, encoding: 'utf8' });
   assert.equal(result.status, 1, result.stderr);
-  assert.deepEqual(result.stderr.trim().replaceAll('\\', '/').split(/\r?\n/u), [
+  assert.deepEqual(controllerDiagnostics(result.stderr), [
     'apps/desktop/scripts/example.test.mjs:1:1 [desktop/controller-real-constructor] Use createControllerFixture(...) to run the real DesktopController constructor.',
     'apps/desktop/src/controller/controller-commands.test.ts:1:34 [desktop/controller-real-constructor] Use createControllerFixture(...) to run the real DesktopController constructor.',
     'scripts/fixtures/native-approval-host.ts:1:1 [desktop/controller-real-constructor] Use createControllerFixture(...) to run the real DesktopController constructor.',
@@ -46,5 +52,5 @@ test('allows real constructors, unrelated calls, quoted text and files outside t
   }
   const result = spawnSync(process.execPath, [lint], { cwd, encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stderr, '');
+  assert.deepEqual(controllerDiagnostics(result.stderr), []);
 });

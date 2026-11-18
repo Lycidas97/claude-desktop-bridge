@@ -5,7 +5,7 @@ import { NativeCallError, type ClaudeDesktopInspector } from "./claude-desktop-i
 import { projectContextMessages } from "./native-context-usage.js";
 import { nativePlanMessages } from "./native-history-projection.js";
 
-async function readTranscriptPage(inspector: Pick<ClaudeDesktopInspector, "call">, sessionId: string, cursor: string, limit: number) {
+export async function readNativeTranscriptPage(inspector: Pick<ClaudeDesktopInspector, "call">, sessionId: string, cursor: string, limit: number) {
   const page = await inspector.call("getTranscriptPage", [sessionId, cursor, limit, { window: "accept" }]);
   if (!isRecord(page) || !Array.isArray(page.messages)) return undefined;
   const messages: unknown[] = page.messages;
@@ -26,7 +26,7 @@ export async function readNativeHistoryPage(
   limit: number,
   planObserved: () => boolean | undefined,
 ) {
-  const page = await readTranscriptPage(inspector, sessionId, cursor ?? "", limit);
+  const page = await readNativeTranscriptPage(inspector, sessionId, cursor ?? "", limit);
   if (!page) throw new NativeCallError("Desktop returned an invalid transcript page");
 
   const firstPlan = nativePlanMessages(page.messages)[0]?.message.content[0];
@@ -39,7 +39,7 @@ export async function readNativeHistoryPage(
   let before = page.nextCursor;
   while (needsEarlierPlan && before) {
     diagnostics.count("history.planPage");
-    const older = await readTranscriptPage(inspector, sessionId, before, limit);
+    const older = await readNativeTranscriptPage(inspector, sessionId, before, limit);
     if (!older) throw new NativeCallError("Desktop returned an invalid transcript page");
     if (!cursor) olderContextPages.unshift(projectContextMessages(older.messages));
     for (const message of nativePlanMessages(older.messages).reverse()) {
@@ -64,7 +64,7 @@ export async function readNativeHistoryPage(
       let olderCursor = before;
       for (let hop = 0; !scan.anchored && olderCursor && canLookBack && hop < 8; hop += 1) {
         diagnostics.count("history.planPage");
-        const older = await readTranscriptPage(inspector, sessionId, olderCursor, Math.max(limit, 100));
+        const older = await readNativeTranscriptPage(inspector, sessionId, olderCursor, Math.max(limit, 100));
         if (!older) break;
         combined = [...projectContextMessages(older.messages), ...combined];
         scan = scanClaudeContextFromMessages(combined);

@@ -4352,11 +4352,16 @@ describe("Claude native relay", () => {
         planMessage("advance", { advance: true }, 20),
       ] });
       f.native.pages.set("hidden-0", { hasMore: true, messages: [
-        { type: "assistant", uuid: "older-0", message: usagePage === 0 ? usage : {} }, plan,
+        { type: "assistant", uuid: "older-0", message: { ...(usagePage === 0 ? usage : {}), content: "Older plan page text" } },
+        plan,
       ] });
       for (let index = 0; index < 9; index += 1) {
         f.native.pages.set(`older-${index}`, usagePage === null && index === 0 ? { hasMore: true } : {
-          hasMore: true, messages: [{ type: "assistant", uuid: `older-${index + 1}`, message: usagePage === index + 1 ? usage : {} }],
+          hasMore: true,
+          messages: [{
+            type: "assistant", uuid: `older-${index + 1}`,
+            message: { ...(usagePage === index + 1 ? usage : {}), content: `Older estimate page ${index + 1} text` },
+          }],
         });
       }
 

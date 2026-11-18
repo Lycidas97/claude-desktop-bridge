@@ -52,7 +52,7 @@ import {
   savedModelOption,
   type NativeContextState,
 } from "./native-context-usage.js";
-import { readNativeHistoryPage } from "./native-history-pagination.js";
+import { readNativeHistoryPage, readNativeTranscriptPage } from "./native-history-pagination.js";
 import {
   enrichNativeSubagentItems,
   extractNativeImageAttachment,
@@ -506,8 +506,8 @@ export class ClaudeDesktopBridge extends EventEmitter {
     }
     if (!this.inspector.ready || !this.inspector.supports("getTranscriptPage")) return;
     try {
-      const tail = record(await this.inspector.call("getTranscriptPage", [sessionId, "", tailLimit, { window: "accept" }]));
-      if (!Array.isArray(tail.messages) || tail.messages.length === 0) return;
+      const tail = await readNativeTranscriptPage(this.inspector, sessionId, "", tailLimit);
+      if (!tail) return;
       const tailModel = extractLatestTranscriptModel(tail.messages);
       if (tailModel) {
         hydrateObservedContextModel(this.ensureContextState(sessionId), tailModel);

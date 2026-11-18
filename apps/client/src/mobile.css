@@ -1134,6 +1134,7 @@
   gap: 26px;
   padding: 16px max(var(--m-gutter), env(safe-area-inset-right)) max(32px, env(safe-area-inset-bottom)) max(var(--m-gutter), env(safe-area-inset-left));
   overflow-y: auto;
+  overscroll-behavior-y: none;
 }
 
 .mobile-settings-group {

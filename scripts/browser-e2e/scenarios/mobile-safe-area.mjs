@@ -93,6 +93,18 @@ export async function verifyMobileSafeArea(page, steps, directory, viewports) {
     await page.screenshot({ path: resolve(directory, `${tab}-safe-area.png`), fullPage: true });
     steps.push(`${tab}: env(safe-area-inset-bottom) 0 → 48px changes padding ${paddings[0]} → ${paddings[1]}px; last content clears safe area, header/document stay fixed`);
   }
+  const settings = page.locator(".mobile-settings-content");
+  const { x, y, width, height } = await settings.boundingBox();
+  const gesture = { x: x + width / 2, y: y + height / 2, gestureSourceType: "touch", preventFling: true };
+  const scrollEnd = await settings.evaluate(element => element.scrollTop);
+  await emulation.send("Input.synthesizeScrollGesture", { ...gesture, yDistance: 120 });
+  assert.ok(await settings.evaluate(element => element.scrollTop) < scrollEnd, "Settings still scrolls away from the end with a touch gesture");
+  await emulation.send("Input.synthesizeScrollGesture", { ...gesture, yDistance: -240 });
+  assert.equal(await settings.evaluate(element => element.scrollTop), scrollEnd, "An upward swipe past the end leaves settings at the content boundary");
+  // Headless Chromium does not render the phone's elastic bounce. Check the
+  // resolved browser policy as well as the bounds reached by touch scrolling.
+  assert.equal(await settings.evaluate(element => getComputedStyle(element).overscrollBehaviorY), "none", "Settings disables vertical rubber-banding and scroll chaining at the boundary");
+  steps.push("Touch scrolling moves within settings and stops at the content end with vertical overscroll disabled");
   await page.getByRole("button", { name: /连接诊断与日志/u }).click();
   await page.getByRole("dialog", { name: "连接诊断与日志导出", exact: true }).waitFor();
   steps.push("The final settings diagnostics button opens its dialog after scrolling to the bottom");

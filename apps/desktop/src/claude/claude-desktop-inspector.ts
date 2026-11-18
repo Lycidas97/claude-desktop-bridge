@@ -7,6 +7,7 @@ const METHODS = new Set([
   "sendMessage", "sendSteeredNow", "promoteQueuedMessage", "cancelQueuedMessage", "interrupt", "stopTask", "setModel", "setEffort",
   "setPermissionMode", "getContextUsage", "getSupportedCommands", "getTranscript", "getTranscriptPage",
   "getTranscriptTail", "respondToToolPermission", "findLocalSessionIdForBridgeId", "getAvailableCodeModels",
+  "resolveSessionFileQuietly",
   "canRewindTo", "rewindV2", "rewindFiles",
   "respondToRefusalFallbackPrompt", "respondToAutoModeServerFallbackPrompt", "respondToLanyardConsent",
   "respondToViolinBowPrompt", "answerPendingCwdTrust", "getPrOverview", "getPrChecks",

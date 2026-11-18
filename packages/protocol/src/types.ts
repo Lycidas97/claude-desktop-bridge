@@ -185,6 +185,7 @@ export type BridgeCapability =
   | "artifact.preview.v1"
   | "artifact.transfer.v1"
   | "artifact.transfer.stat.v1"
+  | "artifact.transfer.relative-link.v1"
   | "artifact.text-preview.v1"
   | "workspace.upload.v1"
   | "provider.profile.v1"
@@ -574,7 +575,7 @@ export interface BridgeArtifactTransferMetadata {
 
 export type BridgeArtifactTransferOpenParams =
   | { artifactId: string; purpose?: "text-preview" | "stat" }
-  | { sessionId: string; path: string; purpose?: "text-preview" | "stat" }
+  | { sessionId: string; path: string; purpose?: "text-preview" | "stat"; resolveRelativeLink?: true }
   | { sessionId: string; nativeImage: BridgeNativeImageRef };
 
 export interface BridgeDirectoryListing {

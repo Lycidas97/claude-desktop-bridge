@@ -102,7 +102,7 @@ export interface DesktopConversationController {
   loadEvidenceDetails(evidenceId: string, kind: "tools" | "artifacts", cursor?: string): Promise<BridgeEvidenceDetailPage>;
   previewArtifact(artifactId: string, hostId?: string): Promise<BridgeArtifactPreview>;
   downloadArtifact(artifact: BridgeArtifactManifest, hostId?: string): Promise<void>;
-  downloadSessionFile(sessionId: string, filePath: string, hostId?: string): Promise<void>;
+  downloadSessionFile(sessionId: string, filePath: string, hostId?: string, resolveRelativeLink?: true): Promise<void>;
   uploadFile: UploadFileHandler;
   sendTurn(
     sessionId: string,
@@ -606,6 +606,7 @@ function useDesktopConversationController(input: DesktopConversationInput): Desk
     sessionId: string,
     filePath: string,
     targetHostId = latestRef.current.snapshot.host.hostId,
+    resolveRelativeLink?: true,
   ): Promise<void> {
     const transferKey = `file:${filePath}`;
     const transferRequest = createHostBoundTransferRequest(targetHostId);
@@ -620,6 +621,7 @@ function useDesktopConversationController(input: DesktopConversationInput): Desk
             setHostTransfer(targetHostId, transferKey, progress);
           }
         },
+        resolveRelativeLink,
       );
     } finally {
       setHostTransfer(targetHostId, transferKey, undefined);
@@ -1112,7 +1114,7 @@ export function DesktopSessionConversation({
       onOpenSession={(targetSessionId) => controller.openSession(targetSessionId, hostId)}
       onRefresh={(targetSessionId = session.sessionId) => controller.refreshSession(targetSessionId, hostId)}
       onLoadOlderHistory={(targetSessionId) => controller.loadOlderHistory(targetSessionId, hostId)}
-      onDownloadSessionFile={(targetSessionId, filePath) => controller.downloadSessionFile(targetSessionId, filePath, hostId)}
+      onDownloadSessionFile={(targetSessionId, filePath, resolveRelativeLink) => controller.downloadSessionFile(targetSessionId, filePath, hostId, resolveRelativeLink)}
       onUploadFile={controller.uploadFile}
       onSendTurn={controller.sendTurn}
       onInterruptTurn={(targetSessionId) => controller.interruptTurn(targetSessionId)}

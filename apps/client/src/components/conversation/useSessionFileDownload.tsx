@@ -7,16 +7,17 @@ import { useMediaPreview } from "../evidence/MediaPreviewProvider.js";
 export function useSessionFileDownload(
   sessionId: string,
   isMobile: boolean,
-  onDownloadSessionFile: ((sessionId: string, filePath: string) => Promise<void>) | undefined,
+  onDownloadSessionFile: ((sessionId: string, filePath: string, resolveRelativeLink?: true) => Promise<void>) | undefined,
+  supportsRelativeLinks: boolean,
 ) {
   const openMedia = useMediaPreview();
-  const [pendingFileDownload, setPendingFileDownload] = useState<string>();
+  const [pendingFileDownload, setPendingFileDownload] = useState<{ path: string; resolveRelativeLink?: true }>();
   const [fileDownloadBusy, setFileDownloadBusy] = useState(false);
   const [fileDownloadError, setFileDownloadError] = useState<string>();
 
-  function requestDownload(filePath: string): void {
+  function requestDownload(path: string, resolveRelativeLink?: true): void {
     setFileDownloadError(undefined);
-    setPendingFileDownload(filePath);
+    setPendingFileDownload({ path, ...(resolveRelativeLink ? { resolveRelativeLink } : {}) });
   }
 
   function closeDownload(): void {
@@ -31,17 +32,20 @@ export function useSessionFileDownload(
         kind,
         sessionId,
         path: filePath,
+        ...(supportsRelativeLinks ? { resolveRelativeLink: true } : {}),
       });
       return;
     }
-    requestDownload(filePath);
+    requestDownload(filePath, supportsRelativeLinks ? true : undefined);
   }
+
+  const pendingPath = pendingFileDownload?.path;
 
   return {
     openFile,
     requestDownload,
     closeDownload,
-    pendingPath: pendingFileDownload,
+    pendingPath,
     busy: fileDownloadBusy,
     resetSelection() {
       setPendingFileDownload(undefined);
@@ -49,12 +53,12 @@ export function useSessionFileDownload(
     },
     dialog: (
       <ConfirmationDialog
-        open={Boolean(pendingFileDownload)}
+        open={Boolean(pendingPath)}
         title={isMobile ? "确认下载远程文件到手机？" : "确认下载工作区文件？"}
-        description={pendingFileDownload
+        description={pendingPath
           ? (isMobile
-              ? `即将从电脑工作区下载「${pendingFileDownload.split(/[\\/]/u).at(-1) || pendingFileDownload}」（${pendingFileDownload}）到手机端，是否继续？`
-              : `即将从工作区下载「${pendingFileDownload.split(/[\\/]/u).at(-1) || pendingFileDownload}」（${pendingFileDownload}），是否继续？`)
+              ? `即将从电脑工作区下载「${pendingPath.split(/[\\/]/u).at(-1) || pendingPath}」（${pendingPath}）到手机端，是否继续？`
+              : `即将从工作区下载「${pendingPath.split(/[\\/]/u).at(-1) || pendingPath}」（${pendingPath}），是否继续？`)
           : ""}
         confirmLabel="确认下载"
         busy={fileDownloadBusy}
@@ -63,7 +67,7 @@ export function useSessionFileDownload(
           if (!pendingFileDownload || !onDownloadSessionFile || fileDownloadBusy) return;
           setFileDownloadBusy(true);
           setFileDownloadError(undefined);
-          void onDownloadSessionFile(sessionId, pendingFileDownload)
+          void onDownloadSessionFile(sessionId, pendingFileDownload.path, pendingFileDownload.resolveRelativeLink)
             .then(() => {
               setPendingFileDownload(undefined);
             })

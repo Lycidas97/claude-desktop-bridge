@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { basename } from "node:path";
+import { basename, isAbsolute } from "node:path";
 import {
   CLAUDE_UNSECTIONED_PROJECT_ID,
   CLAUDE_UNSECTIONED_PROJECT_NAME,
@@ -706,6 +706,11 @@ export class ClaudeDesktopBridge extends EventEmitter {
   executionCwd(sessionId: string): string | undefined {
     const session = this.native.get(sessionId);
     return session?.harnessCwd ?? session?.cwd;
+  }
+  async resolveSessionFile(sessionId: string, path: string): Promise<string | undefined> {
+    if (!this.inspector.ready || !this.inspector.supports("resolveSessionFileQuietly")) return undefined;
+    const resolved = await this.inspector.call("resolveSessionFileQuietly", [sessionId, path]);
+    return typeof resolved === "string" && isAbsolute(resolved) ? resolved : undefined;
   }
   listProjects(): BridgeProjectInfo[] {
     const projects = new Map<string, BridgeProjectInfo>((this.sectionCatalog?.sections ?? []).map(section => [section.id, {

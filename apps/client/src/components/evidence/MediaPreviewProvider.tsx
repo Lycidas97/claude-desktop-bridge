@@ -1,6 +1,6 @@
 import { FILE_PREVIEW_CONFIRM_BYTES, type BridgeArtifactTransferMetadata } from "@bridge/protocol";
 import { createContext, lazy, Suspense, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
-import { formatBytes, type MediaRequest, type MediaTarget } from "../../lib/media-preview.js";
+import { formatBytes, mediaFileParams, type MediaRequest, type MediaTarget } from "../../lib/media-preview.js";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
 import { ConfirmationDialog } from "../common/ConfirmationDialog.js";
 
@@ -62,8 +62,7 @@ export function MediaPreviewProvider({ request, supportsFileStat = false, childr
     }
     let disposed = false;
     void requestRef.current("artifact.transfer.open", {
-      ...(pending.target.artifactId ? { artifactId: pending.target.artifactId }
-        : { sessionId: pending.target.sessionId, path: pending.target.path?.trim().replace(/:\d+(?::\d+)?$/u, "") }),
+      ...mediaFileParams(pending.target),
       purpose: "stat",
     }, { wait: true, timeoutMs: 60_000 }).then((response) => {
       if (disposed) return;

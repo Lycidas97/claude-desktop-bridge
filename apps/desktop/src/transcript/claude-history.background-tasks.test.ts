@@ -315,6 +315,45 @@ describe("background shells and agents", () => {
     ]);
   });
 
+  it.each(["metadata", "child transcript"])("stops an interrupted foreground agent from its %s while the parent process lives", async (signal) => {
+    const run = await session([
+      { type: "user", timestamp: at(0), message: { content: "Review the parser" } },
+      toolUse(1, "skill-call", "Skill", { skill: "review" }),
+      { type: "user", timestamp: at(5), message: { content: [{
+        type: "tool_result", tool_use_id: "skill-call", is_error: true, content: "[Request interrupted by user for tool use]",
+      }] } },
+    ]);
+    const childDir = join(run.root, "session", "subagents");
+    await mkdir(childDir, { recursive: true });
+    const child = join(childDir, "agent-ag01.jsonl");
+    await writeFile(child, jsonl([
+      ...runningAgent(2),
+      { type: "assistant", timestamp: at(4), message: { stop_reason: null, content: [{ type: "text", text: "Reviewing" }] } },
+    ]));
+    expect((await tasks(run.transcript)).find(task => task.taskId === "ag01")?.state).toBe("running");
+
+    if (signal === "metadata") {
+      await writeFile(join(childDir, "agent-ag01.meta.json"), JSON.stringify({ stoppedByUser: true }));
+    } else {
+      await appendFile(child, jsonl([{ type: "user", timestamp: at(5), message: { content: [{ type: "text", text: "[Request interrupted by user]" }] } }]));
+    }
+    expect((await tasks(run.transcript)).find(task => task.taskId === "ag01")).toMatchObject({
+      state: "stopped", subagent: { state: "stopped" },
+    });
+  });
+
+  it("shows an interrupted parent Agent call as stopped without a child ID or report", async () => {
+    const run = await session([
+      toolUse(1, "agent-call", "Agent", { description: "Audit the parser" }),
+      { type: "user", timestamp: at(5), message: { content: [{
+        type: "tool_result", tool_use_id: "agent-call", is_error: true, content: "[Request interrupted by user for tool use]",
+      }] } },
+    ]);
+    const [task] = await tasks(run.transcript);
+    expect(task).toMatchObject({ id: "agent-call", state: "stopped", subagent: { state: "stopped" } });
+    expect(task?.subagent?.reportText).toBeUndefined();
+  });
+
   it("keeps the selected task when an unrelated sidechain tool result has a non-string ID", async () => {
     const run = await session(shellLaunch);
     await appendFile(run.transcript, jsonl([{

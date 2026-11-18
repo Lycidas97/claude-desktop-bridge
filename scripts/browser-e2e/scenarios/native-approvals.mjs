@@ -32,7 +32,7 @@ async function verifySessionHeader(page, host, steps, directory, baseUrl) {
     await eventually(() => notice.count(), state === "confirmed" ? 0 : 1, `Permission notice state ${state}`);
     assert.ok((await page.locator(".m-header .session-profile-summary").textContent()).includes("Don't Ask"), "A requested mode never replaces the observed header mode");
   }
-  async function checkWrapping(selector, surface, requiredParts = [], stackedSecondLine = true) {
+  async function checkDesktopWrapping(selector, surface, requiredParts) {
     const layout = await page.locator(selector).evaluate((element) => {
       const modelLine = element.querySelector(".is-model-line");
       const metaLine = element.querySelector(".is-meta-line");
@@ -61,7 +61,7 @@ async function verifySessionHeader(page, host, steps, directory, baseUrl) {
     for (const part of requiredParts) {
       assert.ok(layout.metaText.includes(part), `${surface} keeps "${part}" visible in meta line: ${JSON.stringify(layout)}`);
     }
-    assert.equal(layout.stacked, stackedSecondLine, `${surface} stackedSecondLine=${stackedSecondLine} mismatch: ${JSON.stringify(layout)}`);
+    assert.equal(layout.stacked, false, `${surface} keeps metadata beside the truncated model: ${JSON.stringify(layout)}`);
     assert.ok(layout.left >= 0 && layout.right <= layout.width + 1 && layout.metaRight <= layout.width + 1, `${surface} fits the viewport`);
   }
   for (const width of [375, 320]) {
@@ -72,7 +72,20 @@ async function verifySessionHeader(page, host, steps, directory, baseUrl) {
         session.allowedActions.canConfigure = canConfigure;
         await host.send({ kind: "snapshot", snapshot: host.snapshot });
         await eventually(() => page.getByRole("button", { name: "会话设置", exact: true }).count(), canConfigure ? 1 : 0, "Settings availability changes only the header action");
-        await checkWrapping(".m-header .session-profile-summary", `Mobile ${width}px ${font} configure=${canConfigure}`, ["Don't Ask", "High"]);
+        const layout = await page.locator(".m-header .session-profile-summary").evaluate(summary => {
+          const bounds = summary.getBoundingClientRect();
+          const model = summary.querySelector(".is-model-line").getBoundingClientRect();
+          const meta = summary.querySelector(".is-meta-line").getBoundingClientRect();
+          const chevron = summary.parentElement.querySelector("svg")?.getBoundingClientRect();
+          return {
+            oneLine: model.top < meta.bottom && meta.top < model.bottom,
+            ellipsized: summary.scrollWidth > summary.clientWidth && getComputedStyle(summary).textOverflow === "ellipsis",
+            inViewport: bounds.left >= 0 && bounds.right <= innerWidth,
+            chevronAtEnd: chevron ? chevron.left >= bounds.right && chevron.right <= innerWidth : null,
+          };
+        });
+        assert.deepEqual(layout, { oneLine: true, ellipsized: true, inViewport: true, chevronAtEnd: canConfigure ? true : null },
+          `Mobile ${width}px ${font} configure=${canConfigure} keeps the long profile on one line with the chevron outside the ellipsis`);
       }
     }
   }
@@ -105,11 +118,11 @@ async function verifySessionHeader(page, host, steps, directory, baseUrl) {
     const summary = page.locator(".desktop-conversation .session-profile-summary");
     await eventually(() => summary.textContent(), `${profile.modelDisplayName} · High · ${modes[mode]}`, "Desktop receives updated mode without a configuration read");
     if (canConfigure) await eventually(accessibleProfile, { name: "会话设置", description: `${profile.modelDisplayName} · High · ${modes[mode]}` }, "Desktop settings announce the current snapshot profile");
-    await checkWrapping(".desktop-conversation .session-profile-summary", `Desktop configure=${canConfigure}`, [modes[mode], "High"], false);
+    await checkDesktopWrapping(".desktop-conversation .session-profile-summary", `Desktop configure=${canConfigure}`, [modes[mode], "High"]);
   }
   await accessibility.detach();
   await page.screenshot({ path: resolve(directory, "desktop-header-readonly-larger.png"), fullPage: true });
-  steps.push("mobile 375/320px and narrow desktop retain complete profile fields and updated accessible settings descriptions; read-only headers remain visible and confirmed notices disappear");
+  steps.push("mobile at 375/320px ellipsizes long summaries on one line while keeping the chevron visible; mobile and desktop retain full accessible settings descriptions and read-only summaries");
 }
 
 export async function verifyNativeApprovals(page, host, steps, directory, baseUrl, relayPeers) {

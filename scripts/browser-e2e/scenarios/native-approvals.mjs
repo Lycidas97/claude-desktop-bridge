@@ -32,52 +32,41 @@ async function verifySessionHeader(page, host, steps, directory, baseUrl) {
     await eventually(() => notice.count(), state === "confirmed" ? 0 : 1, `Permission notice state ${state}`);
     assert.ok((await page.locator(".m-header .session-profile-summary").textContent()).includes("Don't Ask"), "A requested mode never replaces the observed header mode");
   }
-  async function checkWrapping(selector, surface, requiredParts = [], stackedSecondLine = true) {
-    const layout = await page.locator(selector).evaluate((element) => {
+  async function checkWrapping(summary, surface, expectedMeta, canConfigure) {
+    const layout = await summary.evaluate(element => {
       const modelLine = element.querySelector(".is-model-line");
       const metaLine = element.querySelector(".is-meta-line");
-      const rect = element.getBoundingClientRect();
-      const modelRect = modelLine?.getBoundingClientRect();
-      const metaRect = metaLine?.getBoundingClientRect();
-      const range = document.createRange();
-      if (modelLine) range.selectNodeContents(modelLine);
+      const bounds = element.getBoundingClientRect();
+      const model = modelLine.getBoundingClientRect();
+      const meta = metaLine.getBoundingClientRect();
+      const chevron = element.parentElement.querySelector("svg")?.getBoundingClientRect();
+      const modelStyle = getComputedStyle(modelLine);
       return {
-        modelWhiteSpace: modelLine ? getComputedStyle(modelLine).whiteSpace : "",
-        modelTextOverflow: modelLine ? getComputedStyle(modelLine).textOverflow : "",
-        modelLines: modelLine ? new Set([...range.getClientRects()].map((r) => Math.round(r.top))).size : 0,
-        metaText: metaLine?.textContent ?? "",
-        metaClipped: metaLine ? metaLine.scrollWidth > metaLine.clientWidth + 1 : false,
-        stacked: modelRect && metaRect ? metaRect.top >= modelRect.bottom - 2 : false,
-        left: rect.left,
-        right: rect.right,
-        metaRight: metaRect ? metaRect.right : rect.right,
-        width: innerWidth,
+        metaText: metaLine.textContent,
+        metaVisible: meta.left >= bounds.left && meta.right <= bounds.right && metaLine.scrollWidth <= metaLine.clientWidth,
+        oneLine: meta.left >= model.right && model.top < meta.bottom && meta.top < model.bottom,
+        modelEllipsized: modelLine.scrollWidth > modelLine.clientWidth && modelStyle.textOverflow === "ellipsis" && modelStyle.whiteSpace === "nowrap",
+        inViewport: bounds.left >= 0 && bounds.right <= innerWidth,
+        chevronAtEnd: chevron ? chevron.left >= bounds.right && chevron.right <= innerWidth : null,
       };
     });
-    assert.equal(layout.modelWhiteSpace, "nowrap", `${surface} keeps model line on one single line`);
-    assert.equal(layout.modelTextOverflow, "ellipsis", `${surface} truncates long model names cleanly with ellipsis`);
-    assert.equal(layout.modelLines, 1, `${surface} model line never wraps: ${JSON.stringify(layout)}`);
-    assert.equal(layout.metaClipped, false, `${surface} never truncates effort or permission mode: ${JSON.stringify(layout)}`);
-    for (const part of requiredParts) {
-      assert.ok(layout.metaText.includes(part), `${surface} keeps "${part}" visible in meta line: ${JSON.stringify(layout)}`);
-    }
-    assert.equal(layout.stacked, stackedSecondLine, `${surface} stackedSecondLine=${stackedSecondLine} mismatch: ${JSON.stringify(layout)}`);
-    assert.ok(layout.left >= 0 && layout.right <= layout.width + 1 && layout.metaRight <= layout.width + 1, `${surface} fits the viewport`);
+    assert.ok(layout.metaVisible, `${surface} shows the full effort and permission mode beside the long model name`);
+    assert.deepEqual(layout, { metaText: expectedMeta, metaVisible: true, oneLine: true, modelEllipsized: true, inViewport: true, chevronAtEnd: canConfigure ? true : null },
+      `${surface} keeps the header profile on one line and ellipsizes the model name`);
   }
   for (const width of [375, 320]) {
     await page.setViewportSize({ width, height: 812 });
     for (const font of ["standard", "larger"]) {
       await page.evaluate(font => { document.documentElement.dataset.fontSize = font; }, font);
-      for (const canConfigure of [true, false]) {
+      for (const canConfigure of [false, true]) {
         session.allowedActions.canConfigure = canConfigure;
         await host.send({ kind: "snapshot", snapshot: host.snapshot });
         await eventually(() => page.getByRole("button", { name: "会话设置", exact: true }).count(), canConfigure ? 1 : 0, "Settings availability changes only the header action");
-        await checkWrapping(".m-header .session-profile-summary", `Mobile ${width}px ${font} configure=${canConfigure}`, ["Don't Ask", "High"]);
+        await checkWrapping(page.locator(".m-header .session-profile-summary"), `Mobile ${width}px ${font} configure=${canConfigure}`, "High · Don't Ask", canConfigure);
       }
     }
   }
   await page.screenshot({ path: resolve(directory, "mobile-header-larger-320.png"), fullPage: true });
-  session.allowedActions.canConfigure = true;
   await page.exposeFunction("headerRequest", async input => ({ kind: "response", requestId: randomUUID(), ok: true,
     result: await host.nativeApproval.controllerRequest({ kind: "request", requestId: randomUUID(), ...input }) }));
   await page.addInitScript(snapshot => {
@@ -105,14 +94,14 @@ async function verifySessionHeader(page, host, steps, directory, baseUrl) {
     const summary = page.locator(".desktop-conversation .session-profile-summary");
     await eventually(() => summary.textContent(), `${profile.modelDisplayName} · High · ${modes[mode]}`, "Desktop receives updated mode without a configuration read");
     if (canConfigure) await eventually(accessibleProfile, { name: "会话设置", description: `${profile.modelDisplayName} · High · ${modes[mode]}` }, "Desktop settings announce the current snapshot profile");
-    await checkWrapping(".desktop-conversation .session-profile-summary", `Desktop configure=${canConfigure}`, [modes[mode], "High"], false);
+    await checkWrapping(summary, `Desktop configure=${canConfigure}`, `High · ${modes[mode]}`, canConfigure);
   }
   await accessibility.detach();
   await page.screenshot({ path: resolve(directory, "desktop-header-readonly-larger.png"), fullPage: true });
-  steps.push("mobile 375/320px and narrow desktop retain complete profile fields and updated accessible settings descriptions; read-only headers remain visible and confirmed notices disappear");
+  steps.push("mobile at 375/320px ellipsizes long model names on one line and keeps the full effort, permission mode, and chevron visible; mobile and desktop retain full accessible settings descriptions and read-only summaries");
 }
 
-export async function verifyNativeApprovals(page, host, steps, directory, baseUrl, relayPeers) {
+export async function verifyNativeApprovals(page, host, steps, directory, baseUrl, relayRoutes) {
   await openMobileSession(page);
   await page.getByRole("heading", { name: originalTitle, exact: true }).waitFor();
   const slashInput = page.getByRole("combobox", { name: "给 Claude 发指令" });
@@ -200,16 +189,34 @@ export async function verifyNativeApprovals(page, host, steps, directory, baseUr
   await latestOutput.waitFor();
   assert.equal(await latestOutput.evaluate(output => Boolean(output.compareDocumentPosition(document.querySelector(".pending-question")) & Node.DOCUMENT_POSITION_FOLLOWING)), true, "The live question stays after subsequent assistant output");
   const snapshotCount = host.requests.filter((request) => request.method === "snapshot.get").length;
-  const peer = [...relayPeers].find(([, hello]) => hello.roomId === host.pairing.roomId && hello.role === "mobile");
-  assert.ok(peer, "Native approval scenario must own a connected phone");
-  peer[0].close(1012, "native approval reconnect fixture");
+  const routeCount = relayRoutes.length;
+  assert.ok(routeCount > 0, "Native approval scenario must own a phone connection");
+  // The startup probe also opens /ws. Close the page side of every existing relay route
+  // so the phone stops sending before Playwright closes its native socket.
+  await Promise.all(relayRoutes.map(route => route.close({ code: 1000, reason: "native approval reconnect fixture" })));
   await eventually(() => host.requests.filter((request) => request.method === "snapshot.get").length > snapshotCount, true, "Reconnect must fetch pending native approval");
+  assert.ok(relayRoutes.length > routeCount, "Reconnect must open a new relay connection");
   assert.equal(host.nativeApproval.list()[0].requestId, question.request.requestId);
+  const submit = questionCard.getByRole("button", { name: "提交回答", exact: true });
+  assert.equal(await questionCard.getByRole("textbox").count(), 0, "Preset questions start with Other collapsed");
+  assert.equal(await questionCard.getByText("任一已授权设备的首次回答生效", { exact: true }).count(), 0);
+  await questionCard.getByRole("radio", { name: "其他", exact: true }).check();
+  const singleText = questionCard.getByRole("textbox", { name: "选择执行范围：其他回答", exact: true });
+  await singleText.fill("隔离目录");
   await questionCard.getByRole("radio", { name: /仅本机/u }).check();
+  assert.equal(await singleText.count(), 0, "Selecting a preset closes single-choice Other");
   await questionCard.getByRole("checkbox", { name: "类型检查", exact: true }).check();
   await questionCard.getByRole("checkbox", { name: "回归测试", exact: true }).check();
   await page.screenshot({ path: resolve(directory, "native-question.png"), fullPage: true });
-  await questionCard.getByRole("button", { name: "提交回答", exact: true }).click();
+  const multiOther = questionCard.getByRole("checkbox", { name: "其他", exact: true });
+  await multiOther.check();
+  assert.equal(await submit.isDisabled(), true, "Selected Other needs text even with other checks selected");
+  await questionCard.getByRole("textbox", { name: "选择检查项目：其他回答", exact: true }).fill("浏览器检查");
+  assert.equal(await submit.isEnabled(), true);
+  await page.screenshot({ path: resolve(directory, "native-question-other.png"), fullPage: true });
+  await multiOther.uncheck();
+  assert.equal(await questionCard.getByRole("textbox").count(), 0, "Unchecking Other closes the input");
+  await submit.click();
   const questionReply = await question.response;
   assert.equal(questionReply.decision, "once");
   assert.equal(questionReply.requestId, question.request.requestId);
@@ -306,6 +313,10 @@ export async function verifyNativePromptsPr(page, host, steps, directory, baseUr
   await openMobileSession(page);
   await page.getByRole("heading", { name: originalTitle, exact: true }).waitFor();
   const kinds = ["refusal-fallback", "auto-mode-server-fallback", "lanyard-consent", "violin-bow", "cwd-trust"];
+  // Freeze the entrance at a frame where the dialog overlaps the pending dock.
+  const freezeEntrance = await page.addStyleTag({ content: `
+    .m-sheet-backdrop, .m-sheet { animation-delay: -80ms; animation-play-state: paused; }
+  ` });
   const opened = [];
   for (const kind of kinds) {
     const update = await host.syncNativeDialogs(await host.nativeApproval.openPrompt(kind));
@@ -316,7 +327,30 @@ export async function verifyNativePromptsPr(page, host, steps, directory, baseUr
   assert.equal(host.snapshot.permissions.length, 0);
   const listed = await host.nativeApproval.controllerRequest({ kind: "request", requestId: randomUUID(), idempotencyKey: randomUUID(), method: "prompt.list", params: { sessionId } });
   assert.deepEqual(listed.prompts.map(prompt => prompt.kind).sort(), [...kinds].sort());
-  await page.screenshot({ path: resolve(directory, "native-prompts.png"), fullPage: true });
+  const promptSheet = page.getByRole("dialog", { name: "Claude 等待确认", exact: true });
+  const layout = await promptSheet.evaluate(sheet => {
+    const selector = sheet.querySelector('[role="combobox"]').getBoundingClientRect();
+    const description = sheet.querySelector(".native-prompt p").getBoundingClientRect();
+    const actions = sheet.querySelector(".native-prompt .permission-actions").getBoundingClientRect();
+    const dock = document.querySelector(".permission-dock").getBoundingClientRect();
+    const panel = sheet.getBoundingClientRect();
+    const pixel = document.createElement("canvas").getContext("2d");
+    pixel.fillStyle = getComputedStyle(sheet).backgroundColor;
+    pixel.fillRect(0, 0, 1, 1);
+    return {
+      backdropOpacity: Number(getComputedStyle(sheet.parentElement).opacity),
+      panelOpacity: Number(getComputedStyle(sheet).opacity),
+      fillOpacity: pixel.getImageData(0, 0, 1, 1).data[3] / 255,
+      coversDock: panel.top <= dock.top && panel.bottom >= dock.bottom,
+      descriptionBetweenControls: selector.bottom <= description.top && description.bottom <= actions.top,
+    };
+  });
+  assert.equal(layout.coversDock, true, "The entering Native prompt sheet overlaps the pending dock");
+  assert.deepEqual([layout.backdropOpacity, layout.panelOpacity, layout.fillOpacity], [1, 1, 1], "The sheet must hide the pending dock even during its entrance");
+  assert.equal(layout.descriptionBetweenControls, true, "Native prompt details sit between the selector and response buttons");
+  await freezeEntrance.evaluate(style => style.remove());
+  await page.screenshot({ path: resolve(directory, "native-prompts.png"), fullPage: true, animations: "disabled" });
+  steps.push("the Native prompt sheet is opaque during entrance and keeps the description between the selector and actions");
   const selected = ["edit_prompt", "interrupt", "consent_workspace", "cancel_native_operation", "trust"];
   const methods = ["respondToRefusalFallbackPrompt", "respondToAutoModeServerFallbackPrompt", "respondToLanyardConsent", "respondToViolinBowPrompt", "answerPendingCwdTrust"];
   for (const [index, prompt] of opened.entries()) {

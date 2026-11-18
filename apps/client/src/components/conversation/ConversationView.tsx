@@ -93,9 +93,11 @@ import { useConversationMenu, type ConversationMenuBindings } from "./useConvers
 import { useConversationScroll } from "./useConversationScroll.js";
 import { useConversationTasks } from "./useConversationTasks.js";
 import { useSessionFileDownload } from "./useSessionFileDownload.js";
+import { useAcknowledgeSessionCompletion } from "../session/useSeenSessionCompletions.js";
 
 export interface ConversationViewProps {
   variant?: "mobile" | "desktop" | undefined;
+  conversationTabLabel?: string | undefined;
   hostId: string;
   session: BridgeSessionInfo;
   sessions: BridgeSessionInfo[];
@@ -180,6 +182,7 @@ export interface ConversationViewProps {
 
 export function ConversationView({
   variant = "mobile",
+  conversationTabLabel = "对话",
   hostId,
   session,
   sessions,
@@ -272,6 +275,8 @@ export function ConversationView({
   const previousDraftKeyRef = useRef(draftKey);
 
   const effectiveSessionView = controlledSessionView ?? internalSessionView;
+  useAcknowledgeSessionCompletion(hostId, session,
+    visible && effectiveSessionView === "conversation" && (history?.status === "ready" || Boolean(history?.items.length)));
   function setSessionView(next: "conversation" | "evidence"): void {
     if (onSessionViewChange) onSessionViewChange(next);
     else setInternalSessionView(next);
@@ -1070,7 +1075,7 @@ export function ConversationView({
                   className={effectiveSessionView === "conversation" ? "active" : ""}
                   onClick={() => setSessionView("conversation")}
                 >
-                  对话
+                  {conversationTabLabel}
                 </button>
                 <button
                   type="button"

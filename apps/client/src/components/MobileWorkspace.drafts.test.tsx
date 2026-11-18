@@ -53,6 +53,7 @@ const hooks = vi.hoisted(() => ({
 
 vi.mock("react", async (original) => ({
   ...await original<typeof import("react")>(),
+  useSyncExternalStore: (_subscribe: unknown, getSnapshot: () => unknown) => getSnapshot(),
   useState(initial: any) {
     const index = hooks.index++;
     const slots = hooks.slots;
@@ -1944,15 +1945,25 @@ describe("native structured approvals", () => {
   it.each(["single", "multi", "open"] as const)("submits a %s text answer through the original question without sending chat", async mode => {
     const question = { question: "下一步怎么做？", multiSelect: mode === "multi", options: mode === "open" ? [] : [{ label: "先检查" }] };
     const permission: BridgePermissionInfo = { requestId: "text-answer", sessionId: "A", toolUseId: "text-tool", toolName: "AskUserQuestion", createdAt: 1, canAllowAlways: false, input: { questions: [question] } };
-    const onResolve = vi.fn().mockRejectedValueOnce(new Error("回答尚未提交")).mockResolvedValue(undefined);
+    const submission = deferred();
+    const onResolve = vi.fn().mockReturnValueOnce(submission.promise).mockResolvedValue(undefined);
     const child = PermissionPrompt({ permission, onResolve });
     hooks.slots = [];
     const drawQuestion = () => { hooks.index = 0; return (child.type as (props: unknown) => ReactElement)(child.props); };
-    if (mode !== "open") elements(drawQuestion()).find(element => element.type === "input" && element.props.type !== "text")!.props.onChange();
+    expect(elements(drawQuestion()).some(element => element.type === "input" && element.props.type === "text")).toBe(mode === "open");
+    if (mode !== "open") {
+      const choices = () => elements(drawQuestion()).filter(element => element.type === "input" && element.props.type !== "text");
+      if (mode === "multi") choices()[0]!.props.onChange();
+      choices().at(-1)!.props.onChange();
+      expect(elements(drawQuestion()).find(element => element.props.className === "primary-button")!.props.disabled).toBe(true);
+    }
     elements(drawQuestion()).find(element => element.type === "input" && element.props.type === "text")!.props.onChange({ target: { value: "  按修订意见继续  " } });
     expect(elements(drawQuestion()).find(element => element.props.className === "primary-button")!.props.disabled).toBe(false);
     elements(drawQuestion()).find(element => element.props.className === "primary-button")!.props.onClick();
-    for (let i = 0; i < 5; i++) await Promise.resolve();
+    expect(elements(drawQuestion()).find(element => element.type === "fieldset")!.props.disabled).toBe(true);
+    submission.reject(new Error("回答尚未提交"));
+    await settle();
+    expect(elements(drawQuestion()).find(element => element.type === "fieldset")!.props.disabled).toBe(false);
     expect(elements(drawQuestion()).find(element => element.props.role === "alert")?.props.children).toBe("回答尚未提交");
     expect(elements(drawQuestion()).find(element => element.type === "input" && element.props.type === "text")!.props.value).toBe("  按修订意见继续  ");
     elements(drawQuestion()).find(element => element.props.className === "primary-button")!.props.onClick();
@@ -1969,7 +1980,7 @@ describe("native structured approvals", () => {
     const drawQuestion = () => { hooks.index = 0; return (child.type as (props: unknown) => ReactElement)(child.props); };
     hooks.slots = [];
     let rendered = drawQuestion();
-    expect(elements(rendered).filter(element => element.type === "input").map(element => element.props.type)).toEqual(["checkbox", "checkbox", "text"]);
+    expect(elements(rendered).filter(element => element.type === "input").map(element => element.props.type)).toEqual(["checkbox", "checkbox", "checkbox"]);
     elements(rendered).filter(element => element.type === "input")[0]!.props.onChange();
     rendered = drawQuestion();
     elements(rendered).filter(element => element.type === "input")[1]!.props.onChange();
@@ -2272,7 +2283,8 @@ describe("mobile conversation draft ownership", () => {
       return questionTree;
     };
     drawPrompt();
-    elements(questionTree!).find((element) => element.type === "input")!.props.onChange();
+    elements(questionTree!).filter(element => element.type === "input" && element.props.type === "radio").at(-1)!.props.onChange();
+    elements(drawPrompt()).find(element => element.type === "input" && element.props.type === "text")!.props.onChange({ target: { value: "Release branch" } });
     drawPrompt();
     expect(elements(questionTree!).find((element) => element.props.className === "primary-button")!.props.disabled).toBe(false);
     const submitting = deferred();
@@ -2280,8 +2292,8 @@ describe("mobile conversation draft ownership", () => {
     elements(questionTree!).find((element) => element.props.className === "primary-button")!.props.onClick();
     props = { ...props, permissions: [{ ...first, requestId: "second", toolUseId: "tool-second" }] }; draw();
     drawPrompt();
-    expect(elements(questionTree!).filter((element) => element.type === "input" && element.props.type === "radio").map((element) => element.props.checked)).toEqual([false, false]);
-    expect(elements(questionTree!).find(element => element.type === "input" && element.props.type === "text")?.props.value).toBe("");
+    expect(elements(questionTree!).filter((element) => element.type === "input" && element.props.type === "radio").map((element) => element.props.checked)).toEqual([false, false, false]);
+    expect(elements(questionTree!).some(element => element.type === "input" && element.props.type === "text")).toBe(false);
     expect(elements(questionTree!).find((element) => element.props.className === "secondary-button")!.props.disabled).toBe(false);
     expect(elements(questionTree!).find((element) => element.props.className === "primary-button")!.props.disabled).toBe(true);
     submitting.reject(new Error("Previous answer failed")); await settle(); drawPrompt();

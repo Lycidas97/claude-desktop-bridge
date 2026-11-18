@@ -231,15 +231,6 @@ function writePersistedDrafts(
         }
       }
     }
-    if (historyChanged) {
-      // Keep the most recent explicit clears independently of text eviction.
-      const entries = [...clearHistory].slice(-MAX_DRAFT_CLEAR_RECORDS);
-      if (entries.length === 0) {
-        storage.removeItem(DRAFT_CLEAR_HISTORY_KEY);
-      } else {
-        storage.setItem(DRAFT_CLEAR_HISTORY_KEY, JSON.stringify(entries));
-      }
-    }
     if (draftsChanged) {
       const entries = [...drafts.values()]
         .sort((left, right) => right.updatedAt - left.updatedAt)
@@ -248,6 +239,15 @@ function writePersistedDrafts(
         storage.removeItem(CONVERSATION_DRAFTS_STORAGE_KEY);
       } else {
         storage.setItem(CONVERSATION_DRAFTS_STORAGE_KEY, JSON.stringify({ version: 1, entries }));
+      }
+    }
+    if (historyChanged) {
+      // Persist the text removal first so it can free space for the clear history.
+      const entries = [...clearHistory].slice(-MAX_DRAFT_CLEAR_RECORDS);
+      if (entries.length === 0) {
+        storage.removeItem(DRAFT_CLEAR_HISTORY_KEY);
+      } else {
+        storage.setItem(DRAFT_CLEAR_HISTORY_KEY, JSON.stringify(entries));
       }
     }
   } catch {

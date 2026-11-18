@@ -552,6 +552,34 @@ describe("ConversationDraftsProvider", () => {
     }
   });
 
+  it("removes a saved draft when storage has no space for the clear history", () => {
+    const initialText = "existing saved draft";
+    const key = JSON.stringify(["host-a", "sess-A"]);
+    const savedDrafts = JSON.stringify({ version: 1, entries: [{ key, text: initialText, updatedAt: 1 }] });
+    stored.set(CONVERSATION_DRAFTS_STORAGE_KEY, savedDrafts);
+    const quota = CONVERSATION_DRAFTS_STORAGE_KEY.length + savedDrafts.length;
+    vi.spyOn(localStorage, "setItem").mockImplementation((key, value) => {
+      const used = [...stored].reduce((size, [storedKey, storedValue]) => (
+        storedKey === key ? size : size + storedKey.length + storedValue.length
+      ), 0);
+      if (used + key.length + value.length > quota) {
+        throw new DOMException("Storage is full", "QuotaExceededError");
+      }
+      stored.set(key, value);
+    });
+
+    const session = renderProvider().session("host-a", "sess-A");
+    expect(session.draft.text).toBe(initialText);
+    session.setText("");
+
+    const reopenedStore = createStore();
+    try {
+      expect(renderProvider(reopenedStore).session("host-a", "sess-A").draft.text).toBe("");
+    } finally {
+      unmountStore(reopenedStore);
+    }
+  });
+
   it.each(["pagehide", "visibilitychange"])("flushes pending text immediately on %s", (event) => {
     vi.useFakeTimers();
     const page = new EventTarget();

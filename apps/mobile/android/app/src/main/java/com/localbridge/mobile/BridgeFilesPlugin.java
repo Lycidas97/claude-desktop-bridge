@@ -33,8 +33,12 @@ public class BridgeFilesPlugin extends Plugin {
             }
 
             Uri uri = FileProvider.getUriForFile(context, context.getPackageName() + ".fileprovider", file);
+            String mimeType = call.getString("mimeType");
+            if (mimeType == null || "application/octet-stream".equals(mimeType)) {
+                mimeType = context.getContentResolver().getType(uri);
+            }
             Intent view = new Intent(Intent.ACTION_VIEW)
-                .setDataAndType(uri, context.getContentResolver().getType(uri))
+                .setDataAndType(uri, mimeType)
                 .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
             getActivity().startActivity(Intent.createChooser(view, "选择打开方式")
                 .putExtra(Intent.EXTRA_AUTO_LAUNCH_SINGLE_CHOICE, false));

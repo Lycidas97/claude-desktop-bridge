@@ -14,7 +14,7 @@ type RequestArtifact = (
   options?: { wait?: boolean; timeoutMs?: number },
 ) => Promise<BridgeResponse | undefined>;
 
-const BridgeFiles = registerPlugin<{ openFile(options: { path: string }): Promise<void> }>("BridgeFiles");
+const BridgeFiles = registerPlugin<{ openFile(options: { path: string; mimeType: string }): Promise<void> }>("BridgeFiles");
 
 let activeDownloadsCount = 0;
 let activeDownloadsCachedBytes = 0;
@@ -38,10 +38,10 @@ function base64Bytes(value: string): Uint8Array {
   return bytes;
 }
 
-function safeFilename(value: string, preserveExtension: boolean): string {
+function safeFilename(value: string): string {
   const normalized = value.replace(/[\\/:*?"<>|\u0000-\u001f]/gu, "_").trim();
   const maxLength = 160;
-  if (preserveExtension && normalized.length > maxLength) {
+  if (normalized.length > maxLength) {
     const dot = normalized.lastIndexOf(".");
     if (dot > 0 && normalized.length - dot < maxLength) {
       const extension = normalized.slice(dot);
@@ -104,7 +104,7 @@ async function runArtifactTransfer(
   const transfer = opened.transfer;
   const chunks: Uint8Array[] = [];
   const native = Capacitor.getPlatform() === "android";
-  const filename = safeFilename(transfer.name, native);
+  const filename = safeFilename(transfer.name);
   const nativePath = `bridge-evidence/${transfer.transferId}/${filename}`;
   let nativeFileCreated = false;
   let transferCompleted = false;
@@ -142,7 +142,7 @@ async function runArtifactTransfer(
     if (await sha256Hex(chunks) !== transfer.sha256) throw new Error("成果完整性校验失败");
     transferCompleted = true;
     if (native) {
-      await BridgeFiles.openFile({ path: nativePath });
+      await BridgeFiles.openFile({ path: nativePath, mimeType: transfer.mimeType });
       return;
     }
     const blob = new Blob(

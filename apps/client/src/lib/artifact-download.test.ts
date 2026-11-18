@@ -31,12 +31,12 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-function downloadRequest(name = "report.docx") {
+function downloadRequest(name = "report.docx", mimeType = "application/octet-stream") {
   const transfer: BridgeArtifactTransferInfo = {
     transferId: "lease",
     artifactId: "report",
     name,
-    mimeType: "application/octet-stream",
+    mimeType,
     size: 3,
     sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
     chunkBytes: 3,
@@ -62,22 +62,33 @@ it.each([
   const path = `bridge-evidence/lease/${cacheName}`;
   expect(native.share).not.toHaveBeenCalled();
   expect(native.writeFile).toHaveBeenCalledWith({ path, directory: "CACHE", data: "YWJj", recursive: true });
-  expect(native.openFile).toHaveBeenCalledExactlyOnceWith({ path });
+  expect(native.openFile).toHaveBeenCalledExactlyOnceWith({ path, mimeType: "application/octet-stream" });
   expect(native.openFile).toHaveBeenCalledAfter(native.writeFile);
   expect(request).toHaveBeenLastCalledWith("artifact.transfer.close", { transferId: "lease" }, expect.anything());
 });
 
-it("downloads a browser file using a blob URL", async () => {
+it("passes the transfer MIME type for TypeScript downloads on Android", async () => {
+  native.platform = "android";
+  await downloadBridgeSessionFile("session", "main.ts", downloadRequest("main.ts", "text/plain"), vi.fn());
+
+  expect(native.openFile).toHaveBeenCalledExactlyOnceWith({
+    path: "bridge-evidence/lease/main.ts",
+    mimeType: "text/plain",
+  });
+});
+
+it("downloads a browser file using a blob URL and preserves its extension", async () => {
   native.platform = "web";
   vi.useFakeTimers();
   const createObjectURL = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:report");
   const anchor = { click: vi.fn(), download: "", href: "" };
   vi.stubGlobal("document", { createElement: () => anchor });
 
-  await downloadBridgeSessionFile("session", "report.docx", downloadRequest(), vi.fn());
+  const name = `${"x".repeat(160)}.docx`;
+  await downloadBridgeSessionFile("session", name, downloadRequest(name), vi.fn());
 
   expect(createObjectURL).toHaveBeenCalledExactlyOnceWith(expect.any(Blob));
-  expect(anchor).toMatchObject({ download: "report.docx", href: "blob:report" });
+  expect(anchor).toMatchObject({ download: `${"x".repeat(155)}.docx`, href: "blob:report" });
   expect(anchor.click).toHaveBeenCalledOnce();
   expect(native.openFile).not.toHaveBeenCalled();
 });

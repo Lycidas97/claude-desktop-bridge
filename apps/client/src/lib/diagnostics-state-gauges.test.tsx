@@ -733,16 +733,21 @@ describe("Frontend pull-based diagnostics state gauges & redaction", () => {
     await controller.previewArtifact("art-desk-1");
     renderBoth();
 
+    expect(collectDiagnosticsStateSnapshot().desktopConversations).toMatchObject({ trackedHosts: 2 });
     const desktopUploadAbort = new AbortController();
     const uploadPromise = controller.uploadFile("sess-1", { name: "secret-desktop-upload.txt", size: 128 } as File, () => undefined, desktopUploadAbort.signal);
+    // The third host appears only in the transfer table after switching back.
+    input.snapshot = makeDesktopSnapshot("host-secret-3");
+    renderBoth();
     const downloadPromise = controller.downloadSessionFile("sess-1", "/Users/secret-owner/private-repo/secret-desktop.txt");
     await flushMicrotasks();
+    input.snapshot = snapshot;
     renderBoth();
 
     try {
       const gauges = collectDiagnosticsStateSnapshot();
       expect(gauges.desktopConversations).toEqual({
-        trackedHosts: 2,
+        trackedHosts: 3,
         totalBufferedEvents: 3,
         maxEventsPerHost: 2,
         historiesCached: 1,
@@ -759,6 +764,12 @@ describe("Frontend pull-based diagnostics state gauges & redaction", () => {
       releaseDownload();
       await Promise.all([uploadPromise, downloadPromise]);
     }
+    renderBoth();
+    expect(collectDiagnosticsStateSnapshot().desktopConversations).toMatchObject({
+      trackedHosts: 3,
+      artifactTransfersCount: 0,
+      activeUploads: 0,
+    });
 
     unmountStore(consumerStore);
     expect(collectDiagnosticsStateSnapshot()).toHaveProperty("desktopConversations");

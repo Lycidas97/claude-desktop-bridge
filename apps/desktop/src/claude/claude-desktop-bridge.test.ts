@@ -1990,6 +1990,40 @@ describe("Claude native relay", () => {
     }
   });
 
+  it("merges effort declarations by gateway route across context variants", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-effort-catalog-"));
+    const state = new ConversationStateStore({ databasePath: join(root, "state.sqlite") });
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"));
+    await state.initialize();
+    await eventLog.initialize();
+    const settingsPath = join(root, "settings.json");
+    const retired = `magpie-${magpieModelIdHash("group/retired")}.anthropic.claude-opus-5-5`;
+    const bridge = new ClaudeDesktopBridge({
+      settingsPath, eventLog, conversationState: state, inspector: new NativeDesktop(), home: root, environment: {},
+      fetchImpl: async () => Response.json({ data: [
+        { id: "group/runner", max_input_tokens: 200_000, reasoning_levels: ["ultra"] },
+        { id: "claude/claude-opus-5-5", reasoning_levels: ["low", "ultra"] },
+      ] }),
+    });
+    try {
+      await writeFile(settingsPath, JSON.stringify({
+        env: { ANTHROPIC_BASE_URL: "https://catalog.example.test" },
+        modelPicker: { options: [{ model: "group/runner[1m]", label: "Runner 1M" }, { model: retired, label: "Retired" }] },
+      }));
+      await bridge.initialize();
+      const { availableModels } = await bridge.defaultConfiguration();
+      const runner = availableModels.find(model => model.value === "group/runner[1m]");
+      expect.soft(runner).toMatchObject({ displayName: "Runner 1M", supportsEffort: false, declaredEffortLevels: ["ultra"] });
+      expect.soft(runner).not.toHaveProperty("maxInputTokens", 200_000);
+      expect.soft(availableModels.find(model => model.value === retired)).not.toHaveProperty("declaredEffortLevels");
+    } finally {
+      await bridge.close();
+      await eventLog.close();
+      state.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("opens the latest native history while the model catalog request is pending", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-open-catalog-"));
     const state = new ConversationStateStore({ databasePath: join(root, "state.sqlite") });

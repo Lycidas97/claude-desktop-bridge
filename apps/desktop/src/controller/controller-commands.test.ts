@@ -143,6 +143,14 @@ it.each(["default", "acceptEdits", "bypassPermissions", "plan", "dontAsk", "auto
   expect(configureSession).toHaveBeenCalledExactlyOnceWith({ sessionId: "native", permissionMode });
 });
 
+it.each(["ultra", "none"])("explains why effort %s cannot be applied by Desktop", async effort => {
+  const configureSession = vi.fn();
+  const controller = createControllerFixture({ broker: { configureSession } });
+  await expect(controller.handleRequest({ kind: "request", method: "session.configure", requestId: "configure", idempotencyKey: "configure",
+    params: { sessionId: "native", effort } }, "mobile")).rejects.toThrow(`Claude Desktop does not support effort ${JSON.stringify(effort)}`);
+  expect(configureSession).not.toHaveBeenCalled();
+});
+
 it.each(["full-access", "unknown", "", null, 1])("rejects invalid native session permission mode %j", async permissionMode => {
   const configureSession = vi.fn();
   const controller = createControllerFixture({ broker: { configureSession } });

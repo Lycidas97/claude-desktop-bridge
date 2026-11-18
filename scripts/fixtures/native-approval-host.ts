@@ -353,6 +353,10 @@ export async function startNativeApprovalHost(options: {
   const eventLog = new SessionEventLog(join(options.directory, "native-events.jsonl"));
   await eventLog.initialize();
   const broker = new ClaudeDesktopBridge({ eventLog, conversationState: state, inspector, settingsPath,
+    home: commandHome, environment: { ANTHROPIC_BASE_URL: "https://fixture.invalid", ANTHROPIC_AUTH_TOKEN: "synthetic" },
+    fetchImpl: async (input) => new URL(String(input)).pathname === "/v1/models"
+      ? Response.json({ data: [{ id: "synthetic-model", supported_reasoning_levels: ["none", "low", "high", "ultra"] }] })
+      : new Response(null, { status: 404 }),
     scanCatalog: async () => ({ projects: [], sessions: [], observedAt: Date.now() }),
   });
   await broker.initialize();

@@ -2,9 +2,11 @@ import { randomUUID } from "node:crypto";
 import { EventEmitter, on } from "node:events";
 import { basename, isAbsolute } from "node:path";
 import {
+  BRIDGE_EFFORT_LEVELS,
   CLAUDE_UNSECTIONED_PROJECT_ID,
   CLAUDE_UNSECTIONED_PROJECT_NAME,
   DEFAULT_CONFIGURATION_SESSION_ID,
+  isBridgeEffort,
   type BridgeAttachment, type BridgeBackgroundTask, type BridgeEffort, type BridgeHistoryItem, type BridgeHistoryPage, type BridgeModelInfo, type BridgeNativeImageRef, type BridgeNativePermissionMode, type BridgeNativePermissionModeChange, type BridgeOrigin,
   type BridgePendingPrompt, type BridgePermissionDecision, type BridgePermissionInfo, type BridgePrAutoFixState, type BridgePrAutoFixUpdate, type BridgeProjectInfo, type BridgePullRequest, type BridgeRuntimeCapability,
   type BridgeRuntimeStatus, type BridgeSDKPermissionMode, type BridgeSessionCommandResult,
@@ -159,6 +161,7 @@ function nativeSession(value: unknown): NativeSession {
   if (typeof session.sessionId !== "string" || typeof session.cwd !== "string") throw new NativeCallError("Desktop returned an invalid session");
   return {
     ...session,
+    effort: isBridgeEffort(session.effort) ? session.effort : undefined,
     outputStyle: typeof session.outputStyle === "string" ? session.outputStyle : undefined,
     availableOutputStyles: Array.isArray(session.availableOutputStyles) ? outputStyleNames(session.availableOutputStyles) : undefined,
     prs: nativePullRequests(session.prs),
@@ -179,22 +182,23 @@ function mergeModelCatalog(
 ): BridgeModelInfo[] | undefined {
   if (!discovered?.length) return saved;
   if (!saved?.length) return discovered;
-  const findDiscovered = (option: BridgeModelInfo): BridgeModelInfo | undefined => {
+  const merged = saved.map((option) => {
     const longContext = /\[1m\]$/iu.test(option.value);
     const hash = modelOptionHash(option.value);
     const slug = normalizeAnthropicModelSlug(option.value);
-    return discovered.find(item => item.value === option.value)
-      ?? discovered.find(item => modelOptionHash(item.value) === hash && /\[1m\]$/iu.test(item.value) === longContext)
-      ?? (slug ? discovered.find(item => normalizeAnthropicModelSlug(item.value) === slug && /\[1m\]$/iu.test(item.value) === longContext) : undefined);
-  };
-  const merged = saved.map((option) => {
-    const match = findDiscovered(option);
-    if (!match) return option;
+    const sameRoute = (item: BridgeModelInfo) => modelOptionHash(item.value) === hash;
+    const sameContext = (item: BridgeModelInfo) => /\[1m\]$/iu.test(item.value) === longContext;
+    const match = discovered.find(item => item.value === option.value)
+      ?? discovered.find(item => sameRoute(item) && sameContext(item));
+    // Effort belongs to the gateway route. Context capacity still requires a matching variant.
+    const effort = match ?? discovered.find(sameRoute);
+    const capacity = match ?? (slug ? discovered.find(item => sameContext(item) && normalizeAnthropicModelSlug(item.value) === slug) : undefined);
     return {
       ...option,
-      ...(match.maxInputTokens ? { maxInputTokens: match.maxInputTokens } : {}),
-      ...(match.supportsEffort !== undefined ? { supportsEffort: match.supportsEffort } : {}),
-      ...(match.supportedEffortLevels?.length ? { supportedEffortLevels: match.supportedEffortLevels } : {}),
+      ...(capacity?.maxInputTokens ? { maxInputTokens: capacity.maxInputTokens } : {}),
+      ...(effort?.supportsEffort !== undefined ? { supportsEffort: effort.supportsEffort } : {}),
+      ...(effort?.supportedEffortLevels?.length ? { supportedEffortLevels: effort.supportedEffortLevels } : {}),
+      ...(effort?.declaredEffortLevels ? { declaredEffortLevels: effort.declaredEffortLevels } : {}),
     };
   });
   // Keep saved picker context choices authoritative so Desktop's base -> 1M preference check stays intact; append only models absent from settings.json.
@@ -1260,7 +1264,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
       ...(styles.length ? { availableOutputStyles: styles } : {}),
       modelSource: "claude-desktop", effortSource: "claude-desktop",
       availableModels,
-      availableEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+      availableEffortLevels: [...BRIDGE_EFFORT_LEVELS],
       modelsComplete: this.models !== undefined, appliesAfterTurn: false,
     };
   }
@@ -1304,7 +1308,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
             ...(resolved.extraOption && !this.models.some(option => option.value === resolved.extraOption!.value) ? [resolved.extraOption] : []),
           ]
         : resolved.configModel ? [{ value: resolved.configModel, displayName: fallbackLabel }] : [],
-      availableEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+      availableEffortLevels: [...BRIDGE_EFFORT_LEVELS],
       modelsComplete: this.models !== undefined, appliesAfterTurn: native.turnRunning === true,
       ...(context ? { context } : {}),
     };

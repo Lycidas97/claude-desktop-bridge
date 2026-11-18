@@ -1,0 +1,58 @@
+flowchart TB
+    subgraph Owners["稳定父级：位于页面与助理子视图的卸载边界之外"]
+        Drafts["草稿与附件状态<br/>按 hostId + sessionId 隔离<br/>文字 · 图片 · 上传 · 发送状态"]
+    end
+
+    subgraph Platforms["平台壳与数据适配"]
+        MobileShell["手机壳<br/>导航 · 返回键 · 页面布局"]
+        DesktopShell["桌面壳<br/>导航 · 侧栏 · 多栏布局"]
+        MobileAdapter["手机适配<br/>现有 useMobileBridge 状态与动作"]
+        DesktopAdapter["桌面适配<br/>现有 apiRequest 与加载状态"]
+    end
+
+    subgraph Pages["页面：选择或绑定会话"]
+        Sessions["普通会话页<br/>会话目录 + 选中的 sessionId"]
+        Assistant["AssistantPage<br/>绑定的 sessionId<br/>对话 / 邮件 / 设置"]
+        Future["未来业务页面<br/>接入平台导航<br/>需要对话时组合共享视图"]
+    end
+
+    Contract["明确的显示与动作契约<br/>投影后的条目 · 加载状态 · 必要动作<br/>提交保留 requestId"]
+
+    subgraph Shared["共享对话边界"]
+        View["ConversationView<br/>接收 sessionId、数据、动作与必要插槽"]
+        Stream["消息流与直接交互<br/>共享消息叶子 · 工具 · 任务 · 权限 / prompt<br/>不确定投递 · 稳定滚动锚点"]
+        Composer["Composer<br/>草稿 · 附件 · 命令 · 提交 / 回执"]
+    end
+
+    Projection["现有时间线纯函数<br/>保留两端投影差异<br/>邮件按原生消息关联替换，未关联时再插入"]
+
+    subgraph Business["助理业务层"]
+        Provider["AssistantMailProvider<br/>邮件分页 · 缓存 · 绑定"]
+        MailUI["MailCard / MailReference<br/>通过具体组件或必要插槽组合"]
+    end
+
+    MobileShell --> Sessions
+    MobileShell --> Assistant
+    DesktopShell --> Sessions
+    DesktopShell --> Assistant
+    MobileShell -.-> Future
+    DesktopShell -.-> Future
+
+    MobileAdapter --> Contract
+    DesktopAdapter --> Contract
+    Projection --> Contract
+    Contract --> View
+
+    Sessions -->|"组合"| View
+    Assistant -->|"组合"| View
+    Future -. "组合" .-> View
+    Drafts --> Composer
+    View --> Stream
+    View --> Composer
+
+    Assistant --> Provider
+    Provider --> MailUI
+    MailUI -->|"组合"| View
+
+    classDef future stroke-dasharray:5 5;
+    class Future future;

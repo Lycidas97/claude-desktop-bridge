@@ -1,0 +1,2312 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Bridge v3 个人助理 UI 原型（严格复刻本体样式体系）</title>
+  <script src="https://www.gstatic.com/antigravity/web/dev/tailwindcss.min.js"></script>
+  <style>
+    /* =========================================================================
+       Verbatim Bridge v3 Design System Tokens & Layout Rules
+       Extracted directly from:
+       - apps/client/src/styles.css (Pure 2-Pane Flat Desktop, 740px stream, .interactive-prompt-card, .permission-dock, .evidence-panel, .composer-form)
+       - apps/client/src/mobile.css (Cardless Hairline Upper Pages, .mobile-home-catalog.is-flat-tree, .m-header, .m-sheet)
+       - apps/client/src/components/session/settings.css (.desktop-settings-shell, .settings-sections, .mobile-settings-row)
+       - apps/client/src/components/assistant/assistant-mail.css (.assistant-mail-card hairline rows)
+       Scoped on .b-app so host :root is untouched.
+       ========================================================================= */
+
+    .b-app {
+      --font-sans: "DM Sans", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+      --font-num: "Inter", "DM Sans", "PingFang SC", ui-sans-serif, system-ui, sans-serif;
+      --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      --font-scale: 1;
+      --r-btn: 7px;
+      --r-card: 10px;
+      --r-input: 14px;
+      --m-gutter: 16px;
+      --m-touch: 44px;
+      --m-row: 54px;
+      --m-r-control: 10px;
+      --m-r-group: 14px;
+      --m-r-sheet: 20px;
+      --t-fast: 140ms;
+      --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+
+      /* Sunstone Light (styles.css:19-89 + 8776) */
+      --bg: #f6f4f0;
+      --sidebar-fill: #f2efe9;
+      --surface: #ffffff;
+      --surface-2: rgba(58, 44, 32, 0.045);
+      --surface-3: rgba(58, 44, 32, 0.09);
+      --composer-fill: #ffffff;
+      --user-bubble: #ece7dc;
+      --m-sheet-fill: #f6f4f0;
+      --text: #231d16;
+      --muted: #6d6053;
+      --faint: #8d8071;
+      --line: rgba(62, 47, 33, 0.12);
+      --line-strong: rgba(62, 47, 33, 0.22);
+      --clay: #d97757;
+      --accent: var(--clay);
+      --accent-soft: #f6e7de;
+      --accent-ink: #a84d2e;
+      --warm: #b07a24;
+      --warm-soft: #f7ecd8;
+      --warm-ink: #8a5f14;
+      --danger: #c0392b;
+      --danger-soft: #f9e5e1;
+      --danger-ink: #a93226;
+      --success: #788c5d;
+      --success-ink: #5c6f45;
+      --card-fill: #ffffff;
+      --card-border: rgba(62, 47, 33, 0.09);
+      --btn-primary-bg: #a84d2e;
+      --btn-primary-hover: #93411f;
+      --btn-primary-text: #ffffff;
+      --scrim: rgba(46, 35, 25, 0.4);
+      --composer-shadow: 0 8px 28px rgba(28, 25, 21, 0.06), 0 1px 3px rgba(28, 25, 21, 0.03);
+
+      font-family: var(--font-sans);
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid var(--line-strong);
+      box-sizing: border-box;
+    }
+
+    /* Sunstone Dark (styles.css:96-151 + 8781 + mobile.css:28) */
+    .b-app[data-theme="dark"] {
+      --bg: #1b1a18;
+      --sidebar-fill: #141311;
+      --surface: #22211e;
+      --surface-2: #2b2926;
+      --surface-3: #35332f;
+      --composer-fill: #23221f;
+      --user-bubble: #2a2824;
+      --m-sheet-fill: #23221f;
+      --text: rgba(248, 246, 241, 0.94);
+      --muted: rgba(242, 238, 230, 0.68);
+      --faint: rgba(242, 238, 230, 0.56);
+      --line: rgba(255, 255, 255, 0.09);
+      --line-strong: rgba(255, 255, 255, 0.17);
+      --clay: #e0885f;
+      --accent: var(--clay);
+      --accent-soft: rgba(224, 136, 95, 0.16);
+      --accent-ink: #e5936c;
+      --warm: #d9a45b;
+      --warm-soft: rgba(197, 138, 46, 0.16);
+      --warm-ink: #e2b067;
+      --danger: #e57368;
+      --danger-soft: rgba(192, 57, 43, 0.17);
+      --danger-ink: #ef8479;
+      --success: #93a878;
+      --success-ink: #a2ba86;
+      --card-fill: #22211e;
+      --card-border: rgba(255, 255, 255, 0.09);
+      --btn-primary-bg: #e0885f;
+      --btn-primary-hover: #e99b77;
+      --btn-primary-text: #241309;
+      --scrim: rgba(0, 0, 0, 0.52);
+      --composer-shadow: 0 10px 32px rgba(0, 0, 0, 0.38), 0 1px 3px rgba(0, 0, 0, 0.25);
+    }
+
+    /* Apple Light (styles.css:6570-6651 + 8787) */
+    .b-app[data-theme-family="apple"][data-theme="light"] {
+      --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", system-ui, sans-serif;
+      --bg: #f2f2f7;
+      --sidebar-fill: #f4f4f6;
+      --surface: #ffffff;
+      --surface-2: rgba(118, 118, 128, 0.12);
+      --surface-3: rgba(118, 118, 128, 0.2);
+      --composer-fill: #ffffff;
+      --user-bubble: #ebebf0;
+      --m-sheet-fill: #f2f2f7;
+      --text: #1d1d1f;
+      --muted: #636366;
+      --faint: #6b6b70;
+      --line: rgba(60, 60, 67, 0.12);
+      --line-strong: rgba(60, 60, 67, 0.24);
+      --clay: #007aff;
+      --accent: #007aff;
+      --accent-soft: rgba(0, 122, 255, 0.1);
+      --accent-ink: #0055b3;
+      --warm: #ff9500;
+      --warm-soft: rgba(255, 149, 0, 0.12);
+      --warm-ink: #9a4a00;
+      --danger: #ff3b30;
+      --danger-soft: rgba(255, 59, 48, 0.1);
+      --danger-ink: #d70015;
+      --success: #34c759;
+      --success-ink: #1e7b34;
+      --card-fill: #ffffff;
+      --card-border: rgba(60, 60, 67, 0.08);
+      --btn-primary-bg: #0071e3;
+      --btn-primary-hover: #0066d6;
+      --btn-primary-text: #ffffff;
+      --r-btn: 8px;
+      --r-card: 13px;
+      --scrim: rgba(0, 0, 0, 0.36);
+    }
+
+    /* Apple Dark (styles.css:6654-6710 + 8792) */
+    .b-app[data-theme-family="apple"][data-theme="dark"] {
+      --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", system-ui, sans-serif;
+      --bg: #1c1c1e;
+      --sidebar-fill: #141416;
+      --surface: #242426;
+      --surface-2: #2f2f32;
+      --surface-3: #3c3c40;
+      --composer-fill: #242426;
+      --user-bubble: #2c2c2e;
+      --m-sheet-fill: #242426;
+      --text: #f5f5f7;
+      --muted: rgba(235, 235, 245, 0.68);
+      --faint: rgba(235, 235, 245, 0.58);
+      --line: rgba(84, 84, 88, 0.55);
+      --line-strong: rgba(120, 120, 128, 0.7);
+      --clay: #0a84ff;
+      --accent: #0a84ff;
+      --accent-soft: rgba(10, 132, 255, 0.16);
+      --accent-ink: #52a8ff;
+      --warm: #ff9f0a;
+      --warm-soft: rgba(255, 159, 10, 0.14);
+      --warm-ink: #ffb340;
+      --danger: #ff453a;
+      --danger-soft: rgba(255, 69, 58, 0.14);
+      --danger-ink: #ff7b73;
+      --success: #30d158;
+      --success-ink: #38d962;
+      --card-fill: #242426;
+      --card-border: rgba(255, 255, 255, 0.07);
+      --btn-primary-bg: #0a84ff;
+      --btn-primary-hover: #2997ff;
+      --btn-primary-text: #ffffff;
+      --r-btn: 8px;
+      --r-card: 13px;
+      --scrim: rgba(0, 0, 0, 0.52);
+    }
+
+    .b-app *, .b-app *::before, .b-app *::after { box-sizing: border-box; }
+    /* :where 保持零特异性，避免覆盖 .text-link-btn / .send-button 自己的字号与颜色 */
+    :where(.b-app) :where(button, input, textarea, select) { font: inherit; color: inherit; }
+    .b-app button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    /* 状态条：离线 / 会话不可用 / 需重新绑定 / 认证失败（复用 .permission-dock 的扁平横条几何） */
+    .assistant-status-line {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 14px;
+      padding: 9px 12px;
+      border-radius: 9px;
+      background: var(--surface-2);
+      color: var(--muted);
+      font-size: 12.5px;
+      line-height: 1.5;
+    }
+    .assistant-status-line.is-warn { background: var(--warm-soft); color: var(--warm-ink); }
+    .assistant-status-line.is-danger { background: var(--danger-soft); color: var(--danger-ink); }
+    .assistant-status-line > span { flex: 1; min-width: 0; }
+    .assistant-status-line .text-link-btn { color: inherit; font-weight: 650; }
+    .mail-domain-mismatch { padding: 0 3px; border-radius: 4px; background: var(--danger-soft); color: var(--danger-ink); font-weight: 700; }
+    .skeleton-line { height: 11px; border-radius: 6px; background: var(--surface-2); }
+    .composer-form.is-disabled { opacity: 0.55; }
+
+    /* ---- Pure 2-Pane Flat Desktop Layout (styles.css:8821-8997) ---- */
+    .desktop-session-layout {
+      display: grid;
+      width: 100%;
+      height: 680px;
+      grid-template-columns: 260px minmax(0, 1fr);
+      background: var(--bg);
+    }
+    .desktop-session-layout.is-sidebar-collapsed { grid-template-columns: minmax(0, 1fr); }
+
+    .desktop-session-sidebar {
+      display: flex;
+      min-width: 0;
+      min-height: 0;
+      flex-direction: column;
+      border-right: 1px solid var(--line);
+      background: var(--sidebar-fill);
+    }
+    .desktop-sidebar-heading {
+      display: flex;
+      min-height: 48px;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 10px 6px 14px;
+    }
+    .m-status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex: none; display: inline-block; }
+    .m-status-dot.is-online { background: var(--success); }
+
+    .sidebar-assistant-row {
+      display: flex;
+      width: 100%;
+      min-height: 34px;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 6px 10px;
+      border: 0;
+      border-radius: 8px;
+      background: transparent;
+      font-size: 13px;
+      font-weight: 560;
+      cursor: pointer;
+    }
+    .sidebar-assistant-row:hover { background: color-mix(in srgb, var(--text) 5.5%, transparent); }
+    .sidebar-assistant-row.active {
+      background: color-mix(in srgb, var(--text) 8.5%, transparent);
+      font-weight: 620;
+    }
+    .session-search {
+      display: flex;
+      min-height: 34px;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 10px;
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--text) 5.2%, transparent);
+      color: var(--muted);
+      font-size: 12.5px;
+    }
+    .flat-session-row {
+      display: flex;
+      width: 100%;
+      min-height: 34px;
+      align-items: center;
+      padding: 6px 8px 6px 20px;
+      border: 0;
+      border-radius: 8px;
+      background: transparent;
+      font-size: 13px;
+      text-align: left;
+      cursor: pointer;
+      color: var(--text);
+    }
+    .flat-session-row:hover { background: color-mix(in srgb, var(--text) 5.5%, transparent); }
+    .flat-session-row.active { background: color-mix(in srgb, var(--text) 8.5%, transparent); font-weight: 600; }
+
+    /* ---- Single Unified Header (.m-header, styles.css:9503 + mobile.css:502) ---- */
+    .m-header {
+      display: flex;
+      flex: none;
+      min-height: 56px;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 8px 6px 4px;
+      border-bottom: 1px solid var(--line);
+      background: var(--bg);
+    }
+    .m-header.is-embedded {
+      min-height: 52px;
+      gap: 10px;
+      padding: 0 18px 0 14px;
+    }
+    .m-header-copy { display: flex; flex: 1; min-width: 0; align-items: center; gap: 10px; }
+    .m-header h1 { margin: 0; font-size: 15px; font-weight: 620; letter-spacing: -0.01em; white-space: nowrap; }
+    .m-header.is-mobile h1 { font-size: 16.5px; font-weight: 650; }
+    .m-host-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 4px 7px;
+      border: 0;
+      border-radius: 7px;
+      background: transparent;
+      color: var(--muted);
+      font-size: 12.5px;
+      cursor: pointer;
+    }
+    .m-host-chip:hover { background: var(--surface-2); color: var(--text); }
+
+    .icon-button {
+      display: inline-grid;
+      width: 32px;
+      height: 32px;
+      padding: 0;
+      border: 0;
+      border-radius: 7px;
+      place-items: center;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+    }
+    .icon-button:hover, .icon-button.active { background: var(--surface-2); color: var(--text); }
+    .m-header.is-mobile .icon-button { width: 40px; height: 40px; color: var(--text); }
+
+    /* ---- Inline Compact Pill Switch (.desktop-session-view-switch, styles.css:9586) ---- */
+    .view-switch {
+      display: inline-flex;
+      min-height: 30px;
+      align-items: center;
+      gap: 2px;
+      padding: 2px;
+      border-radius: 8px;
+      background: var(--surface-2);
+    }
+    .view-switch > button {
+      display: inline-flex;
+      min-height: 26px;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 10px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 520;
+      white-space: nowrap;
+      cursor: pointer;
+    }
+    .view-switch > button:hover:not(.active) { color: var(--text); }
+    .view-switch > button.active {
+      background: var(--card-fill);
+      color: var(--text);
+      font-weight: 600;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+    }
+    .view-switch > button > b {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    /* ---- Centered 740px Stream & Cardless Hairline Panels (styles.css:8094 + 9635) ---- */
+    .centered-scroll-stage {
+      flex: 1 1 0;
+      min-height: 0;
+      overflow-y: auto;
+      background: var(--bg);
+      padding: 18px max(24px, calc((100% - 740px) / 2)) 18px;
+    }
+    .centered-scroll-stage.is-mobile {
+      padding: 14px 16px 20px;
+    }
+
+    /* Hairline Section Header & Flat 1px Hairline Rows (ZERO outer card boxes!) */
+    .settings-hairline-heading {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 0 2px 9px;
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+    }
+    .mobile-settings-row {
+      padding: 14px 2px;
+      border: 0;
+      border-bottom: 1px solid var(--line);
+      border-radius: 0;
+      background: transparent;
+    }
+
+    /* ---- Permission / Pending Proposal Dock Banner (styles.css:3135) ---- */
+    .permission-dock-wrap { flex: none; padding: 10px max(24px, calc((100% - 740px) / 2)) 0; background: var(--bg); }
+    .permission-dock-wrap.is-mobile { padding: 8px 16px 0; }
+    .permission-dock {
+      display: grid;
+      width: 100%;
+      min-height: 46px;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 10px;
+      padding: 7px 11px;
+      border: 1px solid color-mix(in srgb, var(--warm) 36%, var(--line));
+      border-radius: 9px;
+      background: var(--warm-soft);
+      color: var(--text);
+      text-align: left;
+      cursor: pointer;
+    }
+    .permission-dock-icon {
+      display: grid;
+      width: 32px;
+      height: 32px;
+      place-items: center;
+      border-radius: 7px;
+      background: color-mix(in srgb, var(--warm) 16%, transparent);
+      color: var(--warm);
+    }
+
+    /* ---- Conversation Items: User Bubble, Mail Card, Interactive Proposal Card ---- */
+    .conversation-bubble {
+      max-width: min(80%, 560px);
+      padding: 11px 16px;
+      border: 0;
+      border-radius: 18px;
+      background: var(--user-bubble);
+      color: var(--text);
+      font-size: 14.5px;
+      line-height: 1.55;
+    }
+    .assistant-prose {
+      font-size: 14.5px;
+      line-height: 1.7;
+      color: var(--text);
+    }
+    .is-mobile .assistant-prose, .is-mobile .conversation-bubble { font-size: 15.5px; }
+
+    /* Inline Stream Card (styles.css:7627 .interactive-prompt-card) */
+    .interactive-prompt-card {
+      display: grid;
+      gap: 10px;
+      margin-top: 10px;
+      padding: 13px 14px;
+      border: 1px solid var(--line);
+      border-radius: var(--r-card);
+      background: var(--surface);
+    }
+    .interactive-prompt-card.is-pending {
+      border-color: color-mix(in srgb, var(--accent) 48%, var(--line));
+      background: color-mix(in srgb, var(--accent-soft) 28%, var(--surface));
+    }
+    .interactive-prompt-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 650;
+      background: var(--accent-soft);
+      color: var(--accent-ink);
+    }
+    .interactive-prompt-badge.done {
+      background: var(--surface-2);
+      color: var(--muted);
+    }
+
+    /* Buttons (styles.css:284-332 + mobile.css:1693) */
+    .primary-button, .secondary-button {
+      display: inline-flex;
+      min-height: 34px;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 5px 13px;
+      border-radius: var(--r-btn);
+      font-size: 13px;
+      font-weight: 620;
+      cursor: pointer;
+    }
+    .primary-button {
+      border: 1px solid transparent;
+      background: var(--btn-primary-bg);
+      color: var(--btn-primary-text);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+    }
+    .primary-button:hover { background: var(--btn-primary-hover); }
+    .secondary-button {
+      border: 1px solid var(--line);
+      background: var(--surface);
+      color: var(--text);
+    }
+    .secondary-button:hover { background: var(--surface-2); }
+
+    .text-link-btn {
+      padding: 2px 0;
+      border: 0;
+      background: transparent;
+      color: var(--accent-ink);
+      font-size: 13px;
+      font-weight: 560;
+      cursor: pointer;
+    }
+    .text-link-btn:hover { text-decoration: underline; }
+
+    /* ---- Persistent Bottom Floating Composer (styles.css:8396-8765) ---- */
+    .composer-wrap {
+      flex: none;
+      padding: 4px 24px 16px;
+      background: var(--bg);
+    }
+    .composer-wrap.is-mobile { padding: 4px 14px 14px; }
+    .composer-inner {
+      width: 100%;
+      max-width: 740px;
+      margin: 0 auto;
+      position: relative;
+    }
+    .composer-form {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 10px 12px 9px 14px;
+      border: 1px solid var(--line-strong);
+      border-radius: 18px;
+      background: var(--composer-fill);
+      box-shadow: var(--composer-shadow);
+    }
+    .composer-attach-trigger {
+      display: inline-grid;
+      width: 30px;
+      height: 30px;
+      place-items: center;
+      border: 0;
+      border-radius: 999px;
+      background: var(--surface-2);
+      color: var(--muted);
+      cursor: pointer;
+    }
+    .composer-attach-trigger:hover { background: var(--surface-3); color: var(--text); }
+    .send-button {
+      display: inline-grid;
+      width: 30px;
+      height: 30px;
+      place-items: center;
+      border: 0;
+      border-radius: 50%;
+      background: var(--text);
+      color: var(--bg);
+      cursor: pointer;
+    }
+    .session-context-pill {
+      display: inline-flex;
+      min-height: 26px;
+      align-items: center;
+      padding: 3px 8px;
+      border-radius: 6px;
+      background: var(--surface-2);
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      font-weight: 550;
+    }
+
+    /* Mail Reference Banner (assistant-mail.css:161) */
+    .assistant-mail-reference {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 8px;
+      padding: 8px 12px;
+      border-left: 3px solid var(--accent-ink);
+      background: var(--surface);
+      font-size: 12.5px;
+    }
+
+    /* ---- Mobile Layer-1 Home Session Catalog (mobile.css:79-490) ---- */
+    .mobile-drawer-topbar {
+      display: flex;
+      min-height: 52px;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 8px 10px 6px 12px;
+    }
+    .drawer-host-switcher {
+      display: inline-flex;
+      min-height: 38px;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 11px;
+      border: 0;
+      border-radius: 9px;
+      background: color-mix(in srgb, var(--text) 5.5%, transparent);
+      font-size: 14.5px;
+      font-weight: 620;
+      cursor: pointer;
+    }
+    .drawer-assistant-capsule {
+      display: inline-flex;
+      flex: 1 1 auto;
+      min-height: 38px;
+      align-items: center;
+      gap: 7px;
+      padding: 7px 11px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: var(--surface-2);
+      font-size: 14px;
+      font-weight: 580;
+      cursor: pointer;
+    }
+
+    /* ---- Desktop 2-Column Flat Settings Shell (settings.css:34-108) ---- */
+    .desktop-settings-shell {
+      display: grid;
+      width: min(100%, 820px);
+      margin: 0 auto;
+      grid-template-columns: 148px minmax(0, 1fr);
+      gap: 32px;
+      align-items: start;
+    }
+    .settings-sections button {
+      display: flex;
+      width: 100%;
+      min-height: 34px;
+      align-items: center;
+      padding: 7px 11px;
+      border: 0;
+      border-radius: 8px;
+      background: transparent;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      text-align: left;
+    }
+    .settings-sections button.active {
+      background: color-mix(in srgb, var(--text) 9.5%, transparent);
+      color: var(--text);
+      font-weight: 600;
+    }
+
+    /* ---- Bottom Sheet (.m-sheet, mobile.css:774-875) ---- */
+    .m-sheet-backdrop {
+      position: absolute;
+      inset: 0;
+      z-index: 40;
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
+      background: var(--scrim);
+    }
+    .m-sheet-backdrop.is-desktop { align-items: center; padding: 24px; }
+    .m-sheet {
+      display: flex;
+      width: min(100%, 540px);
+      max-height: 84%;
+      flex-direction: column;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 20px 20px 0 0;
+      background: var(--m-sheet-fill);
+      box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.22);
+    }
+    .m-sheet-backdrop.is-desktop .m-sheet { border-radius: 20px; }
+
+    .b-scroll::-webkit-scrollbar { width: 5px; height: 5px; }
+    .b-scroll::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 999px; }
+  </style>
+</head>
+<body class="bg-[var(--background)] text-[var(--foreground)] antialiased p-3 space-y-3">
+  <!-- Viewer Controls -->
+  <div class="flex flex-wrap items-center justify-between gap-2 px-3.5 py-2.5 rounded-xl bg-[var(--card)] border border-[var(--border)] text-xs">
+    <div class="flex flex-wrap items-center gap-2">
+      <div class="inline-flex rounded-lg p-0.5 bg-[var(--background)] border border-[var(--border)]">
+        <button id="vp-desktop" onclick="setVp('desktop')" class="px-2.5 py-1 rounded-md cursor-pointer">桌面端（纯双栏 260px + 740px 无卡片画布）</button>
+        <button id="vp-mobile" onclick="setVp('mobile')" class="px-2.5 py-1 rounded-md cursor-pointer">手机端 375×812（无卡片发丝行 + 全屏提案页）</button>
+      </div>
+      <div class="inline-flex rounded-lg p-0.5 bg-[var(--background)] border border-[var(--border)]">
+        <button id="fam-sunstone" onclick="setFam('sunstone')" class="px-2.5 py-1 rounded-md cursor-pointer">Sunstone</button>
+        <button id="fam-apple" onclick="setFam('apple')" class="px-2.5 py-1 rounded-md cursor-pointer">Apple</button>
+      </div>
+      <label class="inline-flex items-center gap-1.5">
+        <span class="text-[var(--muted-foreground)]">场景</span>
+        <select id="scenario" onchange="setScenario(this.value)" class="px-2 py-1 rounded-md bg-[var(--background)] border border-[var(--border)] cursor-pointer">
+          <option value="normal">正常（已绑定 · 在线）</option>
+          <option value="uninit">未初始化（首屏）</option>
+          <option value="rebind">需重新绑定（原会话已归档）</option>
+          <option value="unavailable">会话暂不可用（断连 / 目录缺席）</option>
+          <option value="offline">电脑离线（显示缓存）</option>
+          <option value="loading">邮件同步中</option>
+          <option value="empty">收件与日程为空</option>
+          <option value="authfail">邮箱登录失效</option>
+        </select>
+      </label>
+    </div>
+    <div class="flex items-center gap-2">
+      <button onclick="resetAll()" class="px-2.5 py-1 rounded-md border border-[var(--border)] text-[var(--muted-foreground)] hover:text-[var(--foreground)] cursor-pointer">重置</button>
+      <button onclick="toggleTheme()" class="px-2.5 py-1 rounded-md bg-[var(--primary)] text-[var(--primary-foreground)] font-medium cursor-pointer">浅色 / 深色</button>
+    </div>
+  </div>
+
+  <div class="flex justify-center">
+    <div id="root-frame" class="b-app relative overflow-hidden shadow-xl" data-theme="dark" data-theme-family="sunstone"></div>
+  </div>
+
+  <script>
+    const ic = {
+      back: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>`,
+      sidebar: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/></svg>`,
+      mail: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>`,
+      search: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>`,
+      plus: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>`,
+      up: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg>`,
+      settings: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`,
+      refresh: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>`,
+      compose: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z"/></svg>`,
+      alert: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>`,
+      download: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></svg>`,
+      chevDown: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>`,
+      file: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg>`
+    };
+
+    const makeState = () => ({
+      vp: "desktop",
+      family: "sunstone",
+      scenario: "normal",
+      initializing: false,
+      dockVisible: false,
+      todoNotice: null, // { id, text }
+      theme: document.documentElement.classList.contains("light") ? "light" : "dark",
+
+      sidebarCollapsed: false,
+      desktopArea: "assistant", // 'assistant' | 'project'
+      projectTitle: "fix(desktop): prevent background-task catalog OOM",
+
+      // Shared Assistant Sub-view (centered 740px stage, persistent bottom composer!)
+      view: "conversation", // 'conversation' | 'proposals'（仅由待批提醒条进入）| 'mail' | 'agenda' | 'settings'
+      mobileScreen: "assistant", // 'home-catalog' | 'assistant' | 'proposals-page'
+      settingsSection: "accounts", // 'binding' | 'accounts'
+
+      mailAccountFilter: "all",
+      draftText: "",
+      mailRef: null, // { id, subject, accountUser }
+      attachOpen: false,
+      uploads: [], // [{ id, kind, name, size }]
+      sheetMailId: null,
+      previewFile: null,
+      editPropId: null,
+      editMode: "ai", // 'ai' (助理润色/重排，默认首选) | 'manual' (手动编辑兜底)
+      aiFeedback: "",
+      manualDraft: null,
+      confirmSendPropId: null,
+      addingAcc: false,
+
+      accounts: [
+        { key: "work", user: "lycidas@zju.edu.cn", host: "imap.zju.edu.cn", port: 993, enabled: true },
+        { key: "icloud", user: "lycidas@icloud.com", host: "imap.mail.me.com", port: 993, enabled: true }
+      ],
+
+      mails: [
+        {
+          id: "m-1",
+          accountKey: "work",
+          accountUser: "lycidas@zju.edu.cn",
+          subject: "关于周四下午合作协议终审与排期确认",
+          from: "陈明 <legal-notice@partner-corp.cn>",
+          replyTo: "reply-handler@external-service.cn",
+          time: "11/17 09:24",
+          status: "待处理",
+          preview: "附件附上《技术合作协议（修订版 v3）》，主要更新了第 4.2 条交付物归属说明。请问本周四下午 14:00 是否方便安排 45 分钟线上过一下终稿？",
+          analysis: "对方请求确认周四 14:00 线上核对第 4.2 条条款，含 1.4 MB PDF 附件。",
+          attachments: [
+            { id: "a-1", name: "技术合作协议_修订版_v3.pdf", mime: "application/pdf", bytes: 1480000, size: "1.4 MiB" },
+            { id: "a-2", name: "条款变更对照.txt", mime: "text/plain", bytes: 18400, size: "18.0 KiB" }
+          ]
+        },
+        {
+          id: "m-2",
+          accountKey: "icloud",
+          accountUser: "lycidas@icloud.com",
+          subject: "航班时刻调整通知 MU5108",
+          from: "东方航空 <no-reply@ceair.com>",
+          replyTo: null,
+          time: "11/17 08:40",
+          status: "待处理",
+          preview: "您预订的 11月23日 MU5108（上海虹桥 T2 -> 北京首都 T2）起飞时间调整为 10:15，预计到达 12:35。",
+          analysis: "航班顺延 35 分钟起飞，附电子行程单 PDF。",
+          attachments: [
+            { id: "a-3", name: "电子行程单_MU5108.pdf", mime: "application/pdf", bytes: 420000, size: "410.0 KiB" }
+          ]
+        }
+      ],
+
+      proposals: [
+        {
+          id: "p-1",
+          kind: "mail",
+          badge: "发信提案",
+          title: "回复陈明：确认周四 14:00–14:45 终审会议",
+          meta: "发件箱 lycidas@zju.edu.cn · To reply-handler@external-service.cn",
+          fromAccount: "lycidas@zju.edu.cn",
+          to: "reply-handler@external-service.cn",
+          subject: "Re: 关于周四下午合作协议终审与排期确认",
+          replyToMailId: "m-1",
+          cc: [],
+          warning: "回复地址和发件人不是同一个域名",
+          body: "陈老师您好，\n\n修订版 PDF 已收到。本周四（11月19日）下午 14:00–14:45 时间合适，我们届时线上核对第 4.2 条细节。\n\n祝好！",
+          rev: 1,
+          state: "pending"
+        },
+        {
+          id: "p-2",
+          kind: "calendar",
+          badge: "日程提案",
+          title: "新增日程：合作协议终稿核对（陈明）",
+          meta: "Apple 日历 · 无时段冲突",
+          eventTitle: "合作协议终稿核对（陈明）",
+          date: "2026-11-19",
+          startTime: "14:00",
+          endTime: "14:45",
+          calendarSource: "Apple 日历",
+          location: "线上会议（腾讯会议）",
+          notes: "核对《技术合作协议 v3》第 4.2 条交付物归属说明",
+          warning: null,
+          body: "2026-11-19（周四）14:00 – 14:45 · 线上会议（腾讯会议）\n备注：核对《技术合作协议 v3》第 4.2 条交付物归属说明",
+          rev: 1,
+          state: "pending"
+        }
+      ],
+
+      events: [
+        { id: "e-1", time: "今日 10:30 – 11:15", title: "产品周例会", meta: "Apple 日历 · 线上会议" },
+        { id: "e-2", time: "今日 16:00 – 17:30", title: "实验室秋季组会", meta: "工作日历 · 曹光彪楼 302" }
+      ],
+
+      todos: [
+        { id: "t-1", title: "审阅《技术合作协议 v3》第 4.2 条附件", meta: "周四 12:00 前 · 提醒事项 · 关联邮件", done: false, writing: false },
+        // t-2 演示条件写冲突：写入时服务端已被其他设备修改（CalDAV 412 / EventKit 写前核对不符）
+        { id: "t-2", title: "整理并提交 11 月差旅住宿发票", meta: "周五 17:00 · 工作待办", done: false, writing: false, conflict: true }
+      ],
+
+      stream: [
+        { kind: "mail-card", mailId: "m-1" },
+        {
+          kind: "assistant",
+          text: "陈明发来了协议修订版，想约周四 14:00 线上过终稿。你周四 14:00–14:45 没有安排，我起草了回信，并预留了日程：",
+          proposalIds: ["p-1", "p-2"]
+        }
+      ]
+    });
+
+    let S = makeState();
+    const pendings = () => ["uninit", "empty"].includes(S.scenario) ? [] : S.proposals.filter(p => p.state === "pending");
+    const esc = s => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    const md = s => esc(s).replace(/`([^`]+)`/g, '<code style="padding:1px 5px;border-radius:4px;background:var(--surface-2);font-family:var(--font-mono);font-size:12px">$1</code>').replace(/\n/g, "<br/>");
+
+    // ---- 场景派生状态 ----
+    const accLabel = a => ({ work: "浙大", icloud: "iCloud" })[a.key] || a.user.split("@")[1]?.split(".")[0] || a.user;
+    const isUninit = () => S.scenario === "uninit";
+    const isRebind = () => S.scenario === "rebind";
+    const isOffline = () => S.scenario === "offline";
+    const sessionUsable = () => !["uninit", "rebind", "unavailable"].includes(S.scenario);
+    const canSend = () => sessionUsable() && !isOffline();
+    const canCommit = () => !isOffline(); // 提案执行走宿主，与助理会话是否可用无关
+    const visibleMails = () => ["empty", "loading"].includes(S.scenario) ? [] : S.mails;
+    const visibleEvents = () => S.scenario === "empty" ? [] : S.events;
+    const visibleTodos = () => S.scenario === "empty" ? [] : S.todos;
+    const visibleStream = () => S.scenario === "empty" ? [] : S.stream;
+    const pendingMailCount = () => visibleMails().filter(m => m.status === "待处理").length;
+    const domainOf = addr => (String(addr).match(/@([^>\s]+)/) || [])[1]?.toLowerCase() || "";
+    const addrOf = s => (String(s).match(/<([^>]+)>/) || [null, s])[1];
+    const markAddr = (addr, mismatch) => {
+      const [local, domain] = String(addr).split("@");
+      return mismatch && domain ? `${esc(local)}@<span class="mail-domain-mismatch">${esc(domain)}</span>` : esc(addr);
+    };
+    function pendingSummary() {
+      const n = { mail: 0, calendar: 0, todo: 0 };
+      pendings().forEach(p => n[p.kind]++);
+      return [n.mail && `${n.mail} 封回信`, n.calendar && `${n.calendar} 个日程`, n.todo && `${n.todo} 条待办`].filter(Boolean).join(" · ");
+    }
+
+    function setScenario(v) {
+      const { vp, family, theme } = S;
+      S = makeState(); Object.assign(S, { vp, family, theme, scenario: v });
+      if (["rebind", "unavailable", "loading", "empty"].includes(v)) S.view = "mail";
+      if (v === "authfail") { S.view = "settings"; S.settingsSection = "accounts"; }
+      draw();
+    }
+
+    function runInit() {
+      S.initializing = true; draw();
+      setTimeout(() => { S.initializing = false; S.scenario = "normal"; S.view = "settings"; S.settingsSection = "accounts"; S.stream = []; S.proposals = []; draw(); }, 900);
+    }
+
+    // 用户直接勾选待办：不经提案，但同样走宿主条件写（CalDAV If-Match / EventKit 写前核对 / SQLite revision）
+    function toggleTodo(id) {
+      const t = S.todos.find(i => i.id === id);
+      if (!t || t.writing || isOffline()) return;
+      t.writing = true; S.todoNotice = null; draw();
+      setTimeout(() => {
+        t.writing = false;
+        if (t.conflict) { t.conflict = false; t.meta = "周五 18:00 · 工作待办"; S.todoNotice = { id, text: "这条待办刚在其他设备上改过，已刷新为最新内容，请重新确认。" }; }
+        else t.done = !t.done;
+        draw();
+      }, 700);
+    }
+
+    function referenceForReschedule(e) {
+      S.mailRef = { id: e.id, subject: "改期：" + e.title, accountUser: e.time };
+      S.view = "conversation";
+      draw();
+      setTimeout(() => document.getElementById("composer-ta")?.focus(), 20);
+    }
+
+    // 待批提醒条：对话页只在没有任何待批卡片位于可视区时出现；收件 / 日程页常驻
+    function syncDock() {
+      const want = (() => {
+        if (!pendings().length || !canCommit()) return false;
+        if (S.vp === "mobile" && S.mobileScreen !== "assistant") return false;
+        if (S.view === "mail" || S.view === "agenda") return true;
+        if (S.view !== "conversation") return false;
+        const stage = document.getElementById("assistant-stage");
+        if (!stage) return false;
+        const box = stage.getBoundingClientRect();
+        return ![...stage.querySelectorAll(".interactive-prompt-card.is-pending")].some(el => {
+          const r = el.getBoundingClientRect();
+          return r.bottom > box.top + 24 && r.top < box.bottom - 24;
+        });
+      })();
+      const dock = document.getElementById("pending-dock");
+      if (dock) dock.hidden = !want;
+    }
+
+    function setVp(vp) { S.vp = vp; draw(); }
+    function setFam(f) { S.family = f; draw(); }
+    function toggleTheme() { S.theme = S.theme === "dark" ? "light" : "dark"; draw(); }
+    function resetAll() { setScenario(S.scenario); }
+
+    function selectMailForChat(id) {
+      const m = S.mails.find(x => x.id === id);
+      if (!m) return;
+      S.mailRef = { id: m.id, subject: m.subject, accountUser: m.accountUser };
+      S.sheetMailId = null; S.previewFile = null;
+      S.mobileScreen = "assistant"; S.view = "conversation";
+      draw();
+      setTimeout(() => document.getElementById("composer-ta")?.focus(), 20);
+    }
+
+    function addUpload(kind) {
+      S.attachOpen = false;
+      S.uploads.push(kind === "image"
+        ? { id: "u-" + Date.now(), kind: "image", name: "差旅发票拍照_01.jpg", size: "620.0 KiB" }
+        : { id: "u-" + Date.now(), kind: "file", name: "11月报销原始单.csv", size: "42.0 KiB" });
+      draw();
+    }
+
+    function sendTurn() {
+      const ta = document.getElementById("composer-ta");
+      const raw = (ta ? ta.value : S.draftText).trim();
+      if (!canSend() || (!raw && !S.uploads.length)) return;
+      const text = raw || "帮我整理刚上传的文件并导出规范表格";
+      const ups = [...S.uploads];
+      const ref = S.mailRef;
+
+      S.stream.push({ kind: "user", text, uploads: ups, refSubject: ref?.subject });
+      if (ups.length) {
+        S.stream.push({
+          kind: "assistant",
+          text: `已核对 ${ups.map(u => u.name).join("、")}，整理成了一张报销表：`,
+          outputFile: { name: "11月差旅报销规范表.csv", size: "12.4 KiB", bytes: 12700, mime: "text/csv", text: "日期,类别,商户,金额\n2026-11-12,住宿,全季酒店浙大店,468.00\n2026-11-13,餐饮,知味观,126.00" }
+        });
+      } else {
+        const pid = "p-" + Date.now();
+        const shortTitle = text.length > 20 ? text.slice(0, 20) + "…" : text;
+        S.proposals.unshift({
+          id: pid,
+          kind: "todo",
+          badge: "待办提案",
+          title: "新建待办：" + shortTitle,
+          todoTitle: shortTitle,
+          date: "2026-11-18",
+          dueTime: "10:00",
+          listSource: "提醒事项",
+          notes: ref ? `关联邮件《${ref.subject}》` : "",
+          meta: "提醒事项" + (ref ? ` · 关联《${ref.subject.slice(0, 10)}…》` : ""),
+          warning: null,
+          body: "截止提醒：2026-11-18 10:00" + (ref ? `\n备注：关联邮件《${ref.subject}》` : ""),
+          rev: 1,
+          state: "pending"
+        });
+        S.stream.push({ kind: "assistant", text: "要加这条待办吗？", proposalIds: [pid] });
+      }
+      S.draftText = ""; S.mailRef = null; S.uploads = [];
+      if (S.view !== "conversation") S.view = "conversation";
+      draw();
+    }
+
+    function primaryCommitLabel(p) {
+      if (p.kind === "mail") return "核对并发送…";
+      if (p.kind === "calendar") return "确认写入日历";
+      return "确认添加待办";
+    }
+
+    function refineButtonLabel(p) {
+      if (p.kind === "mail") return "让助理润色";
+      if (p.kind === "calendar") return "让助理重排";
+      return "让助理调整";
+    }
+
+    function requestCommitProp(id) {
+      const p = S.proposals.find(x => x.id === id);
+      if (!p || p.state !== "pending" || !canCommit()) return;
+      // 邮件发送属于不可撤回外部动作，强制走二次核对确认抽屉
+      if (p.kind === "mail") {
+        S.confirmSendPropId = id;
+        draw();
+        return;
+      }
+      executeCommitProp(id);
+    }
+
+    function executeCommitProp(id) {
+      const p = S.proposals.find(x => x.id === id);
+      if (!p || p.state !== "pending") return;
+      p.state = "executed";
+      S.confirmSendPropId = null;
+      if (p.kind === "calendar") {
+        S.events.splice(1, 0, {
+          id: "e-" + Date.now(),
+          time: `${p.date || "周四"} ${p.startTime || "14:00"} – ${p.endTime || "14:45"}`,
+          title: p.eventTitle || "合作协议终稿核对（陈明）",
+          meta: `${p.calendarSource || "Apple 日历"} · 已写入`
+        });
+      }
+      draw();
+    }
+
+    function buildManualDraft(p) {
+      if (p.kind === "mail") {
+        return { to: p.to || "", subject: p.subject || "", body: p.body || "" };
+      }
+      if (p.kind === "calendar") {
+        return {
+          eventTitle: p.eventTitle || p.title.replace(/^新增日程：/, ""),
+          date: p.date || "2026-11-19",
+          startTime: p.startTime || "14:00",
+          endTime: p.endTime || "14:45",
+          calendarSource: p.calendarSource || "Apple 日历",
+          location: p.location || "线上会议",
+          notes: p.notes || ""
+        };
+      }
+      return {
+        todoTitle: p.todoTitle || p.title.replace(/^新建待办：/, ""),
+        date: p.date || "2026-11-18",
+        dueTime: p.dueTime || "10:00",
+        listSource: p.listSource || "提醒事项",
+        notes: p.notes || ""
+      };
+    }
+
+    function focusActivePropInput() {
+      setTimeout(() => {
+        const el = document.getElementById(S.editMode === "ai" ? "prop-ai-ta" : "prop-manual-ta");
+        if (el) {
+          el.focus();
+          el.selectionStart = el.selectionEnd = el.value.length;
+        }
+      }, 20);
+    }
+
+    function openPropEdit(id, mode = "ai") {
+      const p = S.proposals.find(x => x.id === id);
+      if (!p) return;
+      S.editPropId = id;
+      S.editMode = mode;
+      S.aiFeedback = "";
+      S.manualDraft = buildManualDraft(p);
+      draw();
+      focusActivePropInput();
+    }
+
+    function setEditMode(mode) {
+      S.editMode = mode;
+      draw();
+      focusActivePropInput();
+    }
+
+    function applyAiChip(chip) {
+      S.aiFeedback = S.aiFeedback ? `${S.aiFeedback}；${chip}` : chip;
+      draw();
+      focusActivePropInput();
+    }
+
+    function cancelPropEdit() {
+      S.editPropId = null;
+      S.aiFeedback = "";
+      S.manualDraft = null;
+      draw();
+    }
+
+    function submitAiRefinement(id) {
+      const p = S.proposals.find(x => x.id === id);
+      const idea = (document.getElementById("prop-ai-ta")?.value ?? S.aiFeedback).trim();
+      if (!p || !idea) return;
+
+      if (p.kind === "mail") {
+        if (idea.includes("周五") || idea.includes("婉拒")) {
+          p.subject = "Re: 关于合作协议终审排期调整建议";
+          p.title = "回复陈明：协商改约周五下午核对终稿";
+          p.body = `陈老师您好，\n\n感谢发来修订版 PDF！周四下午这边临时有安排冲突，不知本周五（11月20日）下午 15:00–15:30 是否方便线上过一下第 4.2 条细节？\n\n祝好！`;
+        } else {
+          p.body = `陈老师您好，\n\n修订版 v3 已妥收。周四（11月19日）14:00–14:45 我们准时线上核对第 4.2 条交付物说明，届时也会同步确认后续细节。\n\n顺颂时祺！`;
+        }
+      } else if (p.kind === "calendar") {
+        if (idea.includes("周五")) {
+          p.date = "2026-11-20";
+          p.startTime = "15:00";
+          p.endTime = idea.includes("30") ? "15:30" : "15:45";
+        } else if (idea.includes("30")) {
+          p.endTime = "14:30";
+        } else if (idea.includes("顺延") || idea.includes("推迟")) {
+          p.startTime = "14:30";
+          p.endTime = "15:15";
+        } else {
+          p.date = "2026-11-20";
+          p.startTime = "10:00";
+          p.endTime = "10:45";
+        }
+        p.meta = `${p.calendarSource} · 无时段冲突`;
+        p.body = `${p.date} ${p.startTime} – ${p.endTime} · ${p.location}${p.notes ? "\n备注：" + p.notes : ""}`;
+      } else {
+        p.date = idea.includes("周五") ? "2026-11-20" : "2026-11-18";
+        p.dueTime = idea.includes("周五") ? "17:30" : "10:00";
+        p.body = `截止提醒：${p.date} ${p.dueTime}${p.notes ? "\n备注：" + p.notes : ""}`;
+      }
+
+      p.rev += 1; p.updated = true;
+      S.editPropId = null;
+      S.aiFeedback = "";
+      S.manualDraft = null;
+      draw();
+    }
+
+    function saveManualPropEdit(id) {
+      const p = S.proposals.find(x => x.id === id);
+      const d = S.manualDraft;
+      if (!p || !d) return;
+
+      if (p.kind === "mail") {
+        if (d.to.trim()) p.to = d.to.trim();
+        if (d.subject.trim()) p.subject = d.subject.trim();
+        if (d.body.trim()) p.body = d.body.trim();
+        p.meta = `发件箱 ${p.fromAccount} · To ${p.to}`;
+      } else if (p.kind === "calendar") {
+        p.eventTitle = d.eventTitle.trim() || p.eventTitle;
+        p.title = "新增日程：" + p.eventTitle;
+        p.date = d.date;
+        p.startTime = d.startTime;
+        p.endTime = d.endTime;
+        p.calendarSource = d.calendarSource;
+        p.location = d.location;
+        p.notes = d.notes;
+        p.meta = p.calendarSource;
+        p.body = `${p.date} ${p.startTime} – ${p.endTime} · ${p.location}${p.notes ? "\n备注：" + p.notes : ""}`;
+      } else {
+        p.todoTitle = d.todoTitle.trim() || p.todoTitle;
+        p.title = "新建待办：" + p.todoTitle;
+        p.date = d.date;
+        p.dueTime = d.dueTime;
+        p.listSource = d.listSource;
+        p.notes = d.notes;
+        p.meta = p.listSource;
+        p.body = `截止提醒：${p.date} ${p.dueTime}${p.notes ? "\n备注：" + p.notes : ""}`;
+      }
+
+      p.rev += 1; p.updated = true;
+      S.editPropId = null;
+      S.manualDraft = null;
+      draw();
+    }
+
+    function getAiChipsForProp(p) {
+      if (p.kind === "mail") {
+        return ["语气更客气温和", "精简到三句话内", "婉拒周四，改约周五下午", "补充询问第 4.2 条细节"];
+      }
+      if (p.kind === "calendar") {
+        return ["改到周五下午空档", "缩短为 30 分钟", "顺延半小时开始", "改到下周上午并留缓冲"];
+      }
+      return ["推迟到明早 10:00", "改到周五下班前", "补充优先核对附件备注"];
+    }
+
+    /* Shared Refinement Fields Renderer (used in Mobile Full-Screen Editor & Desktop Inline Refinement) */
+    function renderPropRefinementBody(p, fullScreenMobile) {
+      const chips = getAiChipsForProp(p);
+      const d = S.manualDraft || buildManualDraft(p);
+
+      if (S.editMode === "ai") {
+        return `
+          <div class="${fullScreenMobile ? 'flex-1 flex flex-col min-h-0 px-4 py-3 gap-3' : 'space-y-2.5 pt-1'}">
+            <!-- 当前版本上下文对照：邮件看草稿摘要，日程看当前拟定槽位与前后会议参考 -->
+            <div style="padding:9px 11px;border-radius:9px;background:var(--surface-2);font-size:12.5px;line-height:1.55" class="shrink-0">
+              ${p.kind === "calendar" ? `
+                <div style="font-weight:600;color:var(--text)">当前拟定：${esc(p.date)} ${esc(p.startTime)} – ${esc(p.endTime)} · ${esc(p.calendarSource)}</div>
+                <div style="color:var(--muted);margin-top:2px">邻近已有日程参考：10:30–11:15 产品周例会 · 16:00–17:30 实验室秋季组会</div>
+              ` : `
+                <div style="max-height:${fullScreenMobile ? '220px' : '96px'};overflow-y:auto;white-space:pre-wrap;color:var(--text)">${esc(p.body)}</div>
+              `}
+            </div>
+
+            <!-- 针对邮件 vs 日程定制的快捷意见胶囊 -->
+            <div class="flex flex-wrap gap-1.5 shrink-0">
+              ${chips.map(c => `
+                <button onclick='applyAiChip(${JSON.stringify(c)})' style="padding:5px 10px;border:1px solid var(--line-strong);border-radius:999px;background:var(--surface);color:var(--text);font-size:12px;cursor:pointer">
+                  + ${esc(c)}
+                </button>
+              `).join("")}
+            </div>
+
+            <!-- 修改意见输入框（手机端 flex:1 向下占满剩余全屏） -->
+            <textarea
+              id="prop-ai-ta"
+              oninput="S.aiFeedback=this.value"
+              rows="3"
+              placeholder="${p.kind === 'calendar' ? '想改到什么时间？' : p.kind === 'mail' ? '想怎么改这封信？' : '想怎么调整？'}"
+              style="height:${fullScreenMobile ? '112px' : '84px'};flex:none;width:100%;resize:none;padding:12px 14px;border:1px solid var(--line-strong);border-radius:var(--r-input);background:var(--surface);color:var(--text);font-family:var(--font-sans);font-size:${fullScreenMobile ? '15px' : '13.5px'};line-height:1.65;outline:none"
+            >${esc(S.aiFeedback)}</textarea>
+          </div>
+        `;
+      }
+
+      // Secondary Mode: 手动编辑（邮件与日程表单结构完全不同，底部多行区域均 flex:1 向下占满）
+      if (p.kind === "mail") {
+        return `
+          <div class="${fullScreenMobile ? 'flex-1 flex flex-col min-h-0 px-4 py-3 gap-2.5' : 'space-y-2.5 pt-1'}">
+            <div class="grid gap-2 shrink-0" style="font-size:12.5px">
+              <label class="flex items-center gap-2" style="padding:7px 10px;border:1px solid var(--line);border-radius:9px;background:var(--surface)">
+                <span style="color:var(--muted);width:44px;flex-shrink:0">收件方</span>
+                <input value="${esc(d.to)}" oninput="S.manualDraft.to=this.value" style="flex:1;border:0;background:transparent;outline:none;font-family:var(--font-mono);font-size:12.5px" />
+              </label>
+              <label class="flex items-center gap-2" style="padding:7px 10px;border:1px solid var(--line);border-radius:9px;background:var(--surface)">
+                <span style="color:var(--muted);width:44px;flex-shrink:0">主题</span>
+                <input value="${esc(d.subject)}" oninput="S.manualDraft.subject=this.value" style="flex:1;border:0;background:transparent;outline:none;font-size:13px" />
+              </label>
+            </div>
+            <textarea
+              id="prop-manual-ta"
+              oninput="S.manualDraft.body=this.value"
+              rows="${fullScreenMobile ? 8 : 8}"
+              style="${fullScreenMobile ? 'flex:1;min-height:0;height:100%;' : 'min-height:190px;'}width:100%;resize:none;padding:12px 14px;border:1px solid var(--line-strong);border-radius:var(--r-input);background:var(--surface);color:var(--text);font-family:var(--font-sans);font-size:${fullScreenMobile ? '15px' : '13.5px'};line-height:1.65;outline:none"
+            >${esc(d.body)}</textarea>
+          </div>
+        `;
+      }
+
+      if (p.kind === "calendar") {
+        return `
+          <div class="${fullScreenMobile ? 'flex-1 flex flex-col min-h-0 px-4 py-3 gap-2.5' : 'space-y-2.5 pt-1'}">
+            <div class="grid gap-2 shrink-0" style="font-size:13px">
+              <label class="grid gap-1">
+                <span style="font-size:11.5px;color:var(--muted)">日程标题</span>
+                <input value="${esc(d.eventTitle)}" oninput="S.manualDraft.eventTitle=this.value" style="padding:8px 11px;border:1px solid var(--line-strong);border-radius:9px;background:var(--surface)" />
+              </label>
+              <!-- 手机端日期独占一行，起止时间两列；桌面端三列 -->
+              <div class="grid ${fullScreenMobile ? 'grid-cols-2' : 'grid-cols-3'} gap-2">
+                <label class="grid gap-1 min-w-0 ${fullScreenMobile ? 'col-span-2' : ''}">
+                  <span style="font-size:11.5px;color:var(--muted)">日期</span>
+                  <input type="date" value="${esc(d.date)}" oninput="S.manualDraft.date=this.value" style="min-width:0;width:100%;padding:8px 8px;border:1px solid var(--line-strong);border-radius:9px;background:var(--surface);font-size:12.5px" />
+                </label>
+                <label class="grid gap-1">
+                  <span style="font-size:11.5px;color:var(--muted)">开始</span>
+                  <input type="time" value="${esc(d.startTime)}" oninput="S.manualDraft.startTime=this.value" style="min-width:0;width:100%;padding:8px 8px;border:1px solid var(--line-strong);border-radius:9px;background:var(--surface);font-size:12.5px" />
+                </label>
+                <label class="grid gap-1">
+                  <span style="font-size:11.5px;color:var(--muted)">结束</span>
+                  <input type="time" value="${esc(d.endTime)}" oninput="S.manualDraft.endTime=this.value" style="min-width:0;width:100%;padding:8px 8px;border:1px solid var(--line-strong);border-radius:9px;background:var(--surface);font-size:12.5px" />
+                </label>
+              </div>
+              <div class="grid grid-cols-2 gap-2">
+                <label class="grid gap-1">
+                  <span style="font-size:11.5px;color:var(--muted)">写入日历</span>
+                  <select onchange="S.manualDraft.calendarSource=this.value" style="padding:8px 9px;border:1px solid var(--line-strong);border-radius:9px;background:var(--surface);font-size:12.5px">
+                    <option ${d.calendarSource.includes("Apple") ? "selected" : ""}>Apple 日历</option>
+                    <option ${d.calendarSource.includes("CalDAV") ? "selected" : ""}>工作日历</option>
+                    <option ${d.calendarSource.includes("本地") ? "selected" : ""}>本地日历</option>
+                  </select>
+                </label>
+                <label class="grid gap-1">
+                  <span style="font-size:11.5px;color:var(--muted)">地点 / 会议链接</span>
+                  <input value="${esc(d.location)}" oninput="S.manualDraft.location=this.value" style="padding:8px 10px;border:1px solid var(--line-strong);border-radius:9px;background:var(--surface);font-size:12.5px" />
+                </label>
+              </div>
+            </div>
+            <textarea
+              id="prop-manual-ta"
+              oninput="S.manualDraft.notes=this.value"
+              placeholder="日程议程或备注说明…"
+              style="${fullScreenMobile ? 'flex:1;min-height:0;height:100%;' : 'min-height:110px;'}width:100%;resize:none;padding:11px 13px;border:1px solid var(--line-strong);border-radius:var(--r-input);background:var(--surface);color:var(--text);font-family:var(--font-sans);font-size:${fullScreenMobile ? '14.5px' : '13.5px'};line-height:1.6;outline:none"
+            >${esc(d.notes)}</textarea>
+          </div>
+        `;
+      }
+
+      // Todo manual form
+      return `
+        <div class="${fullScreenMobile ? 'flex-1 flex flex-col min-h-0 px-4 py-3 gap-2.5' : 'space-y-2.5 pt-1'}">
+          <div class="grid gap-2 shrink-0" style="font-size:13px">
+            <label class="grid gap-1">
+              <span style="font-size:11.5px;color:var(--muted)">待办事项</span>
+              <input value="${esc(d.todoTitle)}" oninput="S.manualDraft.todoTitle=this.value" style="padding:8px 11px;border:1px solid var(--line-strong);border-radius:9px;background:var(--surface)" />
+            </label>
+            <div class="grid grid-cols-2 gap-2">
+              <label class="grid gap-1">
+                <span style="font-size:11.5px;color:var(--muted)">截止日期</span>
+                <input type="date" value="${esc(d.date)}" oninput="S.manualDraft.date=this.value" style="padding:8px 9px;border:1px solid var(--line-strong);border-radius:9px;background:var(--surface);font-size:12.5px" />
+              </label>
+              <label class="grid gap-1">
+                <span style="font-size:11.5px;color:var(--muted)">提醒时间</span>
+                <input type="time" value="${esc(d.dueTime)}" oninput="S.manualDraft.dueTime=this.value" style="padding:8px 9px;border:1px solid var(--line-strong);border-radius:9px;background:var(--surface);font-size:12.5px" />
+              </label>
+            </div>
+          </div>
+          <textarea
+            id="prop-manual-ta"
+            oninput="S.manualDraft.notes=this.value"
+            placeholder="补充待办备注…"
+            style="${fullScreenMobile ? 'flex:1;min-height:0;height:100%;' : 'min-height:110px;'}width:100%;resize:none;padding:11px 13px;border:1px solid var(--line-strong);border-radius:var(--r-input);background:var(--surface);color:var(--text);font-family:var(--font-sans);font-size:${fullScreenMobile ? '14.5px' : '13.5px'};line-height:1.6;outline:none"
+          >${esc(d.notes)}</textarea>
+        </div>
+      `;
+    }
+
+    /* Full-Screen Mobile Proposal Refinement (default: AI polish/reschedule; secondary: structured/full-height manual edit) */
+    function renderMobileFullScreenPropEditor(p) {
+      return `
+        <div class="w-[375px] h-[760px] flex flex-col overflow-hidden is-mobile" style="background:var(--bg)">
+          <header class="m-header is-mobile">
+            <button onclick="cancelPropEdit()" class="icon-button" aria-label="取消微调">${ic.back}</button>
+            <div class="m-header-copy">
+              <h1>${p.kind === "calendar" ? "调整日程提案" : p.kind === "mail" ? "润色发信草稿" : "调整待办提案"}</h1>
+            </div>
+            <nav class="view-switch mr-1">
+              <button onclick="setEditMode('ai')" class="${S.editMode === 'ai' ? 'active' : ''}">让助理改</button>
+              <button onclick="setEditMode('manual')" class="${S.editMode === 'manual' ? 'active' : ''}">手动编辑</button>
+            </nav>
+          </header>
+
+          <div class="px-4 py-2.5 space-y-1 shrink-0" style="border-bottom:1px solid var(--line)">
+            <div class="flex items-center justify-between gap-2" style="font-size:11.5px">
+              <span style="color:var(--accent-ink);font-weight:650">${esc(p.badge)}</span>
+              
+            </div>
+            <div style="font-size:14px;font-weight:620">${esc(p.title)}</div>
+            ${p.warning ? `<div style="margin-top:4px;padding:6px 9px;border-radius:7px;background:var(--warm-soft);color:var(--warm-ink);font-size:12px">${esc(p.warning)}</div>` : ""}
+          </div>
+
+          ${renderPropRefinementBody(p, true)}
+
+          <footer class="px-4 pt-2.5 pb-3.5 flex items-center gap-2.5 shrink-0" style="border-top:1px solid var(--line);background:var(--bg)">
+            <button onclick="cancelPropEdit()" class="secondary-button" style="min-height:40px;padding:0 16px">取消</button>
+            ${S.editMode === "ai" ? `
+              <button onclick="submitAiRefinement('${p.id}')" class="primary-button flex-1" style="min-height:40px;justify-content:center">${refineButtonLabel(p)}</button>
+            ` : `
+              <button onclick="saveManualPropEdit('${p.id}')" class="primary-button flex-1" style="min-height:40px;justify-content:center">保存修改</button>
+            `}
+          </footer>
+        </div>
+      `;
+    }
+
+    function renderDesktopInlineRefinement(p) {
+      return `
+        <div class="space-y-2.5 pt-1" style="border-top:1px solid var(--line)">
+          <div class="flex items-center justify-between gap-2 pt-1">
+            <span></span>
+            <nav class="view-switch">
+              <button onclick="setEditMode('ai')" class="${S.editMode === 'ai' ? 'active' : ''}">让助理改</button>
+              <button onclick="setEditMode('manual')" class="${S.editMode === 'manual' ? 'active' : ''}">手动编辑</button>
+            </nav>
+          </div>
+          ${renderPropRefinementBody(p, false)}
+          <div class="flex items-center gap-2 pt-1">
+            ${S.editMode === "ai" ? `
+              <button onclick="submitAiRefinement('${p.id}')" class="primary-button">${refineButtonLabel(p)}</button>
+            ` : `
+              <button onclick="saveManualPropEdit('${p.id}')" class="primary-button">保存修改</button>
+            `}
+            <button onclick="cancelPropEdit()" class="secondary-button">取消</button>
+          </div>
+        </div>
+      `;
+    }
+
+    const doneLabel = p => p.state !== "executed" ? "已忽略" : p.kind === "mail" ? "已发出" : p.kind === "calendar" ? "已写入日历" : "已添加待办";
+    const dismissProp = id => `S.proposals.find(x=>x.id==='${id}').state='dismissed';draw()`;
+
+    function renderProposalActions(p, pushRight) {
+      return `
+        <div class="flex items-center gap-2 flex-wrap">
+          <button onclick="requestCommitProp('${p.id}')" class="primary-button" ${canCommit() ? "" : "disabled"}>${primaryCommitLabel(p)}</button>
+          <button onclick="openPropEdit('${p.id}', 'ai')" class="secondary-button" ${canSend() ? "" : "disabled"}>${refineButtonLabel(p)}</button>
+          <button onclick="openPropEdit('${p.id}', 'manual')" class="text-link-btn" style="color:var(--muted)">手动编辑</button>
+          <button onclick="${dismissProp(p.id)}" class="text-link-btn" style="color:var(--muted);${pushRight ? "margin-left:auto" : ""}">忽略</button>
+        </div>`;
+    }
+
+    /* Inline Proposal Card inside Conversation Stream (uses .interactive-prompt-card) */
+    function renderInlineProposal(p) {
+      if (p.state !== "pending") {
+        return `<section class="interactive-prompt-card">
+          <div class="flex items-center gap-2">
+            <span class="interactive-prompt-badge done">${p.state === "executed" ? "✓ " : ""}${doneLabel(p)}</span>
+            <span style="font-size:13.5px;font-weight:580">${esc(p.title)}</span>
+          </div>
+        </section>`;
+      }
+      const editing = S.vp === "desktop" && S.editPropId === p.id;
+      return `<section class="interactive-prompt-card is-pending" data-prop="${p.id}">
+        <div class="flex items-center gap-2">
+          <span class="interactive-prompt-badge">${esc(p.badge)}</span>
+          ${p.updated ? `<span style="font-size:11.5px;color:var(--success-ink);font-weight:600">已更新</span>` : ""}
+        </div>
+        <div style="font-size:14px;font-weight:630">${esc(p.title)}</div>
+        <div style="color:var(--muted);font-size:12px">${esc(p.meta)}</div>
+        ${p.warning ? `<div style="padding:7px 10px;border-radius:7px;background:var(--warm-soft);color:var(--warm-ink);font-size:12px">${esc(p.warning)}</div>` : ""}
+        ${editing ? renderDesktopInlineRefinement(p) : `
+          <pre style="margin:0;padding:10px 12px;border-radius:8px;background:var(--bg);border:1px solid var(--line);white-space:pre-wrap;font-family:var(--font-sans);font-size:13px;line-height:1.6">${esc(p.body)}</pre>
+          ${renderProposalActions(p, true)}
+        `}
+      </section>`;
+    }
+
+    /* Full-Page Proposal List — 两端都只从待批提醒条进入 */
+    function renderHairlineProposalsPage() {
+      const pList = pendings();
+      const doneList = S.proposals.filter(p => p.state !== "pending");
+      return `
+        <div>
+          ${S.vp === "desktop" ? `
+            <button onclick="S.view='conversation';draw()" class="text-link-btn inline-flex items-center gap-1" style="color:var(--muted);margin-bottom:10px">${ic.back.replace('width="20" height="20"', 'width="15" height="15"')}<span>返回对话</span></button>
+          ` : ""}
+          <div class="settings-hairline-heading">
+            <span>待确认</span>
+            <span>${pList.length}</span>
+          </div>
+          ${pList.length === 0 ? `<p style="padding:36px 0;text-align:center;color:var(--muted);font-size:13.5px">没有待确认的事项</p>` : ""}
+          ${pList.map(p => `
+            <div class="mobile-settings-row space-y-2.5">
+              <div class="flex items-center gap-2 text-xs">
+                <span style="color:var(--accent-ink);font-weight:650">${esc(p.badge)}</span>
+                <span style="color:var(--muted)">${esc(p.meta)}</span>
+                ${p.updated ? `<span style="color:var(--success-ink);font-weight:600">已更新</span>` : ""}
+              </div>
+              <div style="font-size:15px;font-weight:620">${esc(p.title)}</div>
+              ${p.warning ? `<div style="padding:7px 10px;border-radius:7px;background:var(--warm-soft);color:var(--warm-ink);font-size:12.5px">${esc(p.warning)}</div>` : ""}
+              ${S.vp === "desktop" && S.editPropId === p.id ? renderDesktopInlineRefinement(p) : `
+                <pre style="margin:0;padding:6px 0;white-space:pre-wrap;font-family:var(--font-sans);font-size:14px;line-height:1.65;color:var(--text)">${esc(p.body)}</pre>
+                ${renderProposalActions(p, true)}
+              `}
+            </div>
+          `).join("")}
+
+          ${doneList.length ? `
+            <div class="settings-hairline-heading" style="margin-top:26px">
+              <span>已处理</span>
+              <span>${doneList.length}</span>
+            </div>
+            ${doneList.map(p => `
+              <div class="mobile-settings-row" style="opacity:0.72">
+                <div style="font-size:14px;font-weight:540">${esc(p.title)}</div>
+                <div style="font-size:12px;color:var(--muted)">${doneLabel(p)} · ${esc(p.meta)}</div>
+              </div>
+            `).join("")}
+          ` : ""}
+        </div>
+      `;
+    }
+
+    function renderAuthFailLine() {
+      if (S.scenario !== "authfail") return "";
+      return `<div class="assistant-status-line is-danger">${ic.alert}<span>浙大邮箱登录已失效，新邮件暂停同步。</span><button onclick="S.view='settings';S.settingsSection='accounts';draw()" class="text-link-btn">重新登录</button></div>`;
+    }
+
+    /* Mail List — 行样式映射到现有 .mobile-settings-row / .settings-hairline-heading，不新造类名 */
+    function renderHairlineMailPage() {
+      const enabled = S.accounts.filter(a => a.enabled);
+      const list = visibleMails().filter(m => S.mailAccountFilter === "all" || m.accountKey === S.mailAccountFilter);
+      const tab = (key, label) => `<button onclick="S.mailAccountFilter='${key}';draw()" style="border:0;background:transparent;padding:0;white-space:nowrap;cursor:pointer;color:${S.mailAccountFilter === key ? 'var(--text)' : 'var(--muted)'};font-weight:${S.mailAccountFilter === key ? '650' : '500'}">${esc(label)}</button>`;
+      return `
+        <div>
+          ${renderAuthFailLine()}
+          ${isOffline() ? `<div class="assistant-status-line">${ic.alert}<span>电脑离线，显示的是 09:30 的缓存。</span></div>` : ""}
+          <div class="settings-hairline-heading">
+            <div class="flex items-center gap-4">
+              ${tab("all", "全部")}
+              ${enabled.map(a => tab(a.key, accLabel(a))).join("")}
+            </div>
+          </div>
+
+          ${S.scenario === "loading" ? [0, 1, 2].map(() => `
+            <div class="mobile-settings-row space-y-2.5" aria-hidden="true">
+              <div class="skeleton-line" style="width:38%"></div>
+              <div class="skeleton-line" style="width:72%;height:14px"></div>
+              <div class="skeleton-line" style="width:90%"></div>
+            </div>
+          `).join("") + `<p role="status" style="padding:12px 0;color:var(--muted);font-size:12.5px;text-align:center">正在同步邮件…</p>` : ""}
+
+          ${S.scenario === "empty" ? `<p role="status" style="padding:48px 0;text-align:center;color:var(--muted);font-size:13.5px">还没有新邮件</p>` : ""}
+
+          ${list.map(m => `
+            <article class="mobile-settings-row space-y-1.5">
+              <header class="flex items-center justify-between gap-3" style="font-size:11.5px;color:var(--muted)">
+                <span class="inline-flex items-center gap-1.5 min-w-0">${ic.mail}<span class="truncate">${esc(accLabel(S.accounts.find(a => a.key === m.accountKey) || { key: m.accountKey, user: m.accountUser }))} · ${esc(m.status)}</span></span>
+                <time style="font-family:var(--font-num)">${esc(m.time)}</time>
+              </header>
+              <h3 style="margin:2px 0 0;font-size:15.5px;font-weight:600;line-height:1.45">${esc(m.subject)}</h3>
+              <div style="font-size:12.5px;color:var(--muted)">${esc(m.from)}</div>
+              <p style="margin:0;font-size:14px;line-height:1.65">${esc(m.analysis)}</p>
+              ${m.attachments.length ? `
+                <div class="pt-1 space-y-1">
+                  ${m.attachments.map(att => `
+                    <div class="flex items-center justify-between gap-3 py-1.5 px-2.5 rounded-lg" style="background:var(--surface-2);font-size:12.5px">
+                      <span class="inline-flex items-center gap-2 min-w-0">${ic.file}<span class="truncate">${esc(att.name)}</span><span style="color:var(--muted);font-family:var(--font-mono);flex:none">${att.size}</span></span>
+                      <button onclick='S.previewFile={name:${JSON.stringify(att.name)},size:${JSON.stringify(att.size)},bytes:${att.bytes},mime:${JSON.stringify(att.mime)},confirmed:${att.bytes <= 1048576}};draw()' class="text-link-btn shrink-0" ${isOffline() ? "disabled" : ""}>预览</button>
+                    </div>
+                  `).join("")}
+                </div>
+              ` : ""}
+              ${renderMailActions(m)}
+            </article>
+          `).join("")}
+        </div>
+      `;
+    }
+
+    /* 邮件两个动作：两处统一顺序（讨论在前）与字号（13px 文字链接） */
+    function renderMailActions(m) {
+      return `
+        <div class="flex items-center gap-4 pt-1">
+          <button onclick="selectMailForChat('${m.id}')" class="text-link-btn" ${canSend() ? "" : "disabled"}>讨论此邮件</button>
+          <button onclick="S.sheetMailId='${m.id}';draw()" class="text-link-btn" style="color:var(--muted)">查看原文</button>
+        </div>`;
+    }
+
+    /* Agenda & Todos */
+    function renderHairlineAgendaPage() {
+      const events = visibleEvents();
+      const todos = visibleTodos();
+      return `
+        <div class="space-y-7">
+          ${isOffline() ? `<div class="assistant-status-line">${ic.alert}<span>电脑离线，显示的是 09:30 的缓存，暂不能修改。</span></div>` : ""}
+          <div>
+            <div class="settings-hairline-heading">
+              <span>日程</span>
+            </div>
+            ${events.length ? "" : `<p style="padding:20px 0;color:var(--muted);font-size:13.5px">今天没有日程</p>`}
+            ${events.map(e => `
+              <div class="mobile-settings-row flex items-center justify-between gap-3">
+                <div class="space-y-0.5 min-w-0">
+                  <div style="font-size:14.5px;font-weight:580">${esc(e.title)}</div>
+                  <div style="font-size:12.5px;color:var(--muted)">${esc(e.time)} · ${esc(e.meta)}</div>
+                </div>
+                <button onclick='referenceForReschedule(${JSON.stringify({ id: e.id, title: e.title, time: e.time })})' class="text-link-btn shrink-0" ${canSend() ? "" : "disabled"}>改期</button>
+              </div>
+            `).join("")}
+          </div>
+
+          <div>
+            <div class="settings-hairline-heading">
+              <span>待办</span>
+              <span>${todos.filter(t => !t.done).length ? `${todos.filter(t => !t.done).length} 未完成` : ""}</span>
+            </div>
+            ${todos.length ? "" : `<p style="padding:20px 0;color:var(--muted);font-size:13.5px">没有未完成的待办</p>`}
+            ${todos.map(t => `
+              <label class="mobile-settings-row flex items-start gap-3 ${t.writing || isOffline() ? "" : "cursor-pointer"}">
+                <input type="checkbox" ${t.done ? "checked" : ""} ${t.writing || isOffline() ? "disabled" : ""} onchange="toggleTodo('${t.id}')" style="width:18px;height:18px;margin-top:3px;accent-color:var(--accent)" />
+                <div class="flex-1 min-w-0">
+                  <div style="font-size:14.5px;font-weight:540;${t.done ? 'text-decoration:line-through;opacity:0.55' : ''}">${esc(t.title)}</div>
+                  <div style="font-size:12.5px;color:var(--muted);margin-top:2px">${t.writing ? "正在同步…" : esc(t.meta)}</div>
+                  ${S.todoNotice?.id === t.id ? `<div role="status" style="margin-top:6px;font-size:12.5px;color:var(--warm-ink)">${esc(S.todoNotice.text)}</div>` : ""}
+                </div>
+              </label>
+            `).join("")}
+          </div>
+        </div>
+      `;
+    }
+
+    /* Settings (matches DesktopSettings 2-col shell on Desktop & MobileSettings on Mobile) */
+    function renderHairlineSettings(isMobile) {
+      const accountsBlock = `
+        <div>
+          <div class="settings-hairline-heading">
+            <span>收件邮箱</span>
+            <button onclick="S.addingAcc=!S.addingAcc;draw()" class="text-link-btn" style="font-size:12px">+ 添加邮箱</button>
+          </div>
+          ${S.addingAcc ? `
+            <div class="mobile-settings-row space-y-3" style="max-width:480px">
+              <div class="grid gap-2 text-xs">
+                <label class="grid gap-1"><span style="color:var(--muted)">收信服务器</span><input id="acc-h" placeholder="imap.qq.com" style="padding:9px 12px;border:1px solid var(--line-strong);border-radius:var(--r-input);background:var(--surface)" /></label>
+                <label class="grid gap-1"><span style="color:var(--muted)">邮箱地址</span><input id="acc-u" placeholder="name@foxmail.com" style="padding:9px 12px;border:1px solid var(--line-strong);border-radius:var(--r-input);background:var(--surface)" /></label>
+                <label class="grid gap-1"><span style="color:var(--muted)">应用专用密码（只保存在本机钥匙串）</span><input type="password" style="padding:9px 12px;border:1px solid var(--line-strong);border-radius:var(--r-input);background:var(--surface)" /></label>
+              </div>
+              <div class="flex gap-2">
+                <button onclick="S.accounts.push({key:'k'+Date.now(),user:document.getElementById('acc-u').value||'vip@foxmail.com',host:document.getElementById('acc-h').value||'imap.qq.com',port:993,enabled:true});S.addingAcc=false;draw()" class="primary-button">保存并启用</button>
+                <button onclick="S.addingAcc=false;draw()" class="secondary-button">取消</button>
+              </div>
+            </div>
+          ` : ""}
+          ${S.accounts.map(a => {
+            const failed = S.scenario === "authfail" && a.key === "work";
+            const status = !a.enabled ? "已停用" : isOffline() ? "电脑离线" : failed ? "登录已失效，新邮件暂停同步" : "已连接 · 09:24 同步";
+            return `
+            <div class="mobile-settings-row flex items-center justify-between gap-3">
+              <div class="min-w-0">
+                <div style="font-size:14.5px;font-weight:540;overflow-wrap:anywhere">${esc(a.user)}</div>
+                <div style="font-size:12.5px;margin-top:2px;color:${failed ? 'var(--danger-ink)' : 'var(--muted)'}">${status}</div>
+              </div>
+              ${failed
+                ? `<button onclick="S.scenario='normal';draw()" class="primary-button shrink-0">重新登录</button>`
+                : `<button onclick="x=S.accounts.find(i=>i.key==='${a.key}');x.enabled=!x.enabled;draw()" class="secondary-button shrink-0" ${isOffline() ? "disabled" : ""}>${a.enabled ? "停用" : "启用"}</button>`}
+            </div>`;
+          }).join("")}
+        </div>
+      `;
+
+      const sessionStatus = { rebind: "原会话已归档或删除", unavailable: "暂时连不上，恢复后自动重连", offline: "电脑离线" }[S.scenario] || "已连接 · 最近活动 09:24";
+      const bindingBlock = `
+        <div>
+          <div class="settings-hairline-heading"><span>助理会话</span></div>
+          <div class="mobile-settings-row flex items-center justify-between gap-3">
+            <div class="min-w-0">
+              <div style="font-size:14.5px;font-weight:540">个人助理</div>
+              <div style="font-size:12.5px;color:${isRebind() ? 'var(--danger-ink)' : 'var(--muted)'};margin-top:2px">${sessionStatus}</div>
+            </div>
+            <button class="secondary-button shrink-0" ${isOffline() ? "disabled" : ""}>${isRebind() ? "重新绑定" : "更换会话"}</button>
+          </div>
+        </div>
+      `;
+
+      if (isMobile) return `<div class="space-y-7">${accountsBlock}${bindingBlock}</div>`;
+      return `
+        <div class="desktop-settings-shell">
+          <nav class="settings-sections">
+            <button onclick="S.settingsSection='accounts';draw()" class="${S.settingsSection === 'accounts' ? 'active' : ''}">收件邮箱</button>
+            <button onclick="S.settingsSection='binding';draw()" class="${S.settingsSection === 'binding' ? 'active' : ''}">助理会话</button>
+          </nav>
+          <div>${S.settingsSection === "accounts" ? accountsBlock : bindingBlock}</div>
+        </div>
+      `;
+    }
+
+    /* 首屏：未初始化 */
+    function renderInitScreen() {
+      return `
+        <div class="flex flex-col items-center text-center" style="padding:${S.vp === "mobile" ? "72px 8px" : "96px 0"};gap:14px">
+          <span style="display:grid;width:44px;height:44px;place-items:center;border-radius:12px;background:var(--accent-soft);color:var(--accent-ink)">${ic.mail.replace('width="15" height="15"', 'width="22" height="22"')}</span>
+          <h2 style="margin:0;font-size:18px;font-weight:650">设置个人助理</h2>
+          <p style="margin:0;max-width:380px;color:var(--muted);font-size:13.5px;line-height:1.7">助理在单独的文件夹里工作，碰不到你的项目。发邮件、改日程和待办前都会先问你。</p>
+          <button onclick="runInit()" class="primary-button" style="min-width:160px;margin-top:6px" ${S.initializing ? "disabled" : ""}>${S.initializing ? "正在准备…" : "开始设置"}</button>
+          <button class="text-link-btn" style="color:var(--muted)">改用已有会话</button>
+        </div>`;
+    }
+
+    /* 会话层状态条：需重新绑定 / 不可用 / 离线 / 邮箱登录失效 */
+    function renderSessionStatusLines() {
+      if (isRebind()) return `
+        <div class="assistant-status-line is-danger">${ic.alert}<span>原来的助理会话已被归档或删除，邮件仍在照常收取。</span>
+          <button class="text-link-btn">新建会话</button><button class="text-link-btn">选择已有会话</button>
+        </div>`;
+      if (S.scenario === "unavailable") return `<div class="assistant-status-line is-warn">${ic.alert}<span>暂时连不上助理会话，恢复后会自动重连，期间新邮件照常收取。</span></div>`;
+      return "";
+    }
+
+    function renderConversationStage(isMobile) {
+      const stream = visibleStream();
+      return `
+        <div>
+          ${renderSessionStatusLines()}
+          ${renderAuthFailLine()}
+          ${isOffline() ? `<div class="assistant-status-line">${ic.alert}<span>电脑离线，显示的是 09:30 的缓存。</span></div>` : ""}
+          ${stream.length ? "" : `<p style="padding:64px 0;text-align:center;color:var(--muted);font-size:13.5px">还没有对话</p>`}
+          <div class="space-y-5">
+            ${stream.map(item => {
+              if (item.kind === "mail-card") {
+                const m = S.mails.find(x => x.id === item.mailId);
+                if (!m) return "";
+                const acc = S.accounts.find(a => a.key === m.accountKey) || { key: m.accountKey, user: m.accountUser };
+                return `
+                  <article class="interactive-prompt-card" style="margin-top:0">
+                    <header class="flex items-center justify-between gap-2" style="font-size:11.5px;color:var(--muted)">
+                      <span class="inline-flex items-center gap-1.5">${ic.mail}<span>${esc(accLabel(acc))}</span></span>
+                      <time style="font-family:var(--font-num)">${esc(m.time)}</time>
+                    </header>
+                    <div style="font-size:15px;font-weight:620">${esc(m.subject)}</div>
+                    <div style="font-size:12.5px;color:var(--muted)">${esc(m.from)}</div>
+                    <div style="font-size:13.5px;line-height:1.6">${esc(m.preview)}</div>
+                    ${m.attachments.length ? `
+                      <div class="flex flex-wrap gap-2">
+                        ${m.attachments.map(att => `
+                          <button onclick='S.previewFile={name:${JSON.stringify(att.name)},size:${JSON.stringify(att.size)},bytes:${att.bytes},mime:${JSON.stringify(att.mime)},confirmed:${att.bytes <= 1048576}};draw()' class="secondary-button !min-h-[30px] !py-1 !px-2.5 !text-xs" ${isOffline() ? "disabled" : ""}>
+                            ${ic.file}<span>${esc(att.name)} · ${att.size}</span>
+                          </button>
+                        `).join("")}
+                      </div>
+                    ` : ""}
+                    ${renderMailActions(m)}
+                  </article>
+                `;
+              }
+              if (item.kind === "user") {
+                return `
+                  <div class="flex justify-end">
+                    <div class="conversation-bubble space-y-1.5">
+                      ${item.refSubject ? `<div style="font-size:12px;color:var(--muted)">引用：${esc(item.refSubject)}</div>` : ""}
+                      ${item.uploads?.length ? `<div class="flex flex-wrap gap-1.5">${item.uploads.map(u => `<span style="padding:2px 8px;border-radius:6px;background:var(--surface-2);font-size:12px">${esc(u.name)}</span>`).join("")}</div>` : ""}
+                      <div>${esc(item.text)}</div>
+                    </div>
+                  </div>
+                `;
+              }
+              if (item.kind === "assistant") {
+                const props = (item.proposalIds || []).map(id => S.proposals.find(p => p.id === id)).filter(Boolean);
+                return `
+                  <div class="space-y-2.5">
+                    <div class="assistant-prose">${md(item.text)}</div>
+                    ${item.outputFile ? `
+                      <div class="mobile-settings-row flex items-center justify-between gap-3" style="border-top:1px solid var(--line)">
+                        <div class="flex items-center gap-2.5 min-w-0">
+                          <span style="width:34px;height:28px;border-radius:6px;background:var(--surface-2);display:inline-grid;place-items:center;color:var(--muted)">${ic.file}</span>
+                          <div class="min-w-0">
+                            <div class="truncate" style="font-size:13.75px;font-weight:580">${esc(item.outputFile.name)}</div>
+                            <div style="font-size:11.5px;color:var(--muted)">${item.outputFile.size}</div>
+                          </div>
+                        </div>
+                        <button onclick='S.previewFile={name:${JSON.stringify(item.outputFile.name)},size:${JSON.stringify(item.outputFile.size)},bytes:${item.outputFile.bytes},mime:"text/csv",text:${JSON.stringify(item.outputFile.text)},confirmed:true};draw()' class="secondary-button shrink-0">预览</button>
+                      </div>
+                    ` : ""}
+                    ${props.map(p => renderInlineProposal(p)).join("")}
+                  </div>
+                `;
+              }
+              return "";
+            }).join("")}
+          </div>
+        </div>
+      `;
+    }
+
+    /* 待批提醒条：放在顶栏下、滚动区外；是否显示由 syncDock() 决定 */
+    function renderPendingDock(isMobile) {
+      const n = pendings().length;
+      if (!n) return "";
+      const open = isMobile ? "S.mobileScreen='proposals-page';draw()" : "S.view='proposals';draw()";
+      return `
+        <div id="pending-dock" class="permission-dock-wrap ${isMobile ? "is-mobile" : ""}" hidden>
+          <button onclick="${open}" class="permission-dock">
+            <span class="permission-dock-icon">${ic.alert}</span>
+            <span>
+              <strong style="font-size:13px;font-weight:620">${n} 项待你确认</strong>
+              <small style="display:block;font-size:11.5px;color:var(--muted);margin-top:1px">${pendingSummary()}</small>
+            </span>
+            <b style="font-size:12px;color:var(--warm-ink);font-weight:650">查看 →</b>
+          </button>
+        </div>`;
+    }
+
+    function renderPersistentComposer(isMobile) {
+      const disabledReason = isRebind() ? "重新绑定会话后可以继续对话"
+        : S.scenario === "unavailable" ? "助理会话暂时连不上"
+        : isOffline() ? "电脑离线，暂时不能发送" : "";
+      const off = Boolean(disabledReason);
+      return `
+        <section class="composer-wrap ${isMobile ? 'is-mobile' : ''}">
+          <div class="composer-inner">
+            ${S.mailRef && !off ? `
+              <div class="assistant-mail-reference">
+                <div class="min-w-0">
+                  <div class="truncate" style="font-weight:600">${esc(S.mailRef.subject)}</div>
+                  <div class="truncate" style="font-size:11.5px;color:var(--muted)">${esc(S.mailRef.accountUser)}</div>
+                </div>
+                <button onclick="S.mailRef=null;draw()" class="text-link-btn shrink-0" style="color:var(--muted)">移除</button>
+              </div>
+            ` : ""}
+
+            ${S.uploads.length && !off ? `
+              <div class="flex flex-wrap gap-1.5 mb-2">
+                ${S.uploads.map(u => `
+                  <span style="display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface);font-size:12px">
+                    <span>${esc(u.name)} · ${u.size}</span>
+                    <button onclick="S.uploads=S.uploads.filter(x=>x.id!=='${u.id}');draw()" aria-label="移除 ${esc(u.name)}" style="border:0;background:transparent;cursor:pointer;color:var(--muted)">×</button>
+                  </span>
+                `).join("")}
+              </div>
+            ` : ""}
+
+            ${S.attachOpen && !off ? `
+              <div style="position:absolute;left:0;bottom:calc(100% + 8px);z-index:30;width:180px;padding:6px;border:1px solid var(--line-strong);border-radius:12px;background:var(--m-sheet-fill);box-shadow:0 12px 32px rgba(0,0,0,0.28)">
+                <button onclick="addUpload('image')" style="display:flex;width:100%;padding:9px 10px;border:0;border-radius:8px;background:transparent;text-align:left;font-size:13px;cursor:pointer" onmouseover="this.style.background='var(--surface-2)'" onmouseout="this.style.background='transparent'">图片</button>
+                <button onclick="addUpload('file')" style="display:flex;width:100%;padding:9px 10px;border:0;border-radius:8px;background:transparent;text-align:left;font-size:13px;cursor:pointer" onmouseover="this.style.background='var(--surface-2)'" onmouseout="this.style.background='transparent'">文件</button>
+              </div>
+            ` : ""}
+
+            <div class="composer-form ${off ? "is-disabled" : ""}">
+              <textarea
+                id="composer-ta"
+                rows="1"
+                ${off ? "disabled" : ""}
+                oninput="S.draftText=this.value"
+                onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendTurn();}"
+                placeholder="${off ? disabledReason : '交代助理做点什么…'}"
+                style="width:100%;border:0;background:transparent;resize:none;outline:none;font-size:${isMobile ? '16px' : '14px'};line-height:1.45"
+              >${esc(S.draftText)}</textarea>
+              <div class="flex items-center justify-between gap-2">
+                <button onclick="S.attachOpen=!S.attachOpen;draw()" class="composer-attach-trigger" aria-label="添加图片或文件" ${off ? "disabled" : ""}>${ic.plus}</button>
+                <div class="flex items-center gap-2">
+                  <span class="session-context-pill">34.2k</span>
+                  <button onclick="sendTurn()" class="send-button" aria-label="发送" ${off ? "disabled" : ""}>${ic.up}</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+      `;
+    }
+
+    /* ---- 全屏阅读页：查看原文 / 附件与产物预览 ----
+       与手机端提案编辑同一套形态：顶栏 ← 返回 + 标题 + 右侧动作，中部整屏滚动，底部固定操作栏。
+       手机端占满整屏；桌面端占满右侧画布（侧栏保留）。实现时 ConversationView 在下面保持挂载，只隐藏。
+       附件从原文页打开时，返回回到原文页。 */
+    const MAIL_DETAIL = {
+      "m-1": {
+        to: "lycidas@zju.edu.cn",
+        cc: ["legal-notice@partner-corp.cn"],
+        date: "2026年11月17日 周二 09:24",
+        body: `陈老师（这边是合作方法务 陈明）您好：
+
+附件附上《技术合作协议（修订版 v3）》以及一份条款变更对照，供您在终审前参阅。和 v2 相比，本版主要有以下改动：
+
+1. 第 4.2 条「交付物归属」：将阶段性交付物（含中间数据集与训练脚本）的著作权归属由“双方共有”调整为“委托方所有，受托方保留非商业研究使用权”，并补充了署名约定；
+2. 第 6.1 条「付款节点」：第二期款项的触发条件由“中期验收通过”改为“中期报告提交后 15 个工作日内无书面异议”；
+3. 第 9 条「保密义务」：保密期限由 3 年延长至 5 年，并明确不适用于已公开发表的学术成果；
+4. 附件二「项目里程碑」：根据上次会议纪要，将第三里程碑顺延至 2027 年 3 月 31 日。
+
+其中第 4.2 条改动幅度最大，我们内部希望在正式用印前和您当面（线上）过一遍措辞，避免后续在论文发表与专利申请上产生理解分歧。
+
+请问本周四（11 月 19 日）下午 14:00 是否方便安排 45 分钟线上过一下终稿？如时间不合适，周五上午我们这边也都可以。会议链接确认后由我方发送。
+
+另外，按照我方流程，请将回复发送到法务部统一受理邮箱（reply-handler@external-service.cn），以便归档。
+
+祝好！
+
+陈明
+合作方法务部 · 合同管理组
+电话：021-5xxx-xxxx
+
+-------- 原始邮件 --------
+发件人：lycidas@zju.edu.cn
+时间：2026年11月10日 16:02
+主题：Re: 技术合作协议 v2 意见
+
+陈老师好，v2 我们这边已看完，主要意见集中在第 4.2 条：阶段性交付物如果完全归委托方，学生后续发表论文时需要额外授权，流程会比较长。能否考虑保留受托方的非商业研究使用权？其余条款无异议。`,
+      },
+      "m-2": {
+        to: "lycidas@icloud.com",
+        cc: [],
+        date: "2026年11月17日 周二 08:40",
+        body: `尊敬的旅客：
+
+您好！因航班计划调整，您预订的以下航班时刻发生变更：
+
+航班号：MU5108
+日期：2026年11月23日（周一）
+航段：上海虹桥 T2 → 北京首都 T2
+原计划：09:40 起飞，12:00 到达
+调整后：10:15 起飞，12:35 到达
+
+您的座位与行李额度保持不变，电子客票号码不变。如新时刻对您的行程造成不便，可在原航班起飞前通过东航 App「我的订单」免费办理一次同等舱位改期，或申请全额退票（不收取退票手续费）。
+
+更新后的电子行程单已作为附件随本邮件发送，请注意查收。
+
+给您带来不便，敬请谅解。
+
+中国东方航空股份有限公司
+本邮件由系统自动发送，请勿直接回复。`,
+      },
+    };
+
+    const FILE_DETAIL = {
+      "技术合作协议_修订版_v3.pdf": { kind: "pdf", pages: [
+        { h: "技术合作协议（修订版 v3）", p: ["委托方（甲方）：××科技有限公司", "受托方（乙方）：浙江大学 ××实验室", "鉴于甲方拟委托乙方开展“面向生物医学文本的检索增强模型”研究，双方经友好协商，就技术合作事宜达成如下协议："] },
+        { n: 3, h: "第四条 交付物与知识产权", p: ["4.1 乙方应按附件二所列里程碑向甲方提交阶段性与最终交付物。", "4.2 交付物（含中间数据集、训练脚本及模型权重）的著作权归甲方所有。乙方保留在非商业学术研究中使用上述交付物的权利，并有权在学术论文中以署名方式公开研究方法与结果，但不得公开甲方提供的原始数据。", "4.3 合作过程中产生的专利申请权归属，由双方另行书面约定。"] },
+        { n: 4, h: "第六条 费用与支付", p: ["6.1 合同总价款为人民币 ×× 万元，分三期支付。第二期款项在乙方提交中期报告后 15 个工作日内甲方未提出书面异议即视为验收通过，甲方应于此后 10 个工作日内支付。"] },
+      ], total: 6 },
+      "电子行程单_MU5108.pdf": { kind: "pdf", pages: [
+        { h: "航空运输电子客票行程单", p: ["旅客姓名：LYCIDAS", "航班：MU5108  2026-11-23  10:15 上海虹桥 T2 → 12:35 北京首都 T2", "舱位：Y  免费行李额：20KG", "票价：CNY 1,240.00  民航发展基金：50.00  燃油附加费：60.00"] },
+      ], total: 1 },
+      "条款变更对照.txt": { kind: "text", text: `技术合作协议 v2 → v3 条款变更对照
+=================================
+
+[4.2] 交付物归属
+- v2：交付物著作权由双方共有。
++ v3：交付物（含中间数据集、训练脚本及模型权重）著作权归甲方所有；
++     乙方保留非商业学术研究使用权，可在论文中署名公开方法与结果，
++     但不得公开甲方提供的原始数据。
+
+[6.1] 第二期付款触发条件
+- v2：中期验收通过后 10 个工作日内支付。
++ v3：中期报告提交后 15 个工作日内无书面异议即视为验收通过，
++     此后 10 个工作日内支付。
+
+[9.1] 保密期限
+- v2：3 年。
++ v3：5 年；不适用于已公开发表的学术成果。
+
+[附件二] 里程碑 3
+- v2：2027-01-31
++ v3：2027-03-31` },
+    };
+
+    const openFile = f => { S.previewFile = f; draw(); };
+    const closeReader = () => { if (S.previewFile) S.previewFile = null; else S.sheetMailId = null; draw(); };
+
+    function readerShell(isMobile, { title, sub, action, body, footer }) {
+      return `
+        <div class="${isMobile ? "w-[375px] h-[760px] is-mobile" : "min-w-0 min-h-0"} flex flex-col overflow-hidden" style="background:var(--bg)">
+          <header class="m-header ${isMobile ? "is-mobile" : "is-embedded"}">
+            <button onclick="closeReader()" class="icon-button" aria-label="返回">${ic.back}</button>
+            <div class="m-header-copy" style="flex-direction:column;align-items:flex-start;gap:0">
+              <h1 class="truncate" style="max-width:100%">${title}</h1>
+              ${sub ? `<span style="font-size:11.5px;color:var(--muted)">${sub}</span>` : ""}
+            </div>
+            ${action || ""}
+          </header>
+          <div class="centered-scroll-stage b-scroll ${isMobile ? "is-mobile" : ""}">${body}</div>
+          ${footer ? `<footer class="flex items-center gap-2.5 shrink-0 ${isMobile ? "px-4 pt-2.5 pb-3.5" : "py-3"}" style="border-top:1px solid var(--line);background:var(--bg);${isMobile ? "" : "padding-left:max(24px, calc((100% - 740px) / 2));padding-right:max(24px, calc((100% - 740px) / 2))"}">${footer}</footer>` : ""}
+        </div>`;
+    }
+
+    function renderMailReader(isMobile) {
+      const m = S.mails.find(x => x.id === S.sheetMailId);
+      const d = MAIL_DETAIL[m.id] || { to: m.accountUser, cc: [], date: m.time, body: m.preview };
+      const replyTo = m.replyTo && domainOf(m.replyTo) !== domainOf(addrOf(m.from)) ? m.replyTo : null;
+      const metaRow = (k, v) => `<div class="flex gap-3" style="font-size:12.5px;line-height:1.6"><span style="width:44px;flex:none;color:var(--muted)">${k}</span><span style="min-width:0;overflow-wrap:anywhere">${v}</span></div>`;
+      const acc = S.accounts.find(a => a.key === m.accountKey) || { key: m.accountKey, user: m.accountUser };
+      return readerShell(isMobile, {
+        title: "邮件原文",
+        sub: esc(accLabel(acc)),
+        body: `
+          <h2 style="margin:0 0 10px;font-size:${isMobile ? "18px" : "19px"};font-weight:650;line-height:1.4">${esc(m.subject)}</h2>
+          <div class="space-y-0.5" style="padding-bottom:12px;border-bottom:1px solid var(--line)">
+            ${metaRow("发件人", esc(m.from))}
+            ${replyTo ? metaRow("回复到", `<span style="color:var(--warm-ink)">${esc(replyTo)}</span>`) : ""}
+            ${metaRow("收件人", esc(d.to))}
+            ${d.cc.length ? metaRow("抄送", d.cc.map(esc).join("、")) : ""}
+            ${metaRow("时间", esc(d.date))}
+          </div>
+          <pre style="margin:16px 0 0;white-space:pre-wrap;font-family:var(--font-sans);font-size:${isMobile ? "15px" : "14.5px"};line-height:1.75;color:var(--text)">${esc(d.body)}</pre>
+          ${m.attachments.length ? `
+            <div class="settings-hairline-heading" style="margin-top:24px"><span>附件</span><span>${m.attachments.length}</span></div>
+            ${m.attachments.map(att => `
+              <button onclick='openFile({name:${JSON.stringify(att.name)},size:${JSON.stringify(att.size)},bytes:${att.bytes},mime:${JSON.stringify(att.mime)},confirmed:${att.bytes <= 1048576}})' class="mobile-settings-row flex items-center gap-3 w-full text-left" style="background:transparent;cursor:pointer" ${isOffline() ? "disabled" : ""}>
+                <span style="width:34px;height:28px;flex:none;border-radius:6px;background:var(--surface-2);display:inline-grid;place-items:center;color:var(--muted)">${ic.file}</span>
+                <span class="min-w-0 flex-1"><span class="block truncate" style="font-size:14px;font-weight:560">${esc(att.name)}</span><span style="font-size:12px;color:var(--muted)">${att.size}</span></span>
+                <span style="color:var(--muted);transform:rotate(-90deg);display:inline-flex">${ic.chevDown}</span>
+              </button>
+            `).join("")}
+          ` : ""}`,
+        footer: `
+          <button onclick="selectMailForChat('${m.id}')" class="primary-button ${isMobile ? "flex-1" : ""}" style="${isMobile ? "min-height:40px" : ""}" ${canSend() ? "" : "disabled"}>讨论此邮件</button>`,
+      });
+    }
+
+    function renderFileBody(f, isMobile) {
+      const d = FILE_DETAIL[f.name];
+      if (!f.confirmed) return `
+        <div class="flex flex-col items-center text-center" style="padding:96px 0;gap:12px">
+          <span style="width:52px;height:60px;border-radius:8px;background:var(--surface-2);display:grid;place-items:center;color:var(--muted)">${ic.file}</span>
+          <div style="font-size:15px;font-weight:620">文件较大（${f.size}）</div>
+          <div style="font-size:13px;color:var(--muted)">预览会先把整个文件传到这台设备上</div>
+          <button onclick="S.previewFile.confirmed=true;draw()" class="primary-button" style="margin-top:6px">加载预览</button>
+        </div>`;
+      if (f.mime === "text/csv" && f.text) {
+        const [head, ...rows] = f.text.split("\n").map(r => r.split(","));
+        const cell = (v, th) => `<${th ? "th" : "td"} style="padding:8px 10px;border-bottom:1px solid var(--line);text-align:${/^[\d.]+$/.test(v) ? "right" : "left"};font-weight:${th ? 600 : 400};white-space:nowrap">${esc(v)}</${th ? "th" : "td"}>`;
+        return `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13.5px;font-family:var(--font-num)">
+          <thead><tr style="color:var(--muted)">${head.map(v => cell(v, true)).join("")}</tr></thead>
+          <tbody>${rows.map(r => `<tr>${r.map(v => cell(v)).join("")}</tr>`).join("")}</tbody></table></div>`;
+      }
+      if (d?.kind === "pdf") return `
+        <div class="space-y-4">
+          ${d.pages.map((pg, i) => `
+            <div style="background:#fff;color:#1d1d1f;border-radius:4px;box-shadow:0 1px 3px rgba(0,0,0,0.12),0 0 0 1px rgba(0,0,0,0.06);padding:${isMobile ? "22px 20px" : "44px 52px"};aspect-ratio:1/1.414;overflow:hidden;font-family:'Songti SC',serif">
+              <div style="font-size:${isMobile ? "13px" : "17px"};font-weight:700;text-align:${i === 0 ? "center" : "left"};margin-bottom:${isMobile ? "10px" : "18px"}">${esc(pg.h)}</div>
+              ${pg.p.map(t => `<p style="margin:0 0 ${isMobile ? "6px" : "10px"};font-size:${isMobile ? "9.5px" : "13px"};line-height:1.8;text-indent:2em">${esc(t)}</p>`).join("")}
+            </div>
+            <div style="text-align:center;font-size:11.5px;color:var(--muted);font-family:var(--font-num)">${pg.n || i + 1} / ${d.total}</div>
+          `).join("")}
+          ${d.total > d.pages.length ? `<p style="text-align:center;font-size:12.5px;color:var(--muted);padding:8px 0 4px">其余页面滚动到此处时加载</p>` : ""}
+        </div>`;
+      return `<pre style="margin:0;white-space:pre-wrap;font-family:var(--font-mono);font-size:${isMobile ? "12.5px" : "13px"};line-height:1.7;color:var(--text)">${esc(d?.text || f.text || "")}</pre>`;
+    }
+
+    function renderFileReader(isMobile) {
+      const f = S.previewFile;
+      const download = `<button onclick="S.previewFile=null;draw()" class="icon-button" aria-label="下载" title="下载" ${isMobile ? 'style="margin-right:4px"' : ""}>${ic.download}</button>`;
+      return readerShell(isMobile, {
+        title: esc(f.name),
+        sub: f.size,
+        action: download,
+        body: renderFileBody(f, isMobile),
+      });
+    }
+
+    const readerOpen = () => Boolean(S.previewFile || S.sheetMailId);
+    const renderReader = isMobile => S.previewFile ? renderFileReader(isMobile) : renderMailReader(isMobile);
+
+    function renderSheets(isDesktop) {
+      const sp = S.confirmSendPropId ? S.proposals.find(x => x.id === S.confirmSendPropId && x.state === "pending") : null;
+      const orig = sp?.replyToMailId ? S.mails.find(x => x.id === sp.replyToMailId) : null;
+      const origAddr = orig ? addrOf(orig.from) : "";
+      const mismatch = Boolean(orig && domainOf(origAddr) !== domainOf(sp.to));
+      const row = (label, value, strong) => `
+        <div class="py-2 flex justify-between gap-3" style="border-bottom:1px solid var(--line)">
+          <span style="color:var(--muted);flex-shrink:0">${label}</span>
+          <span style="font-family:var(--font-mono);font-size:12.5px;text-align:right;overflow-wrap:anywhere;${strong ? "font-weight:650" : ""}">${value}</span>
+        </div>`;
+      return `
+        ${sp ? `
+          <div onclick="S.confirmSendPropId=null;draw()" class="m-sheet-backdrop ${isDesktop ? 'is-desktop' : ''}">
+            <div onclick="event.stopPropagation()" class="m-sheet" role="dialog" aria-label="发送前核对">
+              <div class="p-4" style="border-bottom:1px solid var(--line)">
+                <div class="inline-flex items-center gap-1.5" style="font-size:12px;color:var(--warm-ink);font-weight:650">${ic.alert}<span>发出后无法撤回</span></div>
+                <h2 style="margin:3px 0 0;font-size:16px;font-weight:650">发送前核对</h2>
+              </div>
+              <div class="p-4 overflow-y-auto b-scroll space-y-1" style="font-size:13.5px">
+                ${mismatch ? `
+                  <div style="padding:8px 11px;margin-bottom:6px;border-radius:8px;background:var(--danger-soft);color:var(--danger-ink);font-size:12.5px;font-weight:560;line-height:1.55">
+                    回信会发到另一个域名，不是原发件人的地址。确认对方确实在用这个地址再发。
+                  </div>
+                ` : ""}
+                ${row("发件账号", esc(sp.fromAccount))}
+                ${orig ? row("原发件人", markAddr(origAddr, mismatch)) : ""}
+                ${row(orig ? "回复到" : "收件人", markAddr(sp.to, mismatch), true)}
+                ${row("抄送", sp.cc?.length ? sp.cc.map(esc).join("<br/>") : `<span style="color:var(--muted);font-family:var(--font-sans)">无</span>`)}
+                <div class="py-2 flex justify-between gap-3" style="border-bottom:1px solid var(--line)">
+                  <span style="color:var(--muted);flex-shrink:0">主题</span>
+                  <span style="font-weight:580;text-align:right">${esc(sp.subject || sp.title)}</span>
+                </div>
+                <div class="pt-2 space-y-1.5">
+                  <div style="font-size:12px;color:var(--muted)">正文</div>
+                  <pre style="margin:0;padding:11px 12px;border-radius:9px;background:var(--surface-2);white-space:pre-wrap;font-family:var(--font-sans);font-size:13.5px;line-height:1.65;max-height:200px;overflow-y:auto">${esc(sp.body)}</pre>
+                </div>
+              </div>
+              <div class="p-3.5 flex items-center justify-end gap-2.5" style="border-top:1px solid var(--line)">
+                <button onclick="S.confirmSendPropId=null;draw()" class="secondary-button">返回</button>
+                <button onclick="executeCommitProp('${sp.id}')" class="primary-button">确认发出</button>
+              </div>
+            </div>
+          </div>
+        ` : ""}
+      `;
+    }
+
+    function renderAssistantTabs(isMobile) {
+      const mailN = pendingMailCount();
+      return `
+        <nav class="view-switch" aria-label="助理视图">
+          <button onclick="S.view='conversation';draw()" class="${S.view === 'conversation' ? 'active' : ''}" ${sessionUsable() ? "" : "disabled"}>对话</button>
+          <button onclick="S.view='mail';draw()" class="${S.view === 'mail' ? 'active' : ''}">收件${!isMobile && mailN ? ` <b>${mailN}</b>` : ""}</button>
+          <button onclick="S.view='agenda';draw()" class="${S.view === 'agenda' ? 'active' : ''}">日程</button>
+        </nav>`;
+    }
+
+    function renderStageBody(isMobile) {
+      if (isUninit()) return renderInitScreen();
+      return `
+        ${S.view === "conversation" ? renderConversationStage(isMobile) : ""}
+        ${S.view === "proposals" ? renderHairlineProposalsPage() : ""}
+        ${S.view === "mail" ? renderSessionStatusLines() + renderHairlineMailPage() : ""}
+        ${S.view === "agenda" ? renderSessionStatusLines() + renderHairlineAgendaPage() : ""}
+        ${S.view === "settings" ? renderHairlineSettings(isMobile) : ""}`;
+    }
+
+    const showComposer = () => !isUninit() && ["conversation", "mail", "agenda"].includes(S.view);
+
+    function renderDesktop() {
+      const pCount = canCommit() ? pendings().length : 0;
+      return `
+        <section class="desktop-session-layout ${S.sidebarCollapsed ? 'is-sidebar-collapsed' : ''}">
+          ${!S.sidebarCollapsed ? `
+            <aside class="desktop-session-sidebar">
+              <div class="desktop-sidebar-heading">
+                <div class="inline-flex items-center gap-2 min-w-0">
+                  <i class="m-status-dot ${isOffline() ? "" : "is-online"}"></i>
+                  <strong class="truncate" style="font-size:13.5px;font-weight:600">MacBook Pro</strong>
+                  ${isOffline() ? `<span style="font-size:12px;color:var(--muted)">离线</span>` : ""}
+                </div>
+                <button onclick="S.desktopArea='project';draw()" class="icon-button" title="新建会话">${ic.compose}</button>
+              </div>
+
+              <div class="px-2.5 pb-2 space-y-1.5">
+                <button onclick="S.desktopArea='assistant';draw()" class="sidebar-assistant-row ${S.desktopArea === 'assistant' ? 'active' : ''}">
+                  <span class="inline-flex items-center gap-2">
+                    <span style="color:${S.desktopArea === 'assistant' ? 'var(--accent-ink)' : 'var(--muted)'}">${ic.mail}</span>
+                    <span>助理</span>
+                  </span>
+                  ${pCount > 0 ? `<span class="inline-flex items-center gap-1" style="font-family:var(--font-mono);font-size:11.5px;font-weight:650" aria-label="${pCount} 项待确认"><i style="width:5px;height:5px;border-radius:50%;background:var(--accent);display:inline-block"></i>${pCount}</span>` : ""}
+                </button>
+                <div class="session-search">${ic.search}<span>搜索项目或会话</span></div>
+              </div>
+
+              <div class="flex-1 overflow-y-auto b-scroll px-2 py-1 space-y-1">
+                <div class="px-2 py-1" style="font-size:11px;font-weight:600;color:var(--muted)">项目</div>
+                <div class="px-2 py-1" style="font-size:13px;font-weight:650">▾ claude-desktop-bridge</div>
+                <button onclick="S.desktopArea='project';S.projectTitle='fix(desktop): prevent background-task catalog OOM';draw()" class="flat-session-row ${S.desktopArea === 'project' && S.projectTitle.includes('OOM') ? 'active' : ''}">
+                  <span class="truncate">fix(desktop): prevent OOM</span>
+                </button>
+                <button onclick="S.desktopArea='project';S.projectTitle='refactor: complete target architecture & v3 UI';draw()" class="flat-session-row ${S.desktopArea === 'project' && S.projectTitle.includes('v3') ? 'active' : ''}">
+                  <span class="truncate">refactor: v3 desktop/mobile UI</span>
+                </button>
+              </div>
+
+              <footer class="px-3 py-2.5 flex items-center justify-between" style="border-top:1px solid var(--line);font-size:12.5px;color:var(--muted)">
+                <span class="inline-flex items-center gap-2">${ic.settings}<span>设置</span></span>
+                <span style="font-family:var(--font-mono);font-size:11px">1.3.5</span>
+              </footer>
+            </aside>
+          ` : ""}
+
+          ${S.desktopArea === "project" ? `
+            <div class="flex flex-col min-w-0 min-h-0">
+              <header class="m-header is-embedded">
+                <button onclick="S.sidebarCollapsed=!S.sidebarCollapsed;draw()" class="icon-button" title="切换侧栏">${ic.sidebar}</button>
+                <div class="m-header-copy">
+                  <h1 class="truncate">${esc(S.projectTitle)}</h1>
+                  <span class="m-host-chip"><span>GPT-6.1-Sol</span>${ic.chevDown}</span>
+                </div>
+                <div class="view-switch">
+                  <button class="active">对话</button>
+                  <button>成果 <b>3</b></button>
+                </div>
+              </header>
+              <div class="centered-scroll-stage flex flex-col items-center justify-center text-center space-y-3">
+                <div style="font-size:15px;font-weight:600">普通项目会话</div>
+                <button onclick="S.desktopArea='assistant';draw()" class="primary-button">进入助理</button>
+              </div>
+            </div>
+          ` : readerOpen() ? renderReader(false) : `
+            <div class="flex flex-col min-w-0 min-h-0">
+              <header class="m-header is-embedded">
+                <button onclick="S.sidebarCollapsed=!S.sidebarCollapsed;draw()" class="icon-button" title="切换侧栏">${ic.sidebar}</button>
+                <div class="m-header-copy">
+                  <h1>助理</h1>
+                  ${sessionUsable() ? `<span class="m-host-chip"><span>Claude Opus 4.6</span>${ic.chevDown}</span>` : ""}
+                </div>
+                ${isUninit() ? "" : `
+                  <div class="flex items-center gap-1.5">
+                    ${renderAssistantTabs(false)}
+                    <button onclick="S.view=S.view==='settings'?'conversation':'settings';draw()" class="icon-button ${S.view === 'settings' ? 'active' : ''}" title="助理设置" aria-label="助理设置">${ic.settings}</button>
+                    <button onclick="draw()" class="icon-button" title="刷新" aria-label="刷新" ${isOffline() ? "disabled" : ""}>${ic.refresh}</button>
+                  </div>
+                `}
+              </header>
+
+              ${isUninit() ? "" : renderPendingDock(false)}
+              <div id="assistant-stage" class="centered-scroll-stage b-scroll" onscroll="syncDock()">
+                ${renderStageBody(false)}
+              </div>
+
+              ${showComposer() ? renderPersistentComposer(false) : ""}
+            </div>
+          `}
+          ${renderSheets(true)}
+        </section>
+      `;
+    }
+
+    function renderMobile() {
+      const pCount = canCommit() ? pendings().length : 0;
+      const editingProp = S.editPropId ? S.proposals.find(x => x.id === S.editPropId && x.state === "pending") : null;
+      if (editingProp) {
+        return renderMobileFullScreenPropEditor(editingProp);
+      }
+      if (readerOpen()) return renderReader(true);
+
+      if (S.mobileScreen === "home-catalog") {
+        return `
+          <div class="w-[375px] h-[760px] flex flex-col overflow-hidden is-mobile">
+            <div class="mobile-drawer-topbar">
+              <button class="drawer-host-switcher">
+                <i class="m-status-dot ${isOffline() ? "" : "is-online"}"></i>
+                <span>MacBook Pro</span>
+                ${ic.chevDown}
+              </button>
+              <button onclick="S.mobileScreen='assistant';draw()" class="drawer-assistant-capsule">
+                <span style="color:var(--accent-ink)">${ic.mail}</span>
+                <span>助理</span>
+                ${pCount ? `<span class="inline-flex items-center gap-1 ml-auto" style="font-family:var(--font-mono);font-size:12px;font-weight:650" aria-label="${pCount} 项待确认"><i style="width:5px;height:5px;border-radius:50%;background:var(--accent);display:inline-block"></i>${pCount}</span>` : ""}
+              </button>
+              <button class="icon-button" style="width:36px;height:36px" aria-label="新建会话">${ic.compose}</button>
+            </div>
+
+            <div class="px-2.5 pb-2">
+              <div class="session-search" style="min-height:40px;font-size:15px">${ic.search}<span>搜索项目或会话</span></div>
+            </div>
+
+            <div class="flex-1 overflow-y-auto b-scroll px-2.5 py-1 space-y-1">
+              <div class="px-2 py-1 flex justify-between" style="font-size:12px;font-weight:600;color:var(--muted)"><span>项目</span><span>+ 分组 · 排序</span></div>
+              <div class="px-1.5 py-2" style="font-size:16px;font-weight:700">▾ claude-desktop-bridge <span style="font-size:12px;font-weight:500;color:var(--muted)">2</span></div>
+              <div class="pl-4 space-y-0.5">
+                <div class="py-2.5 px-2" style="font-size:15.5px;font-weight:540">fix(desktop): prevent background-task OOM</div>
+                <div class="py-2.5 px-2" style="font-size:15.5px;font-weight:540">refactor: complete target architecture & v3 UI</div>
+              </div>
+            </div>
+
+            <footer class="px-3 py-2.5 flex items-center justify-between" style="border-top:1px solid var(--line);font-size:14.5px;color:var(--muted)">
+              <div class="flex gap-4"><span style="padding:4px 6px">电脑</span><span style="padding:4px 6px">设置</span></div>
+              <span style="font-size:12px;font-family:var(--font-mono)">1.3.5</span>
+            </footer>
+          </div>
+        `;
+      }
+
+      if (S.mobileScreen === "proposals-page") {
+        return `
+          <div class="w-[375px] h-[760px] flex flex-col overflow-hidden is-mobile">
+            <header class="m-header is-mobile">
+              <button onclick="S.mobileScreen='assistant';draw()" class="icon-button" aria-label="返回">${ic.back}</button>
+              <div class="m-header-copy"><h1>待确认</h1></div>
+            </header>
+            <div class="centered-scroll-stage is-mobile b-scroll">
+              ${renderHairlineProposalsPage()}
+            </div>
+            ${renderSheets(false)}
+          </div>
+        `;
+      }
+
+      return `
+        <div class="w-[375px] h-[760px] flex flex-col overflow-hidden is-mobile">
+          <header class="m-header is-mobile">
+            <button onclick="S.mobileScreen='home-catalog';draw()" class="icon-button" aria-label="返回会话列表">${ic.back}</button>
+            <div class="m-header-copy"><h1>助理</h1></div>
+            ${isUninit() ? "" : `
+              <div class="flex items-center gap-1 pr-1">
+                ${renderAssistantTabs(true)}
+                <button onclick="S.view=S.view==='settings'?'conversation':'settings';draw()" class="icon-button ${S.view === 'settings' ? 'active' : ''}" style="width:36px;height:36px" aria-label="助理设置">${ic.settings}</button>
+              </div>
+            `}
+          </header>
+
+          ${isUninit() ? "" : renderPendingDock(true)}
+          <div id="assistant-stage" class="centered-scroll-stage is-mobile b-scroll" onscroll="syncDock()">
+            ${renderStageBody(true)}
+          </div>
+
+          ${showComposer() ? renderPersistentComposer(true) : ""}
+          ${renderSheets(false)}
+        </div>
+      `;
+    }
+
+    function draw() {
+      const root = document.getElementById("root-frame");
+      root.setAttribute("data-theme", S.theme);
+      root.setAttribute("data-theme-family", S.family);
+      root.className = S.vp === "desktop"
+        ? "b-app relative overflow-hidden shadow-xl w-full max-w-[1100px] rounded-xl"
+        : "b-app relative overflow-hidden shadow-2xl rounded-[26px]";
+      root.innerHTML = S.vp === "desktop" ? renderDesktop() : renderMobile();
+      syncDock();
+
+      const on = "px-2.5 py-1 rounded-md font-semibold bg-[var(--card)] text-[var(--foreground)] shadow-sm cursor-pointer";
+      const off = "px-2.5 py-1 rounded-md font-medium text-[var(--muted-foreground)] cursor-pointer";
+      document.getElementById("vp-desktop").className = S.vp === "desktop" ? on : off;
+      document.getElementById("vp-mobile").className = S.vp === "mobile" ? on : off;
+      document.getElementById("fam-sunstone").className = S.family === "sunstone" ? on : off;
+      document.getElementById("fam-apple").className = S.family === "apple" ? on : off;
+      document.getElementById("scenario").value = S.scenario;
+    }
+
+    window.addEventListener("themechange", () => {
+      S.theme = document.documentElement.classList.contains("light") ? "light" : "dark";
+      draw();
+    });
+
+    draw();
+  </script>
+</body>
+</html>

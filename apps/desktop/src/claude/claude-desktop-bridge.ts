@@ -490,7 +490,13 @@ export class ClaudeDesktopBridge extends EventEmitter {
     };
   }
 
-  private async hydrateContextModelFromTail(sessionId: string): Promise<void> {
+  private async hydrateContextModel(sessionId: string, nativeModel: string | undefined, messages?: readonly unknown[]): Promise<void> {
+    if (this.directModelDisplayName(nativeModel) || this.contextStates.get(sessionId)?.model) return;
+    const pageModel = messages && extractLatestTranscriptModel(messages);
+    if (pageModel) {
+      hydrateObservedContextModel(this.ensureContextState(sessionId), pageModel);
+      return;
+    }
     if (!this.inspector.ready || !this.inspector.supports("getTranscriptPage")) return;
     try {
       const tail = record(await this.inspector.call("getTranscriptPage", [sessionId, "", 20, { window: "accept" }]));
@@ -900,7 +906,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
   }
 
   async refreshDesktopSession(sessionId: string): Promise<void> {
-    await this.refreshSessionMetadata(this.desktopId(sessionId));
+    await this.refreshSessionMetadata(this.desktopId(sessionId), { includeContext: false });
   }
 
   private async readSessionTranscript(id: string) {
@@ -1035,7 +1041,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
     return { sessionId, messageId, scope, ...(prefill !== undefined ? { prefill } : {}) };
   }
 
-  async history(sessionId: string, cursor?: string, limit = 50): Promise<BridgeHistoryPage> {
+  async history(sessionId: string, cursor?: string, limit = 50, { hydrateModel = false } = {}): Promise<BridgeHistoryPage> {
     const id = this.desktopId(sessionId);
     const read = diagnostics.begin(cursor ? "history.cursor" : "history.initial", { cursor: Boolean(cursor), limit });
     try {
@@ -1119,6 +1125,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
           }
           this.applyTranscriptContextMessages(sessionId, combined);
         }
+        if (hydrateModel) await this.hydrateContextModel(id, this.native.get(id)?.model, page.messages);
         this.projectSessions();
         if (JSON.stringify(this.session(sessionId)) !== previousSession) this.emit("changed");
       }
@@ -1249,20 +1256,16 @@ export class ClaudeDesktopBridge extends EventEmitter {
     };
   }
 
-  private async refreshSessionMetadata(sessionId: string): Promise<NativeSession> {
+  private async refreshSessionMetadata(sessionId: string, { includeContext }: { includeContext: boolean }): Promise<NativeSession> {
     const previousSnapshot = JSON.stringify(this.session(sessionId));
     const native = nativeSession(await this.inspector.call("getSession", [sessionId]));
     await this.observeNativeSession(native);
-    if (native.turnRunning === true) {
-      const live = await this.readLiveContextUsage(sessionId);
-      if (live) this.applyLiveContextUsage(sessionId, live);
-    }
-    const rawTrimmed = native.model?.trim();
-    const needsTailModel = !rawTrimmed
-      || rawTrimmed.toLowerCase() === "default"
-      || !this.directModelDisplayName(rawTrimmed);
-    if (needsTailModel && !this.contextStates.get(sessionId)?.model) {
-      await this.hydrateContextModelFromTail(sessionId);
+    if (includeContext) {
+      if (native.turnRunning === true) {
+        const live = await this.readLiveContextUsage(sessionId);
+        if (live) this.applyLiveContextUsage(sessionId, live);
+      }
+      await this.hydrateContextModel(sessionId, native.model);
     }
     this.projectSessions();
     if (JSON.stringify(this.session(sessionId)) !== previousSnapshot) this.emit("changed");
@@ -1272,7 +1275,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
   async configuration(sessionId: string): Promise<BridgeSessionConfiguration> {
     const id = this.desktopId(sessionId);
     await this.refreshModelCatalog("retry-failed");
-    const native = await this.refreshSessionMetadata(id);
+    const native = await this.refreshSessionMetadata(id, { includeContext: true });
     const context = this.session(sessionId)?.contextUsage;
     const resolved = this.resolveSessionModel(sessionId, native.model);
     const fallbackLabel = resolved.modelDisplayName

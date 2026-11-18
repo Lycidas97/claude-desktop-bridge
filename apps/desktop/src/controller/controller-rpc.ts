@@ -294,7 +294,7 @@ async function dispatchControllerRequestInner(
     await host.broker.refreshDesktopSession(sessionId);
     const session = host.broker.session(sessionId);
     if (!session) throw new Error("Session not found");
-    const history = await host.broker.history(sessionId, undefined, numberParam(params, "limit", 18));
+    const history = await host.broker.history(sessionId, undefined, numberParam(params, "limit", 18), { hydrateModel: true });
     return {
       session: host.broker.session(sessionId) ?? session,
       history,

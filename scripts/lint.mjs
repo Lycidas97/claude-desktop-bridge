@@ -8,20 +8,47 @@ function isMember(node, object, property) {
     && node.name.text === property;
 }
 
+function createsWithoutConstructor(node, className) {
+  return ts.isCallExpression(node)
+    && isMember(node.expression, 'Object', 'create')
+    && node.arguments.length > 0
+    && isMember(node.arguments[0], className, 'prototype');
+}
+
+const desktopTests = [
+  'apps/desktop/src/**/*.test.ts',
+  'apps/desktop/scripts/**/*.test.mjs',
+  'scripts/fixtures/native-approval-host.ts',
+];
+
 const rules = [
   {
     id: 'desktop/controller-real-constructor',
-    files: [
-      'apps/desktop/src/**/*.test.ts',
-      'apps/desktop/scripts/**/*.test.mjs',
-      'scripts/fixtures/native-approval-host.ts',
-    ],
+    files: desktopTests,
     message: 'Use createControllerFixture(...) to run the real DesktopController constructor.',
+    matches: node => createsWithoutConstructor(node, 'DesktopController'),
+  },
+  {
+    id: 'desktop/claude-bridge-real-constructor',
+    files: desktopTests,
+    message: 'Use new ClaudeDesktopBridge(...) with test dependencies to run the real constructor.',
+    matches: node => createsWithoutConstructor(node, 'ClaudeDesktopBridge'),
+  },
+  {
+    id: 'ci/prebuild-protocol-source',
+    files: ['scripts/relay-contract-probe.mjs'],
+    message: 'Import from packages/protocol/src in this pre-build script.',
     matches(node) {
-      return ts.isCallExpression(node)
-        && isMember(node.expression, 'Object', 'create')
-        && node.arguments.length > 0
-        && isMember(node.arguments[0], 'DesktopController', 'prototype');
+      let specifier;
+      if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
+        specifier = node.moduleSpecifier;
+      } else if (ts.isCallExpression(node) && (node.expression.kind === ts.SyntaxKind.ImportKeyword
+        || (ts.isIdentifier(node.expression) && node.expression.text === 'require'))) {
+        specifier = node.arguments[0];
+      }
+      return specifier && ts.isStringLiteralLike(specifier)
+        && (/^@bridge\/protocol(?:\/|$)/u.test(specifier.text)
+          || /(?:^|\/)packages\/protocol\/dist(?:\/|$)/u.test(specifier.text));
     },
   },
 ];

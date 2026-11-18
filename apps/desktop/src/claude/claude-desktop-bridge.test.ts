@@ -63,6 +63,7 @@ class NativeDesktop extends EventEmitter {
   keepUntrustedAfterSave = false;
   promptChoiceValues: string[] | undefined;
   applyPrSettings = true;
+  gitInfo: { branch: string } | null = { branch: "feature/owned" };
   promptResult = true;
   ignoreStartTitle = false;
   inputQueueDrained = vi.fn(async () => false);
@@ -89,7 +90,7 @@ class NativeDesktop extends EventEmitter {
     if (method === "getSession") return structuredClone(session);
     if (method === "resolveSessionFileQuietly") return this.resolvedSessionFiles.get(String(args[1])) ?? null;
     if (method === "getContextUsage") return structuredClone(this.contextUsage);
-    if (method === "getGitInfo") return { branch: "feature/owned" };
+    if (method === "getGitInfo") return this.gitInfo;
     const promptField = ({ respondToRefusalFallbackPrompt: "pendingRefusalFallbackPrompt", respondToAutoModeServerFallbackPrompt: "pendingAutoModeServerFallbackPrompt", respondToLanyardConsent: "pendingLanyardConsent", respondToViolinBowPrompt: "pendingViolinBowPrompt", answerPendingCwdTrust: "pendingCwdTrustPrompt" } as Record<string, string>)[method];
     if (promptField) {
       if (!this.promptResult || !session || (session[promptField] as { promptId?: string } | undefined)?.promptId !== args[1]) return false;
@@ -469,14 +470,28 @@ describe("native application dialogs and PR Auto-fix", () => {
       expect(bound.prs[0]?.autoFix).toBe(true);
       expect(f.native.calls.find(call => call.method === "setBoundPrAutoFix")?.args).toEqual(["local-native", "owner/repo", 42, true, "github.com"]);
       expect((await f.bridge.setPrAutoFix({ sessionId: "local-native", target: "own-prs", enabled: true }, resolver)).onlyOwnPrs).toBe(true);
+      f.native.sessions[0]!.harnessCwd = "/owned/worktree";
+      await f.bridge.refreshRuntime();
       expect((await f.bridge.setPrAutoFix({ sessionId: "local-native", target: "next-pr", enabled: true }, resolver)).nextOwnPrArmed).toBe(true);
-      expect(f.native.calls.find(call => call.method === "armAutoFixOnNextPr")?.args).toEqual(["local-native", "feature/owned"]);
-      await expect(f.bridge.setPrAutoFix({ sessionId: "local-native", target: "next-pr", enabled: false }, resolver)).rejects.toThrow("取消布防");
+      expect(f.native.calls.filter(call => call.method === "armAutoFixOnNextPr").map(call => call.args)).toEqual([["local-native", "feature/owned"]]);
+      expect(f.native.calls.filter(call => call.method === "getGitInfo").map(call => call.args)).toEqual([["/owned/worktree"]]);
       f.native.applyPrSettings = false;
       delete f.native.sessions[0]!.autoFixNextOwnPr;
       await expect(f.bridge.setPrAutoFix({ sessionId: "local-native", target: "next-pr", enabled: true }, resolver)).rejects.toThrow("Desktop 未应用");
       await expect(f.bridge.setPrAutoFix({ sessionId: "local-native", target: "own-prs", enabled: false }, resolver)).rejects.toThrow("Desktop 未应用");
       expect(f.eventLog.replay(0, 100).filter(event => event.type === "pr.autoFix.updated")).toHaveLength(3);
+    } finally { await f.close(); }
+  });
+
+  it.each([
+    { enabled: false, branch: "feature/owned", error: "取消布防" },
+    { enabled: true, branch: null, error: "分支" },
+  ])("does not arm the next PR when enabled=$enabled and branch=$branch", async ({ enabled, branch, error }) => {
+    const f = await fixture();
+    try {
+      f.native.gitInfo = branch === null ? null : { branch };
+      await expect(f.bridge.setPrAutoFix({ sessionId: "local-native", target: "next-pr", enabled }, { deviceId: "phone", name: "Phone" })).rejects.toThrow(error);
+      expect(f.native.calls.filter(call => call.method === "armAutoFixOnNextPr")).toEqual([]);
     } finally { await f.close(); }
   });
 

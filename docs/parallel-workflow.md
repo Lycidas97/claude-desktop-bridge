@@ -4,12 +4,12 @@ How the patrol runs Issues through dispatch, implementation, review, CI, and mer
 
 ## Roles
 
-- **Patrol**: the session the owner talks to. Dispatches, sets merge order, settles scheduling conflicts and owner decisions. After merges it runs `main` CI and the dogfood install, and it is the single writer of `LESSONS.md`, `docs/subsystems/*.md`, and shared memory. It makes no code judgments and does not relay review traffic.
+- **Patrol**: the session the owner talks to. Dispatches, sets merge order, settles scheduling conflicts and owner decisions, and runs every PR's `ci:local` (**CI**). After merges it runs `main` CI and the dogfood install, and it is the single writer of `LESSONS.md`, `docs/subsystems/*.md`, and shared memory. It makes no code judgments and does not relay review traffic.
   - The patrol never edits code, tests, or scripts, and never diagnoses failures. Any work that needs a code change goes to a fork. Record it as a comment on the Issue it belongs to (the merged PR's Issue for a `main` failure); open a new Issue only when none fits.
   - The patrol never pushes to `main`. Its `LESSONS.md`, `docs/subsystems/*.md`, and other doc edits land as docs-only PRs, reviewed like any other.
   - Issue bodies and briefs carry symptoms, the owner's decisions, and subsystem paths. They never carry line-level code locations or root-cause claims; locating the code is the fork's job.
   - In a turn that cannot `start_session` (**Host constraints**), the patrol proposes the session (fork, reviewer, or Astra) as a card and waits for the owner to start it. If it cannot propose one, it sends `BLOCKED` and stops; it never routes around the constraint.
-- **Fork**: implements one Issue in its own worktree. Never reviews or merges its own PR.
+- **Fork**: implements one Issue in its own worktree. Never reviews or merges its own PR, and never runs `ci:local`.
 - **Reviewer**: reviews every round of its PRs and merges them (**Merge**). It sees only the PR number and SHA, never the patrol's analysis or the fork brief, and otherwise stays read-only.
 - **Discussion**: a session for retros and process work. It may own docs-only PRs. Anything else it finds becomes an Issue for the patrol; it does not implement, run CI, or coordinate reviewers. After one of its PRs that changes process rules merges, it sends the patrol a short message listing the changed rules, because a long-running patrol rereads `AGENTS.md` only when it compacts.
 
@@ -65,10 +65,11 @@ Every status change is an explicit `SendMessage`:
 | --- | --- |
 | `READY #<n> <sha>` + checks run / not run. The head is frozen from here except for review fixes and syncs; any other change goes in a new PR. | fork → reviewer (and `ui-review`) |
 | `HEAD CHANGED #<n> <old> → <new>` + why | fork → reviewer (and `ui-review`) |
-| `REVIEWED #<n> <sha>: CLEAN — run ci:local` or `…: <k> BLOCKER, <m> NIT — fix` | reviewer → fork |
+| `REVIEWED #<n> <sha>: CLEAN` or `…: <k> BLOCKER, <m> NIT — fix` | reviewer → fork |
 | `UI REVIEWED #<n> <sha>: CLEAN` or `…: <k> BLOCKER, <m> NIT` + model | `ui-review` → fork and reviewer |
 | `NIT FIX OK #<n> <sha>` / `MERGE OK #<n> <sha>`: that SHA becomes the reviewed SHA | reviewer → fork |
-| `CI GREEN #<n> <sha>` / `CI FAILED #<n> <sha>` + cause | fork → reviewer |
+| `CI REQUEST #<n> <sha>` | reviewer → patrol |
+| `CI GREEN #<n> <sha>` / `CI FAILED #<n> <sha>` + failing step and log path | patrol → reviewer |
 | `MERGED #<n> <sha>` + 0–2 verified candidate lessons | reviewer → patrol |
 | `BLOCKED <reason>` | any → patrol |
 | `TAKEN OVER <PRs>` | new owner → old owner |
@@ -105,16 +106,18 @@ The `ui-review` reviewer reviews UI quality and architecture only, posts its own
 
 Flag only defects with a concrete trigger. After a `[BLOCKER]` round, re-review the whole new head. After a NIT-only round, check only `git diff <reviewed>..<new>`. After a sync, check only `git show --remerge-diff <new>`.
 
-## CI (fork)
+## CI (patrol)
 
-- On `run ci:local`, run `npm run ci:local` on the reviewed SHA as a background command, update the PR body, and report the result. Docs-only PRs skip this.
-- A failure that needs a code change is a `[BLOCKER]` round. Rerun an unchanged head at most once; a second failure with the same cause goes to Astra for diagnosis instead of a third run.
+- When the last verdict on a SHA is CLEAN, `NIT FIX OK`, or a `MERGE OK` that **After merge** step 2 does not exempt, the reviewer sends `CI REQUEST #<n> <sha>` to the patrol. Docs-only PRs skip CI.
+- The patrol runs `npm run ci:local` as a background command in the PR's fork worktree, only while its tree is clean and `HEAD` equals that SHA. At most 3 runs go at once on the Mac; further requests queue in merge order. The run publishes `ci/local-distributed` itself; nobody edits the PR body for it.
+- The patrol sends `CI GREEN` or `CI FAILED` with the failing step and log path to the reviewer, without diagnosing the failure.
+- On `CI FAILED`, a failure that needs a code change is a `[BLOCKER]` round. Otherwise the reviewer may send `CI REQUEST` once more for the unchanged head; a second failure with the same cause goes to Astra for diagnosis instead of a third run.
 
 ## Merge (reviewer)
 
 Merge SHA `X` when all of these hold:
 - the last verdict on `X` is CLEAN, `NIT FIX OK`, or `MERGE OK`;
-- `gh api repos/Lycidas97/claude-desktop-bridge/commits/X/statuses` shows `ci/local-distributed = success`, checked yourself rather than taken from the fork's report (not needed for docs-only, or for a sync head exempted by **After merge** step 2);
+- `gh api repos/Lycidas97/claude-desktop-bridge/commits/X/statuses` shows `ci/local-distributed = success`, checked yourself rather than taken from the patrol's report (not needed for docs-only, or for a sync head exempted by **After merge** step 2);
 - for a PR with a `ui-review` reviewer, its last verdict on `X` or an earlier head has no open `[BLOCKER]`;
 - every earlier PR in the merge order is merged.
 

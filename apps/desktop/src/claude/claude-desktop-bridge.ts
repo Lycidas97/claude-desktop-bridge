@@ -990,11 +990,14 @@ export class ClaudeDesktopBridge extends EventEmitter {
       if (!Array.isArray(page.messages)) throw new NativeCallError("Desktop returned an invalid transcript page");
       const nextCursor = page.hasMore === true && typeof record(page.messages[0]).uuid === "string" ? String(record(page.messages[0]).uuid) : undefined;
       const firstPlan = nativePlanMessages(page.messages)[0]?.message.content[0];
-      let boundaryFound = firstPlan?.name === "mcp__ccd_turn__update_plan" && ["first_task", "new_task"].includes(String(record(firstPlan.input).scope));
+      const plainLatestWithKnownPlan = !cursor && !firstPlan && this.messageProjection.get(sessionId)?.planObserved;
+      let needsEarlierPlan = firstPlan
+        ? !(firstPlan.name === "mcp__ccd_turn__update_plan" && ["first_task", "new_task"].includes(String(record(firstPlan.input).scope)))
+        : !cursor && !plainLatestWithKnownPlan;
       const context: unknown[] = [];
       const olderPages: unknown[][] = [];
       let before = nextCursor;
-      while (!boundaryFound && before) {
+      while (needsEarlierPlan && before) {
         diagnostics.count("history.planPage");
         const older = record(await this.inspector.call("getTranscriptPage", [id, before, limit, { window: "accept" }]));
         if (!Array.isArray(older.messages)) throw new NativeCallError("Desktop returned an invalid transcript page");
@@ -1003,7 +1006,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
           const block = message.message.content[0]!;
           context.unshift(message);
           if (block.name === "mcp__ccd_turn__wrap_up" || ["first_task", "new_task"].includes(String(record(block.input).scope))) {
-            boundaryFound = true;
+            needsEarlierPlan = false;
             break;
           }
         }
@@ -1047,7 +1050,9 @@ export class ClaudeDesktopBridge extends EventEmitter {
         } else {
           let combined: unknown[] = [...olderPages.flat(), ...page.messages];
           let scan = scanClaudeContextFromMessages(combined);
-          for (let hop = 0; !scan.anchored && before && page.messages.length >= limit && limit >= 20 && hop < 8; hop += 1) {
+          // Preserve estimated usage at session.open's 18-message default when plan recovery was skipped.
+          const canLookBack = plainLatestWithKnownPlan || (page.messages.length >= limit && limit >= 20);
+          for (let hop = 0; !scan.anchored && before && canLookBack && hop < 8; hop += 1) {
             diagnostics.count("history.planPage");
             const older = record(await this.inspector.call("getTranscriptPage", [id, before, Math.max(limit, 100), { window: "accept" }]));
             if (!Array.isArray(older.messages)) break;

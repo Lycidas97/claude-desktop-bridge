@@ -2872,6 +2872,27 @@ describe("Claude native relay", () => {
 
   const planMessage = (id: string, input: Record<string, unknown>, timestamp = 1, name = "mcp__ccd_turn__update_plan") => ({ type: "assistant", uuid: id, timestamp, message: { content: [{ type: "tool_use", id, name, input }] } });
 
+  it.each([undefined, "newer-page"])("reads only the requested ordinary history page (cursor=%s)", async cursor => {
+    const f = await fixture();
+    try {
+      if (!cursor) {
+        await f.message(planMessage("live-plan", { scope: "first_task", items: [{ content: "Read", status: "in_progress" }] }));
+        f.native.contextUsage = { totalTokens: 64_200, rawMaxTokens: 1_000_000 };
+      }
+      for (let index = 0; index < 18; index += 1) {
+        f.native.pages.set(index === 0 ? cursor ?? "" : `ordinary-${index - 1}`, {
+          messages: [{ type: "assistant", uuid: `ordinary-${index}`, message: { content: [{ type: "text", text: `Page ${index}` }] } }],
+          hasMore: index < 17,
+        });
+      }
+
+      const page = await f.bridge.history("local-native", cursor, 1);
+      expect(page).toMatchObject({ hasMore: true, nextCursor: "ordinary-0", items: [{ id: "ordinary-0", text: "Page 0" }] });
+      if (!cursor) expect(f.bridge.session("local-native")?.contextUsage).toMatchObject({ totalTokens: 64_200, maxTokens: 1_000_000, estimated: false });
+      expect(f.native.calls.filter(call => call.method === "getTranscriptPage").map(call => call.args[1])).toEqual([cursor ?? ""]);
+    } finally { await f.close(); }
+  });
+
   it("keeps one plan identity when initialization and continuation occupy adjacent native history pages", async () => {
     const f = await fixture();
     try {
@@ -2956,12 +2977,16 @@ describe("Claude native relay", () => {
     } finally { await f.close(); }
   });
 
-  it("recovers a history plan after an ordinary live assistant message initialized the projection", async () => {
+  it("recovers an older history plan on a plain latest page before any live plan is observed", async () => {
     const f = await fixture();
     try {
-      await f.message({ type: "assistant", uuid: "ordinary", timestamp: 20, message: { content: [{ type: "text", text: "Continuing work" }] } });
-      f.native.page.messages = [planMessage("history-plan", { scope: "first_task", items: [{ content: "Read", status: "in_progress" }, { content: "Verify", status: "pending" }] }, 10)];
-      await f.bridge.history("local-native");
+      const ordinary = { type: "assistant", uuid: "ordinary", timestamp: 20, message: { content: [{ type: "text", text: "Continuing work" }] } };
+      await f.message(ordinary);
+      f.native.pages.set("", { messages: [ordinary], hasMore: true });
+      f.native.pages.set("ordinary", { messages: [planMessage("history-plan", { scope: "first_task", items: [{ content: "Read", status: "in_progress" }, { content: "Verify", status: "pending" }] }, 10)], hasMore: false });
+      const history = await f.bridge.history("local-native");
+      expect(history.items.map(item => item.id)).toEqual(["ordinary"]);
+      expect(f.native.calls.filter(call => call.method === "getTranscriptPage").map(call => call.args[1])).toEqual(["", "ordinary"]);
       await f.message(planMessage("live-advance", { advance: true }, 30));
       expect(f.eventLog.latestItem("local-native", "assistant.completed", "plan:history-plan")?.data.taskPlan).toMatchObject({
         id: "history-plan", items: [{ content: "Read", status: "completed" }, { content: "Verify", status: "in_progress" }],
@@ -2999,7 +3024,7 @@ describe("Claude native relay", () => {
     } finally { await f.close(); }
   });
 
-  it("restores only plan context across multiple pages and stops at the nearest top-level new_task", async () => {
+  it.each([undefined, "newer-page"])("restores plan context up to the nearest top-level new_task (cursor=%s)", async cursor => {
     const f = await fixture();
     try {
       const old = planMessage("older-plan", { scope: "first_task", items: [{ content: "Old work", status: "in_progress" }] }, 1);
@@ -3008,16 +3033,16 @@ describe("Claude native relay", () => {
       const continuation = planMessage("continued", { scope: "continuation", items: [{ content: "Read", status: "in_progress" }, { content: "Verify", status: "pending" }] }, 20);
       const text = { type: "assistant", uuid: "latest-text", timestamp: 25, message: { content: [{ type: "text", text: "Visible latest text" }] } };
       const advance = planMessage("latest-advance", { advance: true }, 30);
-      f.native.pages.set("", { messages: [text, advance], hasMore: true });
+      f.native.pages.set(cursor ?? "", { messages: [text, advance], hasMore: true });
       f.native.pages.set("latest-text", { messages: [child, continuation], hasMore: true });
       f.native.pages.set("child-initial", { messages: [old, initial], hasMore: true });
-      const latest = await f.bridge.history("local-native", undefined, 2);
-      expect(latest).toMatchObject({ hasMore: true, nextCursor: "latest-text", items: [
+      const history = await f.bridge.history("local-native", cursor, 2);
+      expect(history).toMatchObject({ hasMore: true, nextCursor: "latest-text", items: [
         { id: "latest-text", text: "Visible latest text" },
         { id: "plan:current-plan", taskPlan: { id: "current-plan", items: [{ content: "Read", status: "completed" }, { content: "Verify", status: "in_progress" }] } },
       ] });
-      expect(latest.items).toHaveLength(2);
-      expect(f.native.calls.filter(call => call.method === "getTranscriptPage").map(call => call.args[1])).toEqual(["", "latest-text", "child-initial"]);
+      expect(history.items).toHaveLength(2);
+      expect(f.native.calls.filter(call => call.method === "getTranscriptPage").map(call => call.args[1])).toEqual([cursor ?? "", "latest-text", "child-initial"]);
       expect(f.native.calls.some(call => call.method === "getTranscript")).toBe(false);
     } finally { await f.close(); }
   });
@@ -3964,11 +3989,13 @@ describe("Claude native relay", () => {
         estimated: false,
       });
 
-      // Idle fallback: getContextUsage returns null, sidechain messages > 50 do not hide or pollute main-chain usage.
+      // With the live plan settled and no live usage, find main-chain usage behind a full sidechain page.
       f.native.contextUsage = null;
       f.native.sessions[0]!.model = "claude-sonnet-4-5";
       await f.bridge.refreshRuntime();
-      const trailingSidechains = Array.from({ length: 50 }, (_, index) => ({
+      await f.message(planMessage("live-wrap", { recap: "Done" }, 20, "mcp__ccd_turn__wrap_up"));
+      f.native.calls.length = 0;
+      const trailingSidechains = Array.from({ length: 18 }, (_, index) => ({
         type: "assistant",
         uuid: `side-${index}`,
         isSidechain: true,
@@ -3982,8 +4009,11 @@ describe("Claude native relay", () => {
         ],
         hasMore: false,
       });
-      await f.bridge.history("local-native", undefined, 50);
-      expect(f.bridge.session("local-native")?.contextUsage).toEqual({
+      const openedEstimated = await controller.handleRequest({
+        kind: "request", requestId: "open-estimated", idempotencyKey: "open-estimated", method: "session.open", params: { sessionId: "local-native" },
+      }, "mobile", "phone");
+      expect(f.native.calls.filter(call => call.method === "getTranscriptPage").map(call => call.args[1])).toEqual(["", "side-0"]);
+      expect(openedEstimated.session?.contextUsage).toEqual({
         totalTokens: 40_800,
         maxTokens: 200_000,
         percentage: 20.4,

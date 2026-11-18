@@ -771,7 +771,7 @@
   align-items: flex-end;
   justify-content: center;
   background: var(--scrim);
-  animation: m-fade var(--t-enter) var(--ease-out);
+  animation: m-sheet-scrim var(--t-enter) var(--ease-out);
 }
 
 .m-sheet {
@@ -866,8 +866,8 @@
   .m-sheet { border-bottom: 1px solid var(--line); border-radius: var(--m-r-sheet); }
 }
 
-@keyframes m-fade { from { opacity: 0; } }
-@keyframes m-sheet-rise { from { opacity: 0; transform: translateY(24px); } }
+@keyframes m-sheet-scrim { from { background-color: transparent; } }
+@keyframes m-sheet-rise { from { transform: translateY(24px); } }
 
 @media (prefers-reduced-motion: reduce) {
   .m-sheet,

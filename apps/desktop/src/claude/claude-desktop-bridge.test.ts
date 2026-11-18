@@ -2350,12 +2350,12 @@ describe("Claude native relay", () => {
     } finally { await f.close(); }
   });
 
-  it("refreshes one session configuration without refreshing the entire directory", async () => {
+  it("refreshes one session without refreshing the entire directory", async () => {
     const f = await fixture();
     try {
       f.options.scanCatalog.mockClear();
       f.native.calls = [];
-      await f.bridge.refreshDesktopConfiguration("local-native");
+      await f.bridge.refreshDesktopSession("local-native");
       expect(f.native.calls).toContainEqual({ method: "getSession", args: ["local-native"] });
       expect(f.native.calls.some(call => call.method === "getAll")).toBe(false);
       expect(f.options.scanCatalog).not.toHaveBeenCalled();
@@ -2401,6 +2401,71 @@ describe("Claude native relay", () => {
       resolvePaths.mockRestore();
       vi.unstubAllEnvs();
       await f.close();
+    }
+  });
+
+  it("opens the latest native history while the model catalog request is pending", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-open-catalog-"));
+    const state = new ConversationStateStore({ databasePath: join(root, "state.sqlite") });
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"));
+    await state.initialize();
+    await eventLog.initialize();
+    const native = new NativeDesktop();
+    native.pages.set("", { hasMore: true, messages: [
+      { type: "user", uuid: "newest", message: { content: "Latest native message" } },
+    ] });
+    native.pages.set("newest", { hasMore: false, messages: [] });
+    let releaseCatalog!: () => void;
+    const catalog = new Promise<Response>(resolve => {
+      releaseCatalog = () => resolve(new Response(null, { status: 503 }));
+    });
+    const fetchImpl = vi.fn<typeof fetch>(() => catalog);
+    const settingsPath = join(root, "settings.json");
+    const bridge = new ClaudeDesktopBridge({
+      settingsPath, eventLog, conversationState: state, inspector: native,
+      home: root, environment: {}, fetchImpl, refreshIntervalMs: 60_000,
+    });
+    const controller = createControllerFixture({ broker: bridge, eventLog });
+    const configurationRequest = {
+      kind: "request" as const, method: "session.configuration" as const,
+      requestId: "configuration", idempotencyKey: "configuration", params: { sessionId: "local-native" },
+    };
+    const pending: Promise<unknown>[] = [];
+    try {
+      await bridge.initialize();
+      await writeFile(settingsPath, JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://catalog.example.test" } }));
+      const firstConfiguration = controller.handleRequest(configurationRequest, "mobile", "phone");
+      pending.push(firstConfiguration);
+      await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(1));
+
+      native.sessions[0]!.title = "Fresh native title";
+      const opened = vi.fn();
+      pending.push(controller.handleRequest({
+        ...configurationRequest, method: "session.open", requestId: "open", idempotencyKey: "open",
+      }, "mobile", "phone").then(opened));
+      await vi.waitFor(() => expect(opened).toHaveBeenCalledWith(expect.objectContaining({
+        session: expect.objectContaining({ sessionId: "local-native", title: "Fresh native title" }),
+        history: expect.objectContaining({
+          items: [expect.objectContaining({ id: "newest", text: "Latest native message" })],
+          hasMore: true, nextCursor: "newest",
+        }),
+      })));
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+      releaseCatalog();
+      expect(await firstConfiguration).toMatchObject({ session: { title: "Fresh native title" } });
+      fetchImpl.mockResolvedValueOnce(Response.json({ data: [{ id: "fixture-model", display_name: "Fixture model" }] }));
+      await expect(controller.handleRequest({ ...configurationRequest, requestId: "retry", idempotencyKey: "retry" }, "mobile", "phone")).resolves.toMatchObject({
+        configuration: { modelsComplete: true, availableModels: [{ value: "fixture-model", displayName: "Fixture model" }] },
+      });
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    } finally {
+      releaseCatalog();
+      await Promise.allSettled(pending);
+      await bridge.close();
+      await eventLog.close();
+      state.close();
+      await rm(root, { recursive: true, force: true });
     }
   });
 

@@ -846,7 +846,9 @@ export class ClaudeDesktopBridge extends EventEmitter {
     }
   }
 
-  async refreshDesktopConfiguration(sessionId: string): Promise<void> { await this.configuration(sessionId); }
+  async refreshDesktopSession(sessionId: string): Promise<void> {
+    await this.refreshSessionMetadata(this.desktopId(sessionId));
+  }
 
   private async readSessionTranscript(id: string) {
     if (!this.options.scanCatalog) return findClaudeSessionTranscript(claudeRuntimePaths(), id);
@@ -1184,14 +1186,12 @@ export class ClaudeDesktopBridge extends EventEmitter {
     };
   }
 
-  async configuration(sessionId: string): Promise<BridgeSessionConfiguration> {
-    const id = this.desktopId(sessionId);
+  private async refreshSessionMetadata(sessionId: string): Promise<NativeSession> {
     const previousSnapshot = JSON.stringify(this.session(sessionId));
-    const native = nativeSession(await this.inspector.call("getSession", [id]));
-    await this.refreshModelCatalog("retry-failed");
+    const native = nativeSession(await this.inspector.call("getSession", [sessionId]));
     await this.observeNativeSession(native);
     if (native.turnRunning === true) {
-      const live = await this.readLiveContextUsage(id);
+      const live = await this.readLiveContextUsage(sessionId);
       if (live) this.applyLiveContextUsage(sessionId, live);
     }
     const rawTrimmed = native.model?.trim();
@@ -1199,12 +1199,18 @@ export class ClaudeDesktopBridge extends EventEmitter {
       || rawTrimmed.toLowerCase() === "default"
       || !this.directModelDisplayName(rawTrimmed);
     if (needsTailModel && !this.contextStates.get(sessionId)?.model) {
-      await this.hydrateContextModelFromTail(id);
+      await this.hydrateContextModelFromTail(sessionId);
     }
     this.projectSessions();
-    const projected = this.session(sessionId);
-    const context = projected?.contextUsage;
-    if (JSON.stringify(projected) !== previousSnapshot) this.emit("changed");
+    if (JSON.stringify(this.session(sessionId)) !== previousSnapshot) this.emit("changed");
+    return native;
+  }
+
+  async configuration(sessionId: string): Promise<BridgeSessionConfiguration> {
+    const id = this.desktopId(sessionId);
+    await this.refreshModelCatalog("retry-failed");
+    const native = await this.refreshSessionMetadata(id);
+    const context = this.session(sessionId)?.contextUsage;
     const resolved = this.resolveSessionModel(sessionId, native.model);
     const fallbackLabel = resolved.modelDisplayName
       ?? (resolved.configModel && /\[1m\]$/iu.test(resolved.configModel) ? "默认模型 · 1M" : "默认模型");

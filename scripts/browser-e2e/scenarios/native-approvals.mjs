@@ -283,6 +283,18 @@ export async function verifyNativeApprovals(page, host, steps, directory, baseUr
   assert.equal(resolutions.filter((request) => request.params.requestId === question.request.requestId).length, 1);
   assert.equal(host.requests.filter((request) => request.method === "turn.start").length, 0);
   steps.push("live native questions survive reconnect; single-choice and multi-select answers reach the same native requestID exactly once without chat");
+  await page.getByRole("button", { name: "会话设置", exact: true }).click();
+  const effortConfiguration = page.getByRole("dialog", { name: originalTitle, exact: true });
+  const highEffort = effortConfiguration.getByRole("button", { name: "高", exact: true });
+  assert.equal(await effortConfiguration.getByRole("button", { name: "低", exact: true }).getAttribute("aria-pressed"), "false", "A session with no effort must not show Low as selected");
+  await highEffort.click();
+  await effortConfiguration.getByRole("button", { name: "保存配置", exact: true }).click();
+  await effortConfiguration.waitFor({ state: "hidden" });
+  assert.deepEqual(host.nativeApproval.calls.filter(call => call.method === "setEffort").map(call => call.args), [[sessionId, "high"]]);
+  await page.getByRole("button", { name: "会话设置", exact: true }).click();
+  await eventually(() => highEffort.getAttribute("aria-pressed"), "true", "Reopening settings reads back the Native effort");
+  await effortConfiguration.getByRole("button", { name: "关闭", exact: true }).click();
+  steps.push("unset effort is not shown as Low, and saving High calls native setEffort and survives reopening");
   for (const mode of ["bypassPermissions", "auto"]) {
     await page.getByRole("button", { name: "会话设置", exact: true }).click();
     const configuration = page.getByRole("dialog", { name: originalTitle, exact: true });

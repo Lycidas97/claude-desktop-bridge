@@ -50,7 +50,6 @@ export const PERMISSION_MODE_OPTIONS: ReadonlyArray<{ value: BridgeSDKPermission
 export interface SessionConfigurationChange {
   model?: string | null;
   effort?: string | null;
-  reasoningEffort?: string | null;
   permissionMode?: BridgeSDKPermissionMode | undefined;
   outputStyle?: string;
 }
@@ -70,7 +69,7 @@ export function SessionConfigurationDialog({
 }) {
   const [configuration, setConfiguration] = useState<BridgeSessionConfiguration>();
   const [model, setModel] = useState("");
-  const [effort, setEffort] = useState("medium");
+  const [effortDraft, setEffortDraft] = useState<string>();
   const [nativePermissionMode, setNativePermissionMode] = useState<BridgeSDKPermissionMode>();
   const [outputStyle, setOutputStyle] = useState<string>();
   const [loading, setLoading] = useState(true);
@@ -78,7 +77,6 @@ export function SessionConfigurationDialog({
   const [confirmFullAccess, setConfirmFullAccess] = useState(false);
   const [error, setError] = useState<string>();
   const claudeSession = !session.runtimeId || session.runtimeId === "claude-desktop";
-  const nativeRuntime = session.transport === "claude-desktop-native";
   // Quota lookup is independent of Claude Desktop's native execution channel.
   const quotaState = useOptionalMagpieQuota(claudeSession);
   const quota = claudeSession ? quotaState : undefined;
@@ -92,7 +90,7 @@ export function SessionConfigurationDialog({
         if (!active) return;
         setConfiguration(next);
         setModel(next.model ?? next.availableModels[0]?.value ?? "");
-        setEffort(next.reasoningEffort ?? next.effort ?? next.availableReasoningEfforts?.[0] ?? next.availableEffortLevels[0] ?? "medium");
+        setEffortDraft(undefined);
         setNativePermissionMode(next.nativePermissionMode);
         setOutputStyle(next.outputStyle);
         setError(undefined);
@@ -142,13 +140,13 @@ export function SessionConfigurationDialog({
     () => modelOptions.find((candidate) => candidate.value === model),
     [model, modelOptions],
   );
-  const effortLevels = selectedModel?.supportedEffortLevels?.length
-    ? selectedModel.supportedEffortLevels
-    : configuration?.availableReasoningEfforts?.length
-      ? configuration.availableReasoningEfforts
-      : configuration?.availableEffortLevels ?? [];
-  // Keep the session's own effort so a model that supports it gets it back; show and save what this one allows.
-  const shownEffort = supportedEffort(effort, effortLevels);
+  const effortLevels = selectedModel?.supportsEffort === false ? []
+    : selectedModel?.supportedEffortLevels?.length ? selectedModel.supportedEffortLevels
+    : configuration?.availableEffortLevels ?? [];
+  const modelChanged = modelOptions.length > 0 && model !== (configuration?.model ?? modelOptions[0]?.value);
+  const configuredEffort = modelChanged ? undefined : configuration?.effort;
+  const pickedEffort = effortDraft && effortLevels.includes(effortDraft) ? effortDraft : undefined;
+  const shownEffort = pickedEffort ?? configuredEffort;
 
   async function save(change: SessionConfigurationChange): Promise<void> {
     if (saving) return;
@@ -158,10 +156,10 @@ export function SessionConfigurationDialog({
       const next = await onSave(change);
       setConfiguration(next);
       setModel(next.model ?? next.availableModels[0]?.value ?? "");
-      setEffort(next.reasoningEffort ?? next.effort ?? next.availableReasoningEfforts?.[0] ?? next.availableEffortLevels[0] ?? "medium");
+      setEffortDraft(undefined);
       setNativePermissionMode(next.nativePermissionMode);
       setOutputStyle(next.outputStyle);
-      if (change.model !== null) onClose();
+      onClose();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "会话配置保存失败");
     } finally {
@@ -170,20 +168,12 @@ export function SessionConfigurationDialog({
   }
 
   async function saveSelectedConfiguration(): Promise<void> {
-    const modelChanged = modelOptions.length > 0 && model !== (configuration?.model ?? modelOptions[0]?.value);
-    const styleChanged = Boolean(outputStyle && outputStyle !== configuration?.outputStyle);
-    const loadedEffort = configuration?.reasoningEffort ?? configuration?.effort
-      ?? configuration?.availableReasoningEfforts?.[0] ?? configuration?.availableEffortLevels[0] ?? "medium";
-    // Preserve the existing effort downgrade on a model change or an explicit effort save.
-    const effortChanged = shownEffort !== loadedEffort && (!styleChanged || modelChanged || effort !== loadedEffort);
     const change: SessionConfigurationChange = {
       ...(modelChanged ? { model } : {}),
-      ...(styleChanged && outputStyle ? { outputStyle } : {}),
-      ...(nativeRuntime ? {
-        ...(effortChanged && effortLevels.length && selectedModel?.supportsEffort !== false ? { reasoningEffort: shownEffort } : {}),
-        ...(claudeSession && nativePermissionMode && nativePermissionMode !== configuration?.nativePermissionMode
-          ? { permissionMode: nativePermissionMode } : {}),
-      } : { effort: selectedModel?.supportsEffort === false ? null : shownEffort }),
+      ...(outputStyle && outputStyle !== configuration?.outputStyle ? { outputStyle } : {}),
+      ...(pickedEffort && pickedEffort !== configuredEffort ? { effort: pickedEffort } : {}),
+      ...(claudeSession && nativePermissionMode && nativePermissionMode !== configuration?.nativePermissionMode
+        ? { permissionMode: nativePermissionMode } : {}),
     };
     if (Object.keys(change).length) await save(change);
     else onClose();
@@ -243,25 +233,24 @@ export function SessionConfigurationDialog({
             )}
             {quota && selectedModel && <MagpieModelQuota model={selectedModel} />}
 
-            {effortLevels.length > 0 && selectedModel?.supportsEffort !== false && (
+            {effortLevels.length > 0 && (
               <fieldset className="session-effort-field">
-                <legend>{nativeRuntime ? "思考强度" : "Effort"}</legend>
+                <legend>
+                  思考强度{!effortLevels.some((level) => level === shownEffort) && ` · ${shownEffort ? effortLabel(shownEffort) : "默认"}`}
+                </legend>
                 <div className="effort-segments">
                   {effortLevels.map((level) => (
                     <button
                       type="button"
                       className={shownEffort === level ? "active" : ""}
                       aria-pressed={shownEffort === level}
-                      onClick={() => setEffort(level)}
+                      onClick={() => setEffortDraft(level)}
                       key={level}
                     >
                       {effortLabel(level)}
                     </button>
                   ))}
                 </div>
-                {effort && effort !== shownEffort && (
-                  <small>当前设置为「{effortLabel(effort)}」，这个模型不支持「{effortLabel(effort)}」，保存后改为「{effortLabel(shownEffort)}」。</small>
-                )}
               </fieldset>
             )}
 
@@ -326,11 +315,6 @@ export function SessionConfigurationDialog({
             {error && <div className="session-configuration-error" role="alert">{error}</div>}
 
             <footer>
-              {!nativeRuntime && (configuration?.overrideModel || configuration?.overrideEffort) && (
-                <button type="button" className="secondary-button" disabled={saving} onClick={() => void save({ model: null, effort: null })}>
-                  跟随 Claude Desktop
-                </button>
-              )}
               <button
                 type="button"
                 className="primary-button"

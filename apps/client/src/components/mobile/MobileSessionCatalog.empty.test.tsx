@@ -19,6 +19,7 @@ const hooks = vi.hoisted(() => ({
 
 vi.mock("react", async (original) => ({
   ...await original<typeof import("react")>(),
+  useSyncExternalStore: (_subscribe: unknown, getSnapshot: () => unknown) => getSnapshot(),
   useState(initial: any) {
     const index = hooks.index++;
     if (!(index in hooks.slots)) {

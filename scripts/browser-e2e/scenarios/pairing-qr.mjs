@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
+import { QRCodeSVG } from "qrcode.react";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { buildPairingUrl } from "../../../packages/protocol/dist/index.js";
 
 export async function scanDesktopPairingQr(context, page, host, steps, baseUrl) {
   const desktop = await context.newPage();
   const pairingUrl = buildPairingUrl(baseUrl, host.pairing);
   await desktop.addInitScript(snapshot => {
+    navigator.clipboard.writeText = async text => { window.copiedPairingLink = text; };
     window.bridgeDesktop = {
       getSnapshot: async () => ({ ...snapshot, pairingUrl: undefined, pairingExpiresAt: undefined }),
       onSnapshot: () => () => {},
@@ -18,8 +22,21 @@ export async function scanDesktopPairingQr(context, page, host, steps, baseUrl) 
   await desktop.getByRole("button", { name: "设置", exact: true }).click();
   await desktop.getByRole("button", { name: "手机配对与设备", exact: true }).click();
   await desktop.getByRole("button", { name: "添加手机", exact: true }).click();
-  const qr = await desktop.locator(".device-pairing-band svg[viewBox]").first().evaluate(svg => new XMLSerializer().serializeToString(svg));
+  const panel = desktop.getByRole("region", { name: "手机扫码配对" });
+  await panel.getByText("旧版手机端请复制配对链接，在手机上粘贴。", { exact: true }).waitFor();
+  await panel.getByRole("button", { name: "复制配对链接", exact: true }).click();
+  await panel.getByRole("button", { name: "已复制配对链接", exact: true }).waitFor();
+  assert.ok(await desktop.evaluate(link => window.copiedPairingLink === link, pairingUrl), "Copy uses the full V4 link accepted by older phones");
+
+  const fullQr = renderToStaticMarkup(createElement(QRCodeSVG, { value: pairingUrl, level: "M", marginSize: 4 }));
+  const fullQrModules = Number(fullQr.match(/viewBox="0 0 (\d+) \d+"/u)?.[1]);
+  const { qr, qrModules } = await panel.getByRole("img", { name: "手机配对二维码" }).evaluate(svg => ({
+    qr: new XMLSerializer().serializeToString(svg),
+    qrModules: svg.viewBox.baseVal.width,
+  }));
+  assert.ok(qrModules < fullQrModules, `Desktop QR must use fewer modules than the full link (${qrModules} vs ${fullQrModules})`);
   await desktop.close();
+  steps.push("Desktop guides older phones to the full copied V4 link and renders a smaller QR");
 
   await page.addInitScript(() => {
     const frame = document.createElement("canvas");

@@ -136,13 +136,13 @@ export function DesktopDevices({
               <h3>使用手机 Bridge 扫描</h3>
               <small className="num">{Math.max(0, Math.ceil((snapshot.pairingExpiresAt - Date.now()) / 60_000))} 分钟后过期</small>
             </div>
-            <p>打开手机相机或 Bridge 客户端扫描二维码即可完成密钥交换，无需公网账号。也可以复制配对链接粘贴连接。</p>
+            <p>旧版手机端请复制配对链接，在手机上粘贴。</p>
             <div className="device-pairing-meta-row">
               <span className="device-pairing-relay">{snapshot.host.relayUrl || "端到端加密配对通道"}</span>
               <div className="device-pairing-actions">
                 <button type="button" className="settings-inline-link-btn" onClick={() => void copyPairingLink()}>
                   <Clipboard size={14} aria-hidden="true" />
-                  {copyState === "copied" ? "已复制配对链接" : copyState === "error" ? "复制失败，请扫码" : "复制配对链接"}
+                  {copyState === "copied" ? "已复制配对链接" : copyState === "error" ? "复制失败，请重试" : "复制配对链接"}
                 </button>
                 <button type="button" className="settings-inline-muted-btn" disabled={pairingBusy} onClick={() => void handleCreatePairing()}>
                   <RefreshCw size={13} aria-hidden="true" />

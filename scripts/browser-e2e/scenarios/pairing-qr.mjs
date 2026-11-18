@@ -24,6 +24,7 @@ export async function scanDesktopPairingQr(context, page, host, steps, baseUrl) 
   await desktop.getByRole("button", { name: "添加手机", exact: true }).click();
   const panel = desktop.getByRole("region", { name: "手机扫码配对" });
   await panel.getByText("旧版手机端请复制配对链接，在手机上粘贴。", { exact: true }).waitFor();
+  assert.equal(await panel.locator(".device-pairing-actions").evaluate(actions => getComputedStyle(actions).flexWrap), "wrap", "Desktop pairing actions must wrap in narrow panels");
   await panel.getByRole("button", { name: "复制配对链接", exact: true }).click();
   await panel.getByRole("button", { name: "已复制配对链接", exact: true }).waitFor();
   assert.ok(await desktop.evaluate(link => window.copiedPairingLink === link, pairingUrl), "Copy uses the full V4 link accepted by older phones");

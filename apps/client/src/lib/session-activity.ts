@@ -38,12 +38,13 @@ export function sessionActivity(
   session: Pick<BridgeSessionInfo, "turnState" | "executionStage" | "desktopHandoff" | "isCompacting"> & Partial<Pick<BridgeSessionInfo, "ownership" | "pendingCount" | "runningSubagents">> | undefined,
   items: readonly SessionActivityItem[],
   backgroundTasks?: readonly BridgeBackgroundTask[],
+  showQueueActivity = true,
 ): SessionActivity | undefined {
   if (!session) return undefined;
   if (session.turnState === "running" && session.isCompacting) return { kind: "compacting", label: "正在压缩上下文" };
   const lastUser = [...items].reverse().find((item) => item.role === "user");
   const since = lastUser?.createdAt;
-  if (session.turnState === "queued" || (session.pendingCount ?? 0) > 0) return {
+  if (showQueueActivity && (session.turnState === "queued" || (session.pendingCount ?? 0) > 0)) return {
     kind: "queued",
     label: session.ownership ? sessionQueueLabel({ ...session, ownership: session.ownership }) : "排队等待中",
   };

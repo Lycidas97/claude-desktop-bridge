@@ -68,9 +68,10 @@ async function runScenario(theme, scenario, mockHostRuntime) {
     if (["native-queue-actions", "native-compaction"].includes(scenario)) host.queueSeed = await host.syncNativeQueue(await host.nativeApproval.enqueue("历史中的原生排队消息"), { pushEvents: false });
     if (["project-grouping", "session-catalog"].includes(scenario)) Object.assign(host.snapshot, await host.nativeApproval.projectCatalog());
     if (["section-manage", "round4-boundaries", "round5-ux"].includes(scenario)) await syncNativeSections(host);
+    const touch = ["mobile-safe-area", "native-queue-actions"].includes(scenario);
     context = await browser.newContext({
       viewport: { width: 375, height: 812 }, colorScheme: theme,
-      isMobile: scenario === "mobile-safe-area", hasTouch: scenario === "mobile-safe-area",
+      isMobile: touch, hasTouch: touch,
       serviceWorkers: "block",
     });
     await context.addInitScript(({ mode, family }) => {
@@ -132,7 +133,7 @@ async function runScenario(theme, scenario, mockHostRuntime) {
     else if (scenario === "desktop-diagnostics") await verifyDesktopDiagnostics(page, host, steps, baseUrl);
     else if (scenario === "desktop-quota") await verifyDesktopQuota(page, host, steps, directory, viewports, baseUrl);
     else if (scenario === "desktop-conversation") await verifyDesktopConversation(page, host, steps, directory, viewports, baseUrl);
-    else if (scenario === "native-approvals") await verifyNativeApprovals(page, host, steps, directory, baseUrl, relayPeers);
+    else if (scenario === "native-approvals") await verifyNativeApprovals(page, host, steps, directory, baseUrl, serverRoutes);
     else if (scenario === "native-prompts-pr") await verifyNativePromptsPr(page, host, steps, directory, baseUrl);
     else if (scenario === "native-messages") await verifyNativeMessages(page, host, steps, directory);
     else if (scenario === "history-pagination") await verifyHistoryPagination(page, host, steps, directory);

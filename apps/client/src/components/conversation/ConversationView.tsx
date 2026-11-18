@@ -47,6 +47,7 @@ import {
   conversationItems,
   conversationTimeline,
   groupTimelineTools,
+  isQueuedConversationMessage,
   runtimeSupports,
   type ConversationItem,
 } from "../../lib/conversation-timeline.js";
@@ -92,9 +93,11 @@ import { useConversationMenu, type ConversationMenuBindings } from "./useConvers
 import { useConversationScroll } from "./useConversationScroll.js";
 import { useConversationTasks } from "./useConversationTasks.js";
 import { useSessionFileDownload } from "./useSessionFileDownload.js";
+import { useAcknowledgeSessionCompletion } from "../session/useSeenSessionCompletions.js";
 
 export interface ConversationViewProps {
   variant?: "mobile" | "desktop" | undefined;
+  conversationTabLabel?: string | undefined;
   hostId: string;
   session: BridgeSessionInfo;
   sessions: BridgeSessionInfo[];
@@ -179,6 +182,7 @@ export interface ConversationViewProps {
 
 export function ConversationView({
   variant = "mobile",
+  conversationTabLabel = "对话",
   hostId,
   session,
   sessions,
@@ -271,6 +275,8 @@ export function ConversationView({
   const previousDraftKeyRef = useRef(draftKey);
 
   const effectiveSessionView = controlledSessionView ?? internalSessionView;
+  useAcknowledgeSessionCompletion(hostId, session,
+    visible && effectiveSessionView === "conversation" && (history?.status === "ready" || Boolean(history?.items.length)));
   function setSessionView(next: "conversation" | "evidence"): void {
     if (onSessionViewChange) onSessionViewChange(next);
     else setInternalSessionView(next);
@@ -420,6 +426,20 @@ export function ConversationView({
     [evidence?.items, items, mailCards],
   );
   const displayNodes = useMemo(() => groupTimelineTools(timeline), [timeline]);
+  const latestMessage = displayNodes.filter((node) => node.kind === "message" && !node.item.sessionNotice
+    && (node.item.role === "user" || node.item.role === "assistant")).at(-1);
+  const inlineQueuedIds = new Set<string>();
+  if (effectiveSessionView === "conversation" && session.pendingCount > 0) {
+    for (const node of displayNodes) {
+      if (node.kind === "message" && node.item.role === "user" && !node.item.sessionNotice
+        && node.item.commandId && isQueuedConversationMessage(node.item, session)) {
+        inlineQueuedIds.add(node.item.commandId);
+      }
+    }
+  }
+  const missingQueuedCount = session.pendingCount - inlineQueuedIds.size;
+  const showQueueBanner = missingQueuedCount > 0
+    && session.desktopHandoff?.state !== "close-desktop" && session.desktopHandoff?.state !== "desktop-inbox";
 
   const toolGroupKeysRef = useRef<{ sessionId?: string | undefined; byToolId: Map<string, string> }>({ byToolId: new Map() });
   const toolGroupKeys = useMemo(() => {
@@ -451,6 +471,7 @@ export function ConversationView({
     session,
     sessions,
     items,
+    showQueueActivity: inlineQueuedIds.size === 0 && !showQueueBanner,
     pollEnabled: visible && effectiveSessionView === "conversation" && isNativeReady
       && runtimeId === "claude-desktop" && (history?.status === "ready" || Boolean(history?.items.length)),
     onLoadBackgroundTasks,
@@ -880,6 +901,8 @@ export function ConversationView({
             item={item}
             session={session}
             entering={streamEntering(item.id)}
+            latestMessage={node === latestMessage}
+            revealActionsOnTap={isMobile}
             online={isOnline}
             canSend={canSendSession(session, snapshot)}
             queueAction={item.commandId ? queuedActions?.[item.commandId] : undefined}
@@ -1051,7 +1074,7 @@ export function ConversationView({
                   className={effectiveSessionView === "conversation" ? "active" : ""}
                   onClick={() => setSessionView("conversation")}
                 >
-                  对话
+                  {conversationTabLabel}
                 </button>
                 <button
                   type="button"
@@ -1116,13 +1139,12 @@ export function ConversationView({
             : `Desktop 未切换为「${NATIVE_MODE_LABELS[session.nativePermissionModeChange.mode ?? "bypassPermissions"]}」，后续请求仍需确认`}</span>
         </div>
       )}
-      {session.pendingCount > 0 && session.desktopHandoff?.state !== "close-desktop" && session.desktopHandoff?.state !== "desktop-inbox" && (
+      {showQueueBanner && (
         <div className="session-channel-warning message-queue-status" role="status" aria-label="消息排队状态">
-          <LoaderCircle size={17} />
-          <span>
-            <strong>{isOnline ? `${sessionQueueLabel(session)} · ${session.pendingCount} 条` : "连接已断开，等待同步状态"}</strong>
-            {!isOnline && `上次同步时有 ${session.pendingCount} 条消息排队，当前进度尚未确认。`}
-          </span>
+          <LoaderCircle size={17} aria-hidden="true" />
+          <span>{isOnline
+            ? `${sessionQueueLabel(session)} · ${inlineQueuedIds.size ? "另有 " : ""}${missingQueuedCount} 条`
+            : `上次同步时${inlineQueuedIds.size ? "另" : ""}有 ${missingQueuedCount} 条消息排队`}</span>
           {menu.canSync && (
             <button
               type="button"

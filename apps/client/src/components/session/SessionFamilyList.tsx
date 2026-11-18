@@ -54,6 +54,7 @@ export interface SessionFamilyListProps {
   archivedList?: boolean;
   flat?: boolean;
   selectedId?: string | undefined;
+  seenCompletions?: Readonly<Record<string, string>> | undefined;
   onSelectSession(sessionId: string): void | Promise<void>;
   onOpenSessionActions?: (sessionId: string) => void;
   actionLabel?: (session: BridgeSessionInfo) => string;
@@ -69,6 +70,7 @@ export function SessionFamilyList({
   archivedList = false,
   flat = false,
   selectedId,
+  seenCompletions,
   onSelectSession,
   onOpenSessionActions,
   actionLabel,
@@ -92,7 +94,11 @@ export function SessionFamilyList({
     const turnBadge = suppressTurnPill ? undefined : rawTurnBadge;
     const subagentBadge = isArchivedRow || rawTurnBadge ? undefined : backgroundSubagentBadge(session);
     const badge = turnBadge ?? subagentBadge?.label;
-    const statusTone = pendingPermission ? "waiting" : subagentBadge ? (subagentBadge.stalled ? "queued" : "running") : session.turnState;
+    const unreadCompletion = flat && !isArchivedRow && !rawTurnBadge && !subagentBadge
+      && session.turnState === "idle" && session.pendingCount === 0
+      && Boolean(session.lastCompletedTurnId && seenCompletions?.[session.sessionId] !== session.lastCompletedTurnId);
+    const statusTone = pendingPermission ? "waiting" : subagentBadge ? (subagentBadge.stalled ? "queued" : "running")
+      : unreadCompletion ? "completed" : session.turnState;
     const forksExpanded = expandedForkParents.has(session.sessionId);
     const badgeLabel = session.sidechat ? "/btw" : (session.forkLabel || "fork");
     const badgeClassName = `session-fork-badge${session.sidechat ? " is-sidechat" : ""}`;
@@ -169,6 +175,7 @@ export function SessionFamilyList({
                 {!isArchivedRow && session.currentSummary ? ` · ${session.currentSummary}` : ""}
               </small>
             </span>
+            {unreadCompletion && <span className="session-fork-badge is-sr-only">已完成，未查看</span>}
             {hasForks && badge && <span className="session-fork-badge is-sr-only">{badge}</span>}
             {!hasForks && badgesNode}
           </button>

@@ -55,7 +55,7 @@ describe("sessionActivity", () => {
   ] as const)("shows %s before actual execution instead of stale tool activity or thinking", (executionStage, label) => {
     expect(sessionActivity({ turnState: "running", executionStage }, [{ role: "user", createdAt: 100 }]))
       .toEqual({ kind: "queued", label });
-    expect(sessionActivity({ turnState: "running", executionStage }, [{ role: "tool", toolName: "Read", state: "running", createdAt: 50 }]))
+    expect(sessionActivity({ turnState: "running", executionStage, pendingCount: 1 }, [{ role: "tool", toolName: "Read", state: "running", createdAt: 50 }], undefined, false))
       .toEqual({ kind: "queued", label });
   });
 

@@ -1,14 +1,15 @@
 import type { BridgeBackgroundTask, BridgeSessionInfo } from "@bridge/protocol";
 import { useEffect, useMemo, useState } from "react";
-import { stoppableBridgeTask, type ConversationItem } from "../../lib/conversation-timeline.js";
+import { isQueuedConversationMessage, stoppableBridgeTask, type ConversationItem } from "../../lib/conversation-timeline.js";
 import { sessionActivity } from "../../lib/session-activity.js";
 import { findBackgroundTask } from "./BackgroundTasks.js";
 
-export function useConversationTasks({ draftKey, session, sessions, items, pollEnabled, onLoadBackgroundTasks, onInterruptTurn, onStopSubagent }: {
+export function useConversationTasks({ draftKey, session, sessions, items, showQueueActivity, pollEnabled, onLoadBackgroundTasks, onInterruptTurn, onStopSubagent }: {
   draftKey: string;
   session: BridgeSessionInfo;
   sessions: BridgeSessionInfo[];
   items: ConversationItem[];
+  showQueueActivity: boolean;
   pollEnabled: boolean;
   onLoadBackgroundTasks?: ((sessionId: string) => Promise<BridgeBackgroundTask[]>) | undefined;
   onInterruptTurn(sessionId: string): Promise<void>;
@@ -64,19 +65,24 @@ export function useConversationTasks({ draftKey, session, sessions, items, pollE
 
   const selectedTaskDetails = backgroundTaskDetails?.key === draftKey ? backgroundTaskDetails : undefined;
   const activityTasks = selectedTaskDetails?.tasks ?? session.backgroundTasks;
-  const activity = useMemo(() => sessionActivity(
-    session,
-    selectedTaskDetails?.error ? items.map((item) => {
-      const subagent = item.subagent;
-      if (subagent?.state !== "running") return item;
-      const task = findBackgroundTask(activityTasks, subagent);
-      return task && task.state !== "running"
-        && (!subagent.workflowRunId || task.workflow?.agents.some((agent) => agent.agentId === subagent.agentId))
-        ? { ...item, subagent: { ...subagent, state: task.state } }
-        : item;
-    }) : items,
-    selectedTaskDetails?.error ? undefined : activityTasks,
-  ), [activityTasks, items, selectedTaskDetails?.error, session]);
+  const activity = useMemo(() => {
+    const activityItems = items.filter(item => item.role !== "user"
+      || (item.delivery !== "queued" && !isQueuedConversationMessage(item, session)));
+    return sessionActivity(
+      session,
+      selectedTaskDetails?.error ? activityItems.map((item) => {
+        const subagent = item.subagent;
+        if (subagent?.state !== "running") return item;
+        const task = findBackgroundTask(activityTasks, subagent);
+        return task && task.state !== "running"
+          && (!subagent.workflowRunId || task.workflow?.agents.some((agent) => agent.agentId === subagent.agentId))
+          ? { ...item, subagent: { ...subagent, state: task.state } }
+          : item;
+      }) : activityItems,
+      selectedTaskDetails?.error ? undefined : activityTasks,
+      showQueueActivity,
+    );
+  }, [activityTasks, items, selectedTaskDetails?.error, session, showQueueActivity]);
 
   const backgroundTasks = activityTasks ?? [];
   const runningBackgroundTasks = backgroundTasks.filter((task) => task.state === "running").length;

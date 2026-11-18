@@ -62,7 +62,8 @@ export async function verifyRename(page, host, entry, steps) {
     await row.locator(".session-row-hit").click();
   }
   await page.getByRole("heading", { name: renamedTitle, exact: true }).waitFor();
-  assert.match(await page.getByRole("status", { name: "消息排队状态" }).innerText(), /1 条消息已到电脑/u);
+  assert.match(await page.getByRole("status", { name: "消息排队状态" }).innerText(), / · 1 条/u);
+  assert.equal(await page.locator(".session-activity.queued").count(), 0);
   await openMobileDrawer(page);
   await eventually(() => row.locator("strong").innerText(), renamedTitle, "Renamed chat must update its list row");
   assert.equal(await row.locator("small").innerText(), beforeTime, "Rename must not change displayed activity time");
@@ -134,9 +135,9 @@ export async function verifyDelivery(page, host, steps, relayPeers) {
   const userMessage = page.locator("article.conversation-item.user").filter({ hasText: userText });
   await eventually(() => host.requests.filter((request) => request.method === "turn.start").length, 1, "One click must send one turn.start");
   await userMessage.getByRole("status").filter({ hasText: /已排队|排队中/u }).waitFor();
-  await page.getByRole("status", { name: "消息排队状态" }).waitFor();
   assert.equal(await userMessage.count(), 1, "Queued user message must appear exactly once");
-  assert.match(await page.getByRole("status", { name: "消息排队状态" }).innerText(), /1 条消息已到电脑/u);
+  assert.equal(await page.getByRole("status", { name: "消息排队状态" }).count(), 0);
+  assert.equal(await page.locator(".session-activity.queued").count(), 0);
   steps.push("one send produces one RPC and one queued user message");
 
   // The event is deliberately not pushed. It must arrive through events.resume
@@ -152,7 +153,9 @@ export async function verifyDelivery(page, host, steps, relayPeers) {
   await eventually(() => host.resumeBatches.some((batch) => batch.includes(missed.eventId)), true, "Reconnect must resume the missed event");
   await page.getByText(recoveredText, { exact: true }).waitFor();
   await page.getByRole("heading", { name: renamedTitle, exact: true }).waitFor();
-  assert.match(await page.getByRole("status", { name: "消息排队状态" }).innerText(), /1 条消息已到电脑/u);
+  await userMessage.getByRole("status").getByText("已排队", { exact: true }).waitFor();
+  assert.equal(await page.getByRole("status", { name: "消息排队状态" }).count(), 0);
+  assert.equal(await page.locator(".session-activity.queued").count(), 0);
   assert.equal(await userMessage.count(), 1, "Reconnect must not duplicate the queued user message");
   assert.equal(host.requests.filter((request) => request.method === "turn.start").length, 1, "Reconnect must not resend an acknowledged turn");
   steps.push("real socket reconnect restores snapshot/event, display name, and queue without duplicate send");

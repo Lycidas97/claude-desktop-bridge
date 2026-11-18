@@ -1,8 +1,7 @@
 import type { BridgeSessionInfo } from "@bridge/protocol";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { deliveryLabel, formatTime, type ConversationItem } from "../../lib/conversation-timeline.js";
 import { desktopRuntimeId } from "../../lib/runtime-labels.js";
-import { sessionQueueLabel } from "../../lib/session-activity.js";
 import { MarkdownText } from "../common/MarkdownText.js";
 import { MessageCopyButton } from "../common/MessageCopyButton.js";
 import { ImageAttachment } from "../evidence/ImageAttachment.js";
@@ -14,10 +13,17 @@ export interface QueuedTurnActionState {
   error?: string | undefined;
 }
 
+export function isQueuedConversationMessage(item: ConversationItem, session: BridgeSessionInfo): boolean {
+  return (item.delivery === "queued" || item.delivery === "host-received")
+    && Boolean(item.commandId && session.pendingCommandIds?.includes(item.commandId));
+}
+
 export interface ConversationMessageItemProps {
   item: ConversationItem;
   session: BridgeSessionInfo;
   entering?: boolean | undefined;
+  latestMessage?: boolean | undefined;
+  revealActionsOnTap?: boolean | undefined;
   online?: boolean | undefined;
   canSend?: boolean | undefined;
   queueAction?: QueuedTurnActionState | undefined;
@@ -36,6 +42,8 @@ export function ConversationMessageItem({
   item,
   session,
   entering = false,
+  latestMessage = false,
+  revealActionsOnTap = false,
   online = true,
   canSend = false,
   queueAction,
@@ -49,12 +57,8 @@ export function ConversationMessageItem({
   onFileClick,
   interactivePrompt,
 }: ConversationMessageItemProps) {
-  const showDelivery = Boolean(item.delivery);
-  const messageQueued = Boolean(
-    (item.delivery === "queued" || item.delivery === "host-received")
-    && item.commandId
-    && session.pendingCommandIds?.includes(item.commandId),
-  );
+  const [actionsRevealed, setActionsRevealed] = useState(false);
+  const messageQueued = isQueuedConversationMessage(item, session);
   const canActOnQueued = Boolean(
     item.role === "user"
     && item.commandId
@@ -63,6 +67,8 @@ export function ConversationMessageItem({
     && canSend,
   );
   const copyable = (item.role === "assistant" || item.role === "user") && Boolean(item.text.trim());
+  const canRewind = rewindAvailable && onRewind && item.role === "user" && !item.id.startsWith("local:");
+  const hasUtilities = copyable || canRewind;
   const content = (
     <>
       {item.text && (
@@ -92,8 +98,15 @@ export function ConversationMessageItem({
 
   return (
     <article
-      className={`conversation-item ${item.role} ${item.live ? "live" : ""}${entering ? " is-entering" : ""}`}
+      className={`conversation-item ${item.role} ${item.live ? "live" : ""}${entering ? " is-entering" : ""}${latestMessage || actionsRevealed ? " show-message-utilities" : ""}`}
       data-stream-key={item.id}
+      tabIndex={hasUtilities && !latestMessage ? 0 : undefined}
+      onClick={revealActionsOnTap && hasUtilities && !latestMessage ? (event) => {
+        if (event.target instanceof Element && !event.target.closest("a, button, summary, input, select, textarea")
+          && event.currentTarget.ownerDocument.getSelection()?.isCollapsed !== false) {
+          setActionsRevealed((current) => !current);
+        }
+      } : undefined}
     >
       {item.role === "system" && (
         <div className="conversation-item-meta">
@@ -103,15 +116,15 @@ export function ConversationMessageItem({
       )}
       {/* A sent message's bubble holds only what was sent; status and copy sit under it. */}
       {item.role === "user" ? <div className="conversation-bubble">{content}</div> : content}
-      {(copyable || showDelivery || (rewindAvailable && item.role === "user")) && (
+      {(hasUtilities || item.delivery) && (
         <div className="conversation-message-actions">
-          {showDelivery && (
+          {item.delivery && (
             <span className={`delivery-state ${item.delivery}`} role="status">
-              {messageQueued ? `已排队 · ${sessionQueueLabel(session)}` : deliveryLabel(item.delivery!)}
+              {messageQueued ? "已排队" : deliveryLabel(item.delivery)}
             </span>
           )}
           {canActOnQueued && ([
-            { label: "Send now", action: "steer", callback: onSteerQueuedTurn, className: "queued-steer-button" },
+            { label: "立即发送", action: "steer", callback: onSteerQueuedTurn, className: "queued-steer-button" },
             { label: "撤回", action: "cancel", callback: onCancelQueuedTurn, className: "queued-cancel-button" },
           ] as const).map(({ label, action, callback, className }) => callback && (
             <button
@@ -121,7 +134,7 @@ export function ConversationMessageItem({
               disabled={!online || queueAction?.state === "pending"
                 || (queueAction?.state === "requested" && (queueAction.action === "cancel" || queueAction.action === action))}
               aria-busy={queueAction?.state === "pending" && queueAction.action === action}
-              title={!online ? "电脑离线，连接后再操作" : label === "Send now" ? "立即发送这条排队消息" : "撤回这条排队消息"}
+              title={!online ? "电脑离线，连接后再操作" : action === "steer" ? "立即发送这条排队消息" : "撤回这条排队消息"}
               onClick={async () => {
                 onQueueActionChange?.({ state: "pending", action });
                 try {
@@ -135,17 +148,21 @@ export function ConversationMessageItem({
               {label}
             </button>
           ))}
-          {copyable && <MessageCopyButton text={item.text} label={item.role === "assistant" ? "复制这条回复" : "复制这条消息"} />}
-          {rewindAvailable && onRewind && item.role === "user" && !item.id.startsWith("local:") && (
-            <button
-              type="button"
-              className="message-copy-button"
-              aria-label="回退到这条消息之前"
-              disabled={rewindDisabled}
-              onClick={() => onRewind(item.id)}
-            >
-              回退
-            </button>
+          {hasUtilities && (
+            <div className="conversation-message-utilities">
+              {copyable && <MessageCopyButton text={item.text} label={item.role === "assistant" ? "复制这条回复" : "复制这条消息"} />}
+              {canRewind && (
+                <button
+                  type="button"
+                  className="message-copy-button"
+                  aria-label="回退到这条消息之前"
+                  disabled={rewindDisabled}
+                  onClick={() => onRewind(item.id)}
+                >
+                  回退
+                </button>
+              )}
+            </div>
           )}
         </div>
       )}

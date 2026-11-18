@@ -302,7 +302,11 @@ export async function verifyDesktopConversation(page, host, steps, directory, vi
 
   const stream = page.locator(".desktop-conversation-stream");
   const queuedBubble = stream.locator("article.conversation-item.user").filter({ hasText: "桌面排队待处理消息" });
-  await queuedBubble.getByRole("button", { name: "Send now", exact: true }).waitFor();
+  await queuedBubble.getByRole("button", { name: "立即发送", exact: true }).waitFor();
+  await queuedBubble.getByRole("button", { name: "复制这条消息", exact: true }).waitFor();
+  assert.equal(await queuedBubble.getByRole("status").innerText(), "已排队");
+  assert.equal(await page.getByRole("status", { name: "消息排队状态" }).count(), 0);
+  assert.equal(await page.locator(".session-activity.queued").count(), 0);
   await page.getByRole("button", { name: "后台任务，1 个运行中", exact: true }).waitFor();
   await page.waitForFunction(() => document.getAnimations().every(animation => animation.effect.getComputedTiming().iterations === Infinity || animation.playState === "finished"));
   await page.evaluate(axeSource);
@@ -321,19 +325,19 @@ export async function verifyDesktopConversation(page, host, steps, directory, vi
       ...contrast.incomplete.filter(item => item.nodes.some(node => [...node.any, ...node.all, ...node.none].some(check => check.data?.contrastRatio < 4.5))).map(item => ({ id: item.id, targets: item.nodes.map(node => node.target) })),
     ];
   });
-  assert.deepEqual(axeIssues, [], "Desktop conversation WCAG 2A/2AA and color-contrast (including queued Send now button)");
+  assert.deepEqual(axeIssues, [], "Desktop conversation WCAG 2A/2AA and color-contrast (including queued 立即发送 button)");
   viewports.push({ page: "desktop-conversation-parity", ...page.viewportSize() });
   await page.screenshot({ path: resolve(directory, "desktop-conversation-parity.png"), fullPage: true });
 
-  await queuedBubble.getByRole("button", { name: "Send now", exact: true }).click();
-  await eventually(() => host.nativeApproval.calls.filter(call => call.method === "promoteQueuedMessage").length, 1, "Desktop Send now calls promoteQueuedMessage once");
+  await queuedBubble.getByRole("button", { name: "立即发送", exact: true }).click();
+  await eventually(() => host.nativeApproval.calls.filter(call => call.method === "promoteQueuedMessage").length, 1, "Desktop 立即发送 calls promoteQueuedMessage once");
   assert.deepEqual(host.nativeApproval.calls.find(call => call.method === "promoteQueuedMessage").args, [sessionId, queuedSeed.receipt.messageId]);
-  await eventually(() => queuedBubble.getByRole("button", { name: "撤回", exact: true }).isEnabled(), true, "Cancel remains enabled after deferred Send now");
-  assert.equal(await queuedBubble.getByRole("button", { name: "Send now", exact: true }).isDisabled(), true, "Send now disables after promotion request");
+  await eventually(() => queuedBubble.getByRole("button", { name: "撤回", exact: true }).isEnabled(), true, "Cancel remains enabled after deferred 立即发送");
+  assert.equal(await queuedBubble.getByRole("button", { name: "立即发送", exact: true }).isDisabled(), true, "立即发送 disables after promotion request");
   await queuedBubble.getByRole("button", { name: "撤回", exact: true }).click();
   await queuedBubble.getByRole("status").filter({ hasText: "已取消" }).waitFor();
   assert.equal(await queuedBubble.getByRole("button", { name: "撤回", exact: true }).count(), 0);
-  steps.push("Desktop queued bubble renders WCAG-compliant Send now and 撤回 actions with status announcements");
+  steps.push("Desktop queued bubble renders WCAG-compliant 立即发送 and 撤回 actions with status announcements");
 
   await eventually(() => stream.locator(".task-plan-card").count(), 1, "Desktop stream renders TaskPlanCard");
   assert.equal(await stream.locator(".task-plan-progress").innerText(), "1/2 已完成");
@@ -365,7 +369,17 @@ export async function verifyDesktopConversation(page, host, steps, directory, vi
     });
   });
   const assistantBubble = stream.locator("article.conversation-item.assistant").filter({ hasText: "桌面端已接入共享叶子组件" });
-  await assistantBubble.getByRole("button", { name: "复制这条回复", exact: true }).click();
+  const copyReply = assistantBubble.getByRole("button", { name: "复制这条回复", exact: true });
+  assert.equal(await copyReply.count(), 0, "Older desktop actions start collapsed");
+  await assistantBubble.hover();
+  await copyReply.waitFor();
+  await sidebar.hover();
+  await copyReply.waitFor({ state: "hidden" });
+  await assistantBubble.press("Tab");
+  await copyReply.waitFor();
+  await page.keyboard.press("Tab");
+  assert.equal(await copyReply.evaluate(button => button === document.activeElement), true);
+  await page.keyboard.press("Enter");
   await assistantBubble.getByRole("button", { name: "已复制", exact: true }).waitFor();
   assert.deepEqual(await page.evaluate(() => window.__desktopCopied), ["桌面端已接入共享叶子组件，可下载构建产物 [安装包下载](bundle.zip)。"]);
   steps.push("Desktop conversation supports TaskPlanCard, lazy ToolCallDetailSheet, BackgroundTaskMarker sheet jump, and message copy");

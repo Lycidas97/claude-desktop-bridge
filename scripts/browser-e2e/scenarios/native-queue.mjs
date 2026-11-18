@@ -10,7 +10,9 @@ export async function verifyNativeQueueActions(page, host, steps, directory, rel
   const composer = page.getByRole("combobox", { name: "给 Claude 发指令" });
   const draft = "保留草稿：queue actions must never submit this";
   const historyMessage = page.locator("article.conversation-item.user").filter({ hasText: "历史中的原生排队消息" });
-  await historyMessage.getByRole("status").filter({ hasText: /已排队|排队中/u }).waitFor();
+  await historyMessage.getByRole("status").getByText("已排队", { exact: true }).waitFor();
+  assert.equal(await page.getByRole("status", { name: "消息排队状态" }).count(), 0);
+  assert.equal(await page.locator(".session-activity.queued").count(), 0);
   assert.equal(await historyMessage.count(), 1);
   assert.equal(host.events.length, 0, "Seeded queue must be restored from real native history without delivery events");
   assert.equal(host.queueSeed.receipt.queueMode, "deferred");
@@ -30,22 +32,22 @@ export async function verifyNativeQueueActions(page, host, steps, directory, rel
   await page.screenshot({ path: resolve(directory, "queue-history.png"), fullPage: true });
   const release = host.nativeApproval.holdQueueAction();
   try {
-    await historyMessage.getByRole("button", { name: "Send now", exact: true }).dblclick();
+    await historyMessage.getByRole("button", { name: "立即发送", exact: true }).dblclick();
     await eventually(() => host.nativeApproval.calls.filter(call => call.method === "promoteQueuedMessage").length, 1, "Rapid double-click reaches native promoteQueuedMessage once");
     const beforeReconnect = host.requests.filter(request => request.method === "snapshot.get").length;
     const peers = [...relayPeers].filter(([, hello]) => hello.roomId === host.pairing.roomId && hello.role === "mobile");
     assert.equal(peers.length, 1);
-    peers[0][0].close(1012, "disconnect while Send now is pending");
+    peers[0][0].close(1012, "disconnect while 立即发送 is pending");
     await eventually(() => host.requests.filter(request => request.method === "snapshot.get").length > beforeReconnect, true, "Pending queue operation reconnects through the real socket");
     assert.equal(host.requests.filter(request => request.method === "turn.queue.steer").length, 1, "Reconnect must not replay the transient queue mutation");
     assert.deepEqual(host.nativeApproval.calls.find(call => call.method === "promoteQueuedMessage").args, [sessionId, host.queueSeed.receipt.messageId]);
-    assert.equal(await historyMessage.getByRole("button", { name: "Send now", exact: true }).getAttribute("aria-busy"), "true");
+    assert.equal(await historyMessage.getByRole("button", { name: "立即发送", exact: true }).getAttribute("aria-busy"), "true");
     assert.equal(await historyMessage.getByRole("button", { name: "撤回", exact: true }).isDisabled(), true, "Queue actions share pending state");
     assert.equal(await composer.inputValue(), draft);
     await page.screenshot({ path: resolve(directory, "queue-pending.png"), fullPage: true });
   } finally { release(); }
-  await eventually(() => historyMessage.getByRole("button", { name: "撤回", exact: true }).isEnabled(), true, "Requested Send now must leave cancel enabled");
-  assert.equal(await historyMessage.getByRole("button", { name: "Send now", exact: true }).isDisabled(), true);
+  await eventually(() => historyMessage.getByRole("button", { name: "撤回", exact: true }).isEnabled(), true, "Requested 立即发送 must leave cancel enabled");
+  assert.equal(await historyMessage.getByRole("button", { name: "立即发送", exact: true }).isDisabled(), true);
   host.nativeApproval.queueResult("cancelQueuedMessage", false);
   const releaseCancel = host.nativeApproval.holdQueueAction();
   try {
@@ -66,7 +68,7 @@ export async function verifyNativeQueueActions(page, host, steps, directory, rel
   assert.deepEqual(host.nativeApproval.calls.filter(call => call.method === "cancelQueuedMessage").map(call => call.args), [[sessionId, host.queueSeed.receipt.messageId], [sessionId, host.queueSeed.receipt.messageId]]);
   assert.equal(await composer.inputValue(), draft);
   assert.equal(host.requests.filter(request => ["turn.start", "turn.steer", "turn.interrupt"].includes(request.method)).length, 0, "History queue actions must never submit or interrupt a turn");
-  steps.push("history-only queued receipt restores actions; deferred Send now uses original native UUID, shares pending state, permits later cancel, and native false is visible/retryable without changing draft");
+  steps.push("history-only queued receipt restores actions; deferred 立即发送 uses original native UUID, shares pending state, permits later cancel, and native false is visible/retryable without changing draft");
 
   const text = "浏览器发出的原生排队消息";
   await composer.fill(text);
@@ -77,22 +79,34 @@ export async function verifyNativeQueueActions(page, host, steps, directory, rel
   assert.equal(localReceipt.state, "queued");
   assert.equal(localReceipt.queueMode, "deferred");
   assert.equal(await localMessage.count(), 1, "Local send reconciles with native receipt into one bubble");
+  await localMessage.getByRole("button", { name: "复制这条消息", exact: true }).waitFor();
+  const oldCopy = historyMessage.getByRole("button", { name: "复制这条消息", exact: true });
+  const oldRewind = historyMessage.getByRole("button", { name: "回退到这条消息之前", exact: true });
+  assert.equal(await oldCopy.count(), 0);
+  assert.equal(await oldRewind.count(), 0);
+  await historyMessage.locator(".conversation-bubble").tap();
+  await oldCopy.waitFor();
+  await oldRewind.waitFor();
+  await historyMessage.locator(".conversation-bubble").tap();
+  await oldCopy.waitFor({ state: "hidden" });
+  await oldRewind.waitFor({ state: "hidden" });
+  steps.push("Latest mobile copy is visible by default, and tapping an older bubble reveals or hides its copy and rewind");
   const localRequest = host.requests.find(request => request.method === "turn.start");
   assert.equal(localReceipt.requestId, localRequest.requestId);
   assert.equal(localReceipt.idempotencyKey, localRequest.idempotencyKey);
   await composer.fill(draft);
   host.nativeApproval.queueResult("promoteQueuedMessage", false);
-  await localMessage.getByRole("button", { name: "Send now", exact: true }).click();
+  await localMessage.getByRole("button", { name: "立即发送", exact: true }).click();
   await localMessage.getByRole("alert").filter({ hasText: "无法立即发送" }).waitFor();
   await localMessage.getByRole("status").filter({ hasText: /已排队|排队中/u }).waitFor();
   assert.equal(await composer.inputValue(), draft);
   await page.screenshot({ path: resolve(directory, "queue-send-refused.png"), fullPage: true });
   host.nativeApproval.queueResult("promoteQueuedMessage", true);
-  await localMessage.getByRole("button", { name: "Send now", exact: true }).click();
+  await localMessage.getByRole("button", { name: "立即发送", exact: true }).click();
   await eventually(() => localMessage.getByRole("button", { name: "撤回", exact: true }).isEnabled(), true, "Retry success preserves cancel action");
   assert.equal(await localMessage.getByRole("alert").count(), 0);
   assert.deepEqual(host.nativeApproval.calls.filter(call => call.method === "promoteQueuedMessage").slice(1).map(call => call.args), [[sessionId, localReceipt.messageId], [sessionId, localReceipt.messageId]]);
-  steps.push("one browser turn.start traverses the real controller/facade; native queued result reconciles once, Send now false remains visible and retry uses the same native UUID");
+  steps.push("one browser turn.start traverses the real controller/facade; native queued result reconciles once, 立即发送 false remains visible and retry uses the same native UUID");
 
   const rekeyedId = randomUUID();
   await host.syncNativeQueue(await host.nativeApproval.event({ type: "steers_rekeyed", rekeyedSteers: [{ from: localReceipt.messageId, to: rekeyedId }] }));
@@ -133,10 +147,10 @@ export async function verifyNativeQueueActions(page, host, steps, directory, rel
   const steeredMessage = page.locator("article.conversation-item.user").filter({ hasText: "历史中的 steered 排队消息" });
   await steeredMessage.getByRole("status").filter({ hasText: /已排队|排队中/u }).waitFor();
   await composer.fill(draft);
-  await steeredMessage.getByRole("button", { name: "Send now", exact: true }).click();
+  await steeredMessage.getByRole("button", { name: "立即发送", exact: true }).click();
   await eventually(() => host.nativeApproval.calls.filter(call => call.method === "sendSteeredNow").length, 1, "Steered queue uses native sendSteeredNow");
   assert.deepEqual(host.nativeApproval.calls.find(call => call.method === "sendSteeredNow").args, [sessionId, steered.receipt.messageId]);
-  await eventually(() => steeredMessage.getByRole("button", { name: "撤回", exact: true }).isEnabled(), true, "Steered Send now still permits cancel");
+  await eventually(() => steeredMessage.getByRole("button", { name: "撤回", exact: true }).isEnabled(), true, "Steered 立即发送 still permits cancel");
   const resumesBeforeLateCancel = host.requests.filter(request => request.method === "events.resume").length;
   const releaseLateCancel = host.nativeApproval.holdQueueAction();
   try {
@@ -165,11 +179,11 @@ export async function verifyNativeQueueActions(page, host, steps, directory, rel
   ]);
   assert.equal(host.session.pendingCount, 0);
   assert.deepEqual(host.session.pendingCommandIds, []);
-  assert.equal(await page.getByRole("button", { name: "Send now", exact: true }).count(), 0);
+  assert.equal(await page.getByRole("button", { name: "立即发送", exact: true }).count(), 0);
   assert.equal(await page.getByRole("button", { name: "撤回", exact: true }).count(), 0);
   assert.equal(await page.getByRole("status", { name: "消息排队状态" }).count(), 0);
   await page.screenshot({ path: resolve(directory, "queue-terminal-states.png"), fullPage: true });
-  steps.push("fresh history reconciles a missed rekey into one cached bubble; steered Send now uses its native UUID; completed events preceding a delayed cancel true remain completed; successful cancels persist and queue actions never resubmit or interrupt");
+  steps.push("fresh history reconciles a missed rekey into one cached bubble; steered 立即发送 uses its native UUID; completed events preceding a delayed cancel true remain completed; successful cancels persist and queue actions never resubmit or interrupt");
 
   for (const event of await host.nativeApproval.message({ type: "assistant", uuid: "received-rewind-anchor", timestamp: Date.now(), message: { content: [{ type: "text", text: "保留的原生回退锚点" }] } })) await host.emit(event.type, event.data, { itemId: event.itemId });
   host.nativeApproval.queuedReply(false);
@@ -188,9 +202,9 @@ export async function verifyNativeQueueActions(page, host, steps, directory, rel
   assert.equal(host.nativeApproval.receipts().at(-1).state, "session-received");
   assert.equal(host.session.pendingCount, 0, "The adapter does not invent queued status to expose actions");
   await composer.fill(draft);
-  await receivedMessage.getByRole("button", { name: "Send now", exact: true }).click();
-  await eventually(() => host.nativeApproval.calls.filter(call => call.method === "promoteQueuedMessage" && call.args[1] === received.messageId).length, 1, "Received-only Send now promotes the normally submitted message exactly once");
-  await eventually(() => receivedMessage.getByRole("button", { name: "撤回", exact: true }).isEnabled(), true, "Received-only Send now preserves draft and later cancellation");
+  await receivedMessage.getByRole("button", { name: "立即发送", exact: true }).click();
+  await eventually(() => host.nativeApproval.calls.filter(call => call.method === "promoteQueuedMessage" && call.args[1] === received.messageId).length, 1, "Received-only 立即发送 promotes the normally submitted message exactly once");
+  await eventually(() => receivedMessage.getByRole("button", { name: "撤回", exact: true }).isEnabled(), true, "Received-only 立即发送 preserves draft and later cancellation");
   assert.equal(await composer.inputValue(), draft);
   assert.equal(await receivedMessage.getByRole("button", { name: "回退到这条消息之前", exact: true }).isEnabled(), true);
   await page.screenshot({ path: resolve(directory, "queue-received-actions.png"), fullPage: true });
@@ -217,5 +231,5 @@ export async function verifyNativeQueueActions(page, host, steps, directory, rel
   await page.getByText("保留的原生回退锚点", { exact: true }).waitFor();
   assert.equal(await receivedMessage.count(), 0, "Replayed pre-rewind events cannot revive the discarded received message");
   await page.screenshot({ path: resolve(directory, "queue-running-rewind-complete.png"), fullPage: true });
-  steps.push("normal sends without a composer mode selector keep delivered-only replies received but expose Send now and native rewind; active rewind uses the user UUID/assistant anchor, stops through Native, clears withdrawal receipts, restores text and survives reload without resubmitting");
+  steps.push("normal sends without a composer mode selector keep delivered-only replies received but expose 立即发送 and native rewind; active rewind uses the user UUID/assistant anchor, stops through Native, clears withdrawal receipts, restores text and survives reload without resubmitting");
 }

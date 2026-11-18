@@ -555,6 +555,7 @@ export async function verifyNativeBoundaries(page, host, steps, directory) {
   }
   host.history.splice(0, host.history.length, ...(await host.nativeApproval.history()).items);
   const target = stream.locator("article.conversation-item").filter({ hasText: "重写这条请求" });
+  await target.locator(".conversation-bubble").click();
   await target.getByRole("button", { name: "回退到这条消息之前", exact: true }).click();
   const rewind = page.getByRole("dialog", { name: "回退会话", exact: true });
   await selectCustomOption(page, rewind.getByRole("combobox", { name: "回退范围", exact: true }), "both");
@@ -631,6 +632,7 @@ export async function verifyNativeBoundaries(page, host, steps, directory) {
     ]) for (const event of await host.nativeApproval.message({ ...message, timestamp: Date.now() })) await host.emit(event.type, event.data, { itemId: event.itemId, turnId: event.turnId });
     host.history.splice(0, host.history.length, ...(await host.nativeApproval.history()).items);
     const target = page.locator("article.conversation-item.user").filter({ hasText: text });
+    await target.locator(".conversation-bubble").click();
     await target.getByRole("button", { name: "回退到这条消息之前", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: "回退会话", exact: true });
     await eventually(() => dialog.getByRole("button", { name: "确认回退", exact: true }).isEnabled(), true, "Native preview must finish before injecting the post-success readback disconnect");
@@ -740,14 +742,15 @@ export async function verifyNativeSessionNotices(page, host, steps, directory) {
   assert.equal(await ciNotice.getByRole("link", { name: "the pull request" }).getAttribute("href"), "https://github.com/example/project/pull/175");
   await ciNotice.locator("summary").click();
   assert.equal(await ciNotice.locator("section").isVisible(), false);
-  assert.equal(await userExample.getByRole("button", { name: "回退到这条消息之前", exact: true }).count(), 1);
+  const rewindAction = { name: "回退到这条消息之前", exact: true, includeHidden: true };
+  assert.equal(await userExample.getByRole("button", rewindAction).count(), 1);
   const userCode = stream.locator("article.conversation-item.user").filter({ hasText: "用户的缩进代码示例" });
   assert.equal(await userCode.count(), 1, "Native projection preserves indented examples as user messages");
   assert.ok((await userCode.locator(".markdown-body").textContent()).startsWith("    <ci-monitor-event>"), "The original four-space indentation survives the Native-to-client path");
-  assert.equal(await userCode.getByRole("button", { name: "回退到这条消息之前", exact: true }).count(), 1);
+  assert.equal(await userCode.getByRole("button", rewindAction).count(), 1);
   const userReply = stream.locator("article.conversation-item.user").filter({ hasText: "不要合并，等我确认" });
   assert.equal(await userReply.count(), 1, "User prose between CI envelopes is never swallowed into an app notice");
-  assert.equal(await userReply.getByRole("button", { name: "回退到这条消息之前", exact: true }).count(), 1);
+  assert.equal(await userReply.getByRole("button", rewindAction).count(), 1);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
   await page.screenshot({ path: resolve(directory, "session-notices-collapsed.png"), fullPage: true });
   await notices.first().locator("summary").first().click();

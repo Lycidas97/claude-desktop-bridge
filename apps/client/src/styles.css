@@ -2427,7 +2427,7 @@ button:disabled {
 }
 
 .conversation-message-actions {
-  display: flex;
+  display: var(--message-actions-display, contents);
   flex-wrap: wrap;
   align-items: center;
   margin-top: 4px;
@@ -2439,6 +2439,19 @@ button:disabled {
   gap: 4px;
   /* The copy button keeps its 44px touch area; its padding lines the label up with the bubble's edge. */
   margin: -4px -8px -8px 0;
+}
+
+.conversation-message-actions:has(> :is(.delivery-state:not(.completed), .queued-steer-button, .queued-cancel-button)) {
+  display: flex;
+}
+
+.conversation-item:is(.show-message-utilities, :focus-visible, :has(:focus-visible)) {
+  --message-actions-display: flex;
+  --message-utilities-display: contents;
+}
+
+.conversation-message-utilities {
+  display: var(--message-utilities-display, none);
 }
 
 .conversation-message-actions .delivery-state {
@@ -7438,8 +7451,9 @@ button:disabled {
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .desktop-conversation .conversation-item:not(:hover):not(:focus-within) .conversation-message-actions:not(:has(.queued, .failed, .uncertain, .queued-steer-button, .is-copied)) {
-    opacity: 0;
+  .desktop-conversation .conversation-item:hover {
+    --message-actions-display: flex;
+    --message-utilities-display: contents;
   }
 }
 

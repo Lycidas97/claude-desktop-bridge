@@ -4,11 +4,12 @@ import { stoppableBridgeTask, type ConversationItem } from "../../lib/conversati
 import { sessionActivity } from "../../lib/session-activity.js";
 import { findBackgroundTask } from "./BackgroundTasks.js";
 
-export function useConversationTasks({ draftKey, session, sessions, items, pollEnabled, onLoadBackgroundTasks, onInterruptTurn, onStopSubagent }: {
+export function useConversationTasks({ draftKey, session, sessions, items, showQueueActivity, pollEnabled, onLoadBackgroundTasks, onInterruptTurn, onStopSubagent }: {
   draftKey: string;
   session: BridgeSessionInfo;
   sessions: BridgeSessionInfo[];
   items: ConversationItem[];
+  showQueueActivity: boolean;
   pollEnabled: boolean;
   onLoadBackgroundTasks?: ((sessionId: string) => Promise<BridgeBackgroundTask[]>) | undefined;
   onInterruptTurn(sessionId: string): Promise<void>;
@@ -76,7 +77,8 @@ export function useConversationTasks({ draftKey, session, sessions, items, pollE
         : item;
     }) : items,
     selectedTaskDetails?.error ? undefined : activityTasks,
-  ), [activityTasks, items, selectedTaskDetails?.error, session]);
+    showQueueActivity,
+  ), [activityTasks, items, selectedTaskDetails?.error, session, showQueueActivity]);
 
   const backgroundTasks = activityTasks ?? [];
   const runningBackgroundTasks = backgroundTasks.filter((task) => task.state === "running").length;

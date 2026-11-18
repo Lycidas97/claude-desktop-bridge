@@ -24,7 +24,7 @@ Android is the native phone client. The generic mobile Web client remains availa
 
 The release also includes `SHA256SUMS.txt` and `SOURCE_COMMIT.txt`. Successful builds do not establish live-device validation on every platform. Android system back navigation has been tested in an Android 16 emulator.
 
-1.3.6 collects the conversation and desktop fixes since 1.3.5: relative-path file previews, a single replacement-session open after a desktop reset, leaner native history reads, received-receipt labels that stay collapsed once the queue drains, and mobile layout and question-card fixes. See the [Changelog](CHANGELOG.md) for details; technical documents track the source.
+**Fixes merged after v1.3.5 have not entered a public release yet**, including relative-path file previews, a single replacement-session open after a desktop reset, leaner native history reads, received-receipt labels that stay collapsed once the queue drains, mobile layout and question-card fixes, and per-session output styles. The [latest release](https://github.com/Lycidas97/claude-desktop-bridge/releases/latest) remains authoritative for released capabilities; the Changelog and technical documents track the source.
 
 ## What you need
 
@@ -44,7 +44,7 @@ The app's current controls use Chinese labels, included below to help you find t
 
 Download Bridge above, extract it and use the enclosed installer. On macOS, place Bridge in Applications and open it. If macOS blocks the unnotarized app, verify its source and use the system's Open Anyway option where available.
 
-Launch Claude Desktop / Claude-3p at least once and finish signing in, then open Bridge. Under **Settings → Claude Integration (设置 → Claude 接入)** Bridge shows the **Claude channel (Claude 通道)**, and under **Settings → Connection and Startup (设置 → 连接与启动)** it shows the host and **Relay connection**. The first connects to Desktop, the second connects to the phone and relay; check both.
+Launch Claude Desktop / Claude-3p at least once and finish signing in, then open Bridge. Under **Settings → Claude Integration (设置 → Claude 接入)** Bridge shows the **Native desktop channel (原生桌面通道)**, labeled **Channel ready (通道已就绪)** when ready; under **Settings → Connection and Startup (设置 → 连接与启动)** it shows **Host status (主机状态)** and **Relay status (Relay 状态)**. The first connects to Desktop, the second connects to the phone and relay; check both.
 
 ### 2. Enable Desktop's local connection on macOS
 
@@ -106,8 +106,8 @@ The phone's home screen is the session list. The top-left menu opens the drawer,
 | Prepare the next instruction | Queue input during a task, or steer it immediately when Desktop supports that operation. Use **Send now** or withdraw eligible native messages before processing starts; Desktop decides whether an action is still valid |
 | Answer questions and approvals | Respond through the session's live question or approval controls. Single choice, multiple selection, text and approval options depend on the request. Resolved requests are dismissed across devices; historical cards cannot be resubmitted as live approvals |
 | Change model or effort | Session row or conversation header “⋯” → Session settings (会话设置). Models, context capacity and how changes take effect come from Desktop |
-| Choose a reply style | Pick an **Output style** in session settings. Built-in styles are available out of the box; personal styles must first exist under `~/.claude/output-styles` on the computer. The selection applies from the next reply, while a reply already running on Desktop keeps the old style. The new-session page can preselect it |
-| Enable the debug port from the phone | **Settings → Claude debug port (9229)** on the phone asks the desktop to attempt to open the inspector. Account/workspace policies and existing permissions apply; behavior matches the desktop's automatic attempt |
+| Choose a reply style | **Output style (输出风格)** in session settings. Requires a build after v1.3.5. Built-in styles are available out of the box; personal styles must first exist under `~/.claude/output-styles` on the computer. The selection applies from the next reply, while a reply already running on Desktop keeps the old style. The new-session page can preselect it |
+| Enable the debug port from the phone | **Settings → Claude debug port (9229)** on the phone actively asks the desktop to attempt the inspector through the native menu. Desktop account/workspace policies and macOS Accessibility/Automation permissions still apply. Unlike the background automatic attempt, which does not retry within a Desktop process after a manual close, the phone can ask again |
 | Rewind a conversation or files | Choose Rewind (回退) beside a sent message, preview and select the scope. Conversation rewind stops active work, removes the selected message and later conversation, and returns the text to the composer; add attachments again. Conversation-only rewind keeps current files. File restoration depends on Desktop checkpoints and busy state, and overwrites the files listed in the preview |
 | Create a branch | Session “⋯” → Fork. Desktop decides the history boundary. **Branches share the working directory; a fork does not copy or roll back project files** |
 | View files and results | Open Evidence (成果) from conversation “⋯”, or a workspace path in a message. Preview and download limits are listed below |

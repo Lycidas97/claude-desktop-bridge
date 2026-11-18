@@ -640,6 +640,8 @@ export interface BridgeSessionInfo {
   ownership: BridgeOwnershipState;
   turnState: BridgeTurnState;
   lastActivityAt: number;
+  /** Identity of the latest successful native turn result observed by the Bridge. */
+  lastCompletedTurnId?: string;
   pendingCount: number;
   /** Queued command identities, when provided by the host. */
   pendingCommandIds?: string[];

@@ -19,9 +19,37 @@ export async function verifySessionCatalog(page, host, steps, directory, viewpor
     viewports.push({ page: name, ...page.viewportSize() });
     await page.screenshot({ path: resolve(directory, `${name}.png`), fullPage: true });
   }
+  async function verifyRowMetadata(row) {
+    const bounds = await row.locator(".session-row-copy small").evaluate(element => {
+      const { left, right, top, height } = element.getBoundingClientRect();
+      const title = element.previousElementSibling.getBoundingClientRect();
+      return { left, right, top, height, titleBottom: title.bottom, viewportWidth: innerWidth };
+    });
+    assert.ok(bounds.left >= 0 && bounds.right <= bounds.viewportWidth && bounds.top >= bounds.titleBottom && bounds.height > 1,
+      `Activity and summary appear beneath the title: ${JSON.stringify(bounds)}`);
+  }
+  const catalogSession = host.snapshot.sessions.find(session => session.sessionId === sessionId);
+  catalogSession.currentSummary = "正在验证链路压缩";
+  await host.send({ kind: "snapshot", snapshot: host.snapshot });
   await openMobileDrawer(page);
-  await capture("mobile-catalog");
+  const mobileMetadataRow = page.locator(`.mobile-home-catalog [data-session-id="${sessionId}"]`);
+  await mobileMetadataRow.getByText(/· 正在验证链路压缩/u).waitFor();
+  await verifyRowMetadata(mobileMetadataRow);
   const savedMobileSnapshot = structuredClone(host.snapshot);
+  assert.equal(await mobileMetadataRow.locator(".session-state-dot.completed").count(), 0);
+  catalogSession.lastCompletedTurnId = "mobile-background-result";
+  await host.send({ kind: "snapshot", snapshot: host.snapshot });
+  await mobileMetadataRow.locator(".session-state-dot.completed").waitFor();
+  await capture("mobile-catalog");
+  const seenKey = `bridge-seen-session-completions:${host.pairing.roomId}`;
+  // Model another tab persisting a fork acknowledgement after this catalog cached its state.
+  await page.evaluate(key => localStorage.setItem(key, JSON.stringify({ "browser-e2e-fork": "fork-result" })), seenKey);
+  await mobileMetadataRow.locator(".session-row-hit").click();
+  await page.waitForFunction(({ key, id }) => JSON.parse(localStorage.getItem(key) ?? "{}")[id] === "mobile-background-result", { key: seenKey, id: sessionId });
+  assert.equal(await page.evaluate(key => JSON.parse(localStorage.getItem(key))["browser-e2e-fork"], seenKey), "fork-result");
+  await openMobileDrawer(page);
+  await mobileMetadataRow.waitFor();
+  assert.equal(await mobileMetadataRow.locator(".session-state-dot.completed").count(), 0);
   for (const session of host.snapshot.sessions) {
     session.turnState = "running";
     session.ownership = "DESKTOP_NATIVE_RUNNING";
@@ -50,11 +78,14 @@ export async function verifySessionCatalog(page, host, steps, directory, viewpor
       const forkedRow = document.querySelector(".mobile-home-catalog .session-row-v2.has-forks");
       const plainRow = document.querySelector('.mobile-home-catalog [data-session-id="browser-e2e-fork"]');
       return {
+        forkedTitleDelta: Math.abs(midY(forkedRow.querySelector(".session-family-chevron")) - midY(forkedRow.querySelector(".session-row-copy strong"))),
+        childTitleDelta: Math.abs(plainRow.querySelector(".session-tree-elbow").getBoundingClientRect().top + 5 - midY(plainRow.querySelector(".session-row-copy strong"))),
         forkedChevronDelta: Math.abs(midY(forkedRow.querySelector(".session-family-chevron")) - midY(forkedRow.querySelector(".session-row-action"))),
         forkedBadgesDelta: Math.abs(midY(forkedRow.querySelector(".session-row-badges")) - midY(forkedRow.querySelector(".session-row-action"))),
         plainBadgesDelta: Math.abs(midY(plainRow.querySelector(".session-row-badges")) - midY(plainRow.querySelector(".session-row-action"))),
       };
     });
+    assert.ok(mobileAlign.forkedTitleDelta <= 1.5 && mobileAlign.childTitleDelta <= 1.5, `Mobile ${font} fork chevron and connector align with their titles: ${JSON.stringify(mobileAlign)}`);
     assert.ok(mobileAlign.forkedChevronDelta <= 1.5, `Mobile ${font} forked chevron aligns with action: ${JSON.stringify(mobileAlign)}`);
     assert.ok(mobileAlign.forkedBadgesDelta <= 1.5, `Mobile ${font} forked dot aligns with action: ${JSON.stringify(mobileAlign)}`);
     assert.ok(mobileAlign.plainBadgesDelta <= 1.5, `Mobile ${font} non-forked dot aligns with action: ${JSON.stringify(mobileAlign)}`);
@@ -97,7 +128,9 @@ export async function verifySessionCatalog(page, host, steps, directory, viewpor
   await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
   const sidebar = page.locator(".desktop-session-sidebar");
   const headers = sidebar.locator('.project-group-open[aria-controls^="desktop-project-"] .project-group-toggle-copy strong');
-  await sidebar.locator(`[data-session-id="${sessionId}"]`).waitFor();
+  const desktopMetadataRow = sidebar.locator(`[data-session-id="${sessionId}"]`);
+  await desktopMetadataRow.getByText(/· 正在验证链路压缩/u).waitFor();
+  await verifyRowMetadata(desktopMetadataRow);
   assert.equal(await sidebar.locator('.project-group-open[aria-controls="desktop-archived-sessions"] .project-group-toggle-copy strong').textContent(), "已归档");
   const initialOrder = await headers.allTextContents();
   assert.equal(initialOrder.length, 2);
@@ -115,6 +148,16 @@ export async function verifySessionCatalog(page, host, steps, directory, viewpor
   await sidebar.locator('[data-session-id="browser-e2e-fork"] .session-row-hit').click();
   assert.equal(await sidebar.locator('[data-session-id="browser-e2e-fork"]').evaluate(element => element.classList.contains("active")), true);
   const savedCatalog = await page.evaluate(() => structuredClone(window.__catalogSnapshot));
+  await page.evaluate(id => {
+    const snapshot = structuredClone(window.__catalogSnapshot);
+    snapshot.sessions.find(session => session.sessionId === id).lastCompletedTurnId = "desktop-background-result";
+    window.__updateCatalog(snapshot);
+  }, sessionId);
+  await desktopMetadataRow.locator(".session-state-dot.completed").waitFor();
+  await desktopMetadataRow.locator(".session-row-hit").click();
+  await desktopMetadataRow.locator(".session-state-dot.completed").waitFor({ state: "detached" });
+  await page.evaluate(snapshot => window.__updateCatalog(snapshot), savedCatalog);
+  steps.push("Mobile and Desktop show activity and summary, mark an unopened result, and clear it on opening");
   const contrastChecks = [];
   await page.evaluate(axeSource);
   for (const state of ["running", "waiting", "queued"]) {

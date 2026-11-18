@@ -101,7 +101,7 @@ async function verifySessionHeader(page, host, steps, directory, baseUrl) {
   steps.push("mobile at 375/320px ellipsizes long model names on one line and keeps the full effort, permission mode, and chevron visible; mobile and desktop retain full accessible settings descriptions and read-only summaries");
 }
 
-export async function verifyNativeApprovals(page, host, steps, directory, baseUrl, relayPeers) {
+export async function verifyNativeApprovals(page, host, steps, directory, baseUrl, relayRoutes) {
   await openMobileSession(page);
   await page.getByRole("heading", { name: originalTitle, exact: true }).waitFor();
   const slashInput = page.getByRole("combobox", { name: "给 Claude 发指令" });
@@ -189,16 +189,34 @@ export async function verifyNativeApprovals(page, host, steps, directory, baseUr
   await latestOutput.waitFor();
   assert.equal(await latestOutput.evaluate(output => Boolean(output.compareDocumentPosition(document.querySelector(".pending-question")) & Node.DOCUMENT_POSITION_FOLLOWING)), true, "The live question stays after subsequent assistant output");
   const snapshotCount = host.requests.filter((request) => request.method === "snapshot.get").length;
-  const peer = [...relayPeers].find(([, hello]) => hello.roomId === host.pairing.roomId && hello.role === "mobile");
-  assert.ok(peer, "Native approval scenario must own a connected phone");
-  peer[0].close(1012, "native approval reconnect fixture");
+  const routeCount = relayRoutes.length;
+  assert.ok(routeCount > 0, "Native approval scenario must own a phone connection");
+  // The startup probe also opens /ws. Close the page side of every existing relay route
+  // so the phone stops sending before Playwright closes its native socket.
+  await Promise.all(relayRoutes.map(route => route.close({ code: 1000, reason: "native approval reconnect fixture" })));
   await eventually(() => host.requests.filter((request) => request.method === "snapshot.get").length > snapshotCount, true, "Reconnect must fetch pending native approval");
+  assert.ok(relayRoutes.length > routeCount, "Reconnect must open a new relay connection");
   assert.equal(host.nativeApproval.list()[0].requestId, question.request.requestId);
+  const submit = questionCard.getByRole("button", { name: "提交回答", exact: true });
+  assert.equal(await questionCard.getByRole("textbox").count(), 0, "Preset questions start with Other collapsed");
+  assert.equal(await questionCard.getByText("任一已授权设备的首次回答生效", { exact: true }).count(), 0);
+  await questionCard.getByRole("radio", { name: "其他", exact: true }).check();
+  const singleText = questionCard.getByRole("textbox", { name: "选择执行范围：其他回答", exact: true });
+  await singleText.fill("隔离目录");
   await questionCard.getByRole("radio", { name: /仅本机/u }).check();
+  assert.equal(await singleText.count(), 0, "Selecting a preset closes single-choice Other");
   await questionCard.getByRole("checkbox", { name: "类型检查", exact: true }).check();
   await questionCard.getByRole("checkbox", { name: "回归测试", exact: true }).check();
   await page.screenshot({ path: resolve(directory, "native-question.png"), fullPage: true });
-  await questionCard.getByRole("button", { name: "提交回答", exact: true }).click();
+  const multiOther = questionCard.getByRole("checkbox", { name: "其他", exact: true });
+  await multiOther.check();
+  assert.equal(await submit.isDisabled(), true, "Selected Other needs text even with other checks selected");
+  await questionCard.getByRole("textbox", { name: "选择检查项目：其他回答", exact: true }).fill("浏览器检查");
+  assert.equal(await submit.isEnabled(), true);
+  await page.screenshot({ path: resolve(directory, "native-question-other.png"), fullPage: true });
+  await multiOther.uncheck();
+  assert.equal(await questionCard.getByRole("textbox").count(), 0, "Unchecking Other closes the input");
+  await submit.click();
   const questionReply = await question.response;
   assert.equal(questionReply.decision, "once");
   assert.equal(questionReply.requestId, question.request.requestId);
@@ -295,6 +313,10 @@ export async function verifyNativePromptsPr(page, host, steps, directory, baseUr
   await openMobileSession(page);
   await page.getByRole("heading", { name: originalTitle, exact: true }).waitFor();
   const kinds = ["refusal-fallback", "auto-mode-server-fallback", "lanyard-consent", "violin-bow", "cwd-trust"];
+  // Freeze the entrance at a frame where the dialog overlaps the pending dock.
+  const freezeEntrance = await page.addStyleTag({ content: `
+    .m-sheet-backdrop, .m-sheet { animation-delay: -80ms; animation-play-state: paused; }
+  ` });
   const opened = [];
   for (const kind of kinds) {
     const update = await host.syncNativeDialogs(await host.nativeApproval.openPrompt(kind));
@@ -305,7 +327,30 @@ export async function verifyNativePromptsPr(page, host, steps, directory, baseUr
   assert.equal(host.snapshot.permissions.length, 0);
   const listed = await host.nativeApproval.controllerRequest({ kind: "request", requestId: randomUUID(), idempotencyKey: randomUUID(), method: "prompt.list", params: { sessionId } });
   assert.deepEqual(listed.prompts.map(prompt => prompt.kind).sort(), [...kinds].sort());
-  await page.screenshot({ path: resolve(directory, "native-prompts.png"), fullPage: true });
+  const promptSheet = page.getByRole("dialog", { name: "Claude 等待确认", exact: true });
+  const layout = await promptSheet.evaluate(sheet => {
+    const selector = sheet.querySelector('[role="combobox"]').getBoundingClientRect();
+    const description = sheet.querySelector(".native-prompt p").getBoundingClientRect();
+    const actions = sheet.querySelector(".native-prompt .permission-actions").getBoundingClientRect();
+    const dock = document.querySelector(".permission-dock").getBoundingClientRect();
+    const panel = sheet.getBoundingClientRect();
+    const pixel = document.createElement("canvas").getContext("2d");
+    pixel.fillStyle = getComputedStyle(sheet).backgroundColor;
+    pixel.fillRect(0, 0, 1, 1);
+    return {
+      backdropOpacity: Number(getComputedStyle(sheet.parentElement).opacity),
+      panelOpacity: Number(getComputedStyle(sheet).opacity),
+      fillOpacity: pixel.getImageData(0, 0, 1, 1).data[3] / 255,
+      coversDock: panel.top <= dock.top && panel.bottom >= dock.bottom,
+      descriptionBetweenControls: selector.bottom <= description.top && description.bottom <= actions.top,
+    };
+  });
+  assert.equal(layout.coversDock, true, "The entering Native prompt sheet overlaps the pending dock");
+  assert.deepEqual([layout.backdropOpacity, layout.panelOpacity, layout.fillOpacity], [1, 1, 1], "The sheet must hide the pending dock even during its entrance");
+  assert.equal(layout.descriptionBetweenControls, true, "Native prompt details sit between the selector and response buttons");
+  await freezeEntrance.evaluate(style => style.remove());
+  await page.screenshot({ path: resolve(directory, "native-prompts.png"), fullPage: true, animations: "disabled" });
+  steps.push("the Native prompt sheet is opaque during entrance and keeps the description between the selector and actions");
   const selected = ["edit_prompt", "interrupt", "consent_workspace", "cancel_native_operation", "trust"];
   const methods = ["respondToRefusalFallbackPrompt", "respondToAutoModeServerFallbackPrompt", "respondToLanyardConsent", "respondToViolinBowPrompt", "answerPendingCwdTrust"];
   for (const [index, prompt] of opened.entries()) {

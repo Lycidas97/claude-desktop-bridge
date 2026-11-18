@@ -419,6 +419,18 @@ it("validates rendererDiagnostics at the IPC boundary, merges service + renderer
   });
 });
 
+it("keeps the main renderer hidden when the app starts with --hidden", async () => {
+  process.argv = [...originalArgv, "--hidden"];
+  const { EventEmitter } = await import("node:events");
+  mocks.connect.mockResolvedValueOnce(Object.assign(new EventEmitter(), {
+    call: vi.fn(async () => ({ launchAtLogin: false, sessions: [] })),
+    close: vi.fn(),
+  }));
+  await import("./main.js");
+  await vi.waitFor(() => expect(mocks.windows[1]).toBeDefined());
+  expect(mocks.windows[1]!.options).toMatchObject({ show: false, paintWhenInitiallyHidden: false });
+});
+
 it("configures macOS hiddenInset titlebar and syncs nativeTheme + backgroundColor with renderer theme-color", async () => {
   process.argv = originalArgv;
   Object.defineProperty(process, "platform", { value: "darwin" });

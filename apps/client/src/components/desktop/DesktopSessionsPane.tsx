@@ -41,6 +41,7 @@ import { SessionActionSheets } from "../session/SessionActionSheets.js";
 import { SessionCreateDialog } from "../session/SessionCreateDialog.js";
 import { SessionFamilyList } from "../session/SessionFamilyList.js";
 import { useProjectSessionGroups } from "../session/useProjectSessionGroups.js";
+import { useSeenSessionCompletions } from "../session/useSeenSessionCompletions.js";
 import { useSessionMenuAction } from "../session/useSessionMenuAction.js";
 import {
   SessionSectionDragGhost,
@@ -367,6 +368,7 @@ export function DesktopSessions({
   }, [events, hostId, selectedId]);
 
   const selected = snapshot.sessions.find((session) => session.sessionId === selectedId);
+  const seenCompletions = useSeenSessionCompletions(hostId);
   const visibilityAvailable = snapshot.host.capabilities.includes("session.visibility.v1");
   const hasActiveSessions = activeSessions.length > 0;
 
@@ -703,6 +705,7 @@ export function DesktopSessions({
                               permissions={snapshot.permissions}
                               expandedForkParents={expandedForkParents}
                               selectedId={activeTab === "sessions" ? selectedId : undefined}
+                              seenCompletions={seenCompletions}
                               flat
                               sessionDrag={sessionDrag}
                               actionLabel={(session) => `会话操作：${session.title}`}

@@ -316,7 +316,7 @@ export function QuestionPrompt({
         const choiceName = `${permission.requestId}:${index}`;
         const customSelected = customAnswers[prompt] !== undefined;
         return (
-          <fieldset key={prompt}>
+          <fieldset key={prompt} disabled={busy}>
             <legend>{prompt}</legend>
             {options.map((option) => {
               const label = typeof option.label === "string" ? option.label : "";
@@ -360,7 +360,6 @@ export function QuestionPrompt({
                   type="text"
                   aria-label={`${prompt}：${options.length ? "其他回答" : "你的回答"}`}
                   value={customAnswers[prompt] ?? ""}
-                  disabled={busy}
                   onChange={event => setCustomAnswers(current => ({ ...current, [prompt]: event.target.value }))}
                 />
               </label>

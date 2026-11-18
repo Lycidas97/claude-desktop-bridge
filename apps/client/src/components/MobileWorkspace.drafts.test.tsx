@@ -1908,7 +1908,8 @@ describe("native structured approvals", () => {
   it.each(["single", "multi", "open"] as const)("submits a %s text answer through the original question without sending chat", async mode => {
     const question = { question: "下一步怎么做？", multiSelect: mode === "multi", options: mode === "open" ? [] : [{ label: "先检查" }] };
     const permission: BridgePermissionInfo = { requestId: "text-answer", sessionId: "A", toolUseId: "text-tool", toolName: "AskUserQuestion", createdAt: 1, canAllowAlways: false, input: { questions: [question] } };
-    const onResolve = vi.fn().mockRejectedValueOnce(new Error("回答尚未提交")).mockResolvedValue(undefined);
+    const submission = deferred();
+    const onResolve = vi.fn().mockReturnValueOnce(submission.promise).mockResolvedValue(undefined);
     const child = PermissionPrompt({ permission, onResolve });
     hooks.slots = [];
     const drawQuestion = () => { hooks.index = 0; return (child.type as (props: unknown) => ReactElement)(child.props); };
@@ -1922,7 +1923,10 @@ describe("native structured approvals", () => {
     elements(drawQuestion()).find(element => element.type === "input" && element.props.type === "text")!.props.onChange({ target: { value: "  按修订意见继续  " } });
     expect(elements(drawQuestion()).find(element => element.props.className === "primary-button")!.props.disabled).toBe(false);
     elements(drawQuestion()).find(element => element.props.className === "primary-button")!.props.onClick();
-    for (let i = 0; i < 5; i++) await Promise.resolve();
+    expect(elements(drawQuestion()).find(element => element.type === "fieldset")!.props.disabled).toBe(true);
+    submission.reject(new Error("回答尚未提交"));
+    await settle();
+    expect(elements(drawQuestion()).find(element => element.type === "fieldset")!.props.disabled).toBe(false);
     expect(elements(drawQuestion()).find(element => element.props.role === "alert")?.props.children).toBe("回答尚未提交");
     expect(elements(drawQuestion()).find(element => element.type === "input" && element.props.type === "text")!.props.value).toBe("  按修订意见继续  ");
     elements(drawQuestion()).find(element => element.props.className === "primary-button")!.props.onClick();

@@ -1586,21 +1586,29 @@ describe("unified desktop and assistant conversation composition", () => {
     pushEvent({
       eventId: "shared-compact", seq: 1, timestamp: 11, sessionId: "A", origin: "claude-host", type: "session.compacted", data: {},
     });
+    const sharedEvidence = { id: "shared-bundle", sessionId: "A", startedAt: 12, summary: "Shared evidence", tools: [], artifacts: [] };
     pushEvent({
       eventId: "shared-evidence", seq: 2, timestamp: 12, sessionId: "A", origin: "claude-host", type: "evidence.ready",
-      data: { evidence: { id: "shared-bundle", sessionId: "A", startedAt: 12, summary: "Shared evidence", tools: [], artifacts: [] } },
+      data: { evidence: sharedEvidence },
     });
     fullTree = fullDashboard.draw();
     expect(apiRequest.mock.calls.some(([request]) => request.method === "session.open")).toBe(false);
 
     elements(assistantTabs()).find((element) => element.type === IconButton && element.props.label === "助理设置")!.props.onClick();
     fullTree = fullDashboard.draw();
+    apiRequest.mockImplementation(async ({ method, params }) => ({
+      kind: "response", requestId: "test", ok: true,
+      result: method === "session.open" ? { history: { items: history, hasMore: false } }
+        : method === "evidence.list" ? { evidence: { items: params.sessionId === "A" ? [sharedEvidence] : [], hasMore: false } } : {},
+    }));
     elements(assistantTabs()).find((element) => element.type === "button" && element.props.children === "对话")!.props.onClick();
+    fullTree = fullDashboard.draw();
+    const conversationEvidence = () => elements(fullTree).find((element) => element.type === ConversationView)?.props.evidence;
+    expect(conversationEvidence()).toMatchObject({ status: "loading", items: [{ id: "shared-bundle" }] });
     await settle();
     fullTree = fullDashboard.draw();
+    expect(conversationEvidence()).toMatchObject({ status: "ready", items: [{ id: "shared-bundle" }] });
     expect(composerInput().props.value).toBe("从会话页输入的草稿");
-    expect(elements(fullTree).find((element) => element.type === ConversationView)?.props.evidence?.items)
-      .toMatchObject([{ id: "shared-bundle" }]);
 
     composerInput().props.onChange("助理页修改后的草稿");
     fullTree = fullDashboard.draw();

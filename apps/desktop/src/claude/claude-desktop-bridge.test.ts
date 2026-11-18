@@ -4242,6 +4242,40 @@ describe("Claude native relay", () => {
     } finally { await f.close(); }
   });
 
+  it("keeps the live usage from the second concurrent open when both native replies arrive together", async () => {
+    const f = await fixture();
+    try {
+      f.native.sessions[0]!.model = "claude-sonnet-4-5";
+      f.native.page = { hasMore: false, messages: [{
+        type: "assistant", uuid: "latest", message: { model: "claude-sonnet-4-5", content: "Latest response", usage: { input_tokens: 12_000, output_tokens: 400 } },
+      }] };
+      const usageReplies: Array<(value: unknown) => void> = [];
+      let bothUsageCallsPending!: () => void;
+      const usageCallsPending = new Promise<void>(resolve => { bothUsageCallsPending = resolve; });
+      const call = f.native.call.bind(f.native);
+      vi.spyOn(f.native, "call").mockImplementation((method, args = []) => {
+        if (method !== "getContextUsage") return call(method, args);
+        f.native.calls.push({ method, args });
+        return new Promise(resolve => {
+          usageReplies.push(resolve);
+          if (usageReplies.length === 2) bothUsageCallsPending();
+        });
+      });
+      const controller = createControllerFixture({ broker: f.bridge, eventLog: f.eventLog });
+      const opens = ["phone-a", "phone-b"].map(phone => controller.handleRequest({
+        kind: "request", requestId: phone, idempotencyKey: phone, method: "session.open", params: { sessionId: "local-native" },
+      }, "mobile", phone));
+
+      await usageCallsPending;
+      usageReplies[0]!(null);
+      usageReplies[1]!({ totalTokens: 64_200, rawMaxTokens: 1_000_000 });
+      await Promise.all(opens);
+
+      expect(f.bridge.session("local-native")?.contextUsage).toMatchObject({ totalTokens: 64_200, maxTokens: 1_000_000, estimated: false });
+      expect(f.native.calls.filter(call => call.method === "getTranscriptPage").map(call => call.args[1])).toEqual(["", ""]);
+    } finally { await f.close(); }
+  });
+
   it.each([
     { hasMore: false, count: 1, limit: 50 },
     { hasMore: true, count: 20, limit: 30 },

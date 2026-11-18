@@ -56,21 +56,27 @@ export async function readNativeHistoryPage(
   return {
     page,
     earlierPlanMessages,
-    async readContextMessages(): Promise<unknown[]> {
+    readContextMessages(apply: (messages: unknown[]) => void): void | Promise<void> {
       let combined = [...olderContextPages.flat(), ...page.messages];
-      let scan = scanClaudeContextFromMessages(combined);
       // Preserve estimated usage at session.open's 18-message default when plan recovery was skipped.
       const canLookBack = plainLatestWithKnownPlan || (page.messages.length >= limit && limit >= 20);
-      let olderCursor = before;
-      for (let hop = 0; !scan.anchored && olderCursor && canLookBack && hop < 8; hop += 1) {
-        diagnostics.count("history.planPage");
-        const older = await readNativeTranscriptPage(inspector, sessionId, olderCursor, Math.max(limit, 100));
-        if (!older) break;
-        combined = [...projectContextMessages(older.messages), ...combined];
-        scan = scanClaudeContextFromMessages(combined);
-        olderCursor = older.nextCursor;
+      if (!canLookBack || !before || scanClaudeContextFromMessages(combined).anchored) {
+        // Commit in this turn when no read is needed, before a later live usage reply can commit.
+        apply(combined);
+        return;
       }
-      return combined;
+      return (async () => {
+        let olderCursor: string | undefined = before;
+        for (let hop = 0; olderCursor && hop < 8; hop += 1) {
+          diagnostics.count("history.planPage");
+          const older = await readNativeTranscriptPage(inspector, sessionId, olderCursor, Math.max(limit, 100));
+          if (!older) break;
+          combined = [...projectContextMessages(older.messages), ...combined];
+          if (scanClaudeContextFromMessages(combined).anchored) break;
+          olderCursor = older.nextCursor;
+        }
+        apply(combined);
+      })();
     },
   };
 }

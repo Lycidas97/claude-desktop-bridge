@@ -1094,7 +1094,8 @@ export class ClaudeDesktopBridge extends EventEmitter {
         if (live) {
           this.applyLiveContextUsage(sessionId, live);
         } else {
-          this.applyTranscriptContextMessages(sessionId, await readContextMessages());
+          const pending = readContextMessages(messages => this.applyTranscriptContextMessages(sessionId, messages));
+          if (pending) await pending;
         }
         if (hydrateModel) await this.hydrateContextModel(id, this.native.get(id)?.model, page);
         this.projectSessions();

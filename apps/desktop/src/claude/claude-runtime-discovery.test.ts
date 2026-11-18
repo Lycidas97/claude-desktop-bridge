@@ -85,6 +85,7 @@ describe("Claude gateway and model discovery", () => {
         maxInputTokens: 1_000_000,
         supportsEffort: true,
         supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+        declaredEffortLevels: ["low", "medium", "high", "xhigh", "max"],
       },
       {
         value: "gateway-model-alpha[1m]",
@@ -93,6 +94,7 @@ describe("Claude gateway and model discovery", () => {
         maxInputTokens: 1_000_000,
         supportsEffort: true,
         supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+        declaredEffortLevels: ["low", "medium", "high", "xhigh", "max"],
       },
       {
         value: "gateway-model-beta",
@@ -100,7 +102,25 @@ describe("Claude gateway and model discovery", () => {
         maxInputTokens: 200_000,
         supportsEffort: true,
         supportedEffortLevels: ["low", "medium", "high"],
+        declaredEffortLevels: ["low", "medium", "high"],
       },
+    ]);
+  });
+
+  it("retains a routing group's declared efforts while projecting only native levels for older clients", () => {
+    const models = parseClaudeGatewayModels([
+      { id: "group/mixed", supports_1m: true, supported_reasoning_levels: ["none", { effort: "high" }, "ultra", "future", "low", "high", " ", 1] },
+      { id: "only-ultra", reasoning: true, reasoning_levels: ["ultra"] },
+      { id: "disabled", reasoning: false, reasoning_levels: ["low", "ultra"] },
+    ]);
+    for (const [index, value] of ["group/mixed", "group/mixed[1m]"].entries()) {
+      expect(models[index]).toMatchObject({
+        value, declaredEffortLevels: ["none", "high", "ultra", "future", "low"], supportedEffortLevels: ["low", "high"],
+      });
+    }
+    expect(models.slice(2)).toEqual([
+      { value: "only-ultra", displayName: "only-ultra", declaredEffortLevels: ["ultra"], supportsEffort: false },
+      { value: "disabled", displayName: "disabled", declaredEffortLevels: ["low", "ultra"], supportsEffort: false },
     ]);
   });
 
@@ -266,12 +286,14 @@ describe("Claude gateway and model discovery", () => {
         displayName: "Claude Opus 5.5 · routing group",
         supportsEffort: true,
         supportedEffortLevels: ["low", "medium", "high"],
+        declaredEffortLevels: ["low", "medium", "high"],
       },
       {
         value: "claude/claude-opus-5-5",
         displayName: "Claude Opus 5.5 · Claude Code",
         supportsEffort: true,
         supportedEffortLevels: ["low", "high", "max"],
+        declaredEffortLevels: ["max", "low", "high"],
       },
       {
         value: "antigravity/gemini-4-argon",
@@ -279,6 +301,7 @@ describe("Claude gateway and model discovery", () => {
         description: "Gemini 4 Argon · Antigravity",
         supportsEffort: true,
         supportedEffortLevels: ["low", "medium", "high"],
+        declaredEffortLevels: ["low", "medium", "high"],
       },
     ]);
   });

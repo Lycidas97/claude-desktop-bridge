@@ -135,6 +135,23 @@ describe("session effort", () => {
     expect(button(draw(), "中").props["aria-pressed"]).toBe(true);
   });
 
+  it("shows gateway-only effort levels without offering them as settings", async () => {
+    const loaded: BridgeSessionConfiguration = {
+      ...configuration,
+      availableModels: [{ value: "current-model", displayName: "Current", supportedEffortLevels: ["medium"], declaredEffortLevels: ["none", "medium", "ultra"] }],
+    };
+    const props = { session, onLoad: vi.fn().mockResolvedValue(loaded), onSave: vi.fn().mockResolvedValue(loaded), onClose: vi.fn() };
+    const draw = () => render(() => <SessionConfigurationDialog {...props} />);
+    draw(); await settle();
+    const tree = draw();
+    expect(textContent(tree)).toContain("Desktop 不支持：关闭、超高");
+    expect(button(tree, "关闭")).toBeUndefined();
+    expect(button(tree, "超高")).toBeUndefined();
+    button(tree, "中").props.onClick();
+    button(draw(), "保存配置").props.onClick(); await settle();
+    expect(props.onSave).toHaveBeenCalledExactlyOnceWith({ effort: "medium" });
+  });
+
   it("starts unset and shows the effort Desktop returns after an explicit change", async () => {
     const loaded = { ...configuration, availableEffortLevels: ["low", "medium", "high"] };
     const props = {

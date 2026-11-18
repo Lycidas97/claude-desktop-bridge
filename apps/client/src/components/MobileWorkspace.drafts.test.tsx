@@ -1147,6 +1147,35 @@ describe("mobile session creation", () => {
     ]);
   });
 
+  it("creates a session without sending effort when the selected model only declares a gateway-only level", async () => {
+    const created = { ...props.snapshot!.sessions[0]!, sessionId: "created-gateway-effort", model: "native-model", effort: "medium" as const };
+    props = {
+      ...props,
+      onLoadSessionConfiguration: vi.fn().mockResolvedValue({
+        sessionId: "__default__",
+        model: "native-model",
+        availableModels: [
+          { value: "native-model", displayName: "Native" },
+          { value: "gateway-model", displayName: "Gateway", declaredEffortLevels: ["ultra"] },
+        ],
+        availableEffortLevels: ["low", "medium", "high"],
+        effort: "high",
+      }),
+      onCreateSession: vi.fn().mockResolvedValue(created),
+      onConfigureSession: vi.fn().mockResolvedValue({ model: "gateway-model" }),
+    };
+    draw();
+    startNewChatFromDrawer();
+    await settle();
+    elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "模型")!.props.onChange("gateway-model");
+    draw();
+    expect(elements(tree).find(element => element.props.className === "effort-unavailable")?.props.children).toBe("Desktop 不支持：超高");
+    expect(elements(tree).some(element => element.props['aria-label'] === "思考强度")).toBe(false);
+    elements(tree).find(element => element.type === "button" && String(element.props.className).includes("new-chat-empty-create-btn"))!.props.onClick();
+    await settle();
+    expect(props.onConfigureSession).toHaveBeenCalledExactlyOnceWith(created.sessionId, { model: "gateway-model" });
+  });
+
   it("keeps the first prompt as a draft when configuration fails without an error message", async () => {
     const created = { ...props.snapshot!.sessions[0]!, sessionId: "created-config-error" };
     props = {

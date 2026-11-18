@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join } from "node:path";
 import {
   DEFAULT_CONFIGURATION_SESSION_ID,
   evidenceSummary,
+  isBridgeEffort,
   isBridgeNativeImageRef,
   parseSystemUpdateParams,
   summarizeEvidenceEvent,
@@ -81,8 +82,8 @@ export function nullableBooleanParam(params: Record<string, unknown>, key: strin
 export function effortParam(params: Record<string, unknown>, key: string): BridgeEffort | null | undefined {
   const value = nullableStringParam(params, key);
   if (value === undefined || value === null) return value;
-  if (["low", "medium", "high", "xhigh", "max"].includes(value)) return value as BridgeEffort;
-  throw new Error("Invalid effort");
+  if (isBridgeEffort(value)) return value;
+  throw new Error(`Claude Desktop does not support effort ${JSON.stringify(value)}`);
 }
 
 export function attachmentsParam(params: Record<string, unknown>): BridgeAttachment[] {

@@ -1,9 +1,10 @@
 import {
+  BRIDGE_EFFORT_LEVELS,
   CLAUDE_UNSECTIONED_PROJECT_ID,
   CLAUDE_UNSECTIONED_PROJECT_NAME,
   DEFAULT_CONFIGURATION_SESSION_ID,
+  isBridgeEffort,
   type BridgeDesktopRuntimeId,
-  type BridgeEffort,
   type BridgeHostSnapshot,
   type BridgeProjectInfo,
   type BridgeSDKPermissionMode,
@@ -35,13 +36,13 @@ import { SectionCreateDialog, type SectionCreateState } from "./SectionCreateDia
 import {
   PERMISSION_MODE_OPTIONS,
   effortLabel,
+  modelEffortOptions,
   supportedEffort,
   type SessionConfigurationChange,
 } from "./SessionConfigurationDialog.js";
 
 export const NEW_CHAT_DRAFT_SESSION_ID = "__new__";
 const CREATE_SECTION_OPTION_VALUE = "__create_section__";
-const DEFAULT_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
 
 function formatDisplayDirectory(path: string | undefined): string {
   const trimmed = typeof path === "string" ? path.trim() : "";
@@ -51,12 +52,6 @@ function formatDisplayDirectory(path: string | undefined): string {
   const linuxMatch = /^\/home\/[^/]+(\/.*)$/u.exec(trimmed);
   if (linuxMatch) return `~${linuxMatch[1]}`;
   return trimmed;
-}
-
-function asBridgeEffort(value: string | undefined): BridgeEffort | undefined {
-  return value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max"
-    ? value
-    : undefined;
 }
 
 function isWorkspaceTrustError(reason: unknown): { isTrust: boolean; code: string } {
@@ -375,13 +370,11 @@ export function NewChatCanvas({
     [model, modelOptions],
   );
 
-  const effortLevels = selectedModel?.supportedEffortLevels?.length
-    ? selectedModel.supportedEffortLevels
-    : configuration?.availableReasoningEfforts?.length
-      ? configuration.availableReasoningEfforts
-      : configuration?.availableEffortLevels?.length
-        ? configuration.availableEffortLevels
-        : DEFAULT_EFFORT_LEVELS;
+  const reasoningEfforts = configuration?.availableReasoningEfforts;
+  const { levels: effortLevels, unavailable: unavailableEffort } = modelEffortOptions(selectedModel,
+    reasoningEfforts?.length ? reasoningEfforts.filter(isBridgeEffort)
+      : configuration?.availableEffortLevels.length ? configuration.availableEffortLevels : BRIDGE_EFFORT_LEVELS,
+  );
 
   const shownEffort = supportedEffort(effort, effortLevels);
   const outputStyles = onConfigureSession && canConfigureRuntime
@@ -503,10 +496,8 @@ export function NewChatCanvas({
   }
 
   function buildPostCreateConfiguration(created: BridgeSessionInfo): SessionConfigurationChange | undefined {
-    const desiredEffort = selectedModel?.supportsEffort !== false && effortLevels.length > 0
-      ? asBridgeEffort(shownEffort)
-      : undefined;
-    const createdEffort = created.effort ?? asBridgeEffort(created.reasoningEffort);
+    const desiredEffort = shownEffort;
+    const createdEffort = created.effort ?? (isBridgeEffort(created.reasoningEffort) ? created.reasoningEffort : undefined);
     const createdPermission = created.nativePermissionMode ?? "default";
 
     // The created session can display a catalog fallback before Desktop applies a model.
@@ -777,26 +768,29 @@ export function NewChatCanvas({
               />
             </div>
 
-            {selectedModel?.supportsEffort !== false && effortLevels.length > 0 && (
+            {(effortLevels.length > 0 || unavailableEffort) && (
               <div className="new-chat-config-row">
                 <span className="new-chat-config-label">思考强度</span>
-                <div className="effort-segments new-chat-effort-segments" role="group" aria-label="思考强度">
-                  {effortLevels.map((level) => (
-                    <button
-                      type="button"
-                      key={level}
-                      className={shownEffort === level ? "active" : ""}
-                      aria-pressed={shownEffort === level}
-                      disabled={!connected || locked}
-                      onClick={() => {
-                        userTouchedRef.current.effort = true;
-                        setEffort(level);
-                      }}
-                    >
-                      {effortLabel(level)}
-                    </button>
-                  ))}
-                </div>
+                {effortLevels.length > 0 && (
+                  <div className="effort-segments new-chat-effort-segments" role="group" aria-label="思考强度">
+                    {effortLevels.map((level) => (
+                      <button
+                        type="button"
+                        key={level}
+                        className={shownEffort === level ? "active" : ""}
+                        aria-pressed={shownEffort === level}
+                        disabled={!connected || locked}
+                        onClick={() => {
+                          userTouchedRef.current.effort = true;
+                          setEffort(level);
+                        }}
+                      >
+                        {effortLabel(level)}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {unavailableEffort && <small className="effort-unavailable">{unavailableEffort}</small>}
               </div>
             )}
 

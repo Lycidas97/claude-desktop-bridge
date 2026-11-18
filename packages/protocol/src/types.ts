@@ -148,7 +148,13 @@ export type BridgeOwnershipState =
   | "BRIDGE_RUNNING"
   | "RELEASING";
 export type BridgeTurnState = "idle" | "queued" | "running" | "waiting" | "completed" | "failed" | "interrupted";
-export type BridgeEffort = "low" | "medium" | "high" | "xhigh" | "max";
+/** Effort values accepted by the native Claude Desktop runtime, in ascending order. */
+export const BRIDGE_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
+export type BridgeEffort = typeof BRIDGE_EFFORT_LEVELS[number];
+
+export function isBridgeEffort(value: unknown): value is BridgeEffort {
+  return BRIDGE_EFFORT_LEVELS.some(level => level === value);
+}
 export type BridgeDesktopRegistrationState =
   | "waiting-transcript"
   | "unavailable"
@@ -721,7 +727,10 @@ export interface BridgeModelInfo {
   /** Input capacity advertised by the model's gateway. */
   maxInputTokens?: number;
   supportsEffort?: boolean;
-  supportedEffortLevels?: string[];
+  /** The native-compatible subset of the gateway's declared effort levels. */
+  supportedEffortLevels?: BridgeEffort[];
+  /** Gateway declaration, including levels that cannot be applied in Claude Desktop. */
+  declaredEffortLevels?: string[];
   supportsFast?: boolean;
 }
 
@@ -821,7 +830,7 @@ export interface BridgeSessionConfiguration {
   effortSource: BridgeConfigurationSource;
   providerSource?: BridgeConfigurationSource;
   availableModels: BridgeModelInfo[];
-  availableEffortLevels: string[];
+  availableEffortLevels: BridgeEffort[];
   availableReasoningEfforts?: string[];
   availableProviders?: BridgeRuntimeProviderInfo[];
   supportsFastMode?: boolean;

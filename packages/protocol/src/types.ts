@@ -642,6 +642,8 @@ export interface BridgeSessionInfo {
   lastActivityAt: number;
   /** Identity of the latest successful native turn result observed by the Bridge. */
   lastCompletedTurnId?: string;
+  /** Host observation time of the latest successful main turn result. */
+  lastCompletedTurnAt?: number;
   pendingCount: number;
   /** Queued command identities, when provided by the host. */
   pendingCommandIds?: string[];

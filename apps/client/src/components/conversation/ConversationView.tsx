@@ -430,9 +430,12 @@ export function ConversationView({
   const displayNodes = useMemo(() => groupTimelineTools(timeline), [timeline]);
   const latestMessage = displayNodes.filter((node) => node.kind === "message" && !node.item.sessionNotice
     && (node.item.role === "user" || node.item.role === "assistant")).at(-1);
-  const lastNativeReplyIndex = session.transport === "claude-desktop-native"
+  // During an active turn, assistant progress after the last result can belong to a different input.
+  const nativeReplyCutoff = session.turnState === "idle" ? Infinity : session.lastCompletedTurnAt;
+  const lastNativeReplyIndex = session.transport === "claude-desktop-native" && typeof nativeReplyCutoff === "number"
     ? displayNodes.reduce((last, node, index) => (
-      node.kind === "message" && node.item.role === "assistant" && !node.item.live && node.item.text.trim() ? index : last
+      node.kind === "message" && node.item.role === "assistant" && !node.item.live && node.item.text.trim()
+        && node.item.createdAt <= nativeReplyCutoff ? index : last
     ), -1)
     : -1;
   const inlineQueuedIds = new Set<string>();

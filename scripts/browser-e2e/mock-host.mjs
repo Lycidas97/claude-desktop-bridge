@@ -153,7 +153,7 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
     },
     async syncNativeQueue(update, { pushEvents = true } = {}) {
       history.splice(0, history.length, ...update.history.items);
-      for (const key of ["turnState", "ownership", "pendingCount", "pendingCommandIds", "allowedActions", "isCompacting"]) session[key] = update.session[key];
+      for (const key of ["turnState", "ownership", "pendingCount", "pendingCommandIds", "allowedActions", "isCompacting", "lastCompletedTurnAt"]) session[key] = update.session[key];
       snapshot.projects[0].pendingCount = session.pendingCount;
       snapshot.projects[0].runningCount = session.turnState === "running" ? 1 : 0;
       if (pushEvents) for (const event of update.events) await host.emit(event.type, event.data, {

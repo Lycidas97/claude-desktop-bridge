@@ -270,5 +270,28 @@ export async function verifyNativeQueueActions(page, host, steps, directory, rel
   await page.getByText("原生回复已结束。", { exact: true }).waitFor();
   assert.equal(await completedMessage.locator(".delivery-state").count(), 0, "History keeps the stale received badge hidden after reload");
   assert.equal(await staleActions.count(), 0, "History keeps stale queue controls hidden after reload");
-  steps.push("an uncorrelated result leaves the stored receipt intact and the answered mobile bubble hides its stale received badge and queue controls live and after reload");
+
+  const nextText = "下一轮收到的新消息";
+  const next = await host.syncNativeQueue(await host.nativeApproval.enqueue(nextText));
+  await host.syncNativeQueue(await host.nativeApproval.event({ type: "message", message: {
+    type: "user", uuid: next.receipt.messageId, timestamp: Date.now(), message: { content: nextText },
+  } }));
+  assert.equal(host.session.turnState, "running");
+  const nextMessage = page.locator("article.conversation-item.user").filter({ hasText: nextText });
+  await nextMessage.locator(".delivery-state.session-received").waitFor();
+  assert.equal(await nextMessage.getByRole("button", { name: /^(立即发送|撤回)$/u }).count(), 2, "New received-only input remains actionable");
+  assert.equal(await completedMessage.locator(".delivery-state").count(), 0, "A later native turn cannot revive an old received badge");
+  assert.equal(await staleActions.count(), 0, "A later native turn cannot revive stale queue controls");
+  await host.syncNativeQueue(await host.nativeApproval.event({ type: "message", message: {
+    type: "result", uuid: "correlated-next-result", user_message_uuid: next.receipt.messageId, is_error: false,
+  } }));
+  await nextMessage.locator(".delivery-state.completed").waitFor();
+  assert.equal(await completedMessage.locator(".delivery-state").count(), 0, "A matching result for another message does not revive the old received badge");
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await openMobileSession(page);
+  await completedMessage.waitFor();
+  await page.getByText("原生回复已结束。", { exact: true }).waitFor();
+  assert.equal(await completedMessage.locator(".delivery-state").count(), 0, "Reopening during a later turn keeps the old badge hidden");
+  assert.equal(await staleActions.count(), 0, "Reopening during a later turn keeps the old controls hidden");
+  steps.push("an uncorrelated result leaves the stored receipt intact and the answered mobile bubble hides its stale badge and queue controls after reload and during the next turn");
 }

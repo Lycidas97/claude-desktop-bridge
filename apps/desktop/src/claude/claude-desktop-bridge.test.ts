@@ -2037,9 +2037,10 @@ describe("Claude native relay", () => {
       expect(terminal).toHaveLength(1);
       expect(terminal[0]).toMatchObject({ sessionId: "local-native", itemId: "desktop-result", data: {} });
       expect(terminal[0]?.turnId).toBeUndefined();
-      expect(f.bridge.session("local-native")).toMatchObject({ lastCompletedTurnId: "desktop-result", turnState: "idle" });
+      const completed = f.bridge.session("local-native");
+      expect(completed).toMatchObject({ lastCompletedTurnId: "desktop-result", lastCompletedTurnAt: expect.any(Number), turnState: "idle" });
       await f.bridge.refreshRuntime();
-      expect(f.bridge.session("local-native")?.lastCompletedTurnId).toBe("desktop-result");
+      expect(f.bridge.session("local-native")).toMatchObject({ lastCompletedTurnId: "desktop-result", lastCompletedTurnAt: completed!.lastCompletedTurnAt });
     } finally { await f.close(); }
   });
 

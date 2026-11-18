@@ -56,9 +56,7 @@ export function ConversationMessageItem({
 }: ConversationMessageItemProps) {
   const [actionsRevealed, setActionsRevealed] = useState(false);
   const messageQueued = isQueuedConversationMessage(item, session);
-  // While Native is active, later text may still belong to the preceding turn.
-  const delivery = item.delivery === "session-received" && hasLaterNativeReply && session.turnState === "idle"
-    ? undefined : item.delivery;
+  const delivery = item.delivery === "session-received" && hasLaterNativeReply ? undefined : item.delivery;
   const canActOnQueued = Boolean(
     item.role === "user"
     && item.commandId

@@ -306,6 +306,10 @@ export async function verifyNativePromptsPr(page, host, steps, directory, baseUr
   await openMobileSession(page);
   await page.getByRole("heading", { name: originalTitle, exact: true }).waitFor();
   const kinds = ["refusal-fallback", "auto-mode-server-fallback", "lanyard-consent", "violin-bow", "cwd-trust"];
+  // Freeze the entrance at a frame where the dialog overlaps the pending dock.
+  const freezeEntrance = await page.addStyleTag({ content: `
+    .m-sheet-backdrop, .m-sheet { animation-delay: -80ms; animation-play-state: paused; }
+  ` });
   const opened = [];
   for (const kind of kinds) {
     const update = await host.syncNativeDialogs(await host.nativeApproval.openPrompt(kind));
@@ -316,7 +320,30 @@ export async function verifyNativePromptsPr(page, host, steps, directory, baseUr
   assert.equal(host.snapshot.permissions.length, 0);
   const listed = await host.nativeApproval.controllerRequest({ kind: "request", requestId: randomUUID(), idempotencyKey: randomUUID(), method: "prompt.list", params: { sessionId } });
   assert.deepEqual(listed.prompts.map(prompt => prompt.kind).sort(), [...kinds].sort());
-  await page.screenshot({ path: resolve(directory, "native-prompts.png"), fullPage: true });
+  const promptSheet = page.getByRole("dialog", { name: "Claude 等待确认", exact: true });
+  const layout = await promptSheet.evaluate(sheet => {
+    const selector = sheet.querySelector('[role="combobox"]').getBoundingClientRect();
+    const description = sheet.querySelector(".native-prompt p").getBoundingClientRect();
+    const actions = sheet.querySelector(".native-prompt .permission-actions").getBoundingClientRect();
+    const dock = document.querySelector(".permission-dock").getBoundingClientRect();
+    const panel = sheet.getBoundingClientRect();
+    const pixel = document.createElement("canvas").getContext("2d");
+    pixel.fillStyle = getComputedStyle(sheet).backgroundColor;
+    pixel.fillRect(0, 0, 1, 1);
+    return {
+      backdropOpacity: Number(getComputedStyle(sheet.parentElement).opacity),
+      panelOpacity: Number(getComputedStyle(sheet).opacity),
+      fillOpacity: pixel.getImageData(0, 0, 1, 1).data[3] / 255,
+      coversDock: panel.top <= dock.top && panel.bottom >= dock.bottom,
+      descriptionBetweenControls: selector.bottom <= description.top && description.bottom <= actions.top,
+    };
+  });
+  assert.equal(layout.coversDock, true, "The entering Native prompt sheet overlaps the pending dock");
+  assert.deepEqual([layout.backdropOpacity, layout.panelOpacity, layout.fillOpacity], [1, 1, 1], "The sheet must hide the pending dock even during its entrance");
+  assert.equal(layout.descriptionBetweenControls, true, "Native prompt details sit between the selector and response buttons");
+  await freezeEntrance.evaluate(style => style.remove());
+  await page.screenshot({ path: resolve(directory, "native-prompts.png"), fullPage: true, animations: "disabled" });
+  steps.push("the Native prompt sheet is opaque during entrance and keeps the description between the selector and actions");
   const selected = ["edit_prompt", "interrupt", "consent_workspace", "cancel_native_operation", "trust"];
   const methods = ["respondToRefusalFallbackPrompt", "respondToAutoModeServerFallbackPrompt", "respondToLanyardConsent", "respondToViolinBowPrompt", "answerPendingCwdTrust"];
   for (const [index, prompt] of opened.entries()) {

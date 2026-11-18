@@ -165,6 +165,20 @@ export async function verifyRound4Boundaries(page, host, steps, directory, viewp
   await settingsContent.getByRole("status").getByText(host.claudeActivationResult.detail, { exact: true }).waitFor();
   await saveShot(page, "06a-mobile-inspector-permission.png");
 
+  const closedPort = { claudeInspector: host.snapshot.claudeInspector, runtime: host.snapshot.runtime };
+  host.snapshot.claudeInspector = { ...closedPort.claudeInspector, state: "listening" };
+  host.snapshot.runtime = {
+    ...closedPort.runtime,
+    state: "ready",
+    detail: "已连接",
+    desktopIntegration: { ...closedPort.runtime.desktopIntegration, state: "ready", detail: "已连接" },
+  };
+  await host.send({ kind: "snapshot", snapshot: host.snapshot });
+  await settingsContent.getByText("Claude Desktop 已就绪", { exact: true }).waitFor();
+  await settingsContent.getByText(host.claudeActivationResult.detail, { exact: true }).waitFor({ state: "detached" });
+  Object.assign(host.snapshot, closedPort);
+  await host.send({ kind: "snapshot", snapshot: host.snapshot });
+
   // The catalog reports a listening port and a still-disconnected runtime separately.
   host.claudeActivationResult = { inspectorState: "listening", nativeReady: false, detail: "Claude 原生服务仍在启动。" };
   await page.locator(".m-header:visible").getByRole("button", { name: /^(?:返回|返回会话列表)$/u }).first().click();

@@ -552,17 +552,45 @@ describe("Round 4 Client Deliverables", () => {
       callout = drawCallout();
       expect(textContent(callout)).toContain("辅助功能");
 
+      const readySnapshot: HostSnapshotWithInspector = {
+        ...currentSnapshot,
+        claudeInspector: { ...currentSnapshot.claudeInspector!, state: "listening" },
+        runtime: {
+          ...currentSnapshot.runtime,
+          state: "ready",
+          desktopIntegration: { ...currentSnapshot.runtime.desktopIntegration, state: "ready" },
+        },
+      };
+      expect(drawCallout(readySnapshot)).toBeNull();
+
       onActivate.mockResolvedValueOnce(undefined);
-      elements(callout).find((el) => el.type === "button")!.props.onClick();
+      elements(drawCallout()).find((el) => el.type === "button")!.props.onClick();
       await vi.waitFor(() => expect(onActivate).toHaveBeenCalledTimes(2));
-      callout = drawCallout({
+      expect(textContent(drawCallout({
         ...currentSnapshot,
         claudeInspector: {
           ...currentSnapshot.claudeInspector!,
           startup: { state: "failed", detail: "未找到 Claude 的原生调试菜单。" },
         },
-      });
-      expect(textContent(callout)).toContain("未找到 Claude 的原生调试菜单。");
+      }))).toContain("未找到 Claude 的原生调试菜单。");
+
+      expect(textContent(drawCallout({
+        ...currentSnapshot,
+        claudeInspector: { ...readySnapshot.claudeInspector! },
+        runtime: {
+          ...currentSnapshot.runtime,
+          desktopIntegration: { ...currentSnapshot.runtime.desktopIntegration, detail: "Claude 原生服务仍在启动。" },
+        },
+      }))).toContain("调试端口已开启，Claude 原生连接未就绪。Claude 原生服务仍在启动。");
+      expect(textContent(drawCallout(readySnapshot))).toContain("调试端口已开启，Claude 原生连接已就绪。");
+      expect(textContent(drawCallout(stoppedSnapshot))).not.toContain("Claude 原生连接已就绪");
+
+      onActivate.mockResolvedValueOnce({ inspectorState: "listening", nativeReady: true });
+      elements(drawCallout()).find((el) => el.type === "button")!.props.onClick();
+      await vi.waitFor(() => expect(onActivate).toHaveBeenCalledTimes(3));
+      expect(textContent(drawCallout(readySnapshot))).toContain("Claude 原生连接已就绪");
+      expect(textContent(drawCallout({ ...readySnapshot }))).toContain("Claude 原生连接已就绪");
+      expect(textContent(drawCallout())).not.toContain("Claude 原生连接已就绪");
     });
 
     it("wires the activation action into the workspace callout and renders port and notification controls", () => {

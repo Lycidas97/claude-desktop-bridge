@@ -73,7 +73,7 @@ export function MobileSettings({
 
   const claudeStatus = resolveClaudeRemoteActivationStatus(claudeRuntime?.snapshot);
   const { busy: claudeBusy, feedback: claudeFeedback, activate: activateClaude } = useClaudeRemoteActivation(
-    claudeRuntime?.onActivate, claudeRuntime?.snapshot,
+    claudeRuntime?.onActivate, claudeRuntime?.snapshot, claudeStatus,
   );
   const computerHeadingName = providers?.desktopName ?? quota?.desktopName ?? claudeRuntime?.desktopName;
 

@@ -176,6 +176,30 @@ describe("DesktopController launchDesktopApp + explicit inspector enablement", (
     expect(runtimeAttachSleep).not.toHaveBeenCalled();
   });
 
+  it("reports a current inspector scan error instead of retained startup success", async () => {
+    const inspectorStatus: BridgeInspectorStatus = {
+      platform: "darwin", state: "error", port: 9229, pollIntervalMs: 3_000, clients: [], alerts: [],
+      startup: { state: "already-open", detail: "首次发现时调试端口已开放。" },
+      error: "扫描调试端口超时。",
+    };
+    const { controller } = createHarness({
+      initialAppState: "running",
+      initialInspector: inspectorStatus,
+      enableInspector: async () => inspectorStatus,
+      runtimeStates: ["unavailable"],
+    });
+
+    await expect(controller.handleRequest({
+      kind: "request",
+      requestId: "req-inspector-scan-error",
+      idempotencyKey: "idem-inspector-scan-error",
+      method: "desktop.app.launch",
+      params: { runtimeId: "claude-desktop" },
+    }, "mobile")).resolves.toMatchObject({
+      claudeActivation: { inspectorState: "error", nativeReady: false, detail: "扫描调试端口超时。" },
+    });
+  });
+
   it("skips menu automation when port 9229 is already listening", async () => {
     const enableInspector = vi.fn<() => Promise<BridgeInspectorStatus>>();
     const { controller, launch } = createHarness({

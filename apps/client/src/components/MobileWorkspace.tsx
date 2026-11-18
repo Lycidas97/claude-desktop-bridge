@@ -1017,7 +1017,7 @@ export function MobileWorkspace({
         sessionDrag={sessionDrag}
         manualSections={manualSections}
         sessionActionError={!menuSession && !renameOpen ? sessionActionError : undefined}
-        onActivateClaude={onActivateClaude}
+        onActivateClaude={visible ? onActivateClaude : undefined}
       />
     );
   }
@@ -1130,7 +1130,7 @@ export function MobileWorkspace({
               onConfigureSession={onConfigureSession}
               onCreateSession={onCreateSession}
               onSessionCreated={handleNewChatCreated}
-              onActivateClaude={onActivateClaude}
+              onActivateClaude={visible ? onActivateClaude : undefined}
             />
           </main>
         )}

@@ -434,7 +434,7 @@ export class DesktopController extends EventEmitter {
       let inspectorDetail: string | undefined;
       if (shouldEnableInspector && this.inspectorEnabler) {
         inspectorStatus = await this.inspectorEnabler();
-        inspectorDetail = inspectorStatus.startup?.detail ?? inspectorStatus.error;
+        inspectorDetail = inspectorStatus.state === "error" ? inspectorStatus.error : inspectorStatus.startup?.detail;
         this.inspectorStatus = inspectorStatus;
         if (this.broker?.refreshRuntime) {
           await this.broker.refreshRuntime();

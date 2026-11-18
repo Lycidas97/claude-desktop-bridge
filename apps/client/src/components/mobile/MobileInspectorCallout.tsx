@@ -1,6 +1,6 @@
 import type { BridgeClaudeActivationResult, BridgeDesktopAppStatus, BridgeHostSnapshot, BridgeInspectorStatus } from "@bridge/protocol";
 import { LoaderCircle, Play } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { readClaudeInspector } from "../../lib/claude-snapshot.js";
 
 export interface ClaudeRemoteActivationStatus {
@@ -78,26 +78,46 @@ export interface MobileInspectorCalloutProps {
   onActivate?: (() => Promise<BridgeClaudeActivationResult | undefined>) | undefined;
 }
 
+function openPortDetail(nativeReady: boolean, detail?: string): string {
+  return nativeReady
+    ? "调试端口已开启，Claude 原生连接已就绪。"
+    : `调试端口已开启，Claude 原生连接未就绪。${detail ?? ""}`;
+}
+
 export function useClaudeRemoteActivation(
   onActivate: MobileInspectorCalloutProps["onActivate"],
   snapshot: BridgeHostSnapshot | undefined,
+  status: ClaudeRemoteActivationStatus,
 ) {
   const [busy, setBusy] = useState(false);
-  const [feedback, setFeedback] = useState<{ detail: string; error?: boolean } | "missing">();
-  useEffect(() => setFeedback(undefined), [snapshot?.host.hostId]);
+  const [attempt, setAttempt] = useState<{
+    feedback: { detail: string; error?: boolean } | "snapshot";
+    hostId: string | undefined;
+    snapshotKey?: string;
+  }>();
+  const hostId = snapshot?.host.hostId;
+  const integration = snapshot?.runtime.desktopIntegration;
+  const snapshotKey = `${status.claudeApp?.state}:${status.inspector?.state}:${integration?.state}`;
+  const stale = attempt && (attempt.hostId !== hostId
+    || (attempt.snapshotKey !== undefined && attempt.snapshotKey !== snapshotKey));
+  if (stale) {
+    setAttempt(undefined);
+  } else if (attempt && attempt.snapshotKey === undefined && (attempt.feedback !== "snapshot" || !status.nativeUnavailable)) {
+    // Explicit replies bind to the state on arrival. Older hosts' snapshots can still advance to ready.
+    setAttempt({ ...attempt, snapshotKey });
+  }
+  const feedback = stale ? undefined : attempt?.feedback;
 
   async function activate(): Promise<void> {
     if (busy || !onActivate) return;
     setBusy(true);
-    setFeedback(undefined);
+    setAttempt(undefined);
     try {
       const result = await onActivate();
       if (!result) {
-        setFeedback("missing");
+        setAttempt({ hostId, feedback: "snapshot" });
       } else if (result.inspectorState === "listening") {
-        setFeedback({ detail: result.nativeReady
-          ? "调试端口已开启，Claude 原生连接已就绪。"
-          : `调试端口已开启，Claude 原生连接未就绪。${result.detail ?? ""}` });
+        setAttempt({ hostId, feedback: { detail: openPortDetail(result.nativeReady, result.detail) } });
       } else {
         const fallback = {
           closed: "本次未开启调试端口，请在电脑上手动开启。",
@@ -106,28 +126,33 @@ export function useClaudeRemoteActivation(
           error: "电脑无法检查调试端口状态。",
           unknown: "电脑无法确认调试端口是否开启。",
         }[result.inspectorState];
-        setFeedback({ detail: result.detail || fallback, error: true });
+        setAttempt({ hostId, feedback: { detail: result.detail || fallback, error: true } });
       }
     } catch (reason) {
-      setFeedback({ detail: reason instanceof Error ? reason.message : "开启调试端口失败", error: true });
+      setAttempt({ hostId, feedback: { detail: reason instanceof Error ? reason.message : "开启调试端口失败", error: true } });
     } finally {
       setBusy(false);
     }
   }
 
-  const startup = readClaudeInspector(snapshot)?.startup;
+  if (feedback !== "snapshot") return { busy, feedback, activate };
+  if (status.portLabel === "已开启") {
+    return { busy, feedback: { detail: openPortDetail(!status.nativeUnavailable, integration?.detail), error: false }, activate };
+  }
+  const startup = status.inspector?.startup?.state;
   return {
     busy,
-    feedback: feedback === "missing"
-      ? { detail: startup?.detail || "电脑未返回本次开启结果。", error: startup?.state === "failed" || startup?.state === "accessibility-required" }
-      : feedback,
+    feedback: {
+      detail: status.inspector?.error || resolveClaudeRemoteActivationDetail(snapshot, { attempted: true }),
+      error: status.inspector?.state === "error" || startup === "failed" || startup === "accessibility-required",
+    },
     activate,
   };
 }
 
 export function MobileInspectorCallout({ snapshot, connected, onActivate }: MobileInspectorCalloutProps) {
   const status = resolveClaudeRemoteActivationStatus(snapshot);
-  const { busy, feedback, activate } = useClaudeRemoteActivation(onActivate, snapshot);
+  const { busy, feedback, activate } = useClaudeRemoteActivation(onActivate, snapshot, status);
   if (!connected || !snapshot || !onActivate || (!status.nativeUnavailable && !busy && !feedback)) return null;
 
   return (

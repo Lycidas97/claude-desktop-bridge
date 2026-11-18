@@ -280,8 +280,10 @@ export function extractToolResultAnswers(value: Record<string, unknown>): Questi
 function* questionLabelMatches(answer: string, labels: string[]): Generator<string[], void> {
   if (labels.includes(answer)) yield [answer];
   for (const label of labels) {
-    if (!answer.startsWith(`${label}, `)) continue;
-    for (const rest of questionLabelMatches(answer.slice(label.length + 2), labels.filter(other => other !== label))) {
+    if (!answer.startsWith(label)) continue;
+    const tail = answer.slice(label.length).trimStart();
+    if (!tail.startsWith(", ")) continue;
+    for (const rest of questionLabelMatches(tail.slice(2).trimStart(), labels.filter(other => other !== label))) {
       yield [label, ...rest];
     }
   }
@@ -301,8 +303,12 @@ export function applyQuestionAnswers(
       const { answer, notes } = result;
       const labels = q.options.map(option => option.label);
       let selected: string[] | undefined;
+      let freeTextAnswer: string | undefined;
       if (Array.isArray(answer)) {
-        if (answer.every(label => labels.includes(label))) selected = answer;
+        selected = answer.filter(label => labels.includes(label));
+        if (selected.length && selected.length < answer.length) {
+          freeTextAnswer = answer.filter(part => !labels.includes(part)).join(", ");
+        }
       } else if (answer) {
         if (q.multiSelect) {
           const matches = questionLabelMatches(answer, labels);
@@ -313,8 +319,9 @@ export function applyQuestionAnswers(
       return {
         ...q,
         ...(answer ? { answer: Array.isArray(answer) ? answer.join(", ") : answer } : {}),
+        ...(freeTextAnswer ? { freeTextAnswer } : {}),
         ...(notes ? { notes } : {}),
-        options: selected ? q.options.map(option => selected.includes(option.label) ? { ...option, selected: true } : option) : q.options,
+        options: selected?.length ? q.options.map(option => selected.includes(option.label) ? { ...option, selected: true } : option) : q.options,
       };
     }),
   };

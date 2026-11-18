@@ -216,25 +216,34 @@ export async function verifyNativeApprovals(page, host, steps, directory, baseUr
   const multiOther = checks.getByRole("checkbox", { name: "其他", exact: true });
   await multiOther.check();
   assert.equal(await submit.isDisabled(), true, "Selected Other needs text even with other checks selected");
-  await questionCard.getByRole("textbox", { name: "选择检查项目：其他回答", exact: true }).fill("浏览器检查");
+  const otherAnswer = "浏览器检查, 稍后处理";
+  const multiText = checks.getByRole("textbox", { name: "选择检查项目：其他回答", exact: true });
+  await multiText.fill(otherAnswer);
   assert.equal(await submit.isEnabled(), true);
   await page.screenshot({ path: resolve(directory, "native-question-other.png"), fullPage: true });
   await multiOther.uncheck();
-  assert.equal(await checks.getByRole("textbox").count(), 0, "Unchecking Other closes the input");
+  assert.equal(await multiText.count(), 0, "Unchecking Other closes the input");
+  await multiOther.check();
+  await multiText.fill(otherAnswer);
   await submit.click();
   const questionReply = await question.response;
   assert.equal(questionReply.decision, "once");
   assert.equal(questionReply.requestId, question.request.requestId);
-  assert.deepEqual(questionReply.response, { ...input, answers: { "选择执行范围": "仅本机", "选择检查项目": "类型检查, 回归测试", "选择归档位置": archiveAnswer } });
+  assert.deepEqual(questionReply.response, {
+    ...input,
+    answers: { "选择执行范围": "仅本机", "选择检查项目": "类型检查, 回归测试", "选择归档位置": archiveAnswer },
+    annotations: { "选择检查项目": { notes: otherAnswer } },
+  });
   await questionCard.waitFor({ state: "hidden" });
   const notes = "只处理本机目录, 保留共享副本";
   for (const event of await host.nativeApproval.message({ type: "user", uuid: "native-question-result", timestamp: Date.now(),
-    toolUseResult: { ...questionReply.response, annotations: { "选择执行范围": { notes } } }, message: { content: [
+    toolUseResult: { ...questionReply.response, annotations: { ...questionReply.response.annotations, "选择执行范围": { notes } } }, message: { content: [
       { type: "tool_result", tool_use_id: question.request.toolUseId, content: "User has answered your questions." },
     ] },
   })) await host.emit(event.type, event.data, { itemId: event.itemId });
   const answeredQuestion = page.locator(".interactive-prompt-card").filter({ hasText: "选择检查项目" });
   await answeredQuestion.getByText(archiveAnswer, { exact: true }).waitFor();
+  await answeredQuestion.getByText(otherAnswer, { exact: true }).waitFor();
   await answeredQuestion.getByText(notes, { exact: true }).waitFor();
   await eventually(() => answeredQuestion.locator(".interactive-option-button.is-selected").count(), 3, "Every preset selection is visible and the free-text answer selects none");
   assert.equal(await answeredQuestion.locator(".is-primary").count(), 0, "An answered question has no default first-option highlight");
@@ -248,6 +257,7 @@ export async function verifyNativeApprovals(page, host, steps, directory, baseUr
   await page.reload({ waitUntil: "domcontentloaded" });
   await openMobileSession(page);
   await answeredQuestion.getByText(archiveAnswer, { exact: true }).waitFor();
+  await answeredQuestion.getByText(otherAnswer, { exact: true }).waitFor();
   await answeredQuestion.getByText(notes, { exact: true }).waitFor();
   await eventually(() => answeredQuestion.locator(".interactive-option-button.is-selected").count(), 3, "Reloaded native history retains every selection without selecting a free-text fragment");
   const resolutions = host.requests.filter((request) => request.method === "permission.resolve");

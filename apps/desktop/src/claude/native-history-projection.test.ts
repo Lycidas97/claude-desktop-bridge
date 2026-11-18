@@ -51,10 +51,12 @@ describe("native question answers", () => {
 
   it.each([
     { checks: "已归档到共享目录, 类型检查", text: "已归档到共享目录, 类型检查", selected: [] },
+    { checks: "类型检查, 也检查共享目录", text: "类型检查, 也检查共享目录", selected: [] },
+    { checks: ["类型检查", "也检查共享目录"], text: "类型检查, 也检查共享目录", selected: ["类型检查"], freeText: "也检查共享目录" },
     { checks: "构建, 打包", text: "构建, 打包", selected: ["构建, 打包"] },
     { checks: "构建, 打包, 回归测试", text: "构建, 打包, 回归测试", selected: ["回归测试", "构建, 打包"] },
     { checks: ["构建, 打包", "回归测试"], text: "构建, 打包, 回归测试", selected: ["回归测试", "构建, 打包"] },
-  ])("preserves the full answer and marks only preset labels ($checks)", ({ checks, text, selected }) => {
+  ])("preserves the full answer and marks only preset labels ($checks)", ({ checks, text, selected, freeText }) => {
     const request = ask("question", "ask-1");
     const result = answer("ask-1", checks);
     const projection: NativeMessageProjection = {};
@@ -65,6 +67,17 @@ describe("native question answers", () => {
     const question = history.find(item => item.id === "question")?.interactivePrompt?.questions?.[0];
     expect(question?.answer).toBe(text);
     expect(question?.options.filter(option => option.selected).map(option => option.label)).toEqual(selected);
+    expect(question?.freeTextAnswer).toBe(freeText);
+  });
+
+  it("restores selections when the submitted labels have surrounding whitespace", () => {
+    const request = ask("question", "ask-1", [{
+      question: "选择检查项目", multiSelect: true, options: [{ label: "构建 " }, { label: " 打包" }],
+    }]);
+    const [item] = nativeHistoryItems("session", [request, answer("ask-1", "构建 ,  打包")]);
+    expect(item?.interactivePrompt?.questions?.[0]?.options).toEqual([
+      { label: "构建", selected: true }, { label: "打包", selected: true },
+    ]);
   });
 
   it.each([

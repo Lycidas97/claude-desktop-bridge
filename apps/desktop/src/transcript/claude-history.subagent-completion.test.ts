@@ -92,6 +92,15 @@ describe("structured-output subagent completion boundaries", () => {
     expect(await state(run.transcript)).toBe("running");
   });
 
+  it("recognizes new instructions after a child transcript interruption", async () => {
+    const run = await fixture([call("Read"), { type: "user", message: {
+      content: [{ type: "text", text: "[Request interrupted by user]" }],
+    } }]);
+    expect(await state(run.transcript)).toBe("stopped");
+    await appendFile(run.child, jsonl([{ type: "user", message: { content: "Continue the review" } }]));
+    expect(await state(run.transcript)).toBe("running");
+  });
+
   it("does not confuse a delayed sibling tool result with new work", async () => {
     const launch = call();
     (launch.message as { content: Row[] }).content.push({ type: "tool_use", name: "Read", id: "sibling-read", input: {} });

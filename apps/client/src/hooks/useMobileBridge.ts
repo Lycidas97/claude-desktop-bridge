@@ -663,7 +663,6 @@ export function useMobileBridge() {
       model?: string | null;
       provider?: string | null;
       effort?: string | null;
-      reasoningEffort?: string | null;
       fast?: boolean | null;
       permissionMode?: BridgeSDKPermissionMode;
       outputStyle?: string;

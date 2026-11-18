@@ -2927,6 +2927,40 @@ describe("Claude native relay", () => {
     } finally { await f.close(); }
   });
 
+  it("projects a native task stop on the next detail read while the session process stays alive", async () => {
+    const f = await fixture();
+    try {
+      const transcriptPath = join(f.directory, "stop-session.jsonl");
+      const childDir = join(f.directory, "stop-session", "subagents");
+      await mkdir(childDir, { recursive: true });
+      await writeFile(transcriptPath, "");
+      await writeFile(join(childDir, "agent-native-task.jsonl"), JSON.stringify({
+        type: "assistant", timestamp: new Date(10_000).toISOString(), message: { stop_reason: null, content: [] },
+      }) + "\n");
+      f.options.scanCatalog.mockResolvedValue({ projects: [], sessions: [{
+        ...f.bridge.session("local-native")!, sessionId: "stop-session", desktopSessionId: "local-native", transcriptPath,
+        transcriptMtimeMs: 0, processAlive: true, desktopProcessAlive: true, bridgeProcessAlive: false,
+        processOverlap: false, activeTask: false,
+        activeProcesses: [{ startedAt: 1_000, processAlive: true, entrypoint: "claude-desktop-3p", source: "process" }],
+      }], observedAt: 0 });
+      const nativeCall = f.native.call.bind(f.native);
+      const call = vi.spyOn(f.native, "call").mockImplementation(async (method, args) => {
+        if (method === "stopTask") await writeFile(join(childDir, "agent-native-task.meta.json"), JSON.stringify({ stoppedByUser: true }));
+        return nativeCall(method, args);
+      });
+      expect(await f.bridge.backgroundTaskDetails("local-native")).toMatchObject([{ taskId: "native-task", state: "running" }]);
+      expect(f.bridge.session("local-native")?.runningSubagents?.count).toBe(1);
+
+      await f.bridge.stopSubagent("local-native", "native-task");
+      expect(call).toHaveBeenCalledWith("stopTask", ["local-native", "native-task"]);
+      const changed = vi.fn();
+      f.bridge.on("changed", changed);
+      expect(await f.bridge.backgroundTaskDetails("local-native")).toMatchObject([{ taskId: "native-task", state: "stopped" }]);
+      expect(f.bridge.session("local-native")?.runningSubagents).toBeUndefined();
+      expect(changed).toHaveBeenCalledTimes(1);
+    } finally { await f.close(); }
+  });
+
   it("preserves full multi-thousand-character subagent reports without truncation over short native summaries", async () => {
     const f = await fixture();
     try {
@@ -4139,6 +4173,136 @@ describe("Claude native relay", () => {
     expect(items.find(item => item.interactivePrompt)?.interactivePrompt?.kind).toBe("question");
   });
 
+  it.each([
+    ["claude-sonnet-4-5", true],
+    ["default", true],
+    ["mythos-magpie-5277472942", true],
+    ["default", false],
+  ] as const)("reads the requested history page before the only live usage query (native model: %s, usage available: %s)", async (model, usageAvailable) => {
+    const f = await fixture();
+    try {
+      f.native.sessions[0]!.model = model;
+      f.native.sessions[0]!.turnRunning = true;
+      f.native.contextUsage = usageAvailable ? { totalTokens: 98_000, rawMaxTokens: 196_000 } : null;
+      f.native.page = { hasMore: false, messages: [{
+        type: "assistant", uuid: "latest", message: { model: "claude-sonnet-4-5", content: "Latest response" },
+      }] };
+      const controller = createControllerFixture({ broker: f.bridge, eventLog: f.eventLog });
+      f.native.calls.length = 0;
+
+      const opened = await controller.handleRequest({
+        kind: "request", requestId: "open", idempotencyKey: "open", method: "session.open", params: { sessionId: "local-native", limit: 7 },
+      }, "mobile", "phone");
+
+      expect(opened).toMatchObject({
+        history: { items: [{ id: "latest", text: "Latest response" }], hasMore: false },
+        session: {
+          model: model === "default" ? "claude-sonnet-4-5" : model,
+          modelDisplayName: "Claude Sonnet 4.5",
+          ...(usageAvailable ? { contextUsage: { totalTokens: 98_000, maxTokens: 196_000, percentage: 50, estimated: false } } : {}),
+        },
+      });
+      if (!usageAvailable) expect(opened).not.toHaveProperty("session.contextUsage");
+      expect(f.native.calls.filter(call => ["getTranscriptPage", "getContextUsage"].includes(call.method))).toEqual([
+        { method: "getTranscriptPage", args: ["local-native", "", 7, { window: "accept" }] },
+        { method: "getContextUsage", args: ["local-native"] },
+      ]);
+    } finally { await f.close(); }
+  });
+
+  it.each([
+    { hasMore: false, count: 1, limit: 50 },
+    { hasMore: true, count: 20, limit: 30 },
+  ])("skips a model tail already covered by the requested page ($count messages, hasMore=$hasMore)", async ({ hasMore, count, limit }) => {
+    const f = await fixture();
+    try {
+      f.native.sessions[0]!.model = "default";
+      f.native.sessions[0]!.turnRunning = true;
+      f.native.contextUsage = { totalTokens: 98_000, rawMaxTokens: 196_000 };
+      await f.bridge.refreshRuntime();
+      await f.message(planMessage("live-wrap", { recap: "Done" }, 20, "mcp__ccd_turn__wrap_up"));
+      f.native.page = { hasMore, messages: Array.from({ length: count }, (_, index) => ({
+        type: "user", uuid: `request-${index}`, message: { content: `Request ${index}` },
+      })) };
+      const controller = createControllerFixture({ broker: f.bridge, eventLog: f.eventLog });
+      f.native.calls.length = 0;
+
+      const opened = await controller.handleRequest({
+        kind: "request", requestId: "open", idempotencyKey: "open", method: "session.open", params: { sessionId: "local-native", limit },
+      }, "mobile", "phone");
+
+      expect(opened).toMatchObject({
+        history: { hasMore, ...(hasMore ? { nextCursor: "request-0" } : {}) },
+        session: { contextUsage: { totalTokens: 98_000, maxTokens: 196_000, percentage: 50, estimated: false } },
+      });
+      expect(opened).toHaveProperty("history.items.length", count);
+      expect(f.native.calls.filter(call => ["getTranscriptPage", "getContextUsage"].includes(call.method))).toEqual([
+        { method: "getTranscriptPage", args: ["local-native", "", limit, { window: "accept" }] },
+        { method: "getContextUsage", args: ["local-native"] },
+      ]);
+    } finally { await f.close(); }
+  });
+
+  it.each(["available", "unavailable"])("only checks the model tail after opening a page without model hints (%s tail)", async tail => {
+    const f = await fixture();
+    try {
+      f.native.sessions[0]!.model = "default";
+      f.native.sessions[0]!.turnRunning = true;
+      f.native.contextUsage = { totalTokens: 98_000, rawMaxTokens: 196_000 };
+      await f.bridge.refreshRuntime();
+      await f.message(planMessage("live-wrap", { recap: "Done" }, 20, "mcp__ccd_turn__wrap_up"));
+      const newest = { type: "user", uuid: "latest", message: { content: "Latest request" } };
+      f.native.page = { messages: [newest], hasMore: true };
+      const call = f.native.call.bind(f.native);
+      vi.spyOn(f.native, "call").mockImplementation(async (method, args) => {
+        const result = await call(method, args);
+        if (method !== "getTranscriptPage" || args?.[2] !== 20) return result;
+        if (tail === "unavailable") throw new NativeCallError("Model tail unavailable");
+        return { messages: [
+          { type: "assistant", uuid: "older", message: { model: "claude-sonnet-4-5", content: "Earlier response" } }, newest,
+        ], hasMore: false };
+      });
+      const controller = createControllerFixture({ broker: f.bridge, eventLog: f.eventLog });
+      f.native.calls.length = 0;
+
+      const opened = await controller.handleRequest({
+        kind: "request", requestId: "open", idempotencyKey: "open", method: "session.open", params: { sessionId: "local-native", limit: 1 },
+      }, "mobile", "phone");
+
+      expect(opened).toMatchObject({
+        history: { items: [{ id: "latest", text: "Latest request" }], hasMore: true, nextCursor: "latest" },
+        session: { contextUsage: { totalTokens: 98_000, maxTokens: 196_000, percentage: 50, estimated: false } },
+      });
+      if (tail === "available") expect(opened).toHaveProperty("session.model", "claude-sonnet-4-5");
+      expect(f.native.calls.filter(call => ["getTranscriptPage", "getContextUsage"].includes(call.method))).toEqual([
+        { method: "getTranscriptPage", args: ["local-native", "", 1, { window: "accept" }] },
+        { method: "getContextUsage", args: ["local-native"] },
+        { method: "getTranscriptPage", args: ["local-native", "", 20, { window: "accept" }] },
+      ]);
+    } finally { await f.close(); }
+  });
+
+  it("reads live context usage for standalone session settings", async () => {
+    const f = await fixture();
+    try {
+      f.native.sessions[0]!.model = "claude-opus-5-5";
+      f.native.sessions[0]!.turnRunning = true;
+      f.native.contextUsage = { totalTokens: 64_200, rawMaxTokens: 1_000_000 };
+      const controller = createControllerFixture({ broker: f.bridge, eventLog: f.eventLog });
+      f.native.calls.length = 0;
+
+      const settings = await controller.handleRequest({
+        kind: "request", requestId: "configuration", idempotencyKey: "configuration", method: "session.configuration", params: { sessionId: "local-native" },
+      }, "mobile", "phone");
+
+      const context = { totalTokens: 64_200, maxTokens: 1_000_000, percentage: 6.4, model: "claude-opus-5-5", estimated: false };
+      expect(settings).toMatchObject({ configuration: { context }, session: { contextUsage: context } });
+      expect(f.native.calls.filter(call => ["getTranscriptPage", "getContextUsage"].includes(call.method))).toEqual([
+        { method: "getContextUsage", args: ["local-native"] },
+      ]);
+    } finally { await f.close(); }
+  });
+
   it("prioritizes live getContextUsage and falls back to single-turn main-chain transcript usage across known, [1m], and unknown models", async () => {
     const f = await fixture();
     try {
@@ -4169,6 +4333,7 @@ describe("Claude native relay", () => {
       // With the live plan settled and no live usage, find main-chain usage behind a full sidechain page.
       f.native.contextUsage = null;
       f.native.sessions[0]!.model = "claude-sonnet-4-5";
+      f.native.sessions[0]!.turnRunning = true;
       await f.bridge.refreshRuntime();
       await f.message(planMessage("live-wrap", { recap: "Done" }, 20, "mcp__ccd_turn__wrap_up"));
       f.native.calls.length = 0;
@@ -4189,7 +4354,11 @@ describe("Claude native relay", () => {
       const openedEstimated = await controller.handleRequest({
         kind: "request", requestId: "open-estimated", idempotencyKey: "open-estimated", method: "session.open", params: { sessionId: "local-native" },
       }, "mobile", "phone");
-      expect(f.native.calls.filter(call => call.method === "getTranscriptPage").map(call => call.args[1])).toEqual(["", "side-0"]);
+      expect(f.native.calls.filter(call => ["getTranscriptPage", "getContextUsage"].includes(call.method))).toEqual([
+        { method: "getTranscriptPage", args: ["local-native", "", 18, { window: "accept" }] },
+        { method: "getContextUsage", args: ["local-native"] },
+        { method: "getTranscriptPage", args: ["local-native", "side-0", 100, { window: "accept" }] },
+      ]);
       expect(openedEstimated).toHaveProperty("session.contextUsage", {
         totalTokens: 40_800,
         maxTokens: 200_000,

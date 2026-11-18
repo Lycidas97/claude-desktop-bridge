@@ -7,6 +7,15 @@
 - Apply the model explicitly chosen on the new-session page before sending the
   first message. Keep that message as a draft if session configuration fails.
   [PR 380](https://github.com/Lycidas97/claude-desktop-bridge/pull/380)
+- Show interrupted and manually stopped subagents as stopped and clear their
+  running indicators.
+  [PR 386](https://github.com/Lycidas97/claude-desktop-bridge/pull/386)
+- Refresh context usage when opening a running session with one live query to
+  Desktop.
+  [PR 390](https://github.com/Lycidas97/claude-desktop-bridge/pull/390)
+- Show the thinking-effort levels declared by each gateway model in new-session
+  and session settings. Mark levels that Desktop cannot apply as unavailable.
+  [PR 392](https://github.com/Lycidas97/claude-desktop-bridge/pull/392)
 - Run project lint as part of `npm run verify`. Require real controller and
   bridge constructors in Desktop tests and the native browser fixture, and
   check that the Relay probe uses protocol source before the build. Retain

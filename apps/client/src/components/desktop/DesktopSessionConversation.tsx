@@ -38,12 +38,11 @@ import {
   projectLegacyEvidenceDetails,
 } from "../../hooks/bridge/bridge-reducers.js";
 import type { SessionEvidenceState, SessionHistoryState } from "../../hooks/useMobileBridge.js";
-import { downloadBridgeArtifact, downloadBridgeSessionFile } from "../../lib/artifact-download.js";
 import {
   estimateArtifactPreviewBytes,
   registerDiagnosticsStateProvider,
 } from "../../lib/diagnostics.js";
-import { uploadSessionFile, type UploadFileHandler } from "../../lib/file-upload.js";
+import type { UploadFileHandler } from "../../lib/file-upload.js";
 import { desktopRuntimeId } from "../../lib/runtime-labels.js";
 import { useAssistantMail } from "../assistant/AssistantMailProvider.js";
 import { MailReference } from "../assistant/MailReference.js";
@@ -55,6 +54,7 @@ import {
 import { EvidencePanel } from "../evidence/EvidencePanel.js";
 import { ConversationView } from "../conversation/ConversationView.js";
 import type { SessionConfigurationChange } from "../session/SessionConfigurationDialog.js";
+import { useDesktopConversationTransfers } from "./useDesktopConversationTransfers.js";
 
 const EMPTY_PREVIEWS: Record<string, BridgeArtifactPreview> = {};
 const EMPTY_TRANSFERS: Record<string, number> = {};
@@ -159,12 +159,12 @@ const DesktopConversationContext = createContext<DesktopConversationController |
 function useDesktopConversationController(input: DesktopConversationInput): DesktopConversationController {
   const latestRef = useRef(input);
   latestRef.current = input;
+  const { artifactTransfersByHost, downloadArtifact, downloadSessionFile, uploadFile, readTransferDiagnostics } = useDesktopConversationTransfers(latestRef);
 
   const [selectedByHost, setSelectedByHost] = useState<Record<string, string | undefined>>({});
   const [histories, setHistories] = useState<Record<string, SessionHistoryState>>({});
   const [{ pages: evidence, openedIds }, setEvidence] = useState<DesktopEvidenceCache>({ pages: {}, openedIds: {} });
   const [artifactPreviewsByHost, setArtifactPreviewsByHost] = useState<Record<string, Record<string, BridgeArtifactPreview>>>({});
-  const [artifactTransfersByHost, setArtifactTransfersByHost] = useState<Record<string, Record<string, number>>>({});
 
   const historiesRef = useRef(histories);
   historiesRef.current = histories;
@@ -172,11 +172,8 @@ function useDesktopConversationController(input: DesktopConversationInput): Desk
   evidenceRef.current = evidence;
   const previewsRef = useRef(artifactPreviewsByHost);
   previewsRef.current = artifactPreviewsByHost;
-  const transfersRef = useRef(artifactTransfersByHost);
-  transfersRef.current = artifactTransfersByHost;
   const selectedByHostRef = useRef(selectedByHost);
   selectedByHostRef.current = selectedByHost;
-  const activeUploadsRef = useRef(0);
 
   const loadingHistoryRef = useRef(new Set<string>());
   const loadingEvidenceRef = useRef(new Set<string>());
@@ -551,109 +548,6 @@ function useDesktopConversationController(input: DesktopConversationInput): Desk
     return preview;
   }
 
-  function setHostTransfer(hostId: string, transferKey: string, progress: number | undefined): void {
-    setArtifactTransfersByHost((current) => {
-      const hostTransfers = current[hostId] ?? {};
-      if (progress === undefined) {
-        if (!(transferKey in hostTransfers)) return current;
-        const nextHost = { ...hostTransfers };
-        delete nextHost[transferKey];
-        return { ...current, [hostId]: nextHost };
-      }
-      return {
-        ...current,
-        [hostId]: { ...hostTransfers, [transferKey]: progress },
-      };
-    });
-  }
-
-  function createHostBoundTransferRequest(startingHostId: string) {
-    const startingRequest = latestRef.current.apiRequest;
-    return async (method: LocalBridgeRequest["method"], params: Record<string, unknown>): Promise<BridgeResponse> => {
-      if (latestRef.current.snapshot.host.hostId !== startingHostId) {
-        throw new Error("主机已切换，文件传输已取消");
-      }
-      const response = await startingRequest({ method, params });
-      if (latestRef.current.snapshot.host.hostId !== startingHostId) {
-        throw new Error("主机已切换，文件传输已取消");
-      }
-      return response;
-    };
-  }
-
-  async function downloadArtifact(
-    artifact: BridgeArtifactManifest,
-    targetHostId = latestRef.current.snapshot.host.hostId,
-  ): Promise<void> {
-    const transferRequest = createHostBoundTransferRequest(targetHostId);
-    setHostTransfer(targetHostId, artifact.id, 0);
-    try {
-      await downloadBridgeArtifact(
-        artifact,
-        transferRequest,
-        (progress) => {
-          if (latestRef.current.snapshot.host.hostId === targetHostId) {
-            setHostTransfer(targetHostId, artifact.id, progress);
-          }
-        },
-      );
-    } finally {
-      setHostTransfer(targetHostId, artifact.id, undefined);
-    }
-  }
-
-  async function downloadSessionFile(
-    sessionId: string,
-    filePath: string,
-    targetHostId = latestRef.current.snapshot.host.hostId,
-    resolveRelativeLink?: true,
-  ): Promise<void> {
-    const transferKey = `file:${filePath}`;
-    const transferRequest = createHostBoundTransferRequest(targetHostId);
-    setHostTransfer(targetHostId, transferKey, 0);
-    try {
-      await downloadBridgeSessionFile(
-        sessionId,
-        filePath,
-        transferRequest,
-        (progress) => {
-          if (latestRef.current.snapshot.host.hostId === targetHostId) {
-            setHostTransfer(targetHostId, transferKey, progress);
-          }
-        },
-        resolveRelativeLink,
-      );
-    } finally {
-      setHostTransfer(targetHostId, transferKey, undefined);
-    }
-  }
-
-  const uploadFile: UploadFileHandler = async (sessionId, file, onProgress, signal) => {
-    const startingHostId = latestRef.current.snapshot.host.hostId;
-    const startingRequest = latestRef.current.apiRequest;
-    activeUploadsRef.current += 1;
-    try {
-      return await uploadSessionFile(
-        async (method, params) => {
-          if (latestRef.current.snapshot.host.hostId !== startingHostId) {
-            throw new Error("主机已切换，文件上传已取消");
-          }
-          const response = await startingRequest({ method, params });
-          if (latestRef.current.snapshot.host.hostId !== startingHostId) {
-            throw new Error("主机已切换，文件上传已取消");
-          }
-          return response;
-        },
-        sessionId,
-        file,
-        onProgress,
-        signal,
-      );
-    } finally {
-      activeUploadsRef.current = Math.max(0, activeUploadsRef.current - 1);
-    }
-  };
-
   useEffect(() => {
     return registerDiagnosticsStateProvider("desktopConversations", () => {
       const currentInput = latestRef.current;
@@ -670,7 +564,8 @@ function useDesktopConversationController(input: DesktopConversationInput): Desk
       }
       for (const hostId of Object.keys(selectedByHostRef.current)) trackedHostIds.add(hostId);
       for (const hostId of Object.keys(previewsRef.current)) trackedHostIds.add(hostId);
-      for (const hostId of Object.keys(transfersRef.current)) trackedHostIds.add(hostId);
+      const { hostIds: transferHostIds, artifactTransfersCount, activeUploads } = readTransferDiagnostics();
+      for (const hostId of transferHostIds) trackedHostIds.add(hostId);
 
       const historyEntries = Object.entries(historiesRef.current);
       let historyItemsTotal = 0;
@@ -705,11 +600,6 @@ function useDesktopConversationController(input: DesktopConversationInput): Desk
         }
       }
 
-      let artifactTransfersCount = 0;
-      for (const hostTransfers of Object.values(transfersRef.current)) {
-        artifactTransfersCount += Object.keys(hostTransfers).length;
-      }
-
       return {
         trackedHosts: trackedHostIds.size,
         totalBufferedEvents,
@@ -720,7 +610,7 @@ function useDesktopConversationController(input: DesktopConversationInput): Desk
         artifactPreviewsCached,
         artifactPreviewBytes,
         artifactTransfersCount,
-        activeUploads: activeUploadsRef.current,
+        activeUploads,
       };
     });
   }, []);

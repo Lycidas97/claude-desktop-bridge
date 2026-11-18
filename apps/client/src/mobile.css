@@ -687,14 +687,7 @@
 
 .mobile-app-shell .conversation-workspace .session-profile-summary,
 .assistant-page-mobile .session-profile-summary {
-  display: block;
   text-align: left;
-  text-overflow: ellipsis;
-}
-
-.mobile-app-shell .conversation-workspace .session-profile-summary .session-profile-line,
-.assistant-page-mobile .session-profile-summary .session-profile-line {
-  display: inline;
 }
 
 .new-chat-canvas.is-mobile .m-header.is-title-hidden .session-profile-summary .session-profile-line.is-meta-line {

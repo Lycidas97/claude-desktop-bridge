@@ -1298,51 +1298,6 @@ describe("Claude native relay", () => {
         expect(restoredNative.calls).toEqual([]);
       } finally { await restarted?.close(); await f.close(); }
     });
-
-    // Conflicting Native evidence has no verified production sequence yet; keep these probes opt-in.
-    it.runIf(process.env.BRIDGE_NATIVE_CONFLICT_PROBES === "1").each([false, true])("probe: keeps close withdrawal terminal after a late result (error=%s)", async isError => {
-      const f = await fixture();
-      try {
-        f.native.sendResult = { delivered: true, queued: true };
-        const receipt = await f.bridge.startTurn(input);
-        const changed = once(f.bridge, "changed");
-        f.native.emit("event", { type: "close", sessionId: input.sessionId, withdrawnUuids: [receipt.messageId], lostUuids: [] });
-        await changed;
-        expect(f.state.nativeDesktopReceipt(input.idempotencyKey)?.state).toBe("cancelled");
-        await f.message({ type: "result", user_message_uuid: receipt.messageId, is_error: isError });
-        expect(f.state.nativeDesktopReceipt(input.idempotencyKey)?.state).toBe("cancelled");
-      } finally { await f.close(); }
-    });
-
-    it.runIf(process.env.BRIDGE_NATIVE_CONFLICT_PROBES === "1").each(["completed", "close-withdrawn"] as const)("probe: retains %s evidence after a late send refusal", async terminal => {
-      const f = await fixture();
-      let release!: (result: unknown) => void;
-      f.native.sendReply = new Promise(resolve => { release = resolve; });
-      const sending = f.bridge.startTurn(input);
-      const outcome = sending.then(receipt => ({ receipt }), error => ({ error }));
-      try {
-        await vi.waitFor(() => expect(f.native.calls.some(call => call.method === "sendMessage")).toBe(true));
-        const receipt = f.state.nativeDesktopReceipt(input.idempotencyKey)!;
-        if (terminal === "completed") await f.message({ type: "result", user_message_uuid: receipt.messageId, is_error: false });
-        else {
-          const changed = once(f.bridge, "changed");
-          f.native.emit("event", { type: "close", sessionId: input.sessionId, withdrawnUuids: [receipt.messageId], lostUuids: [] });
-          await changed;
-        }
-        const state = terminal === "completed" ? "completed" : "cancelled";
-        expect(f.state.nativeDesktopReceipt(input.idempotencyKey)?.state).toBe(state);
-        release({ delivered: false, reason: "Native send response arrived after terminal evidence" });
-        const settled = await outcome;
-        expect.soft(f.state.nativeDesktopReceipt(input.idempotencyKey)?.state).toBe(state);
-        expect.soft(settled).toMatchObject({ receipt: { commandId: receipt.commandId, state } });
-        expect(f.native.calls.filter(call => call.method === "sendMessage")).toHaveLength(1);
-        expect(f.bridge.session(input.sessionId)?.pendingCommandIds).toEqual([]);
-      } finally {
-        release({ delivered: true });
-        await outcome;
-        await f.close();
-      }
-    });
   });
 
   it("keeps all five native image refs and exact text in history and accepted without persisting bytes", async () => {

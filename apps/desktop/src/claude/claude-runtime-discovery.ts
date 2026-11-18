@@ -4,11 +4,10 @@ import { access, readdir, readFile, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
-import type { BridgeEffort, BridgeModelInfo, BridgeRuntimeDetection } from "@bridge/protocol";
+import { BRIDGE_EFFORT_LEVELS, type BridgeModelInfo, type BridgeRuntimeDetection } from "@bridge/protocol";
 import { claudeDesktopProfileDirectories } from "../app/platform.js";
 
 const execFileAsync = promisify(execFile);
-const GATEWAY_EFFORT_LEVELS: readonly BridgeEffort[] = ["low", "medium", "high", "xhigh", "max"];
 const GATEWAY_LONG_CONTEXT_TOKENS = 1_000_000;
 const GATEWAY_MODELS_TIMEOUT_MS = 4_000;
 
@@ -506,23 +505,21 @@ export function parseClaudeGatewayModels(items: unknown[]): BridgeModelInfo[] {
       : Array.isArray(item.reasoning_levels)
         ? item.reasoning_levels
         : undefined;
-    const advertisedEffortLevels = rawLevels?.map((level) => (
-      level && typeof level === "object" ? (level as { effort?: unknown }).effort : level
-    ));
-    const supportedEffortLevels = advertisedEffortLevels
-      ? GATEWAY_EFFORT_LEVELS.filter((level) => advertisedEffortLevels.includes(level))
+    const declaredEffortLevels = rawLevels && [...new Set(rawLevels.map((level) => nonEmptyString(
+      level && typeof level === "object" ? (level as { effort?: unknown }).effort : level,
+    )).filter((level): level is string => level !== undefined))];
+    const supportedEffortLevels = declaredEffortLevels && item.reasoning !== false
+      ? BRIDGE_EFFORT_LEVELS.filter((level) => declaredEffortLevels.includes(level))
       : undefined;
-    const supportsEffort = typeof item.reasoning === "boolean"
-      ? item.reasoning
-      : supportedEffortLevels && supportedEffortLevels.length > 0
-        ? true
-        : undefined;
+    const supportsEffort = declaredEffortLevels ? Boolean(supportedEffortLevels?.length)
+      : typeof item.reasoning === "boolean" ? item.reasoning : undefined;
     results.push({
       value: id,
       displayName,
       ...(description ? { description } : {}),
       ...(maxInputTokens ? { maxInputTokens } : {}),
       ...(supportsEffort !== undefined ? { supportsEffort } : {}),
+      ...(declaredEffortLevels ? { declaredEffortLevels } : {}),
       ...(supportedEffortLevels?.length ? { supportedEffortLevels } : {}),
     });
 
@@ -543,6 +540,7 @@ export function parseClaudeGatewayModels(items: unknown[]): BridgeModelInfo[] {
         description: description ? `${description} · 1M context window` : "1M context window",
         maxInputTokens: GATEWAY_LONG_CONTEXT_TOKENS,
         ...(supportsEffort !== undefined ? { supportsEffort } : {}),
+        ...(declaredEffortLevels ? { declaredEffortLevels } : {}),
         ...(supportedEffortLevels?.length ? { supportedEffortLevels } : {}),
       });
     }

@@ -431,6 +431,32 @@ describe("controller transport publication", () => {
     expect(published).not.toHaveBeenCalled();
   });
 
+  it("responds and ACKs before revoking the requesting phone", async () => {
+    const { ws, controller, paired, config } = await fixture();
+    const phone = await BridgeCrypto.fromPairing(paired.pairing);
+    const deviceId = paired.pairing.deviceId;
+    const revoke = vi.spyOn(controller, "revokeDevice");
+    for (const target of ["another-phone", deviceId]) {
+      const envelope = await phone.encrypt({ kind: "request", requestId: target, idempotencyKey: target,
+        method: "device.revoke", params: { deviceId: target } }, "mobile", "desktop", Date.now(), undefined, config.hostDeviceId);
+      ws.sent.length = 0;
+      await controller.receiveMessage(await controller.deviceCryptos.get(deviceId)!.decrypt(envelope), envelope);
+      const response = ws.sent[0];
+      if (response?.type !== "envelope") throw new Error("Expected device revocation response before ACK");
+      expect((await phone.decrypt(response.envelope)).payload).toMatchObject(target === deviceId
+        ? { requestId: target, ok: true, result: { scheduled: true, deviceId } }
+        : { requestId: target, ok: false, error: { code: "A_PHONE_CAN_ONLY_REVOKE_ITSELF", message: "A phone can only revoke itself", retryable: false } });
+      expect(ws.sent[1]).toEqual({ type: "ack", ids: [envelope.id] });
+      expect(ws.sent).toHaveLength(2);
+      expect(controller.deviceCryptos.has(deviceId)).toBe(true);
+      await vi.advanceTimersByTimeAsync(250);
+      expect(controller.deviceCryptos.has(deviceId)).toBe(target !== deviceId);
+    }
+    expect(revoke).toHaveBeenCalledExactlyOnceWith(deviceId);
+    await revoke.mock.results[0]!.value;
+    expect(ws.sent).toContainEqual({ type: "device-revoke", deviceId });
+  });
+
   it("sends complete runtime replacements over the live socket and current state after reconnect", async () => {
     const { ws, controller, paired, sessions } = await fixture();
     const append = vi.spyOn(controller.eventLog, "append");

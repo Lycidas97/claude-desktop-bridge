@@ -2,9 +2,11 @@ import { randomUUID } from "node:crypto";
 import { EventEmitter, on } from "node:events";
 import { basename, isAbsolute } from "node:path";
 import {
+  BRIDGE_EFFORT_LEVELS,
   CLAUDE_UNSECTIONED_PROJECT_ID,
   CLAUDE_UNSECTIONED_PROJECT_NAME,
   DEFAULT_CONFIGURATION_SESSION_ID,
+  isBridgeEffort,
   type BridgeAttachment, type BridgeBackgroundTask, type BridgeEffort, type BridgeHistoryItem, type BridgeHistoryPage, type BridgeModelInfo, type BridgeNativeImageRef, type BridgeNativePermissionMode, type BridgeNativePermissionModeChange, type BridgeOrigin,
   type BridgePendingPrompt, type BridgePermissionDecision, type BridgePermissionInfo, type BridgePrAutoFixState, type BridgePrAutoFixUpdate, type BridgeProjectInfo, type BridgePullRequest, type BridgeRuntimeCapability,
   type BridgeRuntimeStatus, type BridgeSDKPermissionMode, type BridgeSessionCommandResult,
@@ -13,7 +15,7 @@ import {
 import { diag, diagnostics } from "../app/diag.js";
 import { ClaudeDesktopInspector, InspectorDisconnectedError, NativeCallError, type NativeSectionCatalog } from "./claude-desktop-inspector.js";
 import type { ConversationStateStore, NativeDesktopReceipt } from "../controller/conversation-state-store.js";
-import { readClaudeTranscriptBackgroundTasks, readClaudeTranscriptSubagents, scanClaudeContextFromMessages, visibleMessage } from "../transcript/claude-history.js";
+import { readClaudeTranscriptBackgroundTasks, readClaudeTranscriptSubagents, visibleMessage } from "../transcript/claude-history.js";
 import { extractToolCallDetailFromMessages, readSubagentToolCallDetail, summarizeNativeToolInput } from "../transcript/transcript-tool-detail.js";
 import { claudeRuntimePaths } from "../app/platform.js";
 import type { SessionEventLog, BridgeEventDraft } from "../controller/session-event-log.js";
@@ -24,9 +26,6 @@ import {
   discoverClaudeGatewayConfig,
   discoverClaudeProjectDirectory,
   fetchClaudeGatewayModels,
-  humanizeMagpieAnthropicModel,
-  humanizeUpstreamModelId,
-  magpieModelIdHash,
   normalizeAnthropicModelSlug,
   parseMagpieSyntheticModelId,
   resolveClaudeGatewayConfig,
@@ -49,16 +48,15 @@ import {
   hydrateObservedContextModel,
   parseLiveContextUsage,
   projectedContextUsage,
-  projectContextMessages,
-  savedModelOption,
   type NativeContextState,
 } from "./native-context-usage.js";
+import { readNativeHistoryPage, readNativeTranscriptPage } from "./native-history-pagination.js";
+import { directModelDisplayName, mergeModelCatalog, modelOptionHash, resolveSessionModel, savedModelOption } from "./native-model-catalog.js";
 import {
   enrichNativeSubagentItems,
   extractNativeImageAttachment,
   nativeHistoryItems,
   nativeItemEventDraft,
-  nativePlanMessages,
   type NativeMessageProjection,
 } from "./native-history-projection.js";
 
@@ -159,6 +157,7 @@ function nativeSession(value: unknown): NativeSession {
   if (typeof session.sessionId !== "string" || typeof session.cwd !== "string") throw new NativeCallError("Desktop returned an invalid session");
   return {
     ...session,
+    effort: isBridgeEffort(session.effort) ? session.effort : undefined,
     outputStyle: typeof session.outputStyle === "string" ? session.outputStyle : undefined,
     availableOutputStyles: Array.isArray(session.availableOutputStyles) ? outputStyleNames(session.availableOutputStyles) : undefined,
     prs: nativePullRequests(session.prs),
@@ -167,48 +166,6 @@ function nativeSession(value: unknown): NativeSession {
 
 function outputStyleNames(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((name): name is string => typeof name === "string" && name !== "") : [];
-}
-
-function modelOptionHash(value: string): string {
-  return parseMagpieSyntheticModelId(value)?.hash ?? magpieModelIdHash(value);
-}
-
-function mergeModelCatalog(
-  saved: BridgeModelInfo[] | undefined,
-  discovered: BridgeModelInfo[] | undefined,
-): BridgeModelInfo[] | undefined {
-  if (!discovered?.length) return saved;
-  if (!saved?.length) return discovered;
-  const findDiscovered = (option: BridgeModelInfo): BridgeModelInfo | undefined => {
-    const longContext = /\[1m\]$/iu.test(option.value);
-    const hash = modelOptionHash(option.value);
-    const slug = normalizeAnthropicModelSlug(option.value);
-    return discovered.find(item => item.value === option.value)
-      ?? discovered.find(item => modelOptionHash(item.value) === hash && /\[1m\]$/iu.test(item.value) === longContext)
-      ?? (slug ? discovered.find(item => normalizeAnthropicModelSlug(item.value) === slug && /\[1m\]$/iu.test(item.value) === longContext) : undefined);
-  };
-  const merged = saved.map((option) => {
-    const match = findDiscovered(option);
-    if (!match) return option;
-    return {
-      ...option,
-      ...(match.maxInputTokens ? { maxInputTokens: match.maxInputTokens } : {}),
-      ...(match.supportsEffort !== undefined ? { supportsEffort: match.supportsEffort } : {}),
-      ...(match.supportedEffortLevels?.length ? { supportedEffortLevels: match.supportedEffortLevels } : {}),
-    };
-  });
-  // Keep saved picker context choices authoritative so Desktop's base -> 1M preference check stays intact; append only models absent from settings.json.
-  const coveredHashes = new Set(saved.map(option => modelOptionHash(option.value)));
-  const coveredSlugs = new Set(
-    saved.map(option => normalizeAnthropicModelSlug(option.value)).filter((slug): slug is string => Boolean(slug)),
-  );
-  for (const item of discovered) {
-    const hash = modelOptionHash(item.value);
-    const slug = normalizeAnthropicModelSlug(item.value);
-    if (coveredHashes.has(hash) || (slug && coveredSlugs.has(slug))) continue;
-    merged.push(item);
-  }
-  return merged;
 }
 
 type QueryGatewayDiscovery = ClaudeGatewayDiscovery & { mode: "auto" | "manual" };
@@ -418,83 +375,34 @@ export class ClaudeDesktopBridge extends EventEmitter {
     };
   }
 
-  private savedModel(model: string, models = this.models): BridgeModelInfo | undefined {
-    return savedModelOption(models, model);
+  private resolveSessionModel(sessionId: string | undefined, nativeModel: string | undefined, models = this.models) {
+    return resolveSessionModel({
+      nativeModel,
+      contextModel: sessionId ? this.contextStates.get(sessionId)?.model : undefined,
+      models,
+      defaultModel: this.defaultModel,
+    });
   }
 
-  private directModelDisplayName(model: string | undefined, models = this.models): string | undefined {
-    const trimmed = model?.trim();
-    if (!trimmed || trimmed.toLowerCase() === "default") return undefined;
-    const saved = this.savedModel(trimmed, models);
-    if (saved) return saved.displayName;
-    if (trimmed.includes("/") || /^(?:claude|gpt|gemini)-/iu.test(trimmed)) {
-      return humanizeUpstreamModelId(trimmed);
-    }
-    return humanizeMagpieAnthropicModel(trimmed);
-  }
-
-  private resolveSessionModel(
-    sessionId: string | undefined,
-    rawNativeModel: string | undefined,
-    models = this.models,
-  ): {
-    sessionModel?: string;
-    configModel?: string;
-    modelDisplayName?: string;
-    extraOption?: BridgeModelInfo;
-  } {
-    const trimmedNative = rawNativeModel?.trim();
-    const explicitNative = trimmedNative && trimmedNative.toLowerCase() !== "default" ? trimmedNative : undefined;
-    const rawContextModel = sessionId ? this.contextStates.get(sessionId)?.model?.trim() : undefined;
-    const contextModel = rawContextModel && rawContextModel.toLowerCase() !== "default" ? rawContextModel : undefined;
-
-    if (explicitNative) {
-      const saved = this.savedModel(explicitNative, models);
-      const directDisplay = this.directModelDisplayName(explicitNative, models);
-      if (directDisplay) {
-        return {
-          sessionModel: explicitNative,
-          configModel: saved?.value ?? explicitNative,
-          modelDisplayName: directDisplay,
-          ...(saved ? { extraOption: saved } : {}),
-        };
+  private async hydrateContextModel(
+    sessionId: string,
+    nativeModel: string | undefined,
+    page?: { messages: readonly unknown[]; hasMore: boolean },
+  ): Promise<void> {
+    if (directModelDisplayName(nativeModel, this.models) || this.contextStates.get(sessionId)?.model) return;
+    const tailLimit = 20;
+    if (page) {
+      const pageModel = extractLatestTranscriptModel(page.messages);
+      if (pageModel) {
+        hydrateObservedContextModel(this.ensureContextState(sessionId), pageModel);
+        return;
       }
-      if (contextModel && !parseMagpieSyntheticModelId(contextModel)) {
-        const effectiveContext = /\[1m\]$/iu.test(explicitNative) && !/\[1m\]$/iu.test(contextModel)
-          ? `${contextModel}[1m]`
-          : contextModel;
-        const contextSaved = this.savedModel(effectiveContext, models);
-        const contextDisplay = contextSaved?.displayName ?? humanizeUpstreamModelId(effectiveContext);
-        return {
-          sessionModel: explicitNative,
-          configModel: contextSaved?.value ?? explicitNative,
-          ...(contextDisplay ? { modelDisplayName: contextDisplay } : {}),
-          ...(contextSaved ? { extraOption: contextSaved } : {}),
-        };
-      }
-      return { sessionModel: explicitNative, configModel: explicitNative };
+      if (!page.hasMore || page.messages.length >= tailLimit) return;
     }
-
-    const fallbackRaw = (contextModel && !parseMagpieSyntheticModelId(contextModel) ? contextModel : undefined)
-      ?? this.defaultModel
-      ?? models?.[0]?.value;
-    if (!fallbackRaw) return {};
-    const saved = this.savedModel(fallbackRaw, models);
-    const resolvedValue = saved?.value ?? fallbackRaw;
-    const displayName = saved?.displayName ?? this.directModelDisplayName(resolvedValue, models) ?? humanizeUpstreamModelId(resolvedValue);
-    return {
-      sessionModel: resolvedValue,
-      configModel: resolvedValue,
-      ...(displayName ? { modelDisplayName: displayName } : {}),
-      ...(saved ? { extraOption: saved } : {}),
-    };
-  }
-
-  private async hydrateContextModelFromTail(sessionId: string): Promise<void> {
     if (!this.inspector.ready || !this.inspector.supports("getTranscriptPage")) return;
     try {
-      const tail = record(await this.inspector.call("getTranscriptPage", [sessionId, "", 20, { window: "accept" }]));
-      if (!Array.isArray(tail.messages) || tail.messages.length === 0) return;
+      const tail = await readNativeTranscriptPage(this.inspector, sessionId, "", tailLimit);
+      if (!tail) return;
       const tailModel = extractLatestTranscriptModel(tail.messages);
       if (tailModel) {
         hydrateObservedContextModel(this.ensureContextState(sessionId), tailModel);
@@ -900,7 +808,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
   }
 
   async refreshDesktopSession(sessionId: string): Promise<void> {
-    await this.refreshSessionMetadata(this.desktopId(sessionId));
+    await this.refreshSessionMetadata(this.desktopId(sessionId), { includeContext: false });
   }
 
   private async readSessionTranscript(id: string) {
@@ -1035,41 +943,19 @@ export class ClaudeDesktopBridge extends EventEmitter {
     return { sessionId, messageId, scope, ...(prefill !== undefined ? { prefill } : {}) };
   }
 
-  async history(sessionId: string, cursor?: string, limit = 50): Promise<BridgeHistoryPage> {
+  async history(sessionId: string, cursor?: string, limit = 50, { hydrateModel = false } = {}): Promise<BridgeHistoryPage> {
     const id = this.desktopId(sessionId);
     const read = diagnostics.begin(cursor ? "history.cursor" : "history.initial", { cursor: Boolean(cursor), limit });
     try {
       if (!this.inspector.ready) throw new InspectorDisconnectedError("Claude Desktop history is unavailable while inspector is disconnected");
       const previousSession = !cursor ? JSON.stringify(this.session(sessionId)) : undefined;
-      const page = record(await this.inspector.call("getTranscriptPage", [id, cursor ?? "", limit, { window: "accept" }]));
-      if (!Array.isArray(page.messages)) throw new NativeCallError("Desktop returned an invalid transcript page");
-      const nextCursor = page.hasMore === true && typeof record(page.messages[0]).uuid === "string" ? String(record(page.messages[0]).uuid) : undefined;
-      const firstPlan = nativePlanMessages(page.messages)[0]?.message.content[0];
-      const plainLatestWithKnownPlan = !cursor && !firstPlan && this.messageProjection.get(sessionId)?.planObserved;
-      let needsEarlierPlan = firstPlan
-        ? !(firstPlan.name === "mcp__ccd_turn__update_plan" && ["first_task", "new_task"].includes(String(record(firstPlan.input).scope)))
-        : !cursor && !plainLatestWithKnownPlan;
-      const context: unknown[] = [];
-      const olderPages: unknown[][] = [];
-      let before = nextCursor;
-      while (needsEarlierPlan && before) {
-        diagnostics.count("history.planPage");
-        const older = record(await this.inspector.call("getTranscriptPage", [id, before, limit, { window: "accept" }]));
-        if (!Array.isArray(older.messages)) throw new NativeCallError("Desktop returned an invalid transcript page");
-        if (!cursor) olderPages.unshift(projectContextMessages(older.messages));
-        for (const message of nativePlanMessages(older.messages).reverse()) {
-          const block = message.message.content[0]!;
-          context.unshift(message);
-          if (block.name === "mcp__ccd_turn__wrap_up" || ["first_task", "new_task"].includes(String(record(block.input).scope))) {
-            needsEarlierPlan = false;
-            break;
-          }
-        }
-        before = older.hasMore === true && typeof record(older.messages[0]).uuid === "string" ? String(record(older.messages[0]).uuid) : undefined;
-      }
+      const { page, earlierPlanMessages, readContextMessages } = await readNativeHistoryPage(
+        this.inspector, id, cursor, limit, () => this.messageProjection.get(sessionId)?.planObserved,
+      );
+      const { hasMore, nextCursor } = page;
       const liveProjection = this.messageProjection.get(sessionId) ?? {};
       const projection: NativeMessageProjection = { ...(liveProjection.questionAnswers ? { questionAnswers: liveProjection.questionAnswers } : {}) };
-      nativeHistoryItems(sessionId, context, projection);
+      nativeHistoryItems(sessionId, earlierPlanMessages, projection);
       const items = nativeHistoryItems(sessionId, page.messages, projection);
       const localSubagents = await this.enrichSubagentItems(sessionId, items);
       if (projection.questions?.size || projection.questionAnswers?.size) {
@@ -1103,22 +989,10 @@ export class ClaudeDesktopBridge extends EventEmitter {
         if (live) {
           this.applyLiveContextUsage(sessionId, live);
         } else {
-          let combined: unknown[] = [...olderPages.flat(), ...page.messages];
-          let scan = scanClaudeContextFromMessages(combined);
-          // Preserve estimated usage at session.open's 18-message default when plan recovery was skipped.
-          const canLookBack = plainLatestWithKnownPlan || (page.messages.length >= limit && limit >= 20);
-          for (let hop = 0; !scan.anchored && before && canLookBack && hop < 8; hop += 1) {
-            diagnostics.count("history.planPage");
-            const older = record(await this.inspector.call("getTranscriptPage", [id, before, Math.max(limit, 100), { window: "accept" }]));
-            if (!Array.isArray(older.messages)) break;
-            combined = [...projectContextMessages(older.messages), ...combined];
-            scan = scanClaudeContextFromMessages(combined);
-            before = older.hasMore === true && typeof record(older.messages[0]).uuid === "string"
-              ? String(record(older.messages[0]).uuid)
-              : undefined;
-          }
-          this.applyTranscriptContextMessages(sessionId, combined);
+          const pending = readContextMessages(messages => this.applyTranscriptContextMessages(sessionId, messages));
+          if (pending) await pending;
         }
+        if (hydrateModel) await this.hydrateContextModel(id, this.native.get(id)?.model, page);
         this.projectSessions();
         if (JSON.stringify(this.session(sessionId)) !== previousSession) this.emit("changed");
       }
@@ -1132,7 +1006,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
         }
       }
       diag("history.messages", { messages: items.length });
-      return { sessionId, items, hasMore: page.hasMore === true, ...(nextCursor ? { nextCursor } : {}) };
+      return { sessionId, items, hasMore, ...(nextCursor ? { nextCursor } : {}) };
     } finally { read(); }
   }
 
@@ -1244,25 +1118,21 @@ export class ClaudeDesktopBridge extends EventEmitter {
       ...(styles.length ? { availableOutputStyles: styles } : {}),
       modelSource: "claude-desktop", effortSource: "claude-desktop",
       availableModels,
-      availableEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+      availableEffortLevels: [...BRIDGE_EFFORT_LEVELS],
       modelsComplete: this.models !== undefined, appliesAfterTurn: false,
     };
   }
 
-  private async refreshSessionMetadata(sessionId: string): Promise<NativeSession> {
+  private async refreshSessionMetadata(sessionId: string, { includeContext }: { includeContext: boolean }): Promise<NativeSession> {
     const previousSnapshot = JSON.stringify(this.session(sessionId));
     const native = nativeSession(await this.inspector.call("getSession", [sessionId]));
     await this.observeNativeSession(native);
-    if (native.turnRunning === true) {
-      const live = await this.readLiveContextUsage(sessionId);
-      if (live) this.applyLiveContextUsage(sessionId, live);
-    }
-    const rawTrimmed = native.model?.trim();
-    const needsTailModel = !rawTrimmed
-      || rawTrimmed.toLowerCase() === "default"
-      || !this.directModelDisplayName(rawTrimmed);
-    if (needsTailModel && !this.contextStates.get(sessionId)?.model) {
-      await this.hydrateContextModelFromTail(sessionId);
+    if (includeContext) {
+      if (native.turnRunning === true) {
+        const live = await this.readLiveContextUsage(sessionId);
+        if (live) this.applyLiveContextUsage(sessionId, live);
+      }
+      await this.hydrateContextModel(sessionId, native.model);
     }
     this.projectSessions();
     if (JSON.stringify(this.session(sessionId)) !== previousSnapshot) this.emit("changed");
@@ -1272,7 +1142,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
   async configuration(sessionId: string): Promise<BridgeSessionConfiguration> {
     const id = this.desktopId(sessionId);
     await this.refreshModelCatalog("retry-failed");
-    const native = await this.refreshSessionMetadata(id);
+    const native = await this.refreshSessionMetadata(id, { includeContext: true });
     const context = this.session(sessionId)?.contextUsage;
     const resolved = this.resolveSessionModel(sessionId, native.model);
     const fallbackLabel = resolved.modelDisplayName
@@ -1292,7 +1162,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
             ...(resolved.extraOption && !this.models.some(option => option.value === resolved.extraOption!.value) ? [resolved.extraOption] : []),
           ]
         : resolved.configModel ? [{ value: resolved.configModel, displayName: fallbackLabel }] : [],
-      availableEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+      availableEffortLevels: [...BRIDGE_EFFORT_LEVELS],
       modelsComplete: this.models !== undefined, appliesAfterTurn: native.turnRunning === true,
       ...(context ? { context } : {}),
     };
@@ -1374,7 +1244,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
     const configuration = await this.configuration(input.sessionId);
     const observedNativeModel = this.native.get(input.sessionId)?.model?.trim();
     const observedResolvedModel = observedNativeModel && observedNativeModel.toLowerCase() !== "default"
-      ? (this.savedModel(observedNativeModel)?.value ?? observedNativeModel)
+      ? (savedModelOption(this.models, observedNativeModel)?.value ?? observedNativeModel)
       : undefined;
     // Validate against raw native readback (never transcript/default fallbacks), accepting
     // only Desktop's known base -> preferred-1M normalization when 1M was not a separate option.

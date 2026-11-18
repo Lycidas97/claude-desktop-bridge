@@ -661,6 +661,7 @@ export interface BridgeSessionInfo {
   /** Native runtime fast/priority mode for Codex/Hermes. */
   fast?: boolean;
   outputStyle?: string;
+  outputStyleCatalogReady?: true;
   configurationPending?: boolean;
   /** Current main-session context window watermark, when observed. */
   contextUsage?: BridgeSessionContextUsage;

@@ -988,6 +988,7 @@ describe("mobile session creation", () => {
       ...props.snapshot!.sessions[0]!,
       sessionId: "created-1",
       title: "Created",
+      outputStyle: "Learning",
       projectId: "project-2",
       projectName: "Second project",
       model: "claude-sonnet-4-6",
@@ -1127,7 +1128,10 @@ describe("mobile session creation", () => {
     expect(permissionMenu().props.value).toBe("default");
     permissionMenu().props.onChange("plan"); draw();
     expect(permissionMenu().props.value).toBe("plan");
-    elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "输出风格")!.props.onChange("Personal notes");
+    const styleMenu = elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "输出风格")!;
+    expect(styleMenu.props.value).toBe("");
+    expect(styleMenu.props.options).toContainEqual({ value: "default", label: "默认" });
+    styleMenu.props.onChange("default");
     draw();
 
     await form().props.onSubmit({ preventDefault() {} });
@@ -1136,7 +1140,7 @@ describe("mobile session creation", () => {
     expect(props.onCreateSession).toHaveBeenCalledWith("/tmp/project-2", undefined, "claude-desktop", "project-2");
     expect(callOrder).toEqual([
       "create:/tmp/project-2:project-2",
-      "configure:created-1:claude-opus-4-7:xhigh:plan:Personal notes",
+      "configure:created-1:claude-opus-4-7:xhigh:plan:default",
       "send:created-1:跨入口保留的新建草稿",
     ]);
   });

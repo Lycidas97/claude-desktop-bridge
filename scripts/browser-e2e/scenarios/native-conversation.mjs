@@ -175,8 +175,10 @@ export async function verifyNativeMessages(page, host, steps, directory) {
   const styleSelect = configuration.getByRole("combobox", { name: "输出风格", exact: true });
   await eventually(() => customSelectValue(styleSelect), "default", "Existing session initially displays Desktop's current style");
   await selectCustomOption(page, styleSelect, "Fixture project style");
+  const beforeStyleSave = host.nativeApproval.calls.length;
   await configuration.getByRole("button", { name: "保存配置", exact: true }).click();
   await configuration.waitFor({ state: "hidden" });
+  assert.equal(host.nativeApproval.calls.slice(beforeStyleSave).some(call => ["setModel", "setEffort", "setPermissionMode"].includes(call.method)), false);
   assert.deepEqual(host.nativeApproval.calls.filter(call => call.method === "applyFlagSettings").at(-1).args,
     [sessionId, { outputStyle: "Fixture project style" }]);
   await settingsButton.getByText("Fixture project style", { exact: true }).waitFor();

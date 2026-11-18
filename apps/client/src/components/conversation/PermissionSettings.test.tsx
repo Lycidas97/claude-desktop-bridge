@@ -136,7 +136,7 @@ describe("session effort", () => {
     expect(textContent(tree)).toContain("这个模型不支持「极高」");
     button(tree, "保存配置").props.onClick();
     await settle();
-    expect(props.onSave).toHaveBeenCalledWith({ model: "gemini[1m]", reasoningEffort: "high" });
+    expect(props.onSave).toHaveBeenCalledWith({ reasoningEffort: "high" });
 
     elements(tree).find((element) => element.type === SelectMenu && element.props.value === "gemini[1m]")!
       .props.onChange("claude");
@@ -146,6 +146,43 @@ describe("session effort", () => {
 });
 
 describe("native Claude session configuration", () => {
+  it("saves only the new output style when the displayed model is inherited", async () => {
+    const native = {
+      ...configuration, effort: "medium" as const, nativePermissionMode: "default" as const,
+      outputStyle: "default", availableOutputStyles: ["default", "Learning"],
+    };
+    const props = { session, onLoad: vi.fn().mockResolvedValue(native), onSave: vi.fn().mockResolvedValue(native), onClose: vi.fn() };
+    const draw = () => render(() => <SessionConfigurationDialog {...props} />);
+    draw(); await settle();
+    elements(draw()).find(element => element.type === SelectMenu && element.props.ariaLabel === "输出风格")!.props.onChange("Learning");
+    button(draw(), "保存配置").props.onClick();
+    await settle();
+    expect(props.onSave).toHaveBeenCalledExactlyOnceWith({ outputStyle: "Learning" });
+  });
+
+  it("shows the Native style catalog when initialization finishes with the dialog open", async () => {
+    const loaded = {
+      ...configuration,
+      availableModels: [...configuration.availableModels, { value: "next-model", displayName: "Next" }],
+    };
+    const props = {
+      onLoad: vi.fn().mockResolvedValueOnce(loaded).mockResolvedValue({
+        ...loaded, outputStyle: "default", availableOutputStyles: ["default", "Project notes"],
+      }),
+      onSave: vi.fn(), onClose: vi.fn(),
+    };
+    let current: BridgeSessionInfo = session;
+    const draw = () => render(() => <SessionConfigurationDialog {...props} session={current} />);
+    draw(); await settle();
+    elements(draw()).find(element => element.type === SelectMenu && element.props.ariaLabel === "模型")!.props.onChange("next-model");
+    expect(textContent(draw())).not.toContain("Project notes");
+    current = { ...session, outputStyleCatalogReady: true };
+    draw(); await settle();
+    const tree = draw();
+    expect(textContent(tree)).toContain("Project notes");
+    expect(elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "模型")!.props.value).toBe("next-model");
+  });
+
   it("loads and displays quota for the selected native Claude model without changing its execution ID", async () => {
     const model = { value: "mythos-magpie-1234567890", displayName: "Opus", resolvedModel: "claude/claude-opus-5-5" };
     const request = vi.fn().mockReturnValue(vi.fn());
@@ -163,7 +200,8 @@ describe("native Claude session configuration", () => {
     expect(textContent(tree)).toContain("单账号最高可用 80%");
     expect(elements(tree).find(element => element.type === MagpieModelQuota)?.props.model).toEqual(model);
     button(tree, "保存配置").props.onClick(); await settle();
-    expect(props.onSave).toHaveBeenCalledExactlyOnceWith({ model: model.value });
+    expect(props.onSave).not.toHaveBeenCalled();
+    expect(props.onClose).toHaveBeenCalledOnce();
   });
 
   it("saves native permissionMode through session.configure and confirms bypassPermissions", async () => {

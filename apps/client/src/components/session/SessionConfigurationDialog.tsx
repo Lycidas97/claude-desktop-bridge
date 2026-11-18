@@ -118,6 +118,26 @@ export function SessionConfigurationDialog({
 
   const modelOptions = configuration?.availableModels ?? [];
   const outputStyles = configuration?.availableOutputStyles ?? [];
+  const loadReadyStyles = !loading && configuration && outputStyles.length === 0 && session.outputStyleCatalogReady === true;
+  useEffect(() => {
+    if (!loadReadyStyles) return;
+    let active = true;
+    void onLoad()
+      .then(({ availableOutputStyles, outputStyle }) => {
+        if (!active || !availableOutputStyles?.length) return;
+        setConfiguration((current) => {
+          if (!current) return current;
+          const { outputStyle: _previous, ...settings } = current;
+          return { ...settings, availableOutputStyles, ...(outputStyle ? { outputStyle } : {}) };
+        });
+        setOutputStyle(outputStyle);
+      })
+      .catch((reason: unknown) => {
+        if (active) setError(reason instanceof Error ? reason.message : "输出风格读取失败");
+      });
+    return () => { active = false; };
+  }, [session.sessionId, loadReadyStyles]);
+
   const selectedModel = useMemo(
     () => modelOptions.find((candidate) => candidate.value === model),
     [model, modelOptions],
@@ -149,15 +169,24 @@ export function SessionConfigurationDialog({
     }
   }
 
-  function saveSelectedConfiguration(): Promise<void> {
-    return save({
-      ...(modelOptions.length ? { model } : {}),
-      ...(outputStyle && outputStyle !== configuration?.outputStyle ? { outputStyle } : {}),
+  async function saveSelectedConfiguration(): Promise<void> {
+    const modelChanged = modelOptions.length > 0 && model !== (configuration?.model ?? modelOptions[0]?.value);
+    const styleChanged = Boolean(outputStyle && outputStyle !== configuration?.outputStyle);
+    const loadedEffort = configuration?.reasoningEffort ?? configuration?.effort
+      ?? configuration?.availableReasoningEfforts?.[0] ?? configuration?.availableEffortLevels[0] ?? "medium";
+    // Preserve the existing effort downgrade on a model change or an explicit effort save.
+    const effortChanged = shownEffort !== loadedEffort && (!styleChanged || modelChanged || effort !== loadedEffort);
+    const change: SessionConfigurationChange = {
+      ...(modelChanged ? { model } : {}),
+      ...(styleChanged && outputStyle ? { outputStyle } : {}),
       ...(nativeRuntime ? {
-        ...(effortLevels.length && selectedModel?.supportsEffort !== false ? { reasoningEffort: shownEffort } : {}),
-        ...(claudeSession && nativePermissionMode ? { permissionMode: nativePermissionMode } : {}),
+        ...(effortChanged && effortLevels.length && selectedModel?.supportsEffort !== false ? { reasoningEffort: shownEffort } : {}),
+        ...(claudeSession && nativePermissionMode && nativePermissionMode !== configuration?.nativePermissionMode
+          ? { permissionMode: nativePermissionMode } : {}),
       } : { effort: selectedModel?.supportsEffort === false ? null : shownEffort }),
-    });
+    };
+    if (Object.keys(change).length) await save(change);
+    else onClose();
   }
 
   const appliesAfterTurn = session.turnState === "running" || configuration?.appliesAfterTurn;

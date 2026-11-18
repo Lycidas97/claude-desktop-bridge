@@ -817,7 +817,7 @@ export function NewChatCanvas({
                   disabled={!connected || locked}
                   options={[
                     { value: "", label: "跟随 Claude Desktop" },
-                    ...outputStyles.map((style) => ({ value: style, label: style === "default" ? "默认" : style })),
+                    ...[...new Set(["default", ...outputStyles])].map((style) => ({ value: style, label: style === "default" ? "默认" : style })),
                   ]}
                   onChange={setOutputStyle}
                 />

@@ -688,6 +688,8 @@ export class ClaudeDesktopBridge extends EventEmitter {
         ...(resolvedModel.sessionModel ? { model: resolvedModel.sessionModel, ...(resolvedModel.modelDisplayName ? { modelDisplayName: resolvedModel.modelDisplayName } : {}) } : {}), ...(native.effort ? { effort: native.effort } : {}),
         ...(native.permissionMode ? { nativePermissionMode: native.permissionMode } : {}),
         ...(native.outputStyle ? { outputStyle: native.outputStyle } : {}),
+        ...(this.inspector.supports("applyFlagSettings") && native.availableOutputStyles?.length
+          ? { outputStyleCatalogReady: true } : {}),
         ...(contextUsage ? { contextUsage } : {}),
         ...(running && this.compactingSessions.has(sessionId) ? { isCompacting: true } : {}),
         prs: native.prs ?? [],
@@ -1296,7 +1298,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
     };
   }
 
-  private async selectOutputStyle(id: string, requested: string): Promise<string> {
+  private async applyOutputStyle(id: string, requested: string): Promise<void> {
     const deadline = AbortSignal.timeout(10_000);
     // An empty Native start returns before Claude Code reports its style catalog.
     const changes = on(this, "changed", { signal: deadline });
@@ -1319,7 +1321,9 @@ export class ClaudeDesktopBridge extends EventEmitter {
     const style = styles.find(name => name === requested) ?? styles.find(name => name.toLowerCase() === requested.toLowerCase());
     if (!style) throw new NativeCallError(`此会话不提供输出风格「${requested}」。`);
     await this.inspector.call("applyFlagSettings", [id, { outputStyle: style }]);
-    return style;
+    if (nativeSession(await this.inspector.call("getSession", [id])).outputStyle !== style) {
+      throw new NativeCallError(`Claude Desktop 未应用输出风格「${style}」。`);
+    }
   }
 
   async configureSession(input: {
@@ -1330,47 +1334,44 @@ export class ClaudeDesktopBridge extends EventEmitter {
     outputStyle?: string;
   }): Promise<BridgeSessionConfiguration> {
     const id = this.desktopId(input.sessionId);
-    if (input.model !== undefined) {
-      let nativeModel = input.model;
-      if (typeof input.model === "string") {
-        const directory = await this.inspector.availableCodeModels();
-        if (directory.length && !directory.includes(input.model)) {
-          const base = input.model.replace(/\[1m\]$/iu, "");
-          const longContext = /\[1m\]$/iu.test(input.model);
-          const hash = modelOptionHash(base);
-          const slug = normalizeAnthropicModelSlug(base);
-          const findByPredicate = (match: (alias: NonNullable<ReturnType<typeof parseMagpieSyntheticModelId>>) => boolean) => (
-            directory.find(candidate => {
-              const alias = parseMagpieSyntheticModelId(candidate);
-              return Boolean(alias && match(alias) && alias.longContext === longContext);
-            }) ?? (longContext ? directory.find(candidate => {
-              const alias = parseMagpieSyntheticModelId(candidate);
-              return Boolean(alias && match(alias) && !alias.longContext);
-            }) : directory.find(candidate => {
-              const alias = parseMagpieSyntheticModelId(candidate);
-              return Boolean(alias && match(alias) && alias.longContext);
-            }))
-          );
-          const found = directory.find(candidate => candidate === base)
-            ?? (!longContext ? directory.find(candidate => candidate === `${base}[1m]`) : undefined)
-            ?? findByPredicate(alias => alias.hash === hash)
-            ?? (slug ? findByPredicate(alias => Boolean(alias.anthropicModel && normalizeAnthropicModelSlug(alias.anthropicModel) === slug)) : undefined);
-          if (!found) throw new NativeCallError("Selected model is unavailable in Claude Desktop's native model directory");
-          nativeModel = longContext && !/\[1m\]$/iu.test(found) ? `${found}[1m]` : found;
-        }
+    let nativeModel = input.model;
+    if (typeof input.model === "string") {
+      const directory = await this.inspector.availableCodeModels();
+      if (directory.length && !directory.includes(input.model)) {
+        const base = input.model.replace(/\[1m\]$/iu, "");
+        const longContext = /\[1m\]$/iu.test(input.model);
+        const hash = modelOptionHash(base);
+        const slug = normalizeAnthropicModelSlug(base);
+        const findByPredicate = (match: (alias: NonNullable<ReturnType<typeof parseMagpieSyntheticModelId>>) => boolean) => (
+          directory.find(candidate => {
+            const alias = parseMagpieSyntheticModelId(candidate);
+            return Boolean(alias && match(alias) && alias.longContext === longContext);
+          }) ?? (longContext ? directory.find(candidate => {
+            const alias = parseMagpieSyntheticModelId(candidate);
+            return Boolean(alias && match(alias) && !alias.longContext);
+          }) : directory.find(candidate => {
+            const alias = parseMagpieSyntheticModelId(candidate);
+            return Boolean(alias && match(alias) && alias.longContext);
+          }))
+        );
+        const found = directory.find(candidate => candidate === base)
+          ?? (!longContext ? directory.find(candidate => candidate === `${base}[1m]`) : undefined)
+          ?? findByPredicate(alias => alias.hash === hash)
+          ?? (slug ? findByPredicate(alias => Boolean(alias.anthropicModel && normalizeAnthropicModelSlug(alias.anthropicModel) === slug)) : undefined);
+        if (!found) throw new NativeCallError("Selected model is unavailable in Claude Desktop's native model directory");
+        nativeModel = longContext && !/\[1m\]$/iu.test(found) ? `${found}[1m]` : found;
       }
+    }
+    if (input.outputStyle !== undefined) await this.applyOutputStyle(id, input.outputStyle);
+    if (nativeModel !== undefined) {
       await this.inspector.call("setModel", [id, nativeModel]);
       const existing = this.contextStates.get(input.sessionId);
       if (existing) existing.estimated = true;
     }
     if (input.effort !== undefined) await this.inspector.call("setEffort", [id, input.effort]);
     if (input.permissionMode !== undefined) await this.inspector.call("setPermissionMode", [id, input.permissionMode]);
-    const outputStyle = input.outputStyle === undefined ? undefined : await this.selectOutputStyle(id, input.outputStyle);
     await this.refreshRuntime();
     const configuration = await this.configuration(input.sessionId);
-    if (outputStyle !== undefined && configuration.outputStyle !== outputStyle) {
-      throw new NativeCallError(`Claude Desktop 未应用输出风格「${outputStyle}」。`);
-    }
     const observedNativeModel = this.native.get(input.sessionId)?.model?.trim();
     const observedResolvedModel = observedNativeModel && observedNativeModel.toLowerCase() !== "default"
       ? (this.savedModel(observedNativeModel)?.value ?? observedNativeModel)

@@ -2337,7 +2337,7 @@ describe("Claude native relay", () => {
       expect(f.native.calls.filter(call => call.method === "applyFlagSettings")).toEqual([
         { method: "applyFlagSettings", args: [created.sessionId, { outputStyle: "concise" }] },
       ]);
-      expect(f.bridge.session(created.sessionId)?.outputStyle).toBe("concise");
+      expect(f.bridge.session(created.sessionId)).toMatchObject({ outputStyle: "concise", outputStyleCatalogReady: true });
       expect(f.bridge.session("local-native")?.outputStyle).toBeUndefined();
     } finally { await f.close(); }
   });
@@ -2347,8 +2347,10 @@ describe("Claude native relay", () => {
     try {
       const session = f.native.sessions[0]!;
       Object.assign(session, { turnRunning: true, availableOutputStyles: ["default", "Project notes"], outputStyle: "default" });
-      await expect(f.bridge.configureSession({ sessionId: "local-native", outputStyle: "Unknown" })).rejects.toThrow("此会话不提供输出风格");
-      expect(f.native.calls.some(call => call.method === "applyFlagSettings")).toBe(false);
+      await expect(f.bridge.configureSession({
+        sessionId: "local-native", outputStyle: "Unknown", model: "other-model", effort: "high", permissionMode: "plan",
+      })).rejects.toThrow("此会话不提供输出风格");
+      expect(f.native.calls.filter(call => ["applyFlagSettings", "setModel", "setEffort", "setPermissionMode"].includes(call.method))).toEqual([]);
       await expect(f.bridge.configureSession({ sessionId: "local-native", outputStyle: "Project notes" })).resolves.toMatchObject({
         appliesAfterTurn: true, outputStyle: "Project notes",
       });

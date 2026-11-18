@@ -30,7 +30,12 @@ export async function scanDesktopPairingQr(context, page, host, steps, baseUrl) 
 
   const fullQr = renderToStaticMarkup(createElement(QRCodeSVG, { value: pairingUrl, level: "M", marginSize: 4 }));
   const fullQrModules = Number(fullQr.match(/viewBox="0 0 (\d+) \d+"/u)?.[1]);
-  const { qr, qrModules } = await panel.getByRole("img", { name: "手机配对二维码" }).evaluate(svg => ({
+  const qrImage = panel.getByRole("img", { name: "手机配对二维码" });
+  assert.deepEqual(await qrImage.evaluate(svg => {
+    const { width, height } = svg.getBoundingClientRect();
+    return { width, height };
+  }), { width: 104, height: 104 }, "Desktop QR must render at 104 × 104 CSS pixels");
+  const { qr, qrModules } = await qrImage.evaluate(svg => ({
     qr: new XMLSerializer().serializeToString(svg),
     qrModules: svg.viewBox.baseVal.width,
   }));

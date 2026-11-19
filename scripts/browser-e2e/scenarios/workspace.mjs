@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { root, sessionId } from "../config.mjs";
-import { eventually, openMobileDrawer, customSelectValue } from "../helpers.mjs";
+import { desktopFixtureRequest, eventually, openMobileDrawer, customSelectValue } from "../helpers.mjs";
 
 export async function verifySessionCatalog(page, host, steps, directory, viewports, baseUrl) {
   await page.emulateMedia({ reducedMotion: "reduce" });
@@ -104,10 +103,11 @@ export async function verifySessionCatalog(page, host, steps, directory, viewpor
   await capture("mobile-project-order");
   await page.getByRole("dialog", { name: "项目顺序" }).getByRole("button", { name: "关闭", exact: true }).click();
 
-  await page.exposeFunction("catalogRequest", async input => ({
-    kind: "response", requestId: randomUUID(), ok: true,
-    result: await host.nativeApproval.controllerRequest({ kind: "request", requestId: randomUUID(), ...input }),
-  }));
+  await page.exposeFunction("catalogRequest", async input => {
+    const request = desktopFixtureRequest(input);
+    return { kind: "response", requestId: request.requestId, ok: true,
+      result: await host.nativeApproval.controllerRequest(request) };
+  });
   await page.addInitScript(snapshot => {
     window.__catalogSnapshot = snapshot;
     window.__updateCatalog = next => {

@@ -1,17 +1,16 @@
 import { attachmentCsv, attachmentHtml, mailWithAttachments } from "../../fixtures/mail-attachments.mjs";
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { sessionId } from "../config.mjs";
-import { customSelectValue, eventually, openMobileDrawer, openMobileSession, selectCustomOption } from "../helpers.mjs";
+import { customSelectValue, desktopFixtureRequest, eventually, openMobileDrawer, openMobileSession, selectCustomOption } from "../helpers.mjs";
 
 async function openDesktopAssistant(page, host, baseUrl, requests) {
   await page.exposeFunction("assistantDesktopRequest", async input => {
-    const requestId = randomUUID();
+    const request = desktopFixtureRequest(input);
     requests.push(input);
-    const result = await host.nativeApproval.controllerRequest({ kind: "request", requestId, ...input, idempotencyKey: input.idempotencyKey ?? requestId }, "desktop");
-    return { kind: "response", requestId, ok: true, result };
+    const result = await host.nativeApproval.controllerRequest(request, "desktop");
+    return { kind: "response", requestId: request.requestId, ok: true, result };
   });
   await page.addInitScript(initialSnapshot => {
     let snapshot = initialSnapshot;

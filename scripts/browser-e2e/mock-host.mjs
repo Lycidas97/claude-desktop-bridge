@@ -5,7 +5,7 @@ import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { BridgeCrypto, BridgeSocket } from "../../packages/protocol/dist/index.js";
 import { remotePreview, sectionCreatePreview, assistantMailPreview, nativePreview, sessionId, originalTitle, userText, replyText } from "./config.mjs";
-import { syncNativeSections } from "./helpers.mjs";
+import { desktopFixtureRequest, syncNativeSections } from "./helpers.mjs";
 
 let nativeFixtureSequence = 0;
 
@@ -825,7 +825,7 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
     return { response, afterAck };
   };
   host.desktopRequest = async (input) => {
-    const { response, afterAck } = await host.handleRequest(input);
+    const { response, afterAck } = await host.handleRequest(desktopFixtureRequest(input));
     await afterAck();
     return response;
   };

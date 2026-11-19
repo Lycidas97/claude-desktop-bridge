@@ -198,6 +198,36 @@ describe("startup and network recovery", () => {
     expect(LocalWebSocket.instances).toHaveLength(2);
   });
 
+  it.each([false, true])("probes the open relay on foregrounding without a network event (blackholed=%s)", async blackhole => {
+    mount();
+    await vi.waitFor(() => expect(bridgeVault.saveMessage).toHaveBeenCalled());
+    const old = LocalWebSocket.instances[0]!;
+    old.blackhole = blackhole;
+    const send = vi.spyOn(old, "send");
+    page.visibilityState = "hidden";
+    page.dispatchEvent(new Event("visibilitychange"));
+    page.visibilityState = "visible";
+    page.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(old.readyState).toBe(blackhole ? LocalWebSocket.CLOSED : LocalWebSocket.OPEN);
+    expect(send.mock.calls.filter(([raw]) => JSON.parse(raw).type === "ping")).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(500); // The router's first retry when only one relay is configured.
+    expect(LocalWebSocket.instances).toHaveLength(blackhole ? 2 : 1);
+    if (blackhole) await vi.waitFor(() => expect(bridgeVault.saveMessage).toHaveBeenCalledTimes(2));
+  });
+
+  it("replaces a silent OPEN relay within 30 seconds without a wake event or queued input", async () => {
+    mount();
+    await vi.waitFor(() => expect(bridgeVault.saveMessage).toHaveBeenCalled());
+    const old = LocalWebSocket.instances[0]!;
+    old.blackhole = true;
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(old.readyState).toBe(LocalWebSocket.CLOSED);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(LocalWebSocket.instances).toHaveLength(2);
+    await vi.waitFor(() => expect(bridgeVault.saveMessage).toHaveBeenCalledTimes(2));
+  });
+
   it.each(["online", "hidden-online", "network-type"])("rebuilds a blackholed OPEN connection on %s without reloading cache or changing queued input identity", async signal => {
     const bridge = mount();
     await vi.waitFor(() => expect(bridgeVault.saveMessage).toHaveBeenCalled());

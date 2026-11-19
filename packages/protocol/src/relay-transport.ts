@@ -26,6 +26,8 @@ const HEARTBEAT_TIMEOUT_MS = 75_000;
 export interface RelayTransportOptions extends BridgeSocketOptions {
   path?: Exclude<BridgeTransportPath, "direct">;
   heartbeatIntervalMs?: number;
+  heartbeatTimeoutMs?: number;
+  connectProbeTimeoutMs?: number;
 }
 
 type MessageListener = (message: DecryptedEnvelope, encrypted: EncryptedEnvelope) => void;
@@ -39,7 +41,10 @@ export class RelayTransport implements BridgeTransport {
   readonly endpoint: string;
   private readonly socket: BridgeSocket;
   private readonly heartbeatIntervalMs: number;
+  private readonly heartbeatTimeoutMs: number;
+  private readonly connectProbeTimeoutMs: number | undefined;
   private heartbeat: ReturnType<typeof setInterval> | undefined;
+  private connectProbe: ReturnType<typeof setTimeout> | undefined;
   private rttValue: number | undefined;
   private lastConnectedAt: number | undefined;
   private lastPongAt: number | undefined;
@@ -51,6 +56,8 @@ export class RelayTransport implements BridgeTransport {
     this.path = options.path ?? relayPathForUrl(options.crypto.identity.relayUrl);
     this.endpoint = options.crypto.identity.relayUrl;
     this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? HEARTBEAT_INTERVAL_MS;
+    this.heartbeatTimeoutMs = options.heartbeatTimeoutMs ?? HEARTBEAT_TIMEOUT_MS;
+    this.connectProbeTimeoutMs = options.connectProbeTimeoutMs;
     this.socket = new BridgeSocket(options);
     this.socket.onError((error) => {
       this.lastError = error.message;
@@ -70,6 +77,7 @@ export class RelayTransport implements BridgeTransport {
     });
     this.socket.onFrame((frame) => {
       this.lastPongAt = Date.now();
+      this.stopConnectProbe();
       if (frame.type === "pong") {
         this.rttValue = Math.max(0, Date.now() - frame.at);
         this.lastError = undefined;
@@ -93,6 +101,15 @@ export class RelayTransport implements BridgeTransport {
   }
 
   connect(): void {
+    if (this.state === "connected" && this.connectProbeTimeoutMs !== undefined) {
+      // A wake can leave a dead WebSocket reporting OPEN. Test the relay without
+      // tearing down a healthy link or resetting the enclosing transport.
+      if (this.connectProbe === undefined) {
+        this.connectProbe = setTimeout(() => this.closeUnresponsiveSocket(), this.connectProbeTimeoutMs);
+        this.socket.ping();
+      }
+      return;
+    }
     this.socket.connect();
   }
 
@@ -157,21 +174,31 @@ export class RelayTransport implements BridgeTransport {
     this.stopHeartbeat();
     this.socket.ping();
     this.heartbeat = setInterval(() => {
-      if (Date.now() - (this.lastPongAt ?? 0) > HEARTBEAT_TIMEOUT_MS) {
-        const error = new Error("Relay heartbeat timed out");
-        error.name = "RELAY_HEARTBEAT_TIMEOUT";
-        this.lastError = error.message;
-        for (const listener of this.errorListeners) listener(error);
-        this.socket.close();
+      if (Date.now() - (this.lastPongAt ?? 0) > this.heartbeatTimeoutMs) {
+        this.closeUnresponsiveSocket();
         return;
       }
       this.socket.ping();
     }, this.heartbeatIntervalMs);
   }
 
+  private closeUnresponsiveSocket(): void {
+    const error = new Error("Relay heartbeat timed out");
+    error.name = "RELAY_HEARTBEAT_TIMEOUT";
+    this.lastError = error.message;
+    for (const listener of this.errorListeners) listener(error);
+    this.socket.close();
+  }
+
   private stopHeartbeat(): void {
     if (this.heartbeat) clearInterval(this.heartbeat);
     this.heartbeat = undefined;
+    this.stopConnectProbe();
+  }
+
+  private stopConnectProbe(): void {
+    clearTimeout(this.connectProbe);
+    this.connectProbe = undefined;
   }
 
   private metrics(): BridgeTransportMetrics {

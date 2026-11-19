@@ -229,6 +229,7 @@ export type BridgeCapability =
   | "plugin.assistant-mail.manual-reference.v1"
   | "plugin.assistant-mail.workspace.v1"
   | "plugin.assistant-mail.account.v1"
+  | "plugin.assistant-mail.polling.v1"
   | "plugin.assistant-mail.attachments.v1"
   | "system.update.v1";
 
@@ -1394,6 +1395,7 @@ export type BridgeMethod =
   | "plugin.assistant-mail.account.add"
   | "plugin.assistant-mail.account.update-credential"
   | "plugin.assistant-mail.account.set-enabled"
+  | "plugin.assistant-mail.account.set-poll-interval"
   | "plugin.assistant-mail.account.remove"
   | "system.update";
 

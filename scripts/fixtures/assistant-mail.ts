@@ -17,7 +17,7 @@ export async function startAssistantMailFixture(directory: string) {
       const mailbox = seeded ? messages : [];
       let finishIdle: (() => void) | undefined;
       return Object.assign(inbox, {
-        capabilities: new Map([["IDLE", true]]), enabled: new Set(),
+        capabilities: seeded ? new Map([["IDLE", true]]) : new Map(), enabled: new Set(),
         async connect() {},
         async mailboxOpen() { return { uidValidity: 1n, uidNext: mailbox.length + 1 }; },
         async *fetch(range: string) { yield* mailbox.filter(message => message.uid >= Number(range.split(":")[0])); },

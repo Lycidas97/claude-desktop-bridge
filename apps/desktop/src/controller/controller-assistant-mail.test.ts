@@ -116,7 +116,7 @@ beforeEach(async () => {
   store.openMailbox("synthetic-account", "1", 1);
   service = new AssistantMailService({
     userDataPath: root,
-    credentials: { supported: true, get: vi.fn(async () => { throw new Error("Unexpected credential read"); }), set: vi.fn(), delete: vi.fn() },
+    credentials: { supported: true, get: vi.fn(async () => { throw new Error("Unexpected credential read"); }), set: vi.fn(async () => {}), delete: vi.fn() },
     createClient: vi.fn(() => { throw new Error("Unexpected IMAP connection"); }),
   });
   await service.initialize();
@@ -139,6 +139,18 @@ async function record(uid: number, source = `Content-Type: text/plain; charset=u
 }
 
 describe("assistant mail mobile RPC projections", () => {
+  it("validates the per-account polling setting before applying it", async () => {
+    await run.request("plugin.assistant-mail.account.add", { host: "imap.example.test", user: "test@example.test", credential: "fixture" });
+    const { accountKey } = service.status().accounts[0]!;
+    for (const pollIntervalSeconds of [undefined, 0, 29, 61, "60"]) {
+      await expect(run.request("plugin.assistant-mail.account.set-poll-interval", { accountKey, pollIntervalSeconds }))
+        .rejects.toMatchObject({ code: "INVALID_PARAMS" });
+    }
+    expect(service.status().accounts[0]?.pollIntervalSeconds).toBe(60);
+    expect(await run.request("plugin.assistant-mail.account.set-poll-interval", { accountKey, pollIntervalSeconds: null }))
+      .toMatchObject({ assistantMail: { accounts: [{ accountKey, pollIntervalSeconds: null }] } });
+  });
+
   it("validates a manual reference and sends only its canonical ID through the existing turn path", async () => {
     const mail = await record(1);
     await run.request("plugin.assistant-mail.bind", { sessionId: "native-first" });

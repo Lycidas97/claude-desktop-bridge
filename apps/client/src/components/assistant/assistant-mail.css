@@ -178,8 +178,15 @@
   background: var(--surface-2);
   color: var(--text);
 }
+.assistant-mail-refresh-hidden { visibility: hidden; }
+.assistant-view-tabs > button[aria-busy="true"] > svg { animation: assistant-mail-spinning .8s linear infinite; }
+@keyframes assistant-mail-spinning { to { transform: rotate(1turn); } }
+.assistant-page .assistant-mail-feedback { padding-block: 0; }
+.assistant-mail-feedback > p { margin: 0 0 6px; }
+.assistant-mail-feedback > p:empty { margin: 0; }
 @media (prefers-reduced-motion: reduce) {
   .assistant-view-switch > button { transition: none; }
+  .assistant-view-tabs > button[aria-busy="true"] > svg { animation: none; }
 }
 .assistant-view-switch > button:disabled, .assistant-view-tabs > button:disabled, .assistant-session-link:disabled { opacity: .5; cursor: default; text-decoration: none; }
 .assistant-conversation { flex: 1; min-height: 0; min-width: 0; }

@@ -318,9 +318,44 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await capture("mobile-mail");
   steps.push("60 stored mail cards render without a turn request; untrusted content stays text and explicit links show the destination host");
 
-  host.mailOffline = true;
-  host.socket.close();
-  await page.getByText("电脑离线，显示已缓存邮件。", { exact: true }).waitFor();
+  const refreshMail = page.getByRole("button", { name: /^刷新邮件/u });
+  const mailRefreshed = page.getByRole("status").filter({ hasText: "邮件列表已刷新" });
+  const refreshGate = Promise.withResolvers();
+  host.mailPageGate = refreshGate.promise;
+  try {
+    await refreshMail.click();
+    await page.getByRole("status").filter({ hasText: "正在刷新邮件列表" }).waitFor();
+    assert.equal(await refreshMail.isDisabled(), true);
+    assert.equal(await cards().count(), 60, "Pending refresh preserves the loaded inbox");
+  } finally {
+    host.mailPageGate = undefined;
+    refreshGate.resolve(true);
+  }
+  await mailRefreshed.waitFor();
+  assert.equal(await cards().count(), 60, "A completed refresh can leave the inbox unchanged");
+  host.mailPageFailure = true;
+  await refreshMail.click();
+  await page.getByRole("alert").filter({ hasText: "隔离邮件列表读取失败" }).waitFor();
+  assert.equal(await mailRefreshed.count(), 0, "A failed refresh cannot retain a success message");
+  assert.equal(await cards().count(), 60, "A failed refresh preserves the loaded inbox");
+  host.mailPageFailure = false;
+  steps.push("manual mail refresh announces progress, unchanged success, and failure while preserving the loaded list");
+
+  const interruptedRefresh = Promise.withResolvers();
+  const mailListRequests = () => host.requests.filter(request => request.method === "plugin.assistant-mail.list").length;
+  const beforeInterruptedRefresh = mailListRequests();
+  host.mailPageGate = interruptedRefresh.promise;
+  try {
+    await refreshMail.click();
+    await eventually(() => mailListRequests() > beforeInterruptedRefresh, true, "The refresh reaches the host before disconnect");
+    host.mailOffline = true;
+    host.socket.close();
+    await page.getByRole("alert").filter({ hasText: "电脑离线，邮件列表刷新已中断。" }).waitFor();
+    assert.equal(await refreshMail.getAttribute("aria-busy"), "false");
+  } finally {
+    host.mailPageGate = undefined;
+    interruptedRefresh.resolve(false);
+  }
   await host.nativeApproval.assistantMail.deliver(62);
   host.nativeApproval.assistantMail.service.updateAnalysis(oldest.mailRefId, { summary: '<img src="https://tracker.invalid/analysis">旧邮件分析已更新', suggestions: ["核对附件后回复"], questions: ["是否需要补充材料？"] });
   host.nativeApproval.assistantMail.service.setProcessingStatus(oldest.mailRefId, "processed");
@@ -721,7 +756,12 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   steps.push("managed setup confirms the path and Native permissions, pins the project, and keeps previous managed sessions out of the manual binding picker");
 
   const desktopAttachmentMail = await host.nativeApproval.assistantMail.deliver(1, mailWithAttachments());
+  const settingsButton = page.locator(".assistant-view-tabs").getByRole("button", { name: "助理设置", exact: true });
+  const mobileSettingsX = (await settingsButton.boundingBox()).x;
   await page.locator(".assistant-view-tabs").getByRole("button", { name: "议程", exact: true }).click();
+  await page.getByRole("button", { name: "新建待办", exact: true }).waitFor();
+  assert.equal((await settingsButton.boundingBox()).x, mobileSettingsX, "Mobile assistant settings stays in place on Agenda");
+  assert.equal(await refreshMail.count(), 0, "Agenda does not offer a mail refresh");
   await page.getByRole("button", { name: "新建待办", exact: true }).click();
   await page.getByLabel("标题", { exact: true }).fill("手机创建的待办");
   await page.getByRole("button", { name: "保存", exact: true }).click();
@@ -758,7 +798,10 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   assert.equal(await page.locator(".assistant-conversation .desktop-session-layout, .assistant-conversation .is-fixed-session").count(), 0, "Desktop AssistantPage mounts DesktopSessionConversation directly without DesktopSessions layout");
   await page.locator(".assistant-conversation .desktop-conversation-stream [data-mail-id]").first().waitFor();
   await page.locator(".assistant-conversation textarea").fill("桌面跨页共享草稿");
+  const desktopSettingsX = (await settingsButton.boundingBox()).x;
   await page.locator(".assistant-view-tabs").getByRole("button", { name: "议程", exact: true }).click();
+  await page.getByRole("button", { name: "加载更多", exact: true }).waitFor();
+  assert.equal((await settingsButton.boundingBox()).x, desktopSettingsX, "Desktop assistant settings stays in place on Agenda");
   await page.getByRole("button", { name: "加载更多", exact: true }).click();
   await page.getByText("手机创建的待办", { exact: true }).waitFor();
   assert.equal(await page.getByRole("checkbox", { name: "完成 手机创建的待办", exact: true }).isChecked(), true);

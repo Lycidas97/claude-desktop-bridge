@@ -1,6 +1,6 @@
 import type { AgendaEventInput, AgendaTodoInput, BridgeAgendaEvent, BridgeAgendaTodo } from "@bridge/protocol";
-import { ChevronLeft, ChevronRight, Pencil, Plus } from "lucide-react";
-import { useEffect, useId, useState, type FormEvent, type ReactNode } from "react";
+import { CalendarDays, ChevronLeft, ChevronRight, Pencil } from "lucide-react";
+import { useEffect, useId, useState, type FormEvent } from "react";
 import { agendaCalendarDate, agendaInputTime, agendaInstant, agendaTimedRange } from "../../lib/assistant-agenda.js";
 import { IconButton } from "../common/IconButton.js";
 import { Sheet } from "../common/Sheet.js";
@@ -23,22 +23,31 @@ function displayTime(value: string, timeZone = deviceZone): string {
   return agendaInputTime(value, timeZone).replace("T", " ");
 }
 
-export function AgendaView({ tab, onTabChange }: { tab: "todos" | "calendar"; onTabChange(tab: "todos" | "calendar"): void }) {
+export function AgendaView({ calendarOnly, onCalendarOnlyChange }: { calendarOnly: boolean; onCalendarOnlyChange(calendarOnly: boolean): void }) {
   const agenda = useAssistantAgenda()!;
+  const dayId = useId();
   const [editor, setEditor] = useState<Editor>();
   const [completing, setCompleting] = useState<string>();
   const [error, setError] = useState("");
   // The provider keeps opened pages while the Assistant stage is switched away.
-  useEffect(() => {
-    if (tab === "todos") agenda.openTodos();
-    else agenda.openCalendar();
-  }, [tab]);
-  const calendar = tab === "calendar";
-  const page = calendar ? agenda.events : agenda.todos;
+  useEffect(() => { agenda.selectMonth(); }, []);
+  const { events, todos } = agenda;
   const sources = new Map(agenda.snapshot?.sources.map(source => [source.id, source]));
   const canCreate = agenda.online && agenda.snapshot?.sources.some(source => source.enabled && source.writable);
   const year = agenda.month.getFullYear();
   const month = agenda.month.getMonth();
+  const entries = [
+    ...events.records.map(record => ({ record, at: agendaInputTime(record.startAt, deviceZone) })),
+    ...(calendarOnly ? [] : todos.records.map(record => ({ record, at: record.dueAt ? agendaInputTime(record.dueAt, deviceZone) : "" }))),
+  ].sort((a, b) => Number(!a.at) - Number(!b.at) || a.at.localeCompare(b.at));
+  const days = new Map<string, typeof entries>();
+  for (const entry of entries) {
+    const day = entry.at.slice(0, 10);
+    const records = days.get(day);
+    if (records) records.push(entry);
+    else days.set(day, [entry]);
+  }
+  const pages = calendarOnly ? [{ name: "日程", page: events }] : [{ name: "日程", page: events }, { name: "待办", page: todos }];
 
   async function complete(todo: BridgeAgendaTodo, completed: boolean) {
     setCompleting(todo.id);
@@ -52,61 +61,70 @@ export function AgendaView({ tab, onTabChange }: { tab: "todos" | "calendar"; on
     }
   }
 
-  function row(record: BridgeAgendaTodo | BridgeAgendaEvent, detail: ReactNode, toggle?: ReactNode, edit?: Editor) {
+  function row({ record, at }: (typeof entries)[number]) {
     const source = sources.get(record.sourceId);
-    return <li className={`agenda-record${"status" in record && (record.status === "completed" || record.status === "cancelled") ? " is-closed" : ""}`} key={record.id}>
-      {toggle}
+    const isTodo = "status" in record;
+    const priority = isTodo ? priorityGroup(record.priority) : "";
+    return <li className={`agenda-record${isTodo && (record.status === "completed" || record.status === "cancelled") ? " is-closed" : ""}`} key={`${isTodo ? "todo" : "event"}:${record.id}`}>
+      {isTodo ? <label className="agenda-marker agenda-check">
+        <input type="checkbox" aria-label={`完成 ${record.title}`} checked={record.status === "completed"} disabled={!agenda.online || !source?.enabled || !source.writable || Boolean(completing) || todos.loading}
+          onChange={event => void complete(record, event.target.checked)} />
+      </label> : <span className="agenda-marker agenda-event-marker" aria-hidden="true"><CalendarDays size={17} /></span>}
       <div className="agenda-record-copy">
         <strong>{record.title}</strong>
-        {detail}
+        {isTodo ? <div className="agenda-todo-meta">
+          {record.status !== "pending" && record.status !== "completed" && <small>{todoStatuses[record.status]}</small>}
+          {at.length > 10 && <small>截止 {at.slice(11)}</small>}
+          {record.remindAt && <small>提醒 {displayTime(record.remindAt)}</small>}
+          {priority && <small>优先级 {priorityLabels[priority]}</small>}
+        </div> : <>
+          <small>{record.allDay ? record.endAt === shiftDate(record.startAt, 1) ? "全天" : `全天 · 至 ${shiftDate(record.endAt, -1)}`
+            : agendaTimedRange(record.startAt, record.endAt, record.timeZone, deviceZone, at.slice(0, 10))}</small>
+          {record.location && <small>{record.location}</small>}
+          {!!record.attendees?.length && <small>{record.attendees.join("、")}</small>}
+        </>}
         {record.notes && <p className="agenda-notes">{record.notes}</p>}
         {record.origin === "untrusted_external" && <small>{source?.label ?? record.collection}（只读）</small>}
       </div>
-      {source?.enabled && source.writable && edit && <IconButton label={`编辑 ${record.title}`} disabled={!agenda.online} onClick={() => setEditor(edit)}><Pencil size={16} /></IconButton>}
+      {source?.enabled && source.writable && <IconButton label={`编辑 ${record.title}`} disabled={!agenda.online}
+        onClick={() => setEditor(isTodo ? { type: "todo", record } : { type: "event", record })}><Pencil size={16} /></IconButton>}
     </li>;
   }
 
   return <section className="agenda-view" aria-label="议程">
     <div className="agenda-toolbar">
+      <div className="agenda-month" role="group" aria-label="日程月份">
+        <IconButton label="上个月" onClick={() => agenda.selectMonth(new Date(year, month - 1, 1))}><ChevronLeft size={18} /></IconButton>
+        <strong aria-live="polite">{year}年{month + 1}月</strong>
+        <IconButton label="下个月" onClick={() => agenda.selectMonth(new Date(year, month + 1, 1))}><ChevronRight size={18} /></IconButton>
+      </div>
       <nav className="assistant-view-switch" aria-label="议程视图">
-        <button type="button" aria-pressed={!calendar} onClick={() => onTabChange("todos")}>待办</button>
-        <button type="button" aria-pressed={calendar} onClick={() => onTabChange("calendar")}>日历</button>
+        <button type="button" aria-pressed={!calendarOnly} onClick={() => onCalendarOnlyChange(false)}>全部</button>
+        <button type="button" aria-pressed={calendarOnly} onClick={() => onCalendarOnlyChange(true)}>日历</button>
       </nav>
-      <button type="button" className="primary-button agenda-new" disabled={!canCreate} onClick={() => setEditor({ type: calendar ? "event" : "todo" })}>
-        <Plus size={16} aria-hidden="true" />{calendar ? "新建日程" : "新建待办"}
-      </button>
     </div>
-    {calendar && <div className="agenda-month">
-      <IconButton label="上个月" onClick={() => agenda.openCalendar(new Date(year, month - 1, 1))}><ChevronLeft size={18} /></IconButton>
-      <strong aria-live="polite">{year}年{month + 1}月</strong>
-      <IconButton label="下个月" onClick={() => agenda.openCalendar(new Date(year, month + 1, 1))}><ChevronRight size={18} /></IconButton>
-    </div>}
+    <div className="agenda-actions">
+      {!calendarOnly && <button type="button" className="secondary-button" disabled={!canCreate} onClick={() => setEditor({ type: "todo" })}>新建待办</button>}
+      <button type="button" className="primary-button" disabled={!canCreate} onClick={() => setEditor({ type: "event" })}>新建日程</button>
+    </div>
     {!agenda.online && <p role="status">电脑离线，连接后可同步议程。</p>}
     {error && <p role="alert">{error}</p>}
-    {page.error && <div className="assistant-actions"><p role="alert">{page.error}</p><button type="button" className="secondary-button" disabled={!agenda.online || page.loading} onClick={page.retry}>重试</button></div>}
-    {page.incomplete && <p role="status">{calendar ? "部分重复日程超出展开上限，未显示。" : "部分重复待办超出展开上限，未显示。"}</p>}
-    {!page.records.length && !page.error && !page.incomplete && agenda.online && <p className="assistant-mail-empty" role="status">{page.loading ? "正在同步议程…" : calendar ? "本月暂无日程" : "暂无待办"}</p>}
-    {page.records.length > 0 && <ul className="agenda-records" aria-label={calendar ? "日程列表" : "待办列表"}>
-      {calendar ? agenda.events.records.map(event => row(event, <>
-        <small>{event.allDay ? `${event.startAt}${event.endAt === shiftDate(event.startAt, 1) ? "" : ` 至 ${shiftDate(event.endAt, -1)}`} 全天`
-          : agendaTimedRange(event.startAt, event.endAt, event.timeZone, deviceZone)}</small>
-        {event.location && <small>{event.location}</small>}
-        {!!event.attendees?.length && <small>{event.attendees.join("、")}</small>}
-      </>, undefined, { type: "event", record: event })) : agenda.todos.records.map(todo => {
-        const source = sources.get(todo.sourceId);
-        const priority = priorityGroup(todo.priority);
-        return row(todo, <div className="agenda-todo-meta">
-          {todo.status !== "pending" && todo.status !== "completed" && <small>{todoStatuses[todo.status]}</small>}
-          {todo.dueAt && <small>截止 {displayTime(todo.dueAt)}</small>}
-          {todo.remindAt && <small>提醒 {displayTime(todo.remindAt)}</small>}
-          {priority && <small>优先级 {priorityLabels[priority]}</small>}
-        </div>, <label className="agenda-check">
-          <input type="checkbox" aria-label={`完成 ${todo.title}`} checked={todo.status === "completed"} disabled={!agenda.online || !source?.enabled || !source.writable || Boolean(completing) || page.loading}
-            onChange={event => void complete(todo, event.target.checked)} />
-        </label>, { type: "todo", record: todo });
-      })}
-    </ul>}
-    {page.hasMore && <button type="button" className="secondary-button assistant-mail-older" disabled={!agenda.online || page.loading} onClick={page.loadMore}>{page.loading ? "正在读取…" : "加载更多"}</button>}
+    {pages.map(({ name, page }) => <div key={name}>
+      {page.error && <div className="assistant-actions"><p role="alert">{name}：{page.error}</p><button type="button" className="secondary-button" disabled={!agenda.online || page.loading} onClick={page.retry}>重试{name}</button></div>}
+      {page.incomplete && <p role="status">部分重复{name}超出展开上限，未显示。</p>}
+    </div>)}
+    {!entries.length && agenda.online && pages.every(({ page }) => !page.error && !page.incomplete) && <p className="assistant-mail-empty" role="status">
+      {pages.some(({ page }) => page.loading) ? "正在同步议程…" : calendarOnly ? "本月暂无日程" : "暂无日程或待办"}
+    </p>}
+    {[...days].map(([day, records]) => <div className="agenda-day" key={day}>
+      <h3 id={`${dayId}-${day}`}>{day ? <time dateTime={day}>{day}</time> : "无截止日期"}</h3>
+      <ul className="agenda-records" aria-labelledby={`${dayId}-${day}`}>{records.map(row)}</ul>
+    </div>)}
+    {pages.some(({ page }) => page.hasMore) && <div className="agenda-pagination">
+      {pages.map(({ name, page }) => page.hasMore && <button key={name} type="button" className="secondary-button" disabled={!agenda.online || page.loading} onClick={page.loadMore}>
+        {page.loading ? `正在读取${name}…` : `更多${name}`}
+      </button>)}
+    </div>}
     {editor && <AgendaEditor editor={editor} month={agenda.month} onClose={() => setEditor(undefined)} />}
   </section>;
 }
@@ -158,7 +176,7 @@ function AgendaEditor({ editor, month, onClose }: { editor: Editor; month: Date;
         const location = String(form.get("location")).trim();
         const value: AgendaEventInput = { ...fields, startAt, endAt, timeZone: zone, allDay, ...(location ? { location } : {}) };
         await agenda.mutate("plugin.assistant-agenda.event.save", { existing, value });
-        agenda.openCalendar(agendaCalendarDate(startAt, allDay));
+        agenda.selectMonth(agendaCalendarDate(startAt, allDay));
       }
       onClose();
     } catch (reason) {

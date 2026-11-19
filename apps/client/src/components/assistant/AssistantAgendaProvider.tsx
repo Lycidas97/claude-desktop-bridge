@@ -74,8 +74,7 @@ interface AssistantAgendaState {
   todos: ReturnType<typeof useAgendaPages<BridgeAgendaTodo>>;
   events: ReturnType<typeof useAgendaPages<BridgeAgendaEvent>>;
   month: Date;
-  openTodos(): void;
-  openCalendar(month?: Date): void;
+  selectMonth(month?: Date): void;
   mutate(method: AgendaMutation, params: Record<string, unknown>): Promise<void>;
 }
 
@@ -89,7 +88,6 @@ export function AssistantAgendaProvider({ snapshot, online, request, children }:
   request: AssistantRequest;
   children: ReactNode;
 }) {
-  const [todosOpened, setTodosOpened] = useState(false);
   const [month, setMonth] = useState<Date>();
   const [mutation, setMutation] = useState<{ base: string | undefined; snapshot: BridgeAgendaSnapshot }>();
   const enabled = snapshot?.host.capabilities.includes(ASSISTANT_AGENDA_CAPABILITY) === true;
@@ -99,16 +97,16 @@ export function AssistantAgendaProvider({ snapshot, online, request, children }:
   const connected = enabled && online;
   const from = month?.toISOString();
   const to = month && new Date(month.getFullYear(), month.getMonth() + 1, 1).toISOString();
-  const todos = useAgendaPages<BridgeAgendaTodo>("plugin.assistant-agenda.todo.list", request, connected && todosOpened, token);
-  const events = useAgendaPages<BridgeAgendaEvent>("plugin.assistant-agenda.event.list", request, connected && Boolean(month), token, from, to);
+  const opened = connected && month !== undefined;
+  const todos = useAgendaPages<BridgeAgendaTodo>("plugin.assistant-agenda.todo.list", request, opened, token);
+  const events = useAgendaPages<BridgeAgendaEvent>("plugin.assistant-agenda.event.list", request, opened, token, from, to);
 
   return <AssistantAgendaContext.Provider value={enabled ? {
     snapshot: agenda,
     online: connected,
     todos, events,
     month: month ?? new Date(),
-    openTodos: () => setTodosOpened(true),
-    openCalendar(date) {
+    selectMonth(date) {
       setMonth(current => {
         if (!date && current) return current;
         const selected = date ?? new Date();

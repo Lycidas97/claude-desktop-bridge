@@ -57,8 +57,11 @@ async function verifyAssistantConfiguration(page, host, requests, model, effort,
   const modelSelect = dialog.getByRole("combobox", { name: "模型", exact: true });
   await selectCustomOption(page, modelSelect, model);
   assert.equal(await dialog.getByLabel("Desktop 授权模式").count(), 0);
-  assert.equal(await dialog.getByRole("button", { name: "超高", exact: true }).count(), 0);
-  const effortChoice = dialog.getByRole("button", { name: effortLabel, exact: true });
+  const effortGroup = dialog.getByRole("group", { name: /^思考强度/u });
+  if (model === "synthetic-model") {
+    assert.deepEqual(await effortGroup.getByRole("button").allTextContents(), ["低", "高"]);
+  }
+  const effortChoice = effortGroup.getByRole("button", { name: effortLabel, exact: true });
   await effortChoice.click();
   await dialog.getByRole("button", { name: "保存配置", exact: true }).click();
   await dialog.waitFor({ state: "hidden" });

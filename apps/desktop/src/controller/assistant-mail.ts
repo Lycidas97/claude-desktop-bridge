@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { ARTIFACT_MAX_BYTES, ASSISTANT_WORKSPACE_POLICY, mailAttachmentPreviewKind } from "@bridge/protocol";
+import { ARTIFACT_MAX_BYTES, ASSISTANT_WORKSPACE_POLICY, isMailPollInterval, mailAttachmentPreviewKind } from "@bridge/protocol";
 import type {
   BridgeAssistantMailSnapshot,
   BridgeMailAttachmentRef,
@@ -20,6 +20,7 @@ export const ASSISTANT_MAIL_CAPABILITIES = [
   "plugin.assistant-mail.v1",
   "plugin.assistant-mail.manual-reference.v1",
   "plugin.assistant-mail.account.v1",
+  "plugin.assistant-mail.polling.v1",
   "plugin.assistant-mail.attachments.v1",
 ] as const;
 
@@ -55,7 +56,10 @@ export function assistantMailSnapshot(
     ...(binding ? { binding } : {}),
     bindingState: !binding?.nativeSessionId ? binding?.previousSessionIds.length ? "needs-rebind" : "unbound"
       : session?.archivedAt ? "needs-rebind" : !available ? "unavailable" : !session ? "missing" : "ready",
-    receiverState: state, accounts, credentialsSupported,
+    receiverState: state === "polling" ? "connected" : state,
+    accounts: accounts.map(account => account.state === "polling"
+      ? { ...account, state: "connected", receivingMode: "polling" } : { ...account, state: account.state }),
+    credentialsSupported,
     ...(accountConfigError ? { accountConfigError } : {}),
     automaticDelivery: false,
     changeToken,
@@ -329,6 +333,10 @@ export class AssistantMailCoordinator {
         } else if (method === "plugin.assistant-mail.account.set-enabled") {
           if (typeof params.enabled !== "boolean") throw new BridgeRequestError("INVALID_PARAMS", "请选择启用或停用邮箱。");
           await this.mail.setAccountEnabled(accountKey, params.enabled);
+        } else if (method === "plugin.assistant-mail.account.set-poll-interval") {
+          const { pollIntervalSeconds } = params;
+          if (!isMailPollInterval(pollIntervalSeconds)) throw new BridgeRequestError("INVALID_PARAMS", "请选择有效的轮询间隔。");
+          await this.mail.setAccountPollInterval(accountKey, pollIntervalSeconds);
         } else if (method === "plugin.assistant-mail.account.remove") {
           await this.mail.removeAccount(accountKey);
         } else throw new BridgeRequestError("UNSUPPORTED", "当前电脑不支持此邮箱操作。");

@@ -10,6 +10,14 @@ export interface BridgeAssistantBinding {
 
 export type BridgeMailReceiverState = "disabled" | "connecting" | "connected" | "reconnecting" | "unsupported" | "error" | "closed";
 
+export const MAIL_POLL_INTERVALS = [30, 60, 120] as const;
+export const DEFAULT_MAIL_POLL_INTERVAL = 60;
+export type MailPollInterval = (typeof MAIL_POLL_INTERVALS)[number] | null;
+
+export function isMailPollInterval(value: unknown): value is MailPollInterval {
+  return value === null || MAIL_POLL_INTERVALS.some(seconds => value === seconds);
+}
+
 export interface BridgeMailAccount {
   accountKey: string;
   host: string;
@@ -17,6 +25,8 @@ export interface BridgeMailAccount {
   user: string;
   enabled: boolean;
   state: BridgeMailReceiverState;
+  pollIntervalSeconds?: MailPollInterval;
+  receivingMode?: "polling";
   errorCode?: string;
 }
 

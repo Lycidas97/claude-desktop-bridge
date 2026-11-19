@@ -42,7 +42,7 @@ let vite;
 let browser;
 let baseUrl;
 const nativeHosts = [];
-const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "round4-boundaries", "round5-ux", "desktop-diagnostics", "desktop-quota", "desktop-conversation", "mobile-safe-area", "assistant-mail", "incoming-file", "pairing-qr"];
+const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "round4-boundaries", "round5-ux", "desktop-diagnostics", "desktop-quota", "desktop-conversation", "mobile-safe-area", "assistant-mail", "incoming-file", "paired-host-status", "pairing-qr"];
 const scenarios = process.env.BRIDGE_E2E_SCENARIOS ? process.env.BRIDGE_E2E_SCENARIOS.split(",") : allScenarios;
 assert.ok(scenarios.every(scenario => allScenarios.includes(scenario)), "BRIDGE_E2E_SCENARIOS must name existing scenarios");
 const themes = process.env.BRIDGE_QA_THEME ? [process.env.BRIDGE_QA_THEME] : ["light", "dark"];
@@ -64,7 +64,7 @@ async function runScenario(theme, scenario, mockHostRuntime) {
   let context;
   let page;
   let host;
-  let uploadHost;
+  let firstHost;
   let failure;
   try {
     host = await createMockHost(mockHostRuntime, !["delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "round4-boundaries", "round5-ux", "desktop-conversation", "assistant-mail", "incoming-file"].includes(scenario), scenario !== "delivery-approval-reconnect", errors, ["native-approvals", "native-prompts-pr", "native-messages", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "round4-boundaries", "round5-ux", "desktop-conversation", "assistant-mail", "incoming-file"].includes(scenario), ["native-queue-actions", "desktop-conversation"].includes(scenario), ["section-manage", "round4-boundaries", "round5-ux"].includes(scenario), ["assistant-mail", "round5-ux"].includes(scenario), scenario === "round5-ux" ? { desktopName: "LycidasdeMac-mini", initialMailCount: 0 } : {});
@@ -120,17 +120,30 @@ async function runScenario(theme, scenario, mockHostRuntime) {
       errors.push(`browser runtime: ${error.stack}`);
     });
     if (enableTrace) await context.tracing.start({ screenshots: true, snapshots: true, sources: true });
-    uploadHost = scenario === "incoming-file"
-      ? await createMockHost(mockHostRuntime, false, false, errors, true, false, false, false, { desktopName: "文件接收电脑" })
-      : undefined;
-    if (uploadHost) {
-      await page.goto(buildPairingUrl(baseUrl, uploadHost.pairing), { waitUntil: "domcontentloaded" });
-      await page.getByRole("button", { name: /当前电脑：文件接收电脑/ }).click();
+    if (scenario === "incoming-file") {
+      firstHost = await createMockHost(mockHostRuntime, false, false, errors, true, false, false, false, { desktopName: "文件接收电脑" });
+    } else if (scenario === "paired-host-status") {
+      firstHost = await createMockHost(mockHostRuntime, false, false, errors);
+      Object.assign(firstHost.session, { title: "旧配对缓存会话", turnState: "running", ownership: "DESKTOP_NATIVE_RUNNING" });
+      firstHost.snapshot.runtime.activeTurns = 1;
+      firstHost.snapshot.host.lastSeenAt -= 2 * 60 * 60 * 1000;
+    }
+    if (firstHost) {
+      await page.goto(buildPairingUrl(baseUrl, firstHost.pairing), { waitUntil: "domcontentloaded" });
+      const firstSwitcher = page.getByRole("button", { name: `当前电脑：${firstHost.pairing.desktopName}，切换电脑` });
+      if (scenario === "paired-host-status") await page.getByText("旧配对缓存会话", { exact: true }).waitFor();
+      await firstSwitcher.click();
       await page.getByRole("button", { name: "扫码添加新电脑" }).click();
       await page.getByRole("textbox", { name: "配对链接" }).fill(buildPairingUrl(baseUrl, host.pairing));
       await page.getByRole("button", { name: "连接电脑", exact: true }).click();
-      await page.getByRole("button", { name: /当前电脑：Browser E2E 隔离电脑/ }).waitFor();
-      await page.goto(`${baseUrl}/?file-import`, { waitUntil: "domcontentloaded" });
+      if (scenario === "incoming-file") {
+        await page.getByRole("button", { name: /当前电脑：Browser E2E 隔离电脑/ }).waitFor();
+        await page.goto(`${baseUrl}/?file-import`, { waitUntil: "domcontentloaded" });
+      } else {
+        await page.getByText(host.session.title, { exact: true }).waitFor();
+        firstHost.socket.close();
+        await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
+      }
     } else if (scenario === "pairing-qr") await scanDesktopPairingQr(context, page, host, steps, baseUrl);
     else await page.goto(buildPairingUrl(baseUrl, host.pairing), { waitUntil: "domcontentloaded" });
     await page.locator(".mobile-home-catalog").waitFor();
@@ -143,8 +156,31 @@ async function runScenario(theme, scenario, mockHostRuntime) {
     assert.equal(await page.evaluate(() => innerWidth), 375);
     steps.push("real App pairing and encrypted snapshot synchronize the session list at 375x812");
     if (scenario === "assistant-mail") await verifyAssistantMail(page, host, steps, directory, viewports, baseUrl);
-    else if (uploadHost) await verifyIncomingFile(page, host, uploadHost, steps, directory);
-    else if (scenario === "mobile-safe-area") await verifyMobileSafeArea(page, steps, directory, viewports);
+    else if (scenario === "incoming-file") await verifyIncomingFile(page, host, firstHost, steps, directory);
+    else if (scenario === "paired-host-status") {
+      await page.getByRole("button", { name: /当前电脑：Browser E2E 隔离电脑/ }).filter({ has: page.locator(".is-online") }).click();
+      const switcher = page.getByRole("region", { name: "快捷切换电脑" });
+      const current = switcher.locator('.drawer-host-option[aria-current="true"]');
+      const other = switcher.locator('.drawer-host-option:not([aria-current])');
+      assert.deepEqual(await switcher.locator(".drawer-host-option-name").allTextContents(), [host.pairing.desktopName, host.pairing.desktopName]);
+      assert.equal(await other.locator(".drawer-host-option-meta").innerText(), "未连接", "A cached running task must not appear live in the quick switcher after reload");
+      assert.equal(await other.locator(".is-online").count(), 0);
+      assert.equal(await current.locator(".is-online").count(), 1);
+      await switcher.screenshot({ path: resolve(directory, "same-name-quick-switch.png") });
+
+      await page.getByRole("button", { name: "电脑", exact: true }).click();
+      const paired = page.getByRole("region", { name: "已配对的电脑" });
+      const previous = paired.locator(".host-row-shell:not(.is-current)");
+      assert.match(await previous.innerText(), /未连接 · 2 小时前/u);
+      assert.equal(await previous.locator(".is-online").count(), 0);
+      assert.match(await paired.locator(".host-row[aria-current=true]").innerText(), /当前电脑 · 在线/u);
+      await paired.screenshot({ path: resolve(directory, "same-name-paired-computers.png") });
+
+      await previous.locator(".host-row").click();
+      await page.getByText("旧配对缓存会话", { exact: true }).waitFor();
+      assert.equal(await page.getByText(host.session.title, { exact: true }).count(), 0, "Switching hosts must not mix catalogs");
+      steps.push("same-name pairings stay separate after reload; only the connected host is online and the previous catalog remains accessible offline");
+    } else if (scenario === "mobile-safe-area") await verifyMobileSafeArea(page, steps, directory, viewports);
     else if (scenario === "session-catalog") await verifySessionCatalog(page, host, steps, directory, viewports, baseUrl);
     else if (scenario === "desktop-diagnostics") await verifyDesktopDiagnostics(page, host, steps, baseUrl);
     else if (scenario === "desktop-quota") await verifyDesktopQuota(page, host, steps, directory, viewports, baseUrl);
@@ -186,7 +222,7 @@ async function runScenario(theme, scenario, mockHostRuntime) {
       try { await context.close(); } catch (error) { errors.push(`context cleanup: ${error.stack}`); }
     }
     host?.close();
-    uploadHost?.close();
+    firstHost?.close();
     await writeFile(resolve(directory, "browser-errors.json"), JSON.stringify({ errors, console: browserLog }, null, 2));
     // No pairing secrets, tokens, or encrypted envelopes are written to reports.
     await writeFile(resolve(directory, "host-rpc.json"), JSON.stringify({
@@ -198,7 +234,7 @@ async function runScenario(theme, scenario, mockHostRuntime) {
       nativeTrace: host?.nativeTrace,
       ...(host?.nativeQueue ? { nativeCalls: host.nativeApproval.calls, receipts: host.nativeApproval.receipts(), queueEvents: host.events } : {}),
     }, null, 2));
-    for (const fixture of [host?.nativeApproval, uploadHost?.nativeApproval]) {
+    for (const fixture of [host?.nativeApproval, firstHost?.nativeApproval]) {
       if (!fixture) continue;
       const idx = nativeHosts.indexOf(fixture);
       if (idx !== -1) nativeHosts.splice(idx, 1);

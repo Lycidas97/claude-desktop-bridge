@@ -8,11 +8,12 @@ import { IconButton } from "../common/IconButton.js";
 import { Sheet, SheetAction } from "../common/Sheet.js";
 import { MobilePageHeader } from "../mobile/MobilePageHeader.js";
 
-function statusLabel(host: PairedHost): string {
+function statusLabel(host: PairedHost, isCurrent: boolean, isOnline: boolean): string {
   if (host.needsRepair) return "需重新扫码配对";
+  if (!isCurrent) return "未连接";
+  if (!isOnline) return "离线";
   if (host.status === "running") return `${host.activeTurns} 个任务运行中`;
   if (host.status === "attention") return "有待处理消息";
-  if (host.status === "offline") return "离线";
   return "在线";
 }
 
@@ -26,16 +27,17 @@ function lastSeenLabel(host: PairedHost): string {
   return new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(host.lastSeenAt);
 }
 
-function statusDotClass(host: PairedHost): string {
-  if (host.needsRepair || host.status === "attention") return "m-status-dot waiting";
-  if (host.status === "offline") return "m-status-dot is-offline";
-  return "m-status-dot is-online";
+function statusDotClass(host: PairedHost, isOnline: boolean): string {
+  if (host.needsRepair) return "m-status-dot waiting";
+  if (!isOnline) return "m-status-dot is-offline";
+  return host.status === "attention" ? "m-status-dot waiting" : "m-status-dot is-online";
 }
 
 export function HostBrowser({
   hosts,
   error,
   activeHostId,
+  desktopOnline,
   onDetails,
   onSelect,
   onRemove,
@@ -46,6 +48,7 @@ export function HostBrowser({
   error?: string | undefined;
   themeControl?: ThemeControl;
   activeHostId?: string | undefined;
+  desktopOnline: boolean;
   onDetails?(hostId: string): void;
   onSelect(roomId: string, focusSessionId?: string): Promise<void>;
   onRemove(roomId: string): Promise<void>;
@@ -119,21 +122,23 @@ export function HostBrowser({
         <div className="host-rows">
           {hosts.map((host) => {
             const isCurrent = host.roomId === activeHostId;
+            const isOnline = isCurrent && desktopOnline && !host.needsRepair;
             return (
               <div className={`host-row-shell${isCurrent ? " is-current" : ""}`} key={host.roomId}>
                 <button
                   type="button"
                   className="host-row"
+                  aria-current={isCurrent ? "true" : undefined}
                   onClick={() => void openHost(host)}
                   disabled={Boolean(openingHostId) || removing}
                 >
-                  <i className={statusDotClass(host)} aria-hidden="true" />
+                  <i className={statusDotClass(host, isOnline)} aria-hidden="true" />
                   <span className="host-row-copy">
                     <strong>{host.desktopName}</strong>
                     <small>
                       {openingHostId === host.roomId
                         ? "正在连接…"
-                        : `${isCurrent ? "当前连接 · " : ""}${statusLabel(host)} · ${lastSeenLabel(host)}`}
+                        : `${isCurrent ? "当前电脑 · " : ""}${statusLabel(host, isCurrent, isOnline)} · ${lastSeenLabel(host)}`}
                     </small>
                   </span>
                 </button>
@@ -145,7 +150,7 @@ export function HostBrowser({
                 >
                   <MoreHorizontal size={18} />
                 </IconButton>
-                {host.attentionSessionId && !host.needsRepair && (
+                {isOnline && host.attentionSessionId && (
                   <button
                     type="button"
                     className="host-attention-button"

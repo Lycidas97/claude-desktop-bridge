@@ -386,13 +386,14 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await host.send({ kind: "snapshot", snapshot: { ...host.snapshot, assistantMail: {
     ...managedMail, workspace: { ...managedMail.workspace, toolIsolation: "warning", unexpectedTools },
   } } });
-  const catalogWarning = page.locator(".assistant-page").getByRole("alert");
-  await catalogWarning.waitFor();
-  const warningHeight = (await catalogWarning.boundingBox()).height;
+  const catalogDetails = page.locator(".assistant-tool-warning");
+  const catalogSummary = catalogDetails.locator("summary");
+  await catalogSummary.waitFor();
+  const warningHeight = (await catalogSummary.boundingBox()).height;
   await capture("mobile-managed-tool-catalog");
   assert.ok(warningHeight < 64, `The collapsed catalog notice should fit above the conversation, got ${warningHeight}px`);
   const catalogLabel = `工具目录超出托管白名单（${unexpectedTools.length} 项）`;
-  assert.equal(await catalogWarning.innerText(), catalogLabel);
+  assert.equal(await catalogSummary.getByRole("alert").innerText(), catalogLabel);
   const accessibility = await page.context().newCDPSession(page);
   const { root } = await accessibility.send("DOM.getDocument");
   const { nodeId } = await accessibility.send("DOM.querySelector", { nodeId: root.nodeId, selector: ".assistant-tool-warning summary" });
@@ -400,18 +401,30 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await accessibility.detach();
   assert.equal(nodes.find(node => node.role?.value === "DisclosureTriangle")?.name?.value, catalogLabel,
     "Chromium announces the disclosure with the catalog warning text");
-  const catalogDetails = page.locator(".assistant-tool-warning");
-  const terminalTool = catalogDetails.getByText(unexpectedTools[0], { exact: true });
-  assert.equal(await terminalTool.isVisible(), false);
-  await catalogDetails.locator("summary").press("Enter");
-  await terminalTool.waitFor();
-  assert.deepEqual(await catalogDetails.locator("li").allTextContents(), unexpectedTools);
-  const managedComposer = page.locator(".assistant-conversation textarea");
-  await managedComposer.waitFor();
-  assert.ok(await managedComposer.evaluate(element => element.getBoundingClientRect().bottom <= innerHeight), "The expanded catalog leaves the composer within the viewport");
+  const toolList = catalogDetails.getByRole("list", { name: "白名单外工具", exact: true });
+  assert.equal(await toolList.isVisible(), false);
+  await catalogSummary.press("Enter");
+  await toolList.waitFor();
+  assert.deepEqual(await toolList.locator("li").allTextContents(), unexpectedTools);
+  const lastToolInView = () => toolList.locator("li").last().evaluate(element => {
+    const item = element.getBoundingClientRect();
+    const list = element.parentElement.getBoundingClientRect();
+    return item.top >= list.top && item.bottom <= list.bottom;
+  });
+  assert.equal(await lastToolInView(), false);
+  await toolList.press("End");
+  await eventually(lastToolInView, true, "Scrolling the catalog brings its last tool into view");
+  const managedConversation = page.locator(".assistant-conversation");
+  for (const control of [managedConversation.locator("textarea"), managedConversation.getByRole("button", { name: "发送", exact: true })]) {
+    await control.waitFor();
+    assert.ok(await control.evaluate(element => {
+      const { top, bottom } = element.getBoundingClientRect();
+      return top >= 0 && bottom <= innerHeight;
+    }), "The expanded catalog leaves the composer and send button within the viewport");
+  }
   await capture("mobile-managed-tool-catalog-expanded");
-  await catalogWarning.click();
-  assert.equal(await terminalTool.isVisible(), false);
+  await catalogSummary.click();
+  assert.equal(await toolList.isVisible(), false);
   steps.push("a long managed tool catalog warns without covering the conversation; the complete catalog is available on demand");
   await host.send({ kind: "snapshot", snapshot: { ...host.snapshot, assistantMail: {
     ...managedMail, bindingState: "unavailable", workspace: { ...managedMail.workspace, repairFailed: true },

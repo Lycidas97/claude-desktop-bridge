@@ -1,5 +1,5 @@
-import type { ImapFlow, ImapFlowOptions } from "imapflow";
-import { hasCapability } from "imapflow/lib/tools.js";
+import type { ImapFlow, ImapFlowError, ImapFlowOptions } from "imapflow";
+import { hasCapability, isServerRefusal } from "imapflow/lib/tools.js";
 import type { MailCredentials } from "./credentials.js";
 import type { AssistantMailStore, MailEvent } from "./store.js";
 import type { MailPollInterval } from "../../packages/protocol/src/assistant-mail.js";
@@ -180,8 +180,14 @@ export class MailReceiver {
                 if (older) {
                   older.sort((left, right) => right - left);
                   let index = 0;
+                  let refused = false;
                   for (; index < older.length && imported < limit; index++) {
-                    const result = await record(uidValidity, older[index]!, true);
+                    const result = await record(uidValidity, older[index]!, true).catch((error: unknown) => {
+                      if (storageFailure || ended || !client.usable || !isServerRefusal(error as ImapFlowError)) throw error;
+                      // Advance past the refused message without counting it as imported.
+                      refused = true;
+                      return undefined;
+                    });
                     if (result?.event) imported++;
                     if (this.stopped || ended) break;
                   }
@@ -190,12 +196,9 @@ export class MailReceiver {
                   storageFailure = true;
                   this.store.finishHistory(accountKey, uidValidity, nextBefore);
                   storageFailure = false;
-                  failed = false;
+                  failed = refused;
                 }
               }
-            } catch (error) {
-              // A tagged NO on an open connection rejects this history batch, not live receipt.
-              if (storageFailure || ended || !client.usable || (error as { responseStatus?: string } | null)?.responseStatus !== "NO") throw error;
             } finally {
               this.historyBefore = nextBefore;
               this.historyLoading = false;

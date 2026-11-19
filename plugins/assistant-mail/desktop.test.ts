@@ -445,7 +445,7 @@ it.each(["NO", "BYE"])("receives new mail after an IMAP server advertising IDLE 
   }
 });
 
-it("keeps IDLE and receives new mail when IMAP rejects a historical body FETCH", async () => {
+it.each(["NO", "BAD"])("skips a historical FETCH %s and still receives older and live mail", async refusal => {
   const commands: string[] = [];
   let sendNewMail: (() => void) | undefined;
   let delivered = false;
@@ -465,18 +465,19 @@ it("keeps IDLE and receives new mail when IMAP rejects a historical body FETCH",
       switch (command) {
         case "CAPABILITY": socket.write(`* CAPABILITY IMAP4rev1 IDLE\r\n${ok}`); break;
         case "LIST": socket.write(`* LIST () "/" INBOX\r\n${ok}`); break;
-        case "EXAMINE": socket.write(`* 1 EXISTS\r\n* OK [UIDVALIDITY 1] valid\r\n* OK [UIDNEXT 41] next\r\n${tag} OK [READ-ONLY] examined\r\n`); break;
+        case "EXAMINE": socket.write(`* 40 EXISTS\r\n* OK [UIDVALIDITY 1] valid\r\n* OK [UIDNEXT 41] next\r\n${tag} OK [READ-ONLY] examined\r\n`); break;
         case "UID":
-          if (action === "SEARCH") socket.write(`* SEARCH 40\r\n${ok}`);
-          else if (range === "40") socket.write(`${tag} NO historical body unavailable\r\n`);
-          else socket.write((!delivered ? "" : line.includes("BODY.PEEK[]")
-            ? `* 2 FETCH (UID 41 BODY[] {${Buffer.byteLength(source)}}\r\n${source})\r\n`
-            : "* 2 FETCH (UID 41)\r\n") + ok);
+          if (action === "SEARCH") {
+            const uids = Array.from({ length: Number(line.split(":").at(-1)) }, (_, index) => index + 1);
+            socket.write(`* SEARCH ${uids.join(" ")}\r\n${ok}`);
+          } else if (range === "40") socket.write(`${tag} ${refusal} historical body unavailable\r\n`);
+          else if (range === "41:*") socket.write((delivered ? "* 41 FETCH (UID 41)\r\n" : "") + ok);
+          else socket.write(`* ${range} FETCH (UID ${range} BODY[] {${Buffer.byteLength(source)}}\r\n${source})\r\n${ok}`);
           break;
         case "IDLE":
           idleTag = tag;
           socket.write("+ idling\r\n");
-          sendNewMail = () => { delivered = true; socket.write("* 2 EXISTS\r\n"); };
+          sendNewMail = () => { delivered = true; socket.write("* 41 EXISTS\r\n"); };
           break;
         case "NOOP": socket.write(ok); break;
         default: socket.write(`${tag} BAD unexpected command\r\n`);
@@ -494,10 +495,15 @@ it("keeps IDLE and receives new mail when IMAP rejects a historical body FETCH",
     await service.enable({ ...account, host: "127.0.0.1", port });
     await vi.waitFor(() => expect(sendNewMail).toBeDefined());
     expect(service.status()).toMatchObject({ state: "connected", history: { available: true, failed: true } });
+    const older = Array.from({ length: 39 }, (_, index) => 39 - index);
+    expect(service.page().events.map(event => event.uid)).toEqual(older.slice(0, 20));
     sendNewMail!();
-    await vi.waitFor(() => expect(service.page().events.map(event => event.uid)).toEqual([41]));
+    await vi.waitFor(() => expect(service.page().events.map(event => event.uid)).toEqual([41, ...older.slice(0, 20)]));
+    service.requestOlder();
+    await vi.waitFor(() => expect(service.status().history).toEqual({ available: false, loading: false, failed: false }));
+    expect(service.page().events.map(event => event.uid)).toEqual([41, ...older]);
     expect(commands.filter(command => command === "EXAMINE INBOX")).toHaveLength(1);
-    expect(commands.some(command => command.startsWith("UID FETCH 40 ") && command.includes("BODY.PEEK[]"))).toBe(true);
+    expect(commands.filter(command => command.startsWith("UID FETCH 40 ") && command.includes("BODY.PEEK[]"))).toHaveLength(1);
   } finally {
     closing = true;
     await service.close();

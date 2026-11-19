@@ -174,6 +174,7 @@ export class RelayTransport implements BridgeTransport {
     this.stopHeartbeat();
     this.socket.ping();
     this.heartbeat = setInterval(() => {
+      if (this.connectProbe !== undefined) return; // Let the fresh probe finish before judging stale activity.
       if (Date.now() - (this.lastPongAt ?? 0) > this.heartbeatTimeoutMs) {
         this.closeUnresponsiveSocket();
         return;

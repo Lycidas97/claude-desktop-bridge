@@ -216,6 +216,28 @@ describe("startup and network recovery", () => {
     if (blackhole) await vi.waitFor(() => expect(bridgeVault.saveMessage).toHaveBeenCalledTimes(2));
   });
 
+  it("keeps a responsive relay when a suspended heartbeat runs before the foreground probe reply", async () => {
+    const send = vi.spyOn(LocalWebSocket.prototype, "send");
+    mount();
+    await vi.waitFor(() => expect(bridgeVault.saveMessage).toHaveBeenCalled());
+    const old = LocalWebSocket.instances[0]!;
+    const firstPing = send.mock.calls.map(([raw]) => JSON.parse(raw) as ClientFrame).find(frame => frame.type === "ping")!;
+    page.visibilityState = "hidden";
+    page.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(firstPing.at + 9_990 - Date.now());
+    vi.setSystemTime(Date.now() + 30_000); // Advance the wall clock without running the pending heartbeat.
+    send.mockImplementation(function (this: LocalWebSocket, raw) {
+      const frame = JSON.parse(raw) as ClientFrame;
+      if (frame.type === "ping") setTimeout(() => this.receive({ type: "pong", at: frame.at }), 20);
+    });
+    page.visibilityState = "visible";
+    page.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(20); // The delayed heartbeat runs 10 ms before the pong.
+    expect(old.readyState).toBe(LocalWebSocket.OPEN);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(LocalWebSocket.instances).toHaveLength(1);
+  });
+
   it("replaces a silent OPEN relay within 30 seconds without a wake event or queued input", async () => {
     mount();
     await vi.waitFor(() => expect(bridgeVault.saveMessage).toHaveBeenCalled());

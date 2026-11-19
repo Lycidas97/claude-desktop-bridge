@@ -41,7 +41,7 @@ Keep each entry to the rule, one line of what broke, and the commits. No CI run 
 - Seen 1× (2026-11-13)
 
 **[Recipe] Verify a managed Desktop `agent` change by cold-starting the same bound session and comparing `system/init.tools`.**
-- Why: On Desktop 5.11492.5 / Claude Code 2.1.325, the baseline with `permissions.allow` advertised 35 extra tools. Selecting an empty-body project agent via `.claude/settings.json` reduced that to 0, with all 8 mail/agenda tools present and the same Desktop and CLI session IDs. Keep `PreToolUse` for call enforcement (#418).
+- Why: On Desktop 5.11492.5 / Claude Code 2.1.325, selecting an empty-body project agent via `.claude/settings.json` cut extra tools from 35 (the `permissions.allow` baseline) to 0, counting Native `Task` as `Agent`. All 8 mail/agenda tools were present after restart and both session IDs stayed the same. Keep `PreToolUse` for call enforcement (#418).
 - Fixed/verified in: `f9fff4a` (`apps/desktop/src/controller/assistant-workspace.ts`)
 - Seen 1× (2026-11-19)
 

@@ -31,7 +31,7 @@ export function getActiveArtifactDownloadGauges(): { activeCount: number; cached
 }
 
 function unwrap<T>(response: BridgeResponse | undefined): T {
-  if (!response?.ok) throw new Error(response?.error?.message ?? "成果传输失败");
+  if (!response?.ok) throw new Error(response?.error?.message ?? "文件传输失败");
   return response.result as T;
 }
 
@@ -84,7 +84,7 @@ async function readChunkWithResume(
       waitMs = Math.min(5_000, waitMs * 2);
     }
   }
-  throw new Error("成果传输租约已过期");
+  throw new Error("文件传输租约已过期");
 }
 
 async function sha256Hex(chunks: Uint8Array[]): Promise<string> {
@@ -124,7 +124,7 @@ async function runArtifactTransfer(
     for (let index = 0; index < transfer.totalChunks; index += 1) {
       const chunk = await readChunkWithResume(request, transfer, index);
       if (chunk.transferId !== transfer.transferId || chunk.index !== index) {
-        throw new Error("成果分块顺序校验失败");
+        throw new Error("文件分块顺序校验失败");
       }
       const bytes = base64Bytes(chunk.data);
       chunks.push(bytes);
@@ -150,7 +150,7 @@ async function runArtifactTransfer(
       }
       onProgress((index + 1) / transfer.totalChunks);
     }
-    if (await sha256Hex(chunks) !== transfer.sha256) throw new Error("成果完整性校验失败");
+    if (await sha256Hex(chunks) !== transfer.sha256) throw new Error("文件完整性校验失败");
     transferCompleted = true;
     if (native) {
       if (saveChunks) await BridgeFiles.saveFile({ name: filename, chunks: saveChunks });

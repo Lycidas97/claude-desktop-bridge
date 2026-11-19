@@ -184,7 +184,7 @@ export default function MediaViewer({ target, request, onClose }: { target: Medi
           </div>}
           {error && <div className="media-viewer-status" role="alert"><AlertTriangle size={22} /><span>{error}</span><button className="secondary-button" onClick={() => { setPdf(undefined); setAttempt((value) => value + 1); }}>重新加载</button></div>}
           {target.kind === "text" ? (!busy && !error && text !== undefined && <div id="text-preview-content" role={markdown ? "tabpanel" : undefined} aria-labelledby={markdown ? (showSource ? "text-preview-source-tab" : "text-preview-rendered-tab") : undefined} tabIndex={0}>
-            {target.mailAttachment ? <pre className="text-preview-source" aria-label={`${target.name} 全文`}><code>{text}</code></pre> : <TextPreview text={text} name={target.name} source={showSource} />}
+            {target.mailAttachment ? <pre className="text-preview-source text-preview-mail" aria-label={`${target.name} 全文`}><code>{text}</code></pre> : <TextPreview text={text} name={target.name} source={showSource} />}
           </div>) : target.kind === "pdf" ? <canvas ref={canvasRef} aria-label={`${target.name} 第 ${pageNumber} 页`} style={{ visibility: busy || error ? "hidden" : "visible" }} /> : imageUrl && <img src={imageUrl} alt={target.name} style={{ width: zoom === 1 ? "auto" : `${zoom * 100}%`, maxWidth: zoom === 1 ? "100%" : "none", maxHeight: zoom === 1 ? "100%" : "none" }} onError={() => { setError("图片无法显示，请重新加载"); setBusy(false); }} />}
         </div>
         <footer>{target.kind === "text" ? (text === "" && !busy && !error ? "空文件 · UTF-8" : "全文预览 · UTF-8") : target.kind === "pdf" ? "按需读取页面内容" : "滚动查看图片 · 使用上方按钮缩放"}</footer>

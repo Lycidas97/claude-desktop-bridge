@@ -20,6 +20,10 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   async function verifyAttachments(card, captureName) {
     const attachmentCard = card.getByRole("region", { name: "邮件附件" });
     await attachmentCard.getByText("5 个附件", { exact: true }).waitFor();
+    await card.getByText("原文", { exact: true }).click();
+    await card.getByText("Fixture mail with attachments.", { exact: true }).last().waitFor();
+    assert.equal(await card.locator("details[open] .assistant-attachments").count(), 0);
+    await card.getByText("原文", { exact: true }).click();
     await attachmentCard.getByRole("button", { name: "预览 notes.txt", exact: true }).click();
     await page.getByRole("heading", { name: "下载大文件预览？", exact: true }).waitFor();
     await page.getByRole("button", { name: "取消", exact: true }).click();
@@ -29,6 +33,7 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
     await viewer.getByLabel("schedule.html 全文").waitFor();
     assert.equal(await viewer.getByLabel("schedule.html 全文").textContent(), attachmentHtml);
     assert.equal(await viewer.locator("img, iframe, script, a").count(), 0);
+    assert.equal(await viewer.getByLabel("schedule.html 全文").evaluate(el => el.scrollWidth <= el.clientWidth + 1), true);
     await capture(captureName);
     await viewer.getByRole("button", { name: "关闭查看器", exact: true }).click();
     await attachmentCard.getByRole("button", { name: "预览 chart.png", exact: true }).click();

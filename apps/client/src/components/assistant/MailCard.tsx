@@ -49,7 +49,6 @@ export function MailCard({ card, nativeMessage, onDiscuss }: { card: BridgeMailC
   const [detail, setDetail] = useState<BridgeMailDetail>();
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [originalOpen, setOriginalOpen] = useState(false);
   const attachments = detail?.attachments ?? card.attachments;
   const attachmentCount = detail?.attachmentCount ?? card.attachmentCount ?? attachments?.length;
   const attachmentList = attachments?.length ? <section className="assistant-attachments" aria-label="邮件附件">
@@ -75,9 +74,8 @@ export function MailCard({ card, nativeMessage, onDiscuss }: { card: BridgeMailC
       {card.analysis.suggestions?.length ? <><h4>建议</h4><ul>{card.analysis.suggestions.map((suggestion, index) => <li key={index}>{suggestion}</li>)}</ul></> : null}
       {card.analysis.questions?.length ? <><h4>问题</h4><ul>{card.analysis.questions.map((question, index) => <li key={index}>{question}</li>)}</ul></> : null}
     </details>}
-    {!originalOpen && attachmentList}
+    {attachmentList}
     <details onToggle={event => {
-      setOriginalOpen(event.currentTarget.open);
       if (!event.currentTarget.open || detail || loading || !mail?.online) return;
       setLoading(true); setError("");
       void mail.read(card.mailRefId).then(setDetail)
@@ -87,7 +85,6 @@ export function MailCard({ card, nativeMessage, onDiscuss }: { card: BridgeMailC
       {detail ? <><pre>{detail.bodyText}</pre>{detail.truncated && <p>原文过长，已截取前 256,000 个字符。</p>}
         {links.length > 0 && <ul className="assistant-mail-links" aria-label="邮件中的外部链接">{links.map((url, index) => <li key={index}><a href={url.href} target="_blank" rel="noopener noreferrer"><span>{url.host}</span><span className="assistant-mail-link-path">{url.pathname}{url.search}{url.hash}</span></a></li>)}</ul>}
       </> : <p role={error ? "alert" : "status"}>{error || (loading ? "正在读取原文…" : mail?.online ? "展开以读取原文" : "连接电脑后可查看原文")}</p>}
-      {originalOpen && attachmentList}
     </details>
     {nativeMessage && <details className="assistant-mail-native"><summary>关联原生消息</summary><code>{nativeMessage.id}</code><pre>{nativeMessage.text}</pre></details>}
     {mail && <button type="button" className="assistant-session-link" disabled={!mail.canReference} onClick={() => { mail.selectMail(card); onDiscuss?.(); }}>讨论此邮件</button>}

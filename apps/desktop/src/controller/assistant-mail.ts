@@ -23,7 +23,7 @@ export const ASSISTANT_MAIL_CAPABILITIES = [
 const managedHistoryMethods = new Set([
   "session.open", "session.history", "session.tool.detail", "session.configuration", "session.permissions",
   "session.archive", "session.delete", "turn.interrupt", "turn.queue.cancel", "prompt.list",
-  "artifact.preview", "artifact.transfer.open", "artifact.transfer.read", "artifact.transfer.close",
+  "evidence.list", "artifact.preview", "artifact.transfer.open", "artifact.transfer.read", "artifact.transfer.close",
   "file.stat", "file.transfer.open", "file.transfer.read", "file.transfer.close",
 ]);
 
@@ -279,7 +279,12 @@ export class AssistantMailCoordinator {
       if (!session || session.archivedAt || session.transport !== "claude-desktop-native") {
         throw new BridgeRequestError("INVALID_SESSION", "请选择未归档的 Claude Desktop 原生会话。");
       }
-      if (this.mail.binding()?.nativeSessionId !== sessionId) this.bindSession(session);
+      if (this.mail.binding()?.nativeSessionId !== sessionId) {
+        if (this.sessionAccess(session)) {
+          throw new BridgeRequestError("INVALID_TARGET", "只读的旧托管会话不能重新绑定。请选择其他会话或初始化托管助理。");
+        }
+        this.bindSession(session);
+      }
     } else if (method === "plugin.assistant-mail.workspace.initialize") {
       await this.initializeWorkspace(stringParam(params, "workspacePath")!);
     } else if (method.startsWith("plugin.assistant-mail.account.")) {

@@ -44,6 +44,9 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
   const capabilities = snapshot?.host.capabilities ?? mail.cache.workspace?.capabilities ?? [];
   const supportsWorkspace = capabilities.includes("plugin.assistant-mail.workspace.v1") && Boolean(workspace);
   const session = snapshot?.sessions.find(candidate => candidate.sessionId === binding?.nativeSessionId && !candidate.archivedAt);
+  const managedProjectId = snapshot?.projects.find(project => project.managedAssistant)?.projectId;
+  const bindableSessions = snapshot?.sessions.filter(candidate => candidate.transport === "claude-desktop-native" && !candidate.archivedAt
+    && (candidate.sessionId === binding?.nativeSessionId || candidate.projectId !== managedProjectId)) ?? [];
   const state = mail.assistant?.bindingState;
   const displayedView = view === "conversation" && !session ? "mail" : view;
 
@@ -91,15 +94,13 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
             disabled={!mail.online || bindingBusy}
             options={[
               { value: "", label: "选择现有会话" },
-              ...(snapshot?.sessions
-                .filter(candidate => candidate.transport === "claude-desktop-native" && !candidate.archivedAt)
-                .map(candidate => ({ value: candidate.sessionId, label: candidate.title || candidate.sessionId })) ?? []),
+              ...bindableSessions.map(candidate => ({ value: candidate.sessionId, label: candidate.title || candidate.sessionId })),
             ]}
             onChange={setSelectedId}
           />
         </div>
         <div className="assistant-actions">
-          <button type="button" className="primary-button" disabled={!mail.online || bindingBusy || !selectedId} onClick={() => { void configureBinding("plugin.assistant-mail.bind", { sessionId: selectedId }); }}>绑定会话</button>
+          <button type="button" className="primary-button" disabled={!mail.online || bindingBusy || !bindableSessions.some(candidate => candidate.sessionId === selectedId)} onClick={() => { void configureBinding("plugin.assistant-mail.bind", { sessionId: selectedId }); }}>绑定会话</button>
           {!supportsWorkspace && <button type="button" className="secondary-button" disabled={!mail.online || bindingBusy} onClick={() => setCreating(true)}>新建会话</button>}
         </div>
       </div>}

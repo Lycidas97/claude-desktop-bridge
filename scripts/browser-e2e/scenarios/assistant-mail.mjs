@@ -343,7 +343,14 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await selectCustomOption(page, page.getByLabel("助理会话", { exact: true }), sessionId);
   await page.getByRole("button", { name: "绑定会话", exact: true }).click();
   await eventually(() => host.snapshot.assistantMail.binding.nativeSessionId, sessionId, "Restore the manual binding for desktop reference checks");
-  steps.push("managed workspace confirms its private path, agrees with Native session and permission readback, and pins the assistant project without starting a turn");
+  await page.getByRole("button", { name: "助理设置", exact: true }).click();
+  await page.getByRole("button", { name: "更换会话", exact: true }).click();
+  await page.getByLabel("助理会话", { exact: true }).click();
+  const bindingChoices = page.getByRole("listbox");
+  await bindingChoices.waitFor();
+  assert.equal(await bindingChoices.locator(`[data-option-value="${managedSessionId}"]`).count(), 0, "Read-only former managed sessions cannot be selected for manual binding");
+  await page.keyboard.press("Escape");
+  steps.push("managed setup confirms the path and Native permissions, pins the project, and keeps previous managed sessions out of the manual binding picker");
 
   const desktopRequests = [];
   await page.exposeFunction("assistantDesktopRequest", async input => {

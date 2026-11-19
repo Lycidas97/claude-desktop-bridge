@@ -58,8 +58,13 @@ async function fixture() {
       return created;
     }),
     configureSession: vi.fn(async () => ({ nativePermissionMode: "dontAsk" })),
+    refreshDesktopSession: vi.fn(async () => undefined),
+    history: vi.fn(async (sessionId: string) => ({ sessionId, items: [], hasMore: false })),
     forkSession: vi.fn(), startTurn: vi.fn(), steerTurn: vi.fn(),
   });
+  const evidence = { list: vi.fn((sessionId: string, cursor?: string) => ({
+    sessionId, items: [], hasMore: cursor === undefined, ...(cursor === undefined ? { nextCursor: "evidence-next" } : {}),
+  })) };
   const eventLog = Object.assign(new EventEmitter(), { append: vi.fn(async () => undefined), latestSeq: () => 0 });
   const relayUrl = "ws://127.0.0.1:18789/ws";
   const host = await BridgeCrypto.createHost(relayUrl, "Mail fixture");
@@ -78,7 +83,7 @@ async function fixture() {
     { loadOrCreate: async () => config, save: vi.fn(async () => undefined) } as unknown as ControllerArguments[1],
     "http://127.0.0.1:18789", relayUrl,
     broker as unknown as ControllerArguments[4], eventLog as unknown as ControllerArguments[5],
-    {} as ControllerArguments[6], { status: async () => ({ state: "stopped" }) } as unknown as ControllerArguments[7],
+    evidence as unknown as ControllerArguments[6], { status: async () => ({ state: "stopped" }) } as unknown as ControllerArguments[7],
     undefined, undefined, undefined, undefined, undefined, service, workspace,
   );
   // Keep initialization subscriptions and snapshot/RPC/publication logic real; stop at external I/O and scheduling.
@@ -444,6 +449,25 @@ it("binds the provisioned Native conversation only after checking the confirmed 
   expect(store.binding()).toMatchObject({ nativeSessionId: "native-second", previousSessionIds: ["local-managed"] });
   expect(store.binding()).not.toHaveProperty("managed");
   expect((await run.publish()).assistantMail?.workspace).toMatchObject({ toolIsolation: "unobserved" });
+});
+
+it("rejects manual binding to a previous managed session", async () => {
+  await run.request("plugin.assistant-mail.workspace.initialize", { workspacePath: run.workspace.path });
+  await run.request("plugin.assistant-mail.bind", { sessionId: "native-second" });
+  await expect(run.request("plugin.assistant-mail.bind", { sessionId: "local-managed" }))
+    .rejects.toMatchObject({ code: "INVALID_TARGET" });
+  expect(store.binding()).toMatchObject({ nativeSessionId: "native-second", previousSessionIds: ["local-managed"] });
+});
+
+it("serves history and evidence pages for a previous managed session without submitting a turn", async () => {
+  await run.request("plugin.assistant-mail.workspace.initialize", { workspacePath: run.workspace.path });
+  await run.request("plugin.assistant-mail.bind", { sessionId: "native-second" });
+  const sessionId = "local-managed";
+  await expect(run.request("session.open", { sessionId })).resolves.toMatchObject({ session: { sessionId }, history: { sessionId } });
+  await expect(run.request("evidence.list", { sessionId })).resolves.toEqual({ evidence: { sessionId, items: [], hasMore: true, nextCursor: "evidence-next" } });
+  await expect(run.request("evidence.list", { sessionId, cursor: "evidence-next" })).resolves.toEqual({ evidence: { sessionId, items: [], hasMore: false } });
+  await expect(run.request("turn.start", { sessionId, text: "history is read only" })).rejects.toMatchObject({ code: "INVALID_TARGET" });
+  expect(run.broker.startTurn).not.toHaveBeenCalled();
 });
 
 it("preserves the managed binding and observed tools when the same session is selected", async () => {

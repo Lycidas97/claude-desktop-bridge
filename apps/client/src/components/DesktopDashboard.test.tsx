@@ -2435,7 +2435,7 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
       changeToken: "tok-1",
       automaticDelivery: false,
     };
-    let mailCards = [
+    const arrivals = [
       {
         seq: 2,
         mailRefId: "mail-2",
@@ -2463,6 +2463,7 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
         nativeDelivery: { state: "not-submitted" as const },
       },
     ];
+    let mailCards: typeof arrivals = [];
     apiRequest.mockImplementation(async (req: { method: string }) => {
       if (req.method === "plugin.assistant-mail.list") {
         return {
@@ -2496,7 +2497,7 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
     const scheduledTimers = new Set<number>();
     let nextTimerId = 1;
     vi.stubGlobal("window", {
-      localStorage: { getItem: vi.fn().mockReturnValue(null) },
+      localStorage: { getItem: vi.fn().mockReturnValue(null), setItem: vi.fn() },
       setTimeout: vi.fn((fn: () => void) => {
         const id = nextTimerId++;
         scheduledTimers.add(id);
@@ -2532,8 +2533,16 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
     fullDashboard.draw();
     await settle();
     let dashTree = fullDashboard.draw();
+    expect(elements(dashTree).find((element) => element.props.className === "desktop-nav-badge")).toBeUndefined();
 
-    // Both unopened mails count, including the one the assistant already processed.
+    mailCards = arrivals;
+    snapshot = { ...snapshot, assistantMail: { ...snapshot.assistantMail!, changeToken: "tok-2" } };
+    onSnapshotListener?.(snapshot);
+    fullDashboard.draw();
+    await settle();
+    dashTree = fullDashboard.draw();
+
+    // Both unopened arrivals count, including the one the assistant already processed.
     expect(elements(dashTree).some((element) => element.props.className === "desktop-nav-v2")).toBe(false);
     const navBadge = elements(dashTree).find((element) => element.props.className === "desktop-nav-badge")!;
     expect(navBadge.props["aria-hidden"]).toBe("true");
@@ -2543,7 +2552,7 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
     mailCards = mailCards.map((card) => ({ ...card, processingStatus: "processed" as const }));
     snapshot = {
       ...snapshot,
-      assistantMail: { ...snapshot.assistantMail!, changeToken: "tok-2" },
+      assistantMail: { ...snapshot.assistantMail!, changeToken: "tok-3" },
     };
     onSnapshotListener?.(snapshot);
     dashTree = fullDashboard.draw();

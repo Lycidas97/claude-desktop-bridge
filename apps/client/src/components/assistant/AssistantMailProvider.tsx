@@ -17,7 +17,7 @@ interface AssistantMailState {
   selectedMail: BridgeMailCard | undefined;
   canReference: boolean;
   supportsAttachments: boolean;
-  markViewed(mailRefId: string): void;
+  markViewed(card: BridgeMailCard): void;
   selectMail(card: BridgeMailCard): void;
   clearReference(): void;
   referenceFor(sessionId: string): string | undefined;
@@ -52,15 +52,23 @@ export function AssistantMailProvider({ hostId, snapshot, online, request, loadC
   const [refreshKey, setRefreshKey] = useState(0);
   const [selection, setSelection] = useState<{ sessionId: string; mailRefId: string }>();
   const storageKey = hostId ? viewedMailStorageKey(hostId) : undefined;
-  const [viewedMail, setViewedMail] = useState(() => new Set(
-    storageKey && typeof window !== "undefined" ? window.localStorage.getItem(storageKey)?.split("\n") : [],
-  ));
+  const [readState, setReadState] = useState<{ baselineSeq: number; viewed: Set<string> } | undefined>(() => {
+    const saved = storageKey && typeof window !== "undefined" ? window.localStorage.getItem(storageKey) : null;
+    if (!saved) return undefined;
+    const [baselineSeq, ...viewed] = saved.split("\n");
+    return { baselineSeq: Number(baselineSeq), viewed: new Set(viewed) };
+  });
   useEffect(() => {
-    if (storageKey && viewedMail.size) window.localStorage.setItem(storageKey, [...viewedMail].join("\n"));
-  }, [storageKey, viewedMail]);
+    if (storageKey && readState) window.localStorage.setItem(storageKey, [readState.baselineSeq, ...readState.viewed].join("\n"));
+  }, [storageKey, readState]);
 
-  function markViewed(mailRefId: string): void {
-    setViewedMail(current => current.has(mailRefId) ? current : new Set(current).add(mailRefId));
+  function initializeUnreadBaseline(baselineSeq: number): void {
+    setReadState(current => current ?? { baselineSeq, viewed: new Set() });
+  }
+
+  function markViewed({ seq, mailRefId }: BridgeMailCard): void {
+    setReadState(current => !current || seq <= current.baselineSeq || current.viewed.has(mailRefId)
+      ? current : { ...current, viewed: new Set(current.viewed).add(mailRefId) });
   }
 
   const enabled = snapshot ? snapshot.host.capabilities.includes("plugin.assistant-mail.v1")
@@ -75,7 +83,12 @@ export function AssistantMailProvider({ hostId, snapshot, online, request, loadC
   useEffect(() => {
     if (!loadCache) return;
     let active = true;
-    void loadCache().then(stored => { if (active && stored) setCache(stored); })
+    void loadCache().then(stored => {
+      if (!active || !stored) return;
+      // An empty cache can have been saved before the first successful sync.
+      if (stored.cards[0]) initializeUnreadBaseline(stored.cards[0].seq);
+      setCache(stored);
+    })
       .catch(reason => { if (active) setError(String(reason)); })
       .finally(() => { if (active) setCacheReady(true); });
     return () => { active = false; };
@@ -105,7 +118,11 @@ export function AssistantMailProvider({ hostId, snapshot, online, request, loadC
     setLoading(true);
     setError("");
     void refreshMailPages(async cursor => mailResult<{ mailPage: BridgeMailPage }>(await request("plugin.assistant-mail.list", cursor ? { cursor } : {})).mailPage, cacheRef.current, changeToken)
-      .then(next => { if (active) setCache(next); })
+      .then(next => {
+        if (!active) return;
+        initializeUnreadBaseline(next.cards[0]?.seq ?? 0);
+        setCache(next);
+      })
       .catch(reason => { if (active) setError(reason instanceof Error ? reason.message : "邮件同步失败"); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
@@ -125,7 +142,7 @@ export function AssistantMailProvider({ hostId, snapshot, online, request, loadC
     finally { if (mounted.current) setLoading(false); }
   }
 
-  const unreadCount = cache.cards.reduce((count, card) => count + (viewedMail.has(card.mailRefId) ? 0 : 1), 0);
+  const unreadCount = readState ? cache.cards.filter(card => card.seq > readState.baselineSeq && !readState.viewed.has(card.mailRefId)).length : 0;
   const accounts = assistant?.accounts;
   const { accountLabels, showAccount } = useMemo(() => {
     const seenUsers = new Set<string>();
@@ -158,7 +175,7 @@ export function AssistantMailProvider({ hostId, snapshot, online, request, loadC
     markViewed,
     selectMail: card => {
       if (!canReference) return;
-      markViewed(card.mailRefId);
+      markViewed(card);
       setSelection({ sessionId: assistant!.binding!.nativeSessionId!, mailRefId: card.mailRefId });
       onDiscuss?.();
     },

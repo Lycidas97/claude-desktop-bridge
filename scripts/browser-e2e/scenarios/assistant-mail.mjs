@@ -92,6 +92,10 @@ export async function verifyAssistantMailUnread(page, host, steps, directory, vi
   const inbox = page.getByRole("button", { name: "收件", exact: true });
   const cardFor = ({ mailRefId }) => page.locator(`.assistant-mail-list [data-mail-id="${mailRefId}"]`);
 
+  await badge.click();
+  await eventually(() => host.requests.some(request => request.method === "plugin.assistant-mail.list"), true, "Load the initially empty inbox");
+  await page.getByText("暂无已记录邮件", { exact: true }).waitFor();
+  await back.click();
   await eventually(unreadLabel, "助理", "An empty inbox has no badge");
   const first = await host.nativeApproval.assistantMail.deliver(1);
   await eventually(unreadLabel, "助理，1 条未读", "One newly arrived pending mail shows one unread");
@@ -132,18 +136,19 @@ export async function verifyAssistantMailUnread(page, host, steps, directory, vi
   await eventually(unreadLabel, "助理", "Opening one mail clears its badge without marking it processed");
   await page.screenshot({ path: resolve(directory, "viewed-mail.png") });
 
+  const second = await host.nativeApproval.assistantMail.deliver(1);
+  await eventually(unreadLabel, "助理，1 条未读", "A second arrival shows one unread");
   await page.reload({ waitUntil: "domcontentloaded" });
   await openMobileDrawer(page);
   await badge.click();
   await cardFor(first).getByText("待处理", { exact: true }).waitFor();
+  await cardFor(second).waitFor();
   await selectCustomOption(page, page.getByLabel("助理会话", { exact: true }), sessionId);
   await page.getByRole("button", { name: "绑定会话", exact: true }).click();
   await page.locator(".assistant-conversation textarea").waitFor();
   await back.click();
-  await eventually(unreadLabel, "助理", "A reload does not resurrect a viewed pending mail");
+  await eventually(unreadLabel, "助理，1 条未读", "Reload preserves the unread arrival without resurrecting the viewed mail");
 
-  const second = await host.nativeApproval.assistantMail.deliver(1);
-  await eventually(unreadLabel, "助理，1 条未读", "A second arrival shows one unread");
   await badge.click();
   await inbox.click();
   await cardFor(second).getByText("待处理", { exact: true }).waitFor();
@@ -157,12 +162,16 @@ export async function verifyAssistantMailUnread(page, host, steps, directory, vi
   await openDesktopAssistant(page, host, baseUrl, []);
   const desktopBadge = page.locator(".sidebar-assistant-row .desktop-nav-badge");
   await inbox.click();
-  await eventually(() => desktopBadge.textContent(), "2", "Desktop has its own unread state");
+  await cardFor(second).waitFor();
+  assert.equal(await desktopBadge.count(), 0, "A fresh desktop view does not badge its existing mail history");
+  const latest = await host.nativeApproval.assistantMail.deliver(2);
+  await page.evaluate(assistantMail => window.assistantDesktopSnapshot({ assistantMail }), host.snapshot.assistantMail);
+  await eventually(() => desktopBadge.textContent(), "2", "Only arrivals beyond the desktop baseline count");
   const titleBounds = await page.locator(".sidebar-assistant-main").boundingBox();
   const badgeBounds = await desktopBadge.boundingBox();
   assert.ok(titleBounds && badgeBounds && titleBounds.x + titleBounds.width <= badgeBounds.x);
-  await cardFor(second).getByText("原文", { exact: true }).click();
-  await cardFor(second).getByText("待处理", { exact: true }).waitFor();
+  await cardFor(latest).getByText("原文", { exact: true }).click();
+  await cardFor(latest).getByText("待处理", { exact: true }).waitFor();
   await eventually(() => desktopBadge.textContent(), "1", "Desktop opening the newer mail leaves the older one unread");
   await page.screenshot({ path: resolve(directory, "desktop-mail-unread.png") });
   viewports.push({ page: "desktop-mail-unread", ...page.viewportSize() });
@@ -238,6 +247,9 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   assert.equal(host.requests.some(request => request.method === "turn.start"), false);
   await page.getByRole("button", { name: "更早邮件", exact: true }).click();
   await eventually(() => cards().count(), 60, "Older mail pages remain visible");
+  await openMobileDrawer(page);
+  assert.equal(await page.locator(".drawer-assistant-capsule").getAttribute("aria-label"), "助理", "Initial history and older pages add no unread mail");
+  await openAssistant();
   const oldest = host.nativeApproval.assistantMail.service.page({ cursor: "2" }).events[0];
   const original = page.locator(`.assistant-mail-list [data-mail-id="${oldest.mailRefId}"]`);
   await original.getByText("原文", { exact: true }).click();

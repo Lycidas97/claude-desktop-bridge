@@ -1,16 +1,36 @@
-.m-sheet-backdrop:has(.incoming-file-picker) { z-index: 220; }
-
 .incoming-file-picker {
   display: grid;
   gap: 12px;
 }
 
-.incoming-file-picker p {
-  margin: 0;
-  padding: 10px 4px;
-  color: var(--muted);
-  font-size: var(--m-fs-body);
+.incoming-file-name,
+.incoming-file-project {
+  margin: 0 4px;
+  overflow-wrap: anywhere;
 }
 
-.incoming-file-picker [role="alert"] { color: var(--danger-ink); }
+.incoming-file-name { color: var(--text); font-size: var(--m-fs-body); }
+
+.incoming-file-project {
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: var(--m-fs-footnote);
+  font-weight: 600;
+}
+
+.incoming-file-forks {
+  border-bottom: 1px solid var(--line);
+  padding-inline-start: 16px;
+}
+
+.incoming-file-forks:last-child { border-bottom: 0; }
+
+.incoming-file-forks > summary {
+  min-height: 44px;
+  padding: 12px 16px;
+  color: var(--muted);
+  font-size: var(--m-fs-body);
+  cursor: pointer;
+}
+
 .incoming-file-picker .m-sheet-action-copy { overflow-wrap: anywhere; }

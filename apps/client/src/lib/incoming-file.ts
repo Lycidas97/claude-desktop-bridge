@@ -1,6 +1,7 @@
 import { Capacitor, registerPlugin, type PluginListenerHandle } from "@capacitor/core";
 
-type IncomingFile = { id: string } & ({ name: string; mimeType: string } | { error: string });
+type IncomingFile = { id: string } & ({ name: string; mimeType: string } | { error: string; name?: string });
+type ReadableIncomingFile = Extract<IncomingFile, { mimeType: string }>;
 
 const incomingFile = registerPlugin<{
   addListener(event: "fileReceived", listener: (file: IncomingFile) => void): Promise<PluginListenerHandle>;
@@ -33,7 +34,7 @@ export function observeIncomingFiles(
   };
 }
 
-export async function readIncomingFile({ id, name, mimeType }: Extract<IncomingFile, { name: string }>): Promise<File> {
+export async function readIncomingFile({ id, name, mimeType }: ReadableIncomingFile): Promise<File> {
   const parts: BlobPart[] = [];
   while (true) {
     const result = await incomingFile.readFileChunk({ id });

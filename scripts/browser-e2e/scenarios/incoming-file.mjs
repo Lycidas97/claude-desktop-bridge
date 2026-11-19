@@ -54,15 +54,30 @@ export const incomingFileFixture = {
 export async function verifyIncomingFile(page, startingHost, host, steps, directory) {
   const sheet = page.getByRole("dialog", { name: "上传到会话" });
   const target = sheet.getByRole("button", { name: new RegExp(originalTitle) });
+  const root = host.snapshot.sessions.find(session => session.sessionId === sessionId);
+  host.snapshot.sessions.push(
+    { ...root, sessionId: "archived-import-target", title: "已归档的导入目标", archivedAt: Date.now() },
+    { ...root, sessionId: "sidechat-import-target", title: "侧聊导入目标", parentSessionId: sessionId, sidechat: true },
+  );
+  const imageId = "import-while-viewing";
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+l2p0AAAAASUVORK5CYII=", "base64");
+  host.nativeImages.set(`${imageId}:0`, png);
+  host.history.push({ id: imageId, sessionId, role: "user", text: "导入前打开图片", createdAt: Date.now(), origin: "claude-desktop", delivery: "completed", attachments: [
+    { id: `native-image:${imageId}:0`, name: "preview.png", mimeType: "image/png", size: png.length, nativeImage: { messageUuid: imageId, imageIndex: 0 } },
+  ] });
   await sheet.getByText(incomingFileName, { exact: true }).waitFor();
   await sheet.getByRole("button", { name: /Browser E2E 隔离电脑/ }).click();
   await sheet.getByRole("button", { name: "文件接收电脑" }).click();
   await target.waitFor();
   assert.ok(!(await target.isDisabled()));
+  const archivedVisible = await sheet.getByRole("button", { name: "已归档的导入目标", exact: false }).isVisible();
+  const sidechatVisible = await sheet.getByRole("button", { name: "侧聊导入目标", exact: false }).isVisible();
   for (const computer of [startingHost, host]) {
     assert.ok(!computer.requests.some(request => request.method.startsWith("file.upload.")));
   }
   await sheet.screenshot({ path: resolve(directory, "incoming-file-picker.png"), animations: "disabled" });
+  await sheet.locator("summary").click();
+  await sheet.getByRole("button", { name: "侧聊导入目标", exact: true }).waitFor();
   await target.click();
   await page.getByRole("list", { name: "待发送文件" }).getByText("已上传，发送时附上路径", { exact: false }).waitFor();
   await eventually(() => host.requests.filter(request => request.method === "file.upload.cancel").length, 1, "Release the upload lease");
@@ -75,13 +90,22 @@ export async function verifyIncomingFile(page, startingHost, host, steps, direct
   assert.deepEqual(await readFile(resolve(host.nativeApproval.cwd, ".bridge-uploads", uploads[2].params.uploadId, incomingFileName)), sample);
   assert.ok(!host.requests.some(request => request.method === "turn.start"));
 
+  await page.locator(".conversation-image-preview img").click();
+  const viewer = page.locator("dialog.media-viewer");
+  await viewer.waitFor();
   await page.evaluate(file => window.bridgeIncomingFileFixture(file), { id: "warm", name: "另一个文件.bin", mimeType: "application/octet-stream" });
   await sheet.getByText("另一个文件.bin", { exact: true }).waitFor();
+  const viewerStillOpen = await viewer.isVisible();
+  assert.deepEqual({ archivedVisible, sidechatVisible, viewerStillOpen }, {
+    archivedVisible: false, sidechatVisible: false, viewerStillOpen: false,
+  });
   await target.waitFor();
   await sheet.getByRole("button", { name: "取消导入" }).click();
   await sheet.waitFor({ state: "hidden" });
 
-  await page.evaluate(file => window.bridgeIncomingFileFixture(file), { id: "oversize", error: "单个文件不能超过 20 MiB" });
+  const oversizedName = "2026年11月第三周项目进度周报-最终版-修订3（发给客户前请再核对）.docx";
+  await page.evaluate(file => window.bridgeIncomingFileFixture(file), { id: "oversize", name: oversizedName, error: "单个文件不能超过 20 MiB" });
+  await sheet.getByText(oversizedName, { exact: true }).waitFor();
   await sheet.getByRole("alert").waitFor();
   assert.equal(await sheet.getByRole("alert").textContent(), "单个文件不能超过 20 MiB");
   await page.keyboard.press("Escape");

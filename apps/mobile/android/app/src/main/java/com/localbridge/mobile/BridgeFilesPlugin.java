@@ -2,8 +2,10 @@ package com.localbridge.mobile;
 
 import android.app.Activity;
 import android.content.ActivityNotFoundException;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.util.Base64;
 import androidx.activity.result.ActivityResult;
@@ -114,11 +116,15 @@ public class BridgeFilesPlugin extends Plugin {
             Intent view = new Intent(Intent.ACTION_VIEW)
                 .setDataAndType(uri, mimeType)
                 .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            if (view.resolveActivity(context.getPackageManager()) == null) {
+            ComponentName bridge = new ComponentName(context, MainActivity.class);
+            boolean hasViewer = context.getPackageManager().queryIntentActivities(view, PackageManager.MATCH_DEFAULT_ONLY)
+                .stream().anyMatch(result -> !bridge.equals(new ComponentName(result.activityInfo.packageName, result.activityInfo.name)));
+            if (!hasViewer) {
                 call.reject("没有可打开此文件的应用。请安装支持该文件类型的应用后重新下载。");
                 return;
             }
             getActivity().startActivity(Intent.createChooser(view, "选择打开方式")
+                .putExtra(Intent.EXTRA_EXCLUDE_COMPONENTS, new ComponentName[] { bridge })
                 .putExtra(Intent.EXTRA_AUTO_LAUNCH_SINGLE_CHOICE, false));
             call.resolve();
         } catch (IOException | ActivityNotFoundException error) {

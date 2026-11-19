@@ -20,6 +20,7 @@ import { PairingScreen } from "./components/pairing/PairingScreen.js";
 import { PairingSyncScreen } from "./components/pairing/PairingSyncScreen.js";
 import { MediaPreviewProvider } from "./components/evidence/MediaPreviewProvider.js";
 import { MobileAppShell, type MobileTab } from "./components/mobile/MobileAppShell.js";
+import { IncomingFilePicker } from "./components/mobile/IncomingFilePicker.js";
 import { MobileHostDetails } from "./components/pairing/MobileHostDetails.js";
 import { MobilePageHeader } from "./components/mobile/MobilePageHeader.js";
 import {
@@ -574,6 +575,10 @@ function MobileApp({ themeControl }: { themeControl: ThemeControl }) {
     </MobileAppShell>
     </AssistantMailProvider>
       )}
+      <IncomingFilePicker mobile={mobile} snapshot={snapshot} onOpenSession={(hostId, sessionId) => {
+        setPairingOpen(false);
+        void openComputer(hostId, sessionId);
+      }} />
     </ConversationDraftsProvider>
   );
 }

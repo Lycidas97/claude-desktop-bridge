@@ -14,6 +14,8 @@ public class MainActivity extends BridgeActivity {
     protected void onCreate(Bundle savedInstanceState) {
         registerPlugin(BridgeUpdaterPlugin.class);
         registerPlugin(BridgeFilesPlugin.class);
+        // BridgeActivity forwards both the launch intent and subsequent intents to its plugins.
+        registerPlugin(BridgeIncomingFilePlugin.class);
         super.onCreate(savedInstanceState);
     }
 

@@ -516,7 +516,7 @@ function useConversationDraftsController(activeHostId: string | undefined, enabl
       entries: selectedEntries,
       files: selectedFiles,
       uploading,
-      async add(files: FileList | null) {
+      async add(files: ArrayLike<File> | null) {
         if (!sessionId || !onUploadFile || !files?.length) return;
         const targetHostId = hostId;
         const targetSessionId = sessionId;

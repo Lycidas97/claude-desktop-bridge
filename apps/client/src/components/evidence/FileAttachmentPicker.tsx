@@ -28,7 +28,7 @@ export function useFileAttachments(sessionId: string | undefined, onUploadFile: 
     entries: selectedEntries,
     files: selectedEntries.flatMap((entry) => entry.result ? [entry.result] : []),
     uploading: selectedEntries.some((entry) => !entry.result && !entry.error),
-    async add(files: FileList | null) {
+    async add(files: ArrayLike<File> | null) {
       if (!sessionId || !onUploadFile || !files?.length) return;
       const selectedFiles = Array.from(files, (file) => ({ file, id: crypto.randomUUID(), controller: new AbortController() }));
       for (const item of selectedFiles) controllers.current.set(item.id, item.controller);

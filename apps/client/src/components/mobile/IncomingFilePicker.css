@@ -1,0 +1,16 @@
+.m-sheet-backdrop:has(.incoming-file-picker) { z-index: 220; }
+
+.incoming-file-picker {
+  display: grid;
+  gap: 12px;
+}
+
+.incoming-file-picker p {
+  margin: 0;
+  padding: 10px 4px;
+  color: var(--muted);
+  font-size: var(--m-fs-body);
+}
+
+.incoming-file-picker [role="alert"] { color: var(--danger-ink); }
+.incoming-file-picker .m-sheet-action-copy { overflow-wrap: anywhere; }

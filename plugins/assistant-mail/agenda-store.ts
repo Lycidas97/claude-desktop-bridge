@@ -4,7 +4,7 @@ import type {
   AgendaEventInput, AgendaPage, AgendaPageQuery, AgendaRecordIdentity, AgendaTodoInput, AgendaWindow,
   BridgeAgendaEvent, BridgeAgendaSource, BridgeAgendaTodo,
 } from "../../packages/protocol/src/assistant-agenda.js";
-import { parseAgendaObject } from "./agenda-ical.js";
+import { AgendaExpansionLimitError, parseAgendaObject } from "./agenda-ical.js";
 import { agendaInstant, collectionZone } from "./agenda-time.js";
 
 export const LOCAL_AGENDA_ID = "local";
@@ -207,25 +207,31 @@ export class AgendaStore {
     const key = (record: BridgeAgendaTodo) => [Number(record.status === "completed" || record.status === "cancelled"), record.dueAt ?? "~", record.id].join("\0");
     const cursor = [closed, date, id].join("\0");
     const entries = rows.map(row => JSON.parse(row.value as string) as BridgeAgendaTodo).map(record => ({ record, key: key(record) }));
+    let incomplete = false;
     for (const row of this.recurringObjects(2)) {
-      const { uid, todos } = parseAgendaObject(row.data, collectionZone(row.calendar_timezone, this.timeZone), { todos: { limit, closed: Number(closed), date } });
-      for (const todo of todos) {
-        if (query.status && todo.status !== query.status) continue;
-        const record = { ...todo, ...this.importedIdentity(row, uid, todo.recurrenceId) };
-        const order = key(record);
-        if (order > cursor) entries.push({ record, key: order });
+      try {
+        const { uid, todos } = parseAgendaObject(row.data, collectionZone(row.calendar_timezone, this.timeZone), { todos: { limit, closed: Number(closed), date } });
+        for (const todo of todos) {
+          if (query.status && todo.status !== query.status) continue;
+          const record = { ...todo, ...this.importedIdentity(row, uid, todo.recurrenceId) };
+          const order = key(record);
+          if (order > cursor) entries.push({ record, key: order });
+        }
+      } catch (error) {
+        if (!(error instanceof AgendaExpansionLimitError)) throw error;
+        incomplete = true;
       }
     }
     entries.sort((a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
     const page = makePage(entries, limit, entry => entry.key.replaceAll("\0", "|"));
-    return { ...page, records: page.records.map(entry => entry.record) };
+    return { ...page, records: page.records.map(entry => entry.record), ...(incomplete ? { incomplete: true } : {}) };
   }
 
   listEvents(query: AgendaPageQuery & AgendaWindow): AgendaPage<BridgeAgendaEvent> {
     const limit = query.limit ?? 50;
     const key = (record: BridgeAgendaEvent) => `${new Date(this.eventStart(record)).toISOString()}|${record.id}`;
-    const records = this.eventsIn(query).filter(record => !query.cursor || key(record) > query.cursor);
-    return makePage(records, limit, key);
+    const { records, incomplete } = this.eventsIn(query, { allowIncomplete: true });
+    return { ...makePage(records.filter(record => !query.cursor || key(record) > query.cursor), limit, key), ...(incomplete ? { incomplete: true } : {}) };
   }
 
   private eventStart(event: BridgeAgendaEvent) {
@@ -236,19 +242,28 @@ export class AgendaStore {
     return agendaInstant(event.endAt, event.allDay && event.origin === "untrusted_external" ? this.timeZone : event.timeZone);
   }
 
-  private eventsIn(window: AgendaWindow): BridgeAgendaEvent[] {
+  private eventsIn(window: AgendaWindow, options?: { allowIncomplete: true }) {
     const from = Date.parse(window.from), to = Date.parse(window.to);
     const rows = this.db.prepare(`SELECT event.value FROM calendar_events event
       LEFT JOIN agenda_caldav_objects object ON object.source_id = event.source_id AND object.href = event.href
       WHERE (COALESCE(object.recurring, 0) & 1) = 0 AND event.start_at < ? AND event.end_at >= ?`)
       .all(new Date(to + 86_400_000).toISOString(), new Date(from - 86_400_000).toISOString().slice(0, 10));
     const records = rows.map(row => JSON.parse(row.value as string) as BridgeAgendaEvent);
+    let incomplete = false;
     for (const row of this.recurringObjects(1)) {
-      const { uid, events } = parseAgendaObject(row.data, collectionZone(row.calendar_timezone, this.timeZone), { window, allDayZone: this.timeZone });
-      for (const event of events) records.push({ ...event, ...this.importedIdentity(row, uid, event.recurrenceId) });
+      try {
+        const { uid, events } = parseAgendaObject(row.data, collectionZone(row.calendar_timezone, this.timeZone), { window, allDayZone: this.timeZone });
+        for (const event of events) records.push({ ...event, ...this.importedIdentity(row, uid, event.recurrenceId) });
+      } catch (error) {
+        if (!options?.allowIncomplete || !(error instanceof AgendaExpansionLimitError)) throw error;
+        incomplete = true;
+      }
     }
-    return records.filter(event => this.eventStart(event) < to && (this.eventEnd(event) > from || this.eventStart(event) === this.eventEnd(event) && this.eventStart(event) >= from))
-      .sort((a, b) => this.eventStart(a) - this.eventStart(b) || a.id.localeCompare(b.id));
+    return {
+      records: records.filter(event => this.eventStart(event) < to && (this.eventEnd(event) > from || this.eventStart(event) === this.eventEnd(event) && this.eventStart(event) >= from))
+        .sort((a, b) => this.eventStart(a) - this.eventStart(b) || a.id.localeCompare(b.id)),
+      incomplete,
+    };
   }
 
   private recurringObjects(kind: 1 | 2) {
@@ -269,7 +284,7 @@ export class AgendaStore {
     const end = Date.parse(query.to);
     const duration = query.durationMinutes * 60_000;
     const slots: Array<{ from: string; to: string }> = [];
-    for (const event of this.eventsIn(query)) {
+    for (const event of this.eventsIn(query).records) {
       if (!event.busy || this.eventEnd(event) <= this.eventStart(event)) continue;
       const start = this.eventStart(event);
       if (start - next >= duration) slots.push({ from: new Date(next).toISOString(), to: new Date(start).toISOString() });

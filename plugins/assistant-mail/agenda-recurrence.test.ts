@@ -83,6 +83,83 @@ test("pages an old hourly VTODO from its original due date and can seek to a lat
   expect(store.listTodos({ limit: 1, cursor: later.nextCursor }).records).toMatchObject([{ dueAt: "2027-01-01T01:30:00.000Z" }]);
 });
 
+const newYork = ["BEGIN:VTIMEZONE", "TZID:America/New_York", "BEGIN:STANDARD", "DTSTART:20071104T020000",
+  "TZOFFSETFROM:-0400", "TZOFFSETTO:-0500", "RRULE:FREQ=YEARLY;BYMONTH=11;BYDAY=1SU", "END:STANDARD",
+  "BEGIN:DAYLIGHT", "DTSTART:20070311T020000", "TZOFFSETFROM:-0500", "TZOFFSETTO:-0400",
+  "RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=2SU", "END:DAYLIGHT", "END:VTIMEZONE"];
+
+test("reads the ready 2014 New York hourly event in winter and summer without omitting busy intervals", () => {
+  sync(object("ny", ics(...newYork, ...item("VEVENT", "ny", "DTSTART;TZID=America/New_York:20140101T090000",
+    "DURATION:PT30M", "RRULE:FREQ=HOURLY"))));
+  expect(store.source(source).status).toBe("ready");
+  for (const [month, localHour] of [["01", "19"], ["07", "20"]] as const) {
+    const day = { from: `2027-${month}-01T00:00:00.000Z`, to: `2027-${month}-02T00:00:00.000Z` };
+    const events = store.listEvents(day).records;
+    expect(events).toHaveLength(24);
+    expect(events[0]).toMatchObject({ startAt: day.from, recurrenceId: `${month === "01" ? "2026-12-31" : "2027-06-30"}T${localHour}:00:00` });
+    const page = store.listEvents({ ...day, limit: 1 });
+    expect(store.listEvents({ ...day, cursor: page.nextCursor, limit: 1 }).records[0]?.id).toBe(events[1]?.id);
+    expect(store.freeSlots({ ...day, durationMinutes: 30 }).slots).toEqual(events.map((event, hour) => ({
+      from: event.endAt, to: events[hour + 1]?.startAt ?? day.to,
+    })));
+  }
+});
+
+test.each(["2027-03-14", "2027-11-07"])("seeking on %s preserves the iterator's DST instances, IDs and busy intervals", date => {
+  const day = { from: `${date}T04:00:00.000Z`, to: `${date}T11:00:00.000Z` };
+  const series = (start: string, rule: string) => object("ny", ics(...newYork, ...item("VEVENT", "ny",
+    `DTSTART;TZID=America/New_York:${start}T000000`, "DURATION:PT30M", `RRULE:${rule}`)));
+  sync(series(date.startsWith("2027-03") ? "20270313" : "20271106", "FREQ=HOURLY;COUNT=48"));
+  const reference = store.listEvents(day);
+  const gaps = store.freeSlots({ ...day, durationMinutes: 30 });
+  expect(reference.records.length).toBeGreaterThan(0);
+  sync(series("20140101", "FREQ=HOURLY"));
+  expect(store.listEvents(day)).toEqual(reference);
+  expect(store.freeSlots({ ...day, durationMinutes: 30 })).toEqual(gaps);
+});
+
+test("keeps healthy events visible when an old rule exceeds the budget and refuses to report gaps", () => {
+  const dense = object("dense", ics(...item("VEVENT", "dense", "DTSTART:20140101T090000Z", "DURATION:PT30M",
+    "RRULE:FREQ=HOURLY;BYMINUTE=0")));
+  sync(dense);
+  const local = store.saveEvent({ title: "Local", startAt: window.from, endAt: "2027-01-01T01:00:00.000Z", allDay: false, timeZone: "UTC" });
+  expect(store.listEvents(window)).toMatchObject({ records: [{ id: local.id }], incomplete: true });
+  expect(() => store.freeSlots({ ...window, durationMinutes: 30 })).toThrow("Calendar expansion exceeds supported occurrence count");
+  store.applySync(source, { removed: [dense.href], changed: [] });
+  expect(store.listEvents(window)).toEqual({ records: [local] });
+});
+
+test("keeps healthy tasks and cursor pagination visible when a task series exceeds the budget", () => {
+  vi.setSystemTime(new Date(window.from));
+  sync(object("dense-task", ics(...item("VTODO", "dense-task", "DTSTART:20140101T090000Z", "DUE:20140101T093000Z",
+    "RRULE:FREQ=HOURLY;BYMINUTE=0"))));
+  const first = store.saveTodo({ title: "First", status: "pending", dueAt: "2027-01-04" });
+  const second = store.saveTodo({ title: "Second", status: "pending", dueAt: "2027-01-05" });
+  const page = store.listTodos({ limit: 1 });
+  expect(page).toMatchObject({ records: [{ id: first.id }], incomplete: true });
+  expect(page.nextCursor).toBeDefined();
+  expect(store.listTodos({ cursor: page.nextCursor })).toEqual({ records: [second], incomplete: true });
+});
+
+test("pages the ready 2014 hourly task past a completed first occurrence and retains its ID", () => {
+  vi.setSystemTime(new Date(window.from));
+  const uid = "hourly-exception";
+  sync(object(uid, ics(...item("VTODO", uid, "DTSTART:20140101T090000Z", "DUE:20140101T093000Z", "RRULE:FREQ=HOURLY"),
+    ...item("VTODO", uid, "RECURRENCE-ID:20140101T090000Z", "DTSTART:20140101T090000Z", "DUE:20140101T093000Z", "STATUS:COMPLETED"))));
+  expect(store.source(source).status).toBe("ready");
+  const first = store.listTodos({ limit: 1 });
+  expect(first.records).toMatchObject([{ recurrenceId: "2014-01-01T10:00:00Z", dueAt: "2014-01-01T10:30:00.000Z", status: "pending" }]);
+  const second = store.listTodos({ limit: 1, cursor: first.nextCursor });
+  expect(second.records).toMatchObject([{ recurrenceId: "2014-01-01T11:00:00Z" }]);
+  const later = store.listTodos({ limit: 1, cursor: `0|2027-01-01T00:30:00.000Z|${"0".repeat(64)}` });
+  expect(later.records).toMatchObject([{ recurrenceId: "2027-01-01T00:00:00Z" }]);
+  const closed = store.listTodos({ status: "completed", limit: 1 });
+  expect(closed.records).toMatchObject([{ recurrenceId: "2014-01-01T09:00:00Z", status: "completed" }]);
+  expect(closed.nextCursor).toBeUndefined();
+  expect(store.listTodos({ limit: 1, cursor: `1|2014-01-01T09:30:00.000Z|${"0".repeat(64)}` }).records).toEqual(closed.records);
+  expect(store.listTodos({ limit: 1 }).records).toEqual(first.records);
+});
+
 test("uses collection VTIMEZONE for floating DTSTART and DUE, with host fallback", () => {
   const records = [object("meeting", ics(...item("VEVENT", "meeting", "DTSTART:20270104T090000", "DURATION:PT1H"))),
     object("task", ics(...item("VTODO", "task", "DUE:20270104T090000")))];

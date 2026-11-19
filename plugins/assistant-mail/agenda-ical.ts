@@ -4,6 +4,10 @@ import { agendaInstant, componentZone, timestamp, type AgendaZone } from "./agen
 
 const DAY = 86_400_000;
 const expansionLimit = 100_000;
+
+export class AgendaExpansionLimitError extends Error {
+  constructor() { super("Calendar expansion exceeds supported occurrence count"); }
+}
 const utc = ICAL.Timezone.utcTimezone;
 const text = (component: ICAL.Component, name: string, limit: number) => {
   const value = component.getFirstPropertyValue(name);
@@ -63,24 +67,23 @@ function timing(component: ICAL.Component, fallback: AgendaZone, allDayZone?: st
 type Timing = ReturnType<typeof timing>;
 type Instance = { item: Timing; start: ICAL.Time | undefined; recurrenceId?: string | undefined; endAt?: string | undefined };
 
-function repeatStep(rule: ICAL.Recur, start: ICAL.Time, zone: AgendaZone): number | undefined {
+function repeatStep(rule: ICAL.Recur, start: ICAL.Time): number | undefined {
   const unit = ({ SECONDLY: 1000, MINUTELY: 60_000, HOURLY: 3_600_000 } as Record<string, number>)[rule.freq];
-  if (!unit || start.isDate || Object.keys(rule.parts).length) return undefined;
-  if (zone === utc || zone === "UTC") return rule.interval * unit;
-  if (typeof zone !== "string") {
-    const periods = zone.component?.getAllSubcomponents();
-    const offset = zone.utcOffset(start);
-    // ical.js uses zero before the first observance. DTSTART must already use the fixed offset.
-    if (periods?.length && periods.every(period => ["tzoffsetfrom", "tzoffsetto"].every(property =>
-      (period.getFirstPropertyValue(property) as ICAL.UtcOffset | null)?.toSeconds() === offset))) {
-      return rule.interval * unit;
-    }
-  }
-  return undefined;
+  return unit && !start.isDate && !Object.keys(rule.parts).length ? rule.interval * unit : undefined;
 }
 
-function ruleStarts(rule: ICAL.Recur, start: ICAL.Time, zone: AgendaZone, floor: number, step: number | undefined) {
-  if (step) {
+function hasFixedOffset(start: ICAL.Time, zone: AgendaZone): boolean {
+  if (zone === utc || zone === "UTC") return true;
+  if (typeof zone === "string") return false;
+  const periods = zone.component?.getAllSubcomponents();
+  const offset = zone.utcOffset(start);
+  // ical.js uses zero before the first observance. DTSTART must already use the fixed offset.
+  return !!periods?.length && periods.every(period => ["tzoffsetfrom", "tzoffsetto"].every(property =>
+    (period.getFirstPropertyValue(property) as ICAL.UtcOffset | null)?.toSeconds() === offset));
+}
+
+function ruleStarts(rule: ICAL.Recur, start: ICAL.Time, zone: AgendaZone, floor: number, step: number | undefined, fixed: boolean) {
+  if (step && fixed) {
     const origin = instant(start, zone);
     const offset = Date.parse(start.toString().replace(/Z?$/, "Z")) - origin;
     const until = rule.until ? instant(rule.until, zone) : Infinity;
@@ -93,6 +96,16 @@ function ruleStarts(rule: ICAL.Recur, start: ICAL.Time, zone: AgendaZone, floor:
       occurrence.zone = start.zone;
       return occurrence;
     };
+  }
+  if (step && rule.count === null && !rule.until && Number.isFinite(floor)) {
+    // Anchor on the original wall-clock grid before the window. Let ical.js walk zone transitions.
+    const wall = Date.parse(start.toString().replace(/Z?$/, "Z"));
+    const index = Math.floor((floor - DAY - wall) / step);
+    if (index > 0) {
+      const seed = ICAL.Time.fromJSDate(new Date(wall + index * step), true);
+      seed.zone = start.zone;
+      start = seed;
+    }
   }
   const iterator = rule.iterator(start);
   return () => iterator.next();
@@ -141,13 +154,14 @@ function expandSeries(items: Timing[], fallback: AgendaZone, window: AgendaWindo
   }));
   let lower = from - maxSpan - Math.max(0, ...ranges.map(range => range.shift * 1000)) - zoneMargin;
   let candidateLimit = Infinity;
-  const steps = rules.map(rule => repeatStep(rule, start, zone));
-  if (page && rules.length === 1 && steps[0] && !extra.length && !overrides.length) {
+  const steps = rules.map(rule => repeatStep(rule, start));
+  const fixed = steps.some(Boolean) && hasFixedOffset(start, zone);
+  if (page && rules.length === 1 && steps[0] && fixed && !extra.length && !ranges.length) {
     const due = master.endAt();
     if (due?.endsWith("Z")) {
       const status = text(master.component, "status", 32)?.toUpperCase();
       const closed = Number(status === "COMPLETED" || status === "CANCELLED");
-      if (closed < page.closed || (closed === page.closed && page.date === "~")) return [];
+      if (closed < page.closed || (closed === page.closed && page.date === "~")) return instances;
       const after = Date.parse(page.date);
       if (closed === page.closed && Number.isFinite(after)) lower = after - (Date.parse(due) - instant(start, zone));
       // The store resolves the ID tie at the cursor and needs one extra result to detect the next page.
@@ -167,10 +181,10 @@ function expandSeries(items: Timing[], fallback: AgendaZone, window: AgendaWindo
     else add(date);
   }
   for (const [index, rule] of rules.entries()) {
-    const next = ruleStarts(rule, start, zone, lower, steps[index]);
+    const next = ruleStarts(rule, start, zone, lower, steps[index], fixed);
     let count = 0;
     for (let occurrence = next(); occurrence && instant(occurrence, zone) < upper; occurrence = next()) {
-      if (++count > expansionLimit) throw new Error("Calendar expansion exceeds supported occurrence count");
+      if (++count > expansionLimit) throw new AgendaExpansionLimitError();
       add(occurrence);
       if (candidates.size >= candidateLimit) break;
     }

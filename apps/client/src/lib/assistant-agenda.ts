@@ -7,14 +7,16 @@ export async function rereadAgendaPages<T>(
 ): Promise<AgendaPage<T> & { pages: number }> {
   const records: T[] = [];
   let pages = 0;
+  let incomplete: true | undefined;
   let nextCursor: string | undefined;
   do {
     const page = await read(nextCursor);
     records.push(...page.records);
     nextCursor = page.nextCursor;
+    incomplete ||= page.incomplete;
     pages += 1;
   } while (nextCursor && pages < loadedPages && !signal?.aborted);
-  return { records, pages, nextCursor };
+  return { records, pages, nextCursor, ...(incomplete ? { incomplete } : {}) };
 }
 
 function agendaTimeFormatter(timeZone: string): Intl.DateTimeFormat {

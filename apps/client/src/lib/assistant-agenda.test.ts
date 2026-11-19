@@ -11,6 +11,13 @@ describe("agenda page refresh", () => {
     expect(read.mock.calls).toEqual([[undefined], ["new-next"]]);
   });
 
+  it("retains incomplete coverage across a refreshed page chain", async () => {
+    const read = vi.fn(async (cursor?: string) => cursor
+      ? { records: ["older"] }
+      : { records: ["first"], nextCursor: "next", incomplete: true as const });
+    await expect(rereadAgendaPages(read, 2)).resolves.toMatchObject({ records: ["first", "older"], pages: 2, incomplete: true });
+  });
+
   it("stops once the host runs out of pages and reads one page on first load", async () => {
     const read = vi.fn(async () => ({ records: ["remaining"] }));
     await expect(rereadAgendaPages(read, 4)).resolves.toMatchObject({ records: ["remaining"], pages: 1 });

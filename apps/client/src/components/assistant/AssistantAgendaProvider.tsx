@@ -53,6 +53,7 @@ function useAgendaPages<T>(method: AgendaList, request: AssistantRequest, online
   return {
     records: page?.records ?? [],
     hasMore: Boolean(page?.nextCursor),
+    incomplete: page?.incomplete,
     loading,
     error,
     retry: () => setRetry(value => value + 1),
@@ -61,7 +62,7 @@ function useAgendaPages<T>(method: AgendaList, request: AssistantRequest, online
       if (!online || loading || !page?.nextCursor || !signal || signal.aborted) return;
       void run(async () => {
         const next = await read(page.nextCursor);
-        return { ...next, pages: page.pages + 1, records: [...page.records, ...next.records] };
+        return { ...next, ...(page.incomplete ? { incomplete: page.incomplete } : {}), pages: page.pages + 1, records: [...page.records, ...next.records] };
       }, signal);
     },
   };

@@ -5,6 +5,7 @@ import { once } from "node:events";
 import { join } from "node:path";
 import { z } from "zod";
 import type { AssistantAgendaService } from "./agenda.js";
+import { AgendaExpansionLimitError } from "./agenda-ical.js";
 import type { AssistantMailService } from "./desktop.js";
 import { MailAttachmentError } from "./mime.js";
 import { MAIL_SOURCE, MailToolRequest } from "./tool-contract.js";
@@ -73,7 +74,9 @@ export async function serveAssistantMailTools(options: {
       }, result });
     })().catch(error => {
       if (error instanceof Error && "code" in error && error.code === "ECONNRESET") return;
-      if (error instanceof MailAttachmentError) {
+      if (error instanceof AgendaExpansionLimitError) {
+        reply(response, 409, { error: "AGENDA_INCOMPLETE" });
+      } else if (error instanceof MailAttachmentError) {
         const status = error.code === "MAIL_ATTACHMENT_NOT_FOUND" ? 404 : error.code === "MAIL_ATTACHMENT_TOO_LARGE" ? 413 : 422;
         reply(response, status, { error: error.code });
       } else if (error instanceof z.ZodError || error instanceof SyntaxError) {

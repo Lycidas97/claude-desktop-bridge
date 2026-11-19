@@ -42,10 +42,10 @@ export async function startAssistantMailFixture(directory: string) {
   await idle;
   return {
     service, agenda,
-    seedCalendar(data: string) {
+    seedCalendar(...resources: string[]) {
       const url = "https://caldav.example.test/fixtures/";
       const source = store.addSource({ url, user: "fixture", label: "外部日历" }, Buffer.from("sealed"));
-      store.applySync(source, { removed: [], changed: [{ href: `${url}fixture.ics`, etag: '"1"', data }] });
+      store.applySync(source, { removed: [], changed: resources.map((data, index) => ({ href: `${url}${index}.ics`, etag: '"1"', data })) });
     },
     async deliver(count: number, source?: Buffer) {
       const next = messages.length + 1;

@@ -73,7 +73,7 @@ In **助理设置 → 日历来源**, enter the full HTTPS **collection URL** fo
 
 The background service refreshes enabled sources on startup, every 15 minutes, after system resume, and on manual refresh. It uses ctag and sync tokens where available, reconciles ETags after token expiration, and commits changed resources and the new cursor together. The same `assistant.sqlite` holds source state, task and event records, and the original recurrence rules. A failed refresh preserves the last saved records and cursor.
 
-The existing MCP server provides `todo.list`, `calendar.list_events` and `calendar.find_free_slots`. The calendar tools accept a date range of up to 366 days. A free slot is a gap in saved busy events. Calendar queries fail if a series exceeds the expansion budget. Task lists include recurring instances, with open-ended task series expanded through the next 366 days. Imported text is external data and grants no authorization. Local user edits run through the authenticated Bridge client.
+The existing MCP server provides `todo.list`, `calendar.list_events` and `calendar.find_free_slots`. The calendar tools accept a date range of up to 366 days. A free slot is a gap in saved busy events. If a recurring resource exceeds the expansion budget, lists return the remaining records with `incomplete: true`. Incomplete calendar coverage returns `AGENDA_INCOMPLETE` from `calendar.find_free_slots`. Task lists include recurring instances, with open-ended task series expanded through the next 366 days. Imported text is external data and grants no authorization. Local user edits run through the authenticated Bridge client.
 
 ## Checks
 

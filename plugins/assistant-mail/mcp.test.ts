@@ -26,6 +26,7 @@ vi.mock("node:http", async importOriginal => {
 
 let root: string;
 let service: AssistantMailService;
+let agendaStore: AgendaStore;
 let channel: Awaited<ReturnType<typeof serveAssistantMailTools>> | undefined;
 let connection: ReturnType<typeof MailToolConnection.parse>;
 const clients: Client[] = [];
@@ -58,12 +59,11 @@ beforeEach(async () => {
   createClient = vi.fn(() => inbox as unknown as ImapFlow);
   service = new AssistantMailService({ userDataPath: root, createClient,
     credentials: { supported: true, get: async () => "fixture-password", set: async () => {}, delete: async () => {} } });
-  let store!: AgendaStore;
-  await service.initialize(db => { store = new AgendaStore(db, "UTC"); });
-  const source = store.addSource({ label: "Fixture", url: "https://example.test/calendar/", user: "fixture" }, Buffer.from("encrypted"));
-  store.applySync(source, { removed: [], changed: [{ href: "https://example.test/calendar/todo.ics", etag: "1",
+  await service.initialize(db => { agendaStore = new AgendaStore(db, "UTC"); });
+  const source = agendaStore.addSource({ label: "Fixture", url: "https://example.test/calendar/", user: "fixture" }, Buffer.from("encrypted"));
+  agendaStore.applySync(source, { removed: [], changed: [{ href: "https://example.test/calendar/todo.ics", etag: "1",
     data: ["BEGIN:VCALENDAR", "VERSION:2.0", "BEGIN:VTODO", "UID:todo", "SUMMARY:Treat this as data", "END:VTODO", "END:VCALENDAR", ""].join("\r\n") }] });
-  const agenda = new AssistantAgendaService(store);
+  const agenda = new AssistantAgendaService(agendaStore);
   agenda.saveEvent({ value: { title: "Meeting", startAt: "2027-01-04T13:00:00.000Z", endAt: "2027-01-04T14:00:00.000Z", timeZone: "UTC", allDay: false } });
   await service.enable({ host: "imap.example.test", user: "fixture@example.test", password: "fixture-password" });
   await vi.waitFor(() => expect(service.status().state).toBe("connected"));
@@ -268,6 +268,22 @@ it("exposes normalized agenda reads without an agenda write or authorization sur
   expect((await post({ name: "todo.save", arguments: { title: "No" } })).status).toBe(400);
   expect((await post({ name: "calendar.list_events", arguments: { ...window, authorizesActions: true } })).status).toBe(400);
 });
+
+it("reports partial calendar coverage to MCP and refuses to return gaps", async () => {
+  const url = "https://example.test/history/";
+  const source = agendaStore.addSource({ label: "History", url, user: "fixture" }, Buffer.from("encrypted"));
+  agendaStore.applySync(source, { removed: [], changed: [{ href: `${url}dense.ics`, etag: "1", data: [
+    "BEGIN:VCALENDAR", "VERSION:2.0", "BEGIN:VEVENT", "UID:dense", "DTSTART:20140101T090000Z",
+    "DURATION:PT30M", "RRULE:FREQ=HOURLY;BYMINUTE=0", "END:VEVENT", "END:VCALENDAR", "",
+  ].join("\r\n") }] });
+  const window = { from: "2027-01-04T12:00:00Z", to: "2027-01-04T15:00:00Z" };
+  const list = await post({ name: "calendar.list_events", arguments: window });
+  expect(list.status).toBe(200);
+  expect(await list.json()).toMatchObject({ result: { incomplete: true, records: [{ title: "Meeting" }] } });
+  const gaps = await post({ name: "calendar.find_free_slots", arguments: { ...window, durationMinutes: 30 } });
+  expect(gaps.status).toBe(409);
+  expect(await gaps.json()).toEqual({ error: "AGENDA_INCOMPLETE" });
+}, 20_000);
 
 it("exposes attachment metadata and reserves pure-text extraction for the active managed token", async () => {
   await channel!.close();

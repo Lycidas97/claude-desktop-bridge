@@ -68,4 +68,6 @@ export interface AgendaWindow {
 export interface AgendaPage<T> {
   records: T[];
   nextCursor?: string | undefined;
+  /** At least one recurring resource exceeded the expansion budget for this query. */
+  incomplete?: true;
 }

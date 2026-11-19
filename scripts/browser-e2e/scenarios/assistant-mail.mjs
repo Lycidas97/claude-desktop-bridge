@@ -506,6 +506,9 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
     "DTSTART:19700101T000000", "TZOFFSETFROM:-0500", "TZOFFSETTO:-0500", "END:STANDARD", "END:VTIMEZONE",
     "BEGIN:VEVENT", "UID:custom-zone", "SUMMARY:外部时区日程", "DTSTART;TZID=Eastern Standard Time:20270630T090000",
     "DURATION:PT1H", "END:VEVENT", "END:VCALENDAR", "",
+  ].join("\r\n"), [
+    "BEGIN:VCALENDAR", "VERSION:2.0", "BEGIN:VEVENT", "UID:over-budget", "DTSTART:20140101T090000Z",
+    "DURATION:PT30M", "RRULE:FREQ=HOURLY;BYMINUTE=0", "END:VEVENT", "END:VCALENDAR", "",
   ].join("\r\n"));
   await page.getByRole("button", { name: "新建日程", exact: true }).click();
   await page.getByLabel("标题", { exact: true }).fill("东京跨月日程");
@@ -518,7 +521,9 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   const importedEvent = page.getByRole("listitem").filter({ hasText: "外部时区日程" });
   await importedEvent.waitFor();
   assert.match(await importedEvent.innerText(), /America\/Los_Angeles/u);
-  steps.push("saving a Tokyo event opens its Los Angeles month and an imported custom TZID renders in the device zone");
+  await page.getByRole("status").filter({ hasText: "部分重复日程超出展开上限，未显示。" }).waitFor();
+  await capture("desktop-agenda-partial");
+  steps.push("the Los Angeles month shows the saved Tokyo event and the custom TZID import alongside a partial-calendar warning");
 
   await page.locator(".assistant-view-tabs").getByRole("button", { name: "收件", exact: true }).click();
   await page.locator(".assistant-view-tabs").getByRole("button", { name: "助理设置", exact: true }).click();

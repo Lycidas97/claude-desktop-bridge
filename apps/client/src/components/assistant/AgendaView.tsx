@@ -84,7 +84,8 @@ export function AgendaView({ tab, onTabChange }: { tab: "todos" | "calendar"; on
     {!agenda.online && <p role="status">电脑离线，连接后可同步议程。</p>}
     {error && <p role="alert">{error}</p>}
     {page.error && <div className="assistant-actions"><p role="alert">{page.error}</p><button type="button" className="secondary-button" disabled={!agenda.online || page.loading} onClick={page.retry}>重试</button></div>}
-    {!page.records.length && !page.error && agenda.online && <p className="assistant-mail-empty" role="status">{page.loading ? "正在同步议程…" : calendar ? "本月暂无日程" : "暂无待办"}</p>}
+    {page.incomplete && <p role="status">{calendar ? "部分重复日程超出展开上限，未显示。" : "部分重复待办超出展开上限，未显示。"}</p>}
+    {!page.records.length && !page.error && !page.incomplete && agenda.online && <p className="assistant-mail-empty" role="status">{page.loading ? "正在同步议程…" : calendar ? "本月暂无日程" : "暂无待办"}</p>}
     {page.records.length > 0 && <ul className="agenda-records" aria-label={calendar ? "日程列表" : "待办列表"}>
       {calendar ? agenda.events.records.map(event => row(event, <>
         <small>{event.allDay ? `${event.startAt}${event.endAt === shiftDate(event.startAt, 1) ? "" : ` 至 ${shiftDate(event.endAt, -1)}`} 全天`

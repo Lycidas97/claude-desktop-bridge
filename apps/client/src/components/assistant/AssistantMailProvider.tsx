@@ -28,7 +28,7 @@ interface AssistantMailState {
   loadOlder(): Promise<void>;
   reload(): void;
   refresh(): void;
-  refreshStatus: "refreshing" | "refreshed" | "interrupted" | undefined;
+  refreshStatus: "refreshing" | "refreshed" | undefined;
   read(mailRefId: string): Promise<BridgeMailDetail>;
   request: AssistantRequest;
 }
@@ -55,6 +55,11 @@ export function AssistantMailProvider({ hostId, snapshot, online, request, loadC
   const [refreshKey, setRefreshKey] = useState(0);
   const [refreshStatus, setRefreshStatus] = useState<AssistantMailState["refreshStatus"]>();
   const reload = () => setRefreshKey(value => value + 1);
+  useEffect(() => {
+    if (refreshStatus !== "refreshed") return;
+    const timer = setTimeout(() => setRefreshStatus(undefined), 2_400);
+    return () => clearTimeout(timer);
+  }, [refreshStatus]);
   const [selection, setSelection] = useState<{ sessionId: string; mailRefId: string }>();
   const storageKey = hostId ? viewedMailStorageKey(hostId) : undefined;
   const [readState, setReadState] = useState<{ baselineSeq: number; viewed: Set<string> } | undefined>(() => {
@@ -124,7 +129,7 @@ export function AssistantMailProvider({ hostId, snapshot, online, request, loadC
   useEffect(() => {
     if (!online) {
       setLoading(false);
-      setRefreshStatus(status => status === "refreshing" ? "interrupted" : undefined);
+      setRefreshStatus(undefined);
       return;
     }
     if (!enabled || !cacheReady) return;

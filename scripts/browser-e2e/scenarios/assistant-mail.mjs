@@ -318,13 +318,16 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await capture("mobile-mail");
   steps.push("60 stored mail cards render without a turn request; untrusted content stays text and explicit links show the destination host");
 
-  const refreshMail = page.getByRole("button", { name: /^刷新邮件/u });
+  const refreshMail = page.getByRole("button", { name: /刷新邮件列表/u });
   const mailRefreshed = page.getByRole("status").filter({ hasText: "邮件列表已刷新" });
+  await refreshMail.scrollIntoViewIfNeeded();
+  const firstCardY = (await cards().first().boundingBox()).y;
   const refreshGate = Promise.withResolvers();
   host.mailPageGate = refreshGate.promise;
   try {
     await refreshMail.click();
     await page.getByRole("status").filter({ hasText: "正在刷新邮件列表" }).waitFor();
+    assert.equal((await cards().first().boundingBox()).y, firstCardY, "Refresh progress does not move the inbox");
     assert.equal(await refreshMail.isDisabled(), true);
     assert.equal(await cards().count(), 60, "Pending refresh preserves the loaded inbox");
   } finally {
@@ -332,7 +335,11 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
     refreshGate.resolve(true);
   }
   await mailRefreshed.waitFor();
+  assert.equal((await cards().first().boundingBox()).y, firstCardY, "Refresh success does not move the inbox");
   assert.equal(await cards().count(), 60, "A completed refresh can leave the inbox unchanged");
+  await page.getByRole("button", { name: "刷新邮件列表（已刷新）", exact: true }).waitFor();
+  await page.getByRole("button", { name: "刷新邮件列表", exact: true }).waitFor({ timeout: 5_000 });
+  assert.equal(await mailRefreshed.count(), 0, "The success receipt clears in a quiet inbox");
   host.mailPageFailure = true;
   await refreshMail.click();
   await page.getByRole("alert").filter({ hasText: "隔离邮件列表读取失败" }).waitFor();
@@ -350,7 +357,7 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
     await eventually(() => mailListRequests() > beforeInterruptedRefresh, true, "The refresh reaches the host before disconnect");
     host.mailOffline = true;
     host.socket.close();
-    await page.getByRole("alert").filter({ hasText: "电脑离线，邮件列表刷新已中断。" }).waitFor();
+    await page.getByRole("status").filter({ hasText: "电脑离线，显示已缓存邮件。" }).waitFor();
     assert.equal(await refreshMail.getAttribute("aria-busy"), "false");
   } finally {
     host.mailPageGate = undefined;

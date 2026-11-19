@@ -1,5 +1,5 @@
 import { MAIL_POLL_INTERVALS, type BridgeDirectoryListing, type BridgeHostSnapshot, type BridgeMailAccount, type BridgeMethod, type BridgeSessionInfo } from "@bridge/protocol";
-import { ChevronRight, RefreshCw, Settings } from "lucide-react";
+import { Check, ChevronRight, LoaderCircle, RefreshCw, Settings } from "lucide-react";
 import { useEffect, useId, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { formatSessionModelLabel } from "../../lib/conversation-timeline.js";
 import { IconButton } from "../common/IconButton.js";
@@ -77,6 +77,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
   }
 
   const refreshing = mail?.refreshStatus === "refreshing";
+  const refreshed = mail?.refreshStatus === "refreshed";
   const viewTabs = (
     <nav className="assistant-view-tabs" aria-label="助理工作台">
       <div className="assistant-view-switch">
@@ -84,8 +85,14 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
         {mail && <button type="button" aria-pressed={displayedView === "mail"} onClick={() => setView("mail")}>收件</button>}
         {agenda && <button type="button" aria-pressed={displayedView === "agenda"} onClick={() => setView("agenda")}>议程</button>}
       </div>
-      {mail && <IconButton label="刷新邮件列表" className={displayedView === "agenda" ? "assistant-mail-refresh-hidden" : ""}
-        disabled={!mail.online || mail.loading || refreshing} aria-busy={refreshing} onClick={mail.refresh}><RefreshCw size={16} /></IconButton>}
+      {mail && <IconButton label={refreshing ? "正在刷新邮件列表" : refreshed ? "刷新邮件列表（已刷新）" : "刷新邮件列表"}
+        className={displayedView === "agenda" ? "assistant-mail-refresh-hidden" : ""}
+        disabled={!mail.online || mail.loading || refreshing} aria-busy={refreshing} onClick={mail.refresh}>
+        {refreshing ? <LoaderCircle className="is-spinning" size={16} /> : refreshed ? <Check size={16} /> : <RefreshCw size={16} />}
+      </IconButton>}
+      {mail && displayedView !== "agenda" && <span className="assistant-mail-refresh-status" role="status">
+        {refreshing ? "正在刷新邮件列表…" : refreshed ? "邮件列表已刷新" : ""}
+      </span>}
       <IconButton label="助理设置" aria-pressed={displayedView === "settings"} onClick={() => setView("settings")}><Settings size={16} /></IconButton>
     </nav>
   );
@@ -180,7 +187,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
     {displayedView === "mail" && mail && <>
       {!session && binding?.nativeSessionId && <MailReference sessionId={binding.nativeSessionId} />}
       <div className="assistant-mail-list" aria-label="邮件输入">{mail.cache.cards.map(card => <MailCard key={card.mailRefId} card={card} onDiscuss={() => setView("conversation")} />)}</div>
-      {!mail.cache.cards.length && <p className="assistant-mail-empty" role={refreshing ? undefined : "status"}>{mail.loading && !refreshing ? "正在读取邮件…" : "暂无已记录邮件"}</p>}
+      {!mail.cache.cards.length && <p className="assistant-mail-empty" role="status">{mail.loading ? "正在读取邮件…" : "暂无已记录邮件"}</p>}
       {mail.hasOlderMail && <button type="button" className="secondary-button assistant-mail-older" disabled={!mail.online || mail.loading} onClick={() => void mail.loadOlder()}>{mail.loading ? "正在读取…" : "更早邮件"}</button>}
     </>}
   </div>;
@@ -192,9 +199,8 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
         <header className="desktop-page-heading"><h1>助理</h1>{viewTabs}</header>
       </div>
     </div>}
-    {mail && displayedView !== "agenda" && <div className="assistant-page-content assistant-mail-feedback">
-      <p role="status">{refreshing ? "正在刷新邮件列表…" : mail.refreshStatus === "refreshed" ? "邮件列表已刷新" : ""}</p>
-      {mail.refreshStatus === "interrupted" ? <p role="alert">电脑离线，邮件列表刷新已中断。</p> : mail.error && <p role="alert">{mail.error}</p>}
+    {mail?.error && displayedView !== "agenda" && <div className="assistant-page-content assistant-mail-feedback">
+      <p role="alert">{mail.error}</p>
     </div>}
     {session ? <>
       {displayedView === "conversation" && <div className="assistant-page-content">{bindingControls}{notices}</div>}

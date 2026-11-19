@@ -1,9 +1,12 @@
 import type { BridgeDirectoryListing, BridgeHostSnapshot, BridgeMailAccount, BridgeMethod, BridgeSessionInfo } from "@bridge/protocol";
-import { RefreshCw, Settings } from "lucide-react";
+import { ChevronRight, RefreshCw, Settings } from "lucide-react";
 import { useEffect, useId, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { formatSessionModelLabel } from "../../lib/conversation-timeline.js";
 import { IconButton } from "../common/IconButton.js";
 import { SelectMenu } from "../common/SelectMenu.js";
+import type { ConversationViewProps } from "../conversation/ConversationView.js";
 import { MobilePageHeader } from "../mobile/MobilePageHeader.js";
+import { effortLabel } from "../session/SessionConfigurationDialog.js";
 import { SessionCreateDialog } from "../session/SessionCreateDialog.js";
 import { mailResult, useAssistantMail, type AssistantRequest } from "./AssistantMailProvider.js";
 import { MailCard } from "./MailCard.js";
@@ -16,9 +19,10 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
   active?: boolean;
   headerLeading?: ReactNode | undefined;
   onOpenSession(sessionId: string): void;
-  renderConversation(sessionId: string, stage: { alternateStage?: ReactNode | undefined; hideComposer?: boolean | undefined }): ReactNode;
+  renderConversation(sessionId: string, stage: Pick<ConversationViewProps, "alternateStage" | "hideComposer">): ReactNode;
 }) {
   const mail = useAssistantMail();
+  const modelSettingsDescription = useId();
   const [view, setView] = useState<"conversation" | "mail" | "settings">("conversation");
   const [configuring, setConfiguring] = useState(false);
   const [selectedId, setSelectedId] = useState("");
@@ -130,8 +134,20 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
     {!snapshot && binding?.nativeSessionId && <p>绑定会话：{binding.nativeSessionId}</p>}
     {mail.error && <p role="alert">{mail.error}</p>}
   </>;
-  const stage = <div className="assistant-page-content">
+  const stage = (openConfiguration?: () => void) => <div className="assistant-page-content">
     {bindingControls}
+    {displayedView === "settings" && session && (
+      <button type="button" className="assistant-model-settings" aria-label="模型与思考强度" aria-describedby={modelSettingsDescription} aria-haspopup="dialog"
+        disabled={!openConfiguration || workspace?.repairFailed === true} onClick={openConfiguration}>
+        <span>
+          <strong>模型与思考强度</strong>
+          <small id={modelSettingsDescription}>
+            {formatSessionModelLabel(session)} · {session.effort ? effortLabel(session.effort) : "默认"}
+          </small>
+        </span>
+        <ChevronRight size={16} aria-hidden="true" />
+      </button>
+    )}
     {notices}
     {displayedView === "settings" && capabilities.includes("plugin.assistant-mail.account.v1") && <MailAccounts
       accounts={mail.assistant?.accounts ?? []}
@@ -161,7 +177,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
         alternateStage: displayedView === "conversation" ? undefined : stage,
         hideComposer: displayedView === "settings" || workspace?.repairFailed === true,
       })}</div>
-    </> : stage}
+    </> : stage()}
     {creating && snapshot && <SessionCreateDialog snapshot={snapshot} connected={mail.online}
       {...(snapshot.host.capabilities.includes("directory.browse.v1") ? { onBrowseDirectory: browseDirectory } : {})}
       {...(snapshot.host.capabilities.includes("directory.mkdir.v1") ? { onCreateDirectory: createDirectory } : {})}

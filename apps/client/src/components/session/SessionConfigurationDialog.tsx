@@ -59,12 +59,14 @@ export interface SessionConfigurationChange {
 export function SessionConfigurationDialog({
   session,
   revision,
+  modelAndEffortOnly = false,
   onLoad,
   onSave,
   onClose,
 }: {
   session: BridgeSessionInfo;
   revision?: string | number;
+  modelAndEffortOnly?: boolean;
   onLoad(): Promise<BridgeSessionConfiguration>;
   onSave(change: SessionConfigurationChange): Promise<BridgeSessionConfiguration>;
   onClose(): void;
@@ -117,8 +119,9 @@ export function SessionConfigurationDialog({
   }, [confirmFullAccess, saving]);
 
   const modelOptions = configuration?.availableModels ?? [];
-  const outputStyles = configuration?.availableOutputStyles ?? [];
-  const loadReadyStyles = !loading && configuration && outputStyles.length === 0 && session.outputStyleCatalogReady === true;
+  const configurablePermission = !modelAndEffortOnly && claudeSession ? configuration?.nativePermissionMode : undefined;
+  const outputStyles = modelAndEffortOnly ? [] : configuration?.availableOutputStyles ?? [];
+  const loadReadyStyles = !modelAndEffortOnly && !loading && configuration && outputStyles.length === 0 && session.outputStyleCatalogReady === true;
   useEffect(() => {
     if (!loadReadyStyles) return;
     let active = true;
@@ -170,9 +173,9 @@ export function SessionConfigurationDialog({
   async function saveSelectedConfiguration(): Promise<void> {
     const change: SessionConfigurationChange = {
       ...(modelChanged ? { model } : {}),
-      ...(outputStyle && outputStyle !== configuration?.outputStyle ? { outputStyle } : {}),
+      ...(!modelAndEffortOnly && outputStyle && outputStyle !== configuration?.outputStyle ? { outputStyle } : {}),
       ...(pickedEffort && pickedEffort !== configuredEffort ? { effort: pickedEffort } : {}),
-      ...(claudeSession && nativePermissionMode && nativePermissionMode !== configuration?.nativePermissionMode
+      ...(configurablePermission && nativePermissionMode && nativePermissionMode !== configurablePermission
         ? { permissionMode: nativePermissionMode } : {}),
     };
     if (Object.keys(change).length) await save(change);
@@ -258,19 +261,19 @@ export function SessionConfigurationDialog({
               </fieldset>
             )}
 
-            {claudeSession && configuration?.nativePermissionMode && (
+            {configurablePermission && (
               <div className="session-model-field">
                 <span>Desktop 授权模式</span>
                 <SelectMenu<BridgeSDKPermissionMode>
                   ariaLabel="Desktop 授权模式"
-                  value={nativePermissionMode ?? configuration.nativePermissionMode}
+                  value={nativePermissionMode ?? configurablePermission}
                   options={PERMISSION_MODE_OPTIONS}
                   onChange={(nextMode) => setNativePermissionMode(nextMode)}
                 />
               </div>
             )}
 
-            {(outputStyles.length > 0 || outputStyle) && (
+            {!modelAndEffortOnly && (outputStyles.length > 0 || outputStyle) && (
               <div className="session-model-field">
                 <span>输出风格</span>
                 <SelectMenu
@@ -322,9 +325,9 @@ export function SessionConfigurationDialog({
               <button
                 type="button"
                 className="primary-button"
-                disabled={saving || (!modelOptions.length && !effortLevels.length && !configuration?.nativePermissionMode && !outputStyles.length)}
+                disabled={saving || (!modelOptions.length && !effortLevels.length && !configurablePermission && !outputStyles.length)}
                 onClick={() => {
-                  if (claudeSession && nativePermissionMode === "bypassPermissions" && configuration?.nativePermissionMode !== "bypassPermissions") setConfirmFullAccess(true);
+                  if (configurablePermission && nativePermissionMode === "bypassPermissions" && configurablePermission !== "bypassPermissions") setConfirmFullAccess(true);
                   else void saveSelectedConfiguration();
                 }}
               >

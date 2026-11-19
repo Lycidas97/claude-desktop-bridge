@@ -582,8 +582,7 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
           result = await host.nativeApproval.configuration(request);
           if (request.params.sessionId === sessionId) Object.assign(session, host.nativeApproval.profile());
           else if (result.session) {
-            const target = snapshot.sessions.find(candidate => candidate.sessionId === result.session.sessionId);
-            if (target) target.outputStyle = result.session.outputStyle;
+            snapshot.sessions = snapshot.sessions.map(candidate => candidate.sessionId === result.session.sessionId ? result.session : candidate);
           }
           await host.send({ kind: "snapshot", snapshot });
           break;

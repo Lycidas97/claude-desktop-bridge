@@ -3,7 +3,80 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { sessionId } from "../config.mjs";
-import { eventually, openMobileDrawer, openMobileSession, selectCustomOption } from "../helpers.mjs";
+import { customSelectValue, eventually, openMobileDrawer, openMobileSession, selectCustomOption } from "../helpers.mjs";
+
+async function openDesktopAssistant(page, host, baseUrl, requests) {
+  await page.exposeFunction("assistantDesktopRequest", async input => {
+    const requestId = randomUUID();
+    requests.push(input);
+    const result = await host.nativeApproval.controllerRequest({ kind: "request", requestId, ...input }, "desktop");
+    return { kind: "response", requestId, ok: true, result };
+  });
+  await page.addInitScript(initialSnapshot => {
+    let snapshot = initialSnapshot;
+    let onSnapshot;
+    window.assistantDesktopSnapshot = (patch) => {
+      snapshot = { ...snapshot, ...patch };
+      onSnapshot?.(structuredClone(snapshot));
+    };
+    window.bridgeDesktop = {
+      getSnapshot: async () => structuredClone(snapshot), onSnapshot: listener => {
+        onSnapshot = listener;
+        return () => { onSnapshot = undefined; };
+      }, onEvent: () => () => {},
+      request: async input => {
+        const response = await window.assistantDesktopRequest(input);
+        const { assistantMail, session } = response.result;
+        if (assistantMail) window.assistantDesktopSnapshot({ assistantMail });
+        if (input.method === "session.configure" && session) window.assistantDesktopSnapshot({
+          sessions: snapshot.sessions.map(candidate => candidate.sessionId === session.sessionId ? session : candidate),
+        });
+        return response;
+      },
+    };
+  }, { ...host.snapshot, connection: "connected", launchAtLogin: false, diagnosticsEnabled: false, managedDesktopEnabled: false,
+    host: { ...host.snapshot.host, capabilities: host.snapshot.host.capabilities.filter(value => value !== "plugin.magpie-quota.v1") },
+    claudeDesktop: { state: "running", detail: "隔离 Native 宿主", canLaunch: false, canQuit: true } });
+  await page.setViewportSize({ width: 1200, height: 800 });
+  await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "助理", exact: true }).click();
+  await page.locator(".assistant-conversation textarea").waitFor();
+}
+
+async function verifyAssistantConfiguration(page, host, requests, model, effort, effortLabel, screenshot) {
+  const binding = structuredClone(host.snapshot.assistantMail.binding);
+  const { nativeSessionId } = binding;
+  const chat = page.locator(".assistant-conversation textarea");
+  await chat.fill("配置前的助理草稿");
+  const settings = page.getByRole("button", { name: "助理设置", exact: true });
+  const edit = page.getByRole("button", { name: "模型与思考强度", exact: true });
+  await settings.click();
+  await edit.click();
+  const dialog = page.getByRole("dialog", { name: "助理", exact: true });
+  const modelSelect = dialog.getByRole("combobox", { name: "模型", exact: true });
+  await selectCustomOption(page, modelSelect, model);
+  assert.equal(await dialog.getByLabel("Desktop 授权模式").count(), 0);
+  assert.equal(await dialog.getByRole("button", { name: "超高", exact: true }).count(), 0);
+  const effortChoice = dialog.getByRole("button", { name: effortLabel, exact: true });
+  await effortChoice.click();
+  await dialog.getByRole("button", { name: "保存配置", exact: true }).click();
+  await dialog.waitFor({ state: "hidden" });
+  const { client: _client, ...change } = requests.findLast(request => request.method === "session.configure").params;
+  assert.deepEqual(change, { sessionId: nativeSessionId, model, effort });
+  assert.deepEqual(host.snapshot.assistantMail.binding, binding);
+  const nativeSession = (await host.nativeApproval.sectionCatalog()).sessions.find(session => session.sessionId === nativeSessionId);
+  assert.equal(nativeSession.nativePermissionMode, "dontAsk");
+  assert.equal(nativeSession.effort, effort);
+  await edit.getByText(`${nativeSession.modelDisplayName} · ${effortLabel}`, { exact: true }).waitFor();
+  await edit.click();
+  await eventually(() => customSelectValue(modelSelect), model, "Reopened picker reads the model confirmed by the host");
+  assert.equal(await effortChoice.getAttribute("aria-pressed"), "true");
+  await page.screenshot({ path: screenshot, fullPage: true });
+  await dialog.getByRole("button", { name: "关闭", exact: true }).click();
+  await page.getByRole("button", { name: "对话", exact: true }).click();
+  assert.equal(await chat.inputValue(), "配置前的助理草稿");
+  await chat.fill("");
+}
 
 export async function verifyAssistantMail(page, host, steps, directory, viewports, baseUrl) {
   const cards = () => page.locator('.assistant-mail-list > [data-mail-id]');
@@ -334,6 +407,18 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   assert.equal(managedSession.cwd, workspacePath);
   assert.equal(managedSession.nativePermissionMode, "dontAsk");
   assert.equal(host.snapshot.projects.find(project => project.projectId === managedSession.projectId).managedAssistant, true);
+  await verifyAssistantConfiguration(page, host, host.requests, "synthetic-model-large[1m]", "high", "高",
+    resolve(directory, "mobile-assistant-configuration.png"));
+  const managedDesktop = await page.context().newPage();
+  try {
+    const requests = [];
+    await openDesktopAssistant(managedDesktop, host, baseUrl, requests);
+    await verifyAssistantConfiguration(managedDesktop, host, requests, "synthetic-model", "low", "低",
+      resolve(directory, "desktop-assistant-configuration.png"));
+  } finally {
+    await managedDesktop.close();
+  }
+  steps.push("mobile and desktop settings save and reopen host-confirmed model and effort on the same managed session, preserving its draft, binding and dontAsk permission");
   const managedMail = host.snapshot.assistantMail;
   await host.send({ kind: "snapshot", snapshot: { ...host.snapshot, assistantMail: {
     ...managedMail, bindingState: "unavailable", workspace: { ...managedMail.workspace, repairFailed: true },
@@ -362,37 +447,7 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   steps.push("managed setup confirms the path and Native permissions, pins the project, and keeps previous managed sessions out of the manual binding picker");
 
   const desktopRequests = [];
-  await page.exposeFunction("assistantDesktopRequest", async input => {
-    const requestId = randomUUID();
-    desktopRequests.push(input);
-    const result = await host.nativeApproval.controllerRequest({ kind: "request", requestId, ...input }, "desktop");
-    return { kind: "response", requestId, ok: true, result };
-  });
-  await page.addInitScript(initialSnapshot => {
-    let snapshot = initialSnapshot;
-    let onSnapshot;
-    window.assistantDesktopSnapshot = (patch) => {
-      snapshot = { ...snapshot, ...patch };
-      onSnapshot?.(structuredClone(snapshot));
-    };
-    window.bridgeDesktop = {
-      getSnapshot: async () => structuredClone(snapshot), onSnapshot: listener => {
-        onSnapshot = listener;
-        return () => { onSnapshot = undefined; };
-      }, onEvent: () => () => {},
-      request: async input => {
-        const response = await window.assistantDesktopRequest(input);
-        if (response.result.assistantMail) window.assistantDesktopSnapshot({ assistantMail: response.result.assistantMail });
-        return response;
-      },
-    };
-  }, { ...host.snapshot, connection: "connected", launchAtLogin: false, diagnosticsEnabled: false, managedDesktopEnabled: false,
-    host: { ...host.snapshot.host, capabilities: host.snapshot.host.capabilities.filter(value => value !== "plugin.magpie-quota.v1") },
-    claudeDesktop: { state: "running", detail: "隔离 Native 宿主", canLaunch: false, canQuit: true } });
-  await page.setViewportSize({ width: 1200, height: 800 });
-  await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
-  await page.getByRole("button", { name: "助理", exact: true }).click();
-  await page.locator(".assistant-conversation textarea").waitFor();
+  await openDesktopAssistant(page, host, baseUrl, desktopRequests);
   assert.equal(await page.locator(".assistant-page").getByRole("button", { name: "对话", exact: true }).count(), 1, "Only the assistant-level tab is labeled 对话");
   assert.equal(await page.locator(".assistant-page .desktop-page-heading, .assistant-page .m-header").count(), 1, "Desktop assistant has one header");
   assert.equal(await page.locator(".assistant-page").getByRole("navigation", { name: "会话视图" }).count(), 0, "Assistant conversation has no separate evidence view");

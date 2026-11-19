@@ -100,7 +100,7 @@ const ASSISTANT_HIDDEN_COMMANDS = new Set(["fork", "rewind"]);
 export interface ConversationViewProps {
   variant?: "mobile" | "desktop" | undefined;
   surface?: "project" | "assistant" | undefined;
-  alternateStage?: ReactNode;
+  alternateStage?: ((openConfiguration?: () => void) => ReactNode) | undefined;
   hideComposer?: boolean | undefined;
   hostId: string;
   session: BridgeSessionInfo;
@@ -270,7 +270,7 @@ export function ConversationView({
     () => Boolean(session.parentSessionId),
   );
   const [internalPermissionOpen, setInternalPermissionOpen] = useState(false);
-  const [internalConfigurationOpen, setInternalConfigurationOpen] = useState(false);
+  const [internalConfiguration, setInternalConfiguration] = useState<"session" | "model-effort">();
   const [rewindTarget, setRewindTarget] = useState<{ sessionId: string; messageId?: string }>();
   const [selectedNativePromptId, setSelectedNativePromptId] = useState<string>();
   const [contextPopoverOpen, setContextPopoverOpen] = useState(false);
@@ -307,10 +307,10 @@ export function ConversationView({
     if (onPermissionOpenChange) onPermissionOpenChange(next);
     else setInternalPermissionOpen(next);
   }
-  const effectiveConfigurationOpen = controlledConfigurationOpen ?? internalConfigurationOpen;
+  const effectiveConfigurationOpen = controlledConfigurationOpen ?? (internalConfiguration !== undefined);
   function setConfigurationOpen(next: boolean): void {
     if (onConfigurationOpenChange) onConfigurationOpenChange(next);
-    else setInternalConfigurationOpen(next);
+    else setInternalConfiguration(next ? "session" : undefined);
   }
 
   useEffect(() => {
@@ -318,7 +318,7 @@ export function ConversationView({
     previousDraftKeyRef.current = draftKey;
     setInternalSessionView("conversation");
     setInternalPermissionOpen(false);
-    setInternalConfigurationOpen(false);
+    setInternalConfiguration(undefined);
     setInternalForkChainOpen(Boolean(session.parentSessionId));
     tasks.resetSelection();
     files.resetSelection();
@@ -1036,6 +1036,7 @@ export function ConversationView({
         <SessionConfigurationDialog
           key={`configuration:${session.sessionId}`}
           session={session}
+          modelAndEffortOnly={internalConfiguration === "model-effort"}
           revision={events.filter((event) => (
             ((event.type === "session.configuration" || event.type === "session.compacted") && event.sessionId === session.sessionId)
             || (event.type === "permission.policy.changed" && (!event.sessionId || event.sessionId === session.sessionId))
@@ -1313,7 +1314,7 @@ export function ConversationView({
           {transcript}
           {hasAlternateStage ? (
             <div className="conversation-alternate-stage" style={{ flex: 1, overflowY: "auto" }}>
-              {alternateStage}
+              {alternateStage(canConfigure && isOnline ? () => setInternalConfiguration("model-effort") : undefined)}
             </div>
           ) : evidenceView}
         </div>

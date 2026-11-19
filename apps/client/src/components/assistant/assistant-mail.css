@@ -50,6 +50,29 @@
 .assistant-binding-current > :last-child { flex-shrink: 0; }
 .assistant-session-link { min-height: 36px; padding: 4px 0; border: 0; background: transparent; color: var(--accent-ink); font: inherit; font-size: calc(13px * var(--font-scale)); cursor: pointer; }
 .assistant-session-link:hover { text-decoration: underline; }
+.assistant-model-settings {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  margin: 8px 0;
+  padding: 10px 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: calc(13px * var(--font-scale));
+  text-align: left;
+  cursor: pointer;
+}
+.assistant-model-settings:hover:not(:disabled) { color: var(--accent-ink); }
+.assistant-model-settings:disabled { opacity: .65; cursor: default; }
+.assistant-model-settings > span { display: grid; gap: 3px; min-width: 0; }
+.assistant-model-settings small { color: var(--muted); overflow-wrap: anywhere; }
+.assistant-model-settings > svg { flex-shrink: 0; }
 .assistant-binding p, .assistant-page-content > p { color: var(--muted); font-size: calc(13px * var(--font-scale)); line-height: 1.6; }
 .assistant-binding p[role="alert"], .assistant-page-content > p[role="alert"] { color: var(--danger-ink); }
 .assistant-binding-form { display: grid; gap: 12px; margin: 14px 0; }

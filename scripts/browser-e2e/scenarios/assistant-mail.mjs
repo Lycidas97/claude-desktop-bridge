@@ -379,6 +379,32 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   assert.equal(managedSession.nativePermissionMode, "dontAsk");
   assert.equal(host.snapshot.projects.find(project => project.projectId === managedSession.projectId).managedAssistant, true);
   const managedMail = host.snapshot.assistantMail;
+  const unexpectedTools = [
+    "mcp__terminal__run_in_terminal", "mcp__Claude_Browser__preview_start", "mcp__scheduled-tasks__list_scheduled_tasks",
+    ...Array.from({ length: 45 }, (_, index) => `mcp__desktop_fixture__unlisted_tool_name_${index}`),
+  ];
+  await host.send({ kind: "snapshot", snapshot: { ...host.snapshot, assistantMail: {
+    ...managedMail, workspace: { ...managedMail.workspace, toolIsolation: "warning", unexpectedTools },
+  } } });
+  const catalogWarning = page.locator(".assistant-page").getByRole("alert");
+  await catalogWarning.waitFor();
+  const warningHeight = (await catalogWarning.boundingBox()).height;
+  await capture("mobile-managed-tool-catalog");
+  assert.ok(warningHeight < 64, `The collapsed catalog notice should fit above the conversation, got ${warningHeight}px`);
+  assert.equal(await catalogWarning.innerText(), `工具目录超出托管白名单（${unexpectedTools.length} 项）`);
+  const catalogDetails = page.locator(".assistant-page details").filter({ has: page.getByRole("alert") });
+  const terminalTool = catalogDetails.getByText(unexpectedTools[0], { exact: true });
+  assert.equal(await terminalTool.isVisible(), false);
+  await catalogWarning.click();
+  await terminalTool.waitFor();
+  assert.deepEqual(await catalogDetails.locator("li").allTextContents(), unexpectedTools);
+  const managedComposer = page.locator(".assistant-conversation textarea");
+  await managedComposer.waitFor();
+  assert.ok(await managedComposer.evaluate(element => element.getBoundingClientRect().bottom <= innerHeight), "The expanded catalog leaves the composer within the viewport");
+  await capture("mobile-managed-tool-catalog-expanded");
+  await catalogWarning.click();
+  assert.equal(await terminalTool.isVisible(), false);
+  steps.push("a long managed tool catalog warns without covering the conversation; the complete catalog is available on demand");
   await host.send({ kind: "snapshot", snapshot: { ...host.snapshot, assistantMail: {
     ...managedMail, bindingState: "unavailable", workspace: { ...managedMail.workspace, repairFailed: true },
   } } });

@@ -124,7 +124,14 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
   );
   const notices = <>
     {workspace?.repairFailed && workspace.nativeSessionId && <p role="alert">托管工作区配置无法恢复。请重新初始化或更换会话。</p>}
-    {workspace?.toolIsolation === "warning" && <p role="alert">检测到托管助理的工具隔离异常{workspace.unexpectedTools?.length ? `：${workspace.unexpectedTools.join("、")}` : "。"}</p>}
+    {workspace?.toolIsolation === "warning" && (workspace.unexpectedTools?.length ? (
+      <details className="assistant-tool-warning">
+        <summary><span role="alert">工具目录超出托管白名单（{workspace.unexpectedTools.length} 项）</span></summary>
+        <ul tabIndex={0} aria-label="白名单外工具">
+          {workspace.unexpectedTools.map(tool => <li key={tool}><code>{tool}</code></li>)}
+        </ul>
+      </details>
+    ) : <p role="alert">工具目录超出托管白名单</p>)}
     {state === "unavailable" && !workspace?.repairFailed && <p role="status">原生会话暂不可用。</p>}
     {!mail.online && <p role="status">电脑离线，显示已缓存邮件。</p>}
     {!snapshot && binding?.nativeSessionId && <p>绑定会话：{binding.nativeSessionId}</p>}

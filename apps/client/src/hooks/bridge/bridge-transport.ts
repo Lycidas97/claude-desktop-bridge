@@ -282,6 +282,7 @@ export interface BridgeTransportRefs {
   cryptoRef: MutableRefObject<BridgeCrypto | undefined>;
   cryptoByRoomRef: MutableRefObject<Map<string, BridgeCrypto>>;
   socketRef: MutableRefObject<BridgeTransport | undefined>;
+  connectionAttemptRef: MutableRefObject<symbol | undefined>;
   connectionTimerRef: MutableRefObject<ReturnType<typeof setTimeout> | undefined>;
   pairingSyncTimerRef: MutableRefObject<ReturnType<typeof setTimeout> | undefined>;
   pendingResponsesRef: MutableRefObject<Map<string, PendingResponse>>;
@@ -298,6 +299,7 @@ export type ActiveTransportTeardownRefs = Pick<
   BridgeTransportRefs,
   | "cryptoRef"
   | "socketRef"
+  | "connectionAttemptRef"
   | "connectionTimerRef"
   | "pairingSyncTimerRef"
   | "pendingResponsesRef"
@@ -347,6 +349,7 @@ export function teardownActiveTransport(
     options.onlyIfSocket.close();
     return;
   }
+  refs.connectionAttemptRef.current = undefined;
   if (connectionTimerRef.current) {
     clearTimeout(connectionTimerRef.current);
     connectionTimerRef.current = undefined;
@@ -815,9 +818,9 @@ export async function startBridgeConnection(
   const {
     setState,
     stateRef,
-    cryptoRef,
     cryptoByRoomRef,
     socketRef,
+    connectionAttemptRef,
     connectionTimerRef,
     pendingResponsesRef,
     envelopeRequestsRef,
@@ -839,9 +842,12 @@ export async function startBridgeConnection(
     nextCrypto: crypto,
     rejectPendingReason: "连接已重置",
   });
+  const attempt = Symbol();
+  connectionAttemptRef.current = attempt;
   const roomId = crypto.identity.roomId;
   if (!provisionalPairing) writeLastActiveHost(roomId);
   const storedHost = await bridgeVault.getHost(roomId);
+  if (connectionAttemptRef.current !== attempt) return;
   const relayEndpoints = normalizeBridgeEndpoints(
     provisionalPairing?.relayEndpoints ??
       storedHost?.relayEndpoints ??
@@ -879,7 +885,7 @@ export async function startBridgeConnection(
   }));
   if (rejectedOutbox.length > 0) await bridgeVault.removeOutbox(rejectedOutbox.map((envelope) => envelope.id));
   const pendingOutbound = replayableOutbox.length;
-  if (cryptoRef.current !== crypto) return;
+  if (connectionAttemptRef.current !== attempt) return;
   setState((current) => hydrateStoredHostState(current, roomId, stored, {
     rejectedRequestIds,
     pendingOutbound,

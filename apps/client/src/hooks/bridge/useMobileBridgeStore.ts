@@ -18,6 +18,7 @@ export function createBridgeStore(state: MobileBridgeState, setState: BridgeTran
     cryptoRef: { current: undefined },
     cryptoByRoomRef: { current: new Map() },
     socketRef: { current: undefined },
+    connectionAttemptRef: { current: undefined },
     connectionTimerRef: { current: undefined },
     pairingSyncTimerRef: { current: undefined },
     pendingResponsesRef: { current: new Map() },

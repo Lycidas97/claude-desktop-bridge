@@ -184,8 +184,11 @@ export async function verifyAssistantProposals(page, host, steps, directory, vie
 
   await desktop.getByRole("button", { name: "返回列表", exact: true }).click();
   const ruleList = desktop.locator(".proposal-list");
-  await ruleList.getByRole("button", { name: /reporting \/ summary/u }).click();
+  const addRule = ruleList.getByRole("button", { name: /reporting \/ summary/u });
+  await addRule.getByText("新增规则", { exact: true }).waitFor();
+  await addRule.click();
   const ruleDetail = desktop.getByRole("region", { name: "提案详情" });
+  await ruleDetail.getByText("新增规则", { exact: true }).waitFor();
   await ruleDetail.getByRole("button", { name: "确认保存规则" }).click();
   await ruleDetail.getByText("已写入", { exact: true }).waitFor();
   assert.ok((await host.nativeApproval.readFixtureProfile()).includes(memoryProposalFixture.text));
@@ -195,7 +198,10 @@ export async function verifyAssistantProposals(page, host, steps, directory, vie
 
   await host.nativeApproval.draftProposal({ ...memoryProposalFixture, operation: "update", text: "先列结论，再用三条以内的要点说明。" });
   await page.locator(".assistant-page-mobile").getByRole("button", { name: "返回", exact: true }).click();
-  await rows.getByRole("button", { name: /reporting \/ summary/u }).click();
+  const updateRule = rows.getByRole("button", { name: /reporting \/ summary/u });
+  await updateRule.getByText("修改规则", { exact: true }).waitFor();
+  await updateRule.click();
+  await detail.getByText("修改规则", { exact: true }).waitFor();
   await detail.getByText("先列结论。", { exact: true }).waitFor();
   await detail.getByText("先列结论，再用三条以内的要点说明。", { exact: true }).waitFor();
   await capture(page, "mobile-profile-rule-diff");
@@ -203,7 +209,18 @@ export async function verifyAssistantProposals(page, host, steps, directory, vie
   await detail.getByText("已写入", { exact: true }).waitFor();
   assert.ok(host.requests.some(request => request.method === "assistant.proposal.commit" && request.params.confirmMemory === true));
   assert.ok((await host.nativeApproval.readFixtureProfile()).includes("先列结论，再用三条以内的要点说明。"));
-  steps.push("Desktop and paired phone confirm a frozen rule diff; the isolated PROFILE.md changes only after approval");
+
+  const { text: _text, ...ruleWithoutText } = memoryProposalFixture;
+  await host.nativeApproval.draftProposal({ ...ruleWithoutText, operation: "delete" });
+  await page.locator(".assistant-page-mobile").getByRole("button", { name: "返回", exact: true }).click();
+  const deleteRule = rows.getByRole("button", { name: /reporting \/ summary/u });
+  await deleteRule.getByText("删除规则", { exact: true }).waitFor();
+  await deleteRule.click();
+  await detail.getByText("删除规则", { exact: true }).waitFor();
+  await detail.getByRole("button", { name: "确认删除规则" }).click();
+  await detail.getByText("已写入", { exact: true }).waitFor();
+  assert.ok(!(await host.nativeApproval.readFixtureProfile()).includes("先列结论，再用三条以内的要点说明。"));
+  steps.push("Desktop and paired phone label all three rule operations before confirmation; only approvals change the isolated PROFILE.md");
   const { smtp } = host.nativeApproval.assistantMail;
   const { attempts } = smtp;
   const mailRequest = (method, params) => host.nativeApproval.controllerRequest(desktopFixtureRequest({ method, params }), "desktop");

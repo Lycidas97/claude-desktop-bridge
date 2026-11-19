@@ -64,7 +64,7 @@ export function ProposalPanel({ mobile, selected, onSelect }: {
     {pages && pages.proposals.length > 0 && <ul className="proposal-list">
       {pages.proposals.map(proposal => <li key={proposal.proposalId}>
         <button type="button" onClick={() => onSelect(proposal)}>
-          <span><strong>{proposalTitle(proposal)}</strong><small>{proposalKindLabel[proposal.action.kind]}
+          <span><strong>{proposalTitle(proposal)}</strong><small>{proposalKindLabel(proposal.action)}
             {proposal.action.kind !== "memory.rule_upsert" && ` · ${proposal.sourceLabel}`}
             {history && ` · ${proposalStatus(proposal)}`}</small></span>
           <ChevronRight size={16} aria-hidden="true" />

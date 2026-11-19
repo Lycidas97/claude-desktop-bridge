@@ -498,6 +498,8 @@ Desktop，未操作托管会话或邮箱。
 
 浏览器 `assistant-proposals` 在明暗主题用 Desktop 请求和配对手机 RPC 走真实 Controller 和持久提案账本。旧版请求仍可读议程提案，规则提案在列表和引用解析中隐藏，直接提交旧版确认请求会被拒。支持规则审批的客户端显示前后差异并提交显式确认后，隔离 `PROFILE.md` 才会更新。真实 Windows、完整安装包和实体手机审批未取证。
 
+**阶段 3 启用门禁仍有缺口。** 专职子代理草拟的提案可从「提案」入口核对和审批。当前实时消息和历史投影会过滤子代理工具回执，因此这些草稿在会话中没有内联确认卡。启用阶段 3 前须验证子代理草稿可在会话中核对并确认。[独立 UI 评审](https://github.com/Lycidas97/claude-desktop-bridge/pull/443#pullrequestreview-5981038148)
+
 ## Cleanup boundary
 
 The runners append the checkout's `scripts/recycle-cleanup.cjs` to `NODE_OPTIONS`,

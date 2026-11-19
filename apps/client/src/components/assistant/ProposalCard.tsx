@@ -11,12 +11,16 @@ import "./assistant-proposal.css";
 
 const deviceZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 const todoLabels: Record<AgendaTodoInput["status"], string> = { pending: "待办", "in-progress": "进行中", completed: "已完成", cancelled: "已取消" };
-export const proposalKindLabel: Record<BridgeActionProposal["action"]["kind"], string> = {
+const proposalKindLabels = {
   "todo.create": "新建待办", "todo.update": "修改待办", "todo.complete": "完成待办",
   "calendar.create": "新建日程", "calendar.reschedule": "调整日程", "calendar.delete": "删除日程",
   "mail.reply": "回复邮件", "mail.send": "外发邮件",
-  "memory.rule_upsert": "助理规则",
 };
+const ruleOperationLabels = { add: "新增规则", update: "修改规则", delete: "删除规则" };
+
+export function proposalKindLabel(action: BridgeActionProposal["action"]): string {
+  return action.kind === "memory.rule_upsert" ? ruleOperationLabels[action.operation] : proposalKindLabels[action.kind];
+}
 const proposalStateLabel: Record<ProposalState, string> = {
   pending: "待确认", executing: "正在写入…", applied: "已写入", dismissed: "已忽略",
   conflict: "记录已更新", failed: "写入失败", uncertain: "结果不确定",
@@ -40,7 +44,7 @@ export function proposalTitle(proposal: BridgeActionProposal): string {
   const { action } = proposal;
   if (action.kind === "memory.rule_upsert") return `${action.category} / ${action.ruleId}`;
   if ("accountKey" in action) return action.subject || "（无主题）";
-  return "value" in action ? action.value.title : proposal.before?.title ?? proposalKindLabel[action.kind];
+  return "value" in action ? action.value.title : proposal.before?.title ?? proposalKindLabel(action);
 }
 
 function shiftDate(value: string, days: number): string {
@@ -104,7 +108,7 @@ export function ProposalCard({ proposal, mobile, review = false, replaced = fals
   return <section className={`proposal-card${review ? " is-review" : ""}`} aria-label={`提案：${proposalTitle(current)}`} data-proposal-id={current.proposalId} data-stream-key={review ? undefined : `proposal:${current.proposalId}`}>
     <header className="proposal-card-header">
       <Icon size={17} aria-hidden="true" />
-      <span>{proposalKindLabel[action.kind]}</span>
+      <span>{proposalKindLabel(action)}</span>
       {current.revision > 1 && <span className="proposal-card-revision">版本 {current.revision}</span>}
     </header>
     <h3>{proposalTitle(current)}</h3>

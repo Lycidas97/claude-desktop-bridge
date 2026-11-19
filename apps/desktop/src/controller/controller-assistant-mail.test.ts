@@ -478,7 +478,7 @@ it("binds the provisioned Native conversation only after checking the confirmed 
   await expect(run.request("session.fork", { sessionId: "local-managed" })).rejects.toMatchObject({ code: "INVALID_TARGET" });
   expect(run.broker.forkSession).not.toHaveBeenCalled();
   run.broker.emit("system.init", "native-first", ["Bash"]);
-  run.broker.emit("system.init", "local-managed", ["Read", "mcp__assistant-mail__mail_read_event", "Bash", "mcp__ccd_session__start_session"]);
+  run.broker.emit("system.init", "local-managed", ["Read", "Task", "mcp__assistant-mail__mail_read_event", "Bash", "mcp__ccd_session__start_session"]);
   expect((await run.publish()).assistantMail).toMatchObject({
     changeToken: initial.assistantMail?.changeToken,
     workspace: { toolIsolation: "warning", unexpectedTools: ["Bash", "mcp__ccd_session__start_session"] },

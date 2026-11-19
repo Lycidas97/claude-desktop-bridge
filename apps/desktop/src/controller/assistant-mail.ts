@@ -122,7 +122,8 @@ export class AssistantMailCoordinator {
   observeToolCatalog(sessionId: string, tools: string[]): void {
     const binding = this.mail.binding();
     if (binding?.nativeSessionId !== sessionId || !binding.managed) return;
-    this.toolCatalog = { sessionId, unexpectedTools: [...new Set(tools.filter(tool => !isAssistantTool(tool)))].sort() };
+    // Desktop's system/init reports Agent under its legacy SDK name Task.
+    this.toolCatalog = { sessionId, unexpectedTools: [...new Set(tools.filter(tool => !isAssistantTool(tool === "Task" ? "Agent" : tool)))].sort() };
     this.onServiceChanged();
   }
 

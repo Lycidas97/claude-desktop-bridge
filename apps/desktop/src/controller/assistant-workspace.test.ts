@@ -22,6 +22,7 @@ it("writes the exact project policy and bundled MCP launch, preserving templates
   const settings = join(workspace, ".claude", "settings.json");
   const projectRules = join(workspace, "CLAUDE.md");
   const helper = join(workspace, ".claude", "agents", "assistant-helper.md");
+  const runner = join(workspace, ".claude", "agents", "assistant-runner.md");
   expect(await readFile(projectRules, "utf8")).toContain("outputs/");
   expect(await readFile(helper, "utf8")).toContain("name: assistant-helper");
   await writeFile(projectRules, "existing rules");
@@ -38,6 +39,7 @@ it("writes the exact project policy and bundled MCP launch, preserving templates
   } } });
   const policy = JSON.parse(await readFile(settings, "utf8"));
   expect(policy).toMatchObject({
+    agent: "assistant-runner",
     autoMemoryEnabled: false, enableAllProjectMcpServers: false, enabledMcpjsonServers: ["assistant-mail"],
     permissions: {
       defaultMode: "dontAsk",
@@ -46,6 +48,7 @@ it("writes the exact project policy and bundled MCP launch, preserving templates
     hooks: { PreToolUse: [{ matcher: "*", hooks: [{ type: "command", onFailure: "block" }] }] },
   });
   expect(policy.permissions.allow.every(isAssistantTool)).toBe(true);
+  expect(await readFile(runner, "utf8")).toBe(`---\nname: assistant-runner\ndescription: 托管助理主会话\ntools: ${policy.permissions.allow.join(", ")}\n---\n`);
   expect(JSON.stringify(policy)).not.toContain(rotated);
   if (process.platform !== "win32") {
     const [entry] = policy.hooks.PreToolUse[0].hooks;

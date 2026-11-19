@@ -13,6 +13,7 @@ interface WorkspaceOptions {
   platform?: NodeJS.Platform;
 }
 
+const runner = "assistant-runner";
 const deny = [
   "Bash", "PowerShell", "NotebookEdit", "WebFetch", "WebSearch", "SendMessage", "Skill", "Workflow",
   "EnterWorktree", "ExitWorktree", "Monitor", "TaskStop", "LSP", "mcp__ccd_*", "Read(./.mcp.json)",
@@ -124,6 +125,7 @@ export class WorkspaceProvisioner {
     const workspace = await realpath(this.path);
     const mcpArgs = [join(appPath, "dist", "assistant-mcp.cjs"), join(dirname(workspace), "mail-tools.json"), "--managed"];
     const settings = {
+      agent: runner,
       permissions: {
         defaultMode: "dontAsk", allow: ASSISTANT_TOOLS, deny,
         blockReadsOutsideWorkingDirectories: true, blockWritesOutsideWorkingDirectories: true,
@@ -149,6 +151,9 @@ export class WorkspaceProvisioner {
     if (await readFile(helperPath, "utf8") === helperTemplate(ASSISTANT_TOOLS.filter(name => !AGENDA_TOOLS.includes(name)))) {
       await writeWorkspaceFile(helperPath, helperTemplate(ASSISTANT_TOOLS), true, posix);
     }
+    // Empty body keeps the default system prompt; only the main session's tools change.
+    await writeWorkspaceFile(join(workspace, ".claude", "agents", `${runner}.md`),
+      `---\nname: ${runner}\ndescription: 托管助理主会话\ntools: ${ASSISTANT_TOOLS.join(", ")}\n---\n`, true, posix);
     await writeWorkspaceFile(join(workspace, ".claude", "settings.json"), `${JSON.stringify(settings, null, 2)}\n`, true, posix);
     await writeWorkspaceFile(join(workspace, ".mcp.json"), `${JSON.stringify(mcp, null, 2)}\n`, true, posix);
     this.physicalPath = workspace;

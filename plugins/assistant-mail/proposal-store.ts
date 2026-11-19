@@ -3,10 +3,11 @@ import type { DatabaseSync } from "node:sqlite";
 import type { BridgeActionProposal, BridgeProposalPage, ProposalRevisionRef, ProposalState } from "../../packages/protocol/src/assistant-proposal.js";
 import { AgendaEditError } from "./agenda-store.js";
 import type { CalDavWrite } from "./caldav.js";
+import type { ProfileIntent } from "./assistant-memory.js";
 
 type Intent = { backend: "local"; baseRevision?: number } |
-  { backend: "caldav"; collection: string; write: CalDavWrite };
-export type ProposalPayload = Pick<BridgeActionProposal, "action" | "sourceId" | "sourceLabel" | "before"> & { intent: Intent; nativeRevision?: number };
+  { backend: "caldav"; collection: string; write: CalDavWrite } | ProfileIntent;
+export type ProposalPayload = Pick<BridgeActionProposal, "action" | "sourceId" | "sourceLabel" | "before" | "profile"> & { intent: Intent; nativeRevision?: number };
 export type StoredProposal = BridgeActionProposal & { intent: Intent; nativeRevision?: number };
 type ExecutionState = Exclude<ProposalState, "pending">;
 type ResultState = Exclude<ExecutionState, "executing">;

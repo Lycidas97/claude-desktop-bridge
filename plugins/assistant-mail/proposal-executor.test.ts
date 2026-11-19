@@ -1,10 +1,11 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { AgendaEventInput } from "../../packages/protocol/src/assistant-agenda.js";
 import { AgendaStore } from "./agenda-store.js";
+import { AssistantMemory } from "./assistant-memory.js";
 import { requestCalDavMember } from "./caldav.js";
 import { proposalAction } from "./proposal-contract.js";
 import { ProposalExecutor } from "./proposal-executor.js";
@@ -29,7 +30,8 @@ function open() {
   db = new DatabaseSync(file);
   agenda = new AgendaStore(db, "UTC");
   ledger = new ProposalStore(db);
-  service = new ProposalExecutor(ledger, agenda, credentials, notifyAgenda, options => requestCalDavMember(options, fetchDav));
+  service = new ProposalExecutor(ledger, agenda, credentials, notifyAgenda, options => requestCalDavMember(options, fetchDav),
+    { memory: new AssistantMemory(directory), allowed: sessionId => sessionId === "bound-session" });
 }
 function seedRemote(body = sourceBody) {
   const id = agenda.addSource({ label: "Work", url: collection, user: "owner" }, Buffer.from("fixture-credential"));
@@ -47,6 +49,58 @@ afterEach(async () => {
   await service.close();
   db.close();
   rmSync(directory, { recursive: true });
+});
+
+const rule = { kind: "memory.rule_upsert", category: "format", ruleId: "brief", operation: "add",
+  text: "Use concise lists. @memory/notes/untrusted.md", reason: "User requested the format" } as const;
+
+it("shows a frozen rule diff, applies only the confirmed revision, and rejects an external change", async () => {
+  const profile = join(directory, "PROFILE.md");
+  const baseline = "# PROFILE\n\nKeep this existing rule.\n";
+  writeFileSync(profile, baseline);
+  expect(() => service.create("other-session", rule)).toThrow("未启用受控记忆");
+  expect(proposalAction.safeParse({ ...rule, baseProfileSha256: "a".repeat(64) }).success).toBe(false);
+  expect(proposalAction.safeParse({ ...rule, operation: "delete" }).success).toBe(false);
+  const original = service.create("bound-session", rule);
+  const revision = service.reviseFromTool("bound-session", original, { ...rule, text: `${rule.text}\nUse local time.` });
+  expect(service.pending(revision)).toMatchObject({ profile: { before: null, baseProfileSha256: expect.stringMatching(/^[a-f0-9]{64}$/) } });
+  expect(readFileSync(profile, "utf8")).toBe(baseline);
+  await expect(service.commit(original, "stale-phone")).rejects.toMatchObject({ code: "CONFLICT" });
+  await expect(service.commit(revision, "paired-phone")).resolves.toMatchObject({ state: "applied" });
+  expect(readFileSync(profile, "utf8")).toContain("&#64;memory/notes/untrusted.md");
+  expect(readFileSync(profile, "utf8")).toContain("Keep this existing rule.");
+  await expect(service.commit(revision, "desktop")).rejects.toMatchObject({ code: "CONFLICT" });
+  const update = service.create("bound-session", { ...rule, operation: "update", text: "Use UTC." });
+  const { text: _text, ...deleteRule } = rule;
+  const deletion = service.create("bound-session", { ...deleteRule, operation: "delete" });
+  expect(service.pending(update).profile?.before).toBe(`${rule.text}\nUse local time.`);
+  writeFileSync(profile, "# External edit\n");
+  await expect(service.commit(update, "desktop")).resolves.toMatchObject({ state: "conflict" });
+  await expect(service.commit(deletion, "desktop")).resolves.toMatchObject({ state: "conflict" });
+  expect(readFileSync(profile, "utf8")).toBe("# External edit\n");
+  expect(notifyAgenda).not.toHaveBeenCalled();
+});
+
+it.each(["before-rename", "after-rename", "external-edit"] as const)("reconciles interrupted profile writes (%s) without replaying", async interruption => {
+  const profile = join(directory, "PROFILE.md");
+  const baseline = "# PROFILE\n";
+  writeFileSync(profile, baseline);
+  const ref = service.create("bound-session", rule);
+  const persisted = ledger.requirePending(ref);
+  ledger.transaction(() => ledger.claim(persisted, "phone", "executing"));
+  if (persisted.intent.backend !== "profile") throw Error("Expected a profile intent");
+  if (interruption === "before-rename") writeFileSync(join(directory, ".bridge-profile-interrupted.tmp"), persisted.intent.resultText);
+  if (interruption === "after-rename") new AssistantMemory(directory).apply(persisted.intent);
+  if (interruption === "external-edit") writeFileSync(profile, "# External edit\n");
+  const current = readFileSync(profile, "utf8");
+  db.close();
+  open();
+  service.start();
+  await service.close();
+  expect(service.resolve("bound-session", [ref])[0]?.state).toBe(
+    interruption === "after-rename" ? "applied" : interruption === "before-rename" ? "failed" : "conflict");
+  expect(readFileSync(profile, "utf8")).toBe(current);
+  await expect(service.commit(ref, "desktop")).rejects.toMatchObject({ code: "CONFLICT" });
 });
 
 it("stores immutable snapshots, rejects stale, wrong hash and repeat approvals, and attributes the one successful write", async () => {

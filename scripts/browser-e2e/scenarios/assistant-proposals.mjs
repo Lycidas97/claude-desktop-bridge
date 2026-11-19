@@ -7,6 +7,8 @@ const action = { kind: "calendar.create", sourceId: "local", value: {
   title: "项目评审", startAt: "2027-01-04T14:00:00.000Z", endAt: "2027-01-04T15:00:00.000Z", allDay: false, timeZone: "UTC",
 } };
 const detachedTitle = "整理评审纪要";
+export const memoryProposalFixture = { kind: "memory.rule_upsert", category: "reporting", ruleId: "summary", operation: "add",
+  text: "先列结论。", reason: "用户要求规则在重启后保留。" };
 const window = { from: "2027-01-04T00:00:00.000Z", to: "2027-01-05T00:00:00.000Z" };
 
 export async function seedAssistantProposals(host) {
@@ -96,6 +98,8 @@ export async function verifyAssistantProposals(page, host, steps, directory, vie
     await host.nativeApproval.message({ type: "assistant", uuid: `proposal-scroll-${index}`, timestamp: Date.now() + index,
       message: { content: [{ type: "text", text: `项目评审记录 ${index}` }] } });
   }
+  const rule = await host.nativeApproval.draftProposal(memoryProposalFixture);
+  assert.ok(!(await host.nativeApproval.readFixtureProfile()).includes(memoryProposalFixture.text));
   const desktop = await page.context().newPage();
   desktop.setDefaultTimeout(15_000);
   const desktopRequests = [];
@@ -148,5 +152,25 @@ export async function verifyAssistantProposals(page, host, steps, directory, vie
   assert.notEqual(desktopCommit.params.payloadHash, detached.payloadHash);
   await capture(desktop, "desktop-proposal-applied");
   steps.push("Desktop shares the inline receipt and confirms a pending-only task using trusted local IPC");
+
+  await desktop.getByRole("button", { name: "返回列表", exact: true }).click();
+  const ruleList = desktop.locator(".proposal-list");
+  await ruleList.getByRole("button", { name: /reporting \/ summary/u }).click();
+  const ruleDetail = desktop.getByRole("region", { name: "提案详情" });
+  await ruleDetail.getByRole("button", { name: "确认保存规则" }).click();
+  await ruleDetail.getByText("已写入", { exact: true }).waitFor();
+  assert.ok((await host.nativeApproval.readFixtureProfile()).includes(memoryProposalFixture.text));
+  assert.equal(desktopRequests.find(request => request.method === "assistant.proposal.commit" && request.params.proposalId === rule.result.proposalId).params.payloadHash, rule.result.payloadHash);
+
+  await host.nativeApproval.draftProposal({ ...memoryProposalFixture, operation: "update", text: "先列结论，再用三条以内的要点说明。" });
+  await page.locator(".assistant-page-mobile").getByRole("button", { name: "返回", exact: true }).click();
+  await rows.getByRole("button", { name: /reporting \/ summary/u }).click();
+  await detail.getByText("先列结论。", { exact: true }).waitFor();
+  await detail.getByText("先列结论，再用三条以内的要点说明。", { exact: true }).waitFor();
+  await capture(page, "mobile-profile-rule-diff");
+  await detail.getByRole("button", { name: "确认保存规则" }).click();
+  await detail.getByText("已写入", { exact: true }).waitFor();
+  assert.ok((await host.nativeApproval.readFixtureProfile()).includes("先列结论，再用三条以内的要点说明。"));
+  steps.push("Desktop and paired phone confirm a frozen rule diff; the isolated PROFILE.md changes only after approval");
   await desktop.close();
 }

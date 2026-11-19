@@ -462,6 +462,38 @@ Desktop，未操作托管会话或邮箱。
 
 这些检查使用隔离数据。真实邮箱自动触发、物理手机唤醒、安装态无参 `/compact`、自动压缩和 hook 故障的影响需实机取证。此前手动带 focus 的探针见上节。
 
+## 阶段 3 受控记忆门禁
+
+[#217](https://github.com/Lycidas97/claude-desktop-bridge/issues/217)，2026-11-19 UTC。**生产仍使用 `stage1-fenced-workspace`。** 实验目标为 macOS 27.2（26B123）、Claude Desktop 5.11492.5、Native `system/init` 记录的 Claude Code 2.1.325。工作树生成守卫和 MCP，再将其放入隔离 `app.asar/dist`，由已安装的 Bridge 1.3.8-dev.22.diag 的 Electron 可执行文件以 `ELECTRON_RUN_AS_NODE=1` 启动；不是替换安装包。邮箱、令牌和数据目录均为独立夹具；没有改生产绑定或启动第二条 Native 事件订阅。
+
+隔离 Native 会话 `local_81b57a8e-112c-48b5-aad4-1636161ef011` 的 `app.asar` SHA-256 为 `2f348361b4bb452df0f92ff3b8adfaa0ddaa4954a993f6ba410395a65eea93c3`。取证包只包含三个 hook/MCP 脚本；不据此证明正式打包安装后整个服务行为一致。用同一 Native 会话升级并冷启动，核对工具回执与落盘，而不依赖模型自报：
+
+| 测试消息 UUID | 观察结果 |
+| --- | --- |
+| `1fba0b32-9aec-4979-a00f-94b525bbfe80` | 阶段 1 在未存在的子目录创建 `outputs/initial/export.txt`。 |
+| `73191515-b005-4890-bb60-6bb3908b7f78` | 阶段 3 从项目规则读到 `PROFILE.md` 中未出现在提示里的测试标记，常规 Read/Write 成功。拒绝工作区外 Read 和主会话写资料；不带 `path` 的 `Glob`/`Grep` 在含凭据配置的根目录被拒。 |
+| `9326733d-8c1c-460d-a1fe-4b1a147dbd28` | 子代理挂钩收到 `agent_type: memory-curator` 和 `agent_id`，读成功，分别写入 `threads` 和 `notes`；对越界目录链接和嵌套 `CLAUDE.md` 的写入返回守卫拒绝。 |
+| `6f47b2ec-8bd8-46bf-b58a-4c20e0f4eb4a` | 邮件和日程子代理各有可归因的 Read，两个目标写文件均不存在。Native 没发出这两个角色的 Write 调用，不把未发出当作守卫拒绝回执。 |
+| `03069c3f-2d2d-4881-98da-b500affabed5` | 恢复阶段 3 配置并冷启动原会话后，`outputs/restarted.txt` 确实写入。 |
+
+同一 ASAR 的第二轮隔离会话 `local_fe6d0fca-4df2-4bc2-b86e-97ac445b471e` 补测了查找、压缩和故障闭锁：
+
+| 测试消息 UUID | 观察结果 |
+| --- | --- |
+| `322882c9-6ffd-46df-aeac-55e94267303e` | `memory.lookup_entry` 返回宿主索引 ID 对应的相对路径，Native 随后读取了该线程资料。 |
+| `4ba12068-cf04-4cec-9557-91d89a20aec7` | 手动 `/compact` 产生 Native 压缩边界。`PreCompact` 和 `SessionStart(compact)` 都与原 CLI 会话匹配，注入规则版本和索引 ID，未带入测试笔记正文。`PostCompact` 回执成功，未注入资料。 |
+| `fe1ddc7f-1c65-4ca9-ab93-9950c063e2c5` | 冷启动原会话后，`outputs/restarted.txt` 确实写入。 |
+| `3b2f8c6b-907e-4cf7-a2e3-cfd950332358`、`29d5abc9-588e-425e-8d1c-dbd3953add31`、`a21b5418-4049-4e37-a781-44ab0f829d26` | 守卫脚本缺失、异常和超时分别阻断了主会话与 `memory-curator` 对同一正常文件的 Read，六次均有 Native 工具错误回执。 |
+| `3be7422a-53b2-467b-8f2a-e9363158c6d9` | 添加显式 MCP 引用前，`memory-curator` 调用 `ToolSearch`，账本没有新增规则草稿。 |
+
+专职子代理的定义显式引用父会话的 `assistant-mail` MCP 后，用同一 ASAR 在新隔离会话 `local_554d9bd2-dbdb-4c59-928f-d866b253f822` 复测。消息 `d081a4f6-d498-4394-922e-90c660771352` 中，`memory-curator` 的 `ToolSearch` 找到 `proposal_create`，随后 Native 子代理工具回执和守卫均返回成功。账本新增一条 `memory.rule_upsert` 待确认提案，`PROFILE.md` 与提交前逐字节相同。另一轮消息 `e55b24e6-9b33-40dc-bf14-85f68ce3f9d1` 中，模型找到同一工具后结束回合，未发出调用。
+
+额外压缩探针 `983f4158-90fc-49c5-8a06-ab5194f826f4` 和 `4d16f9c2-18d3-4c14-a67e-e059ff4493d9` 对照了 hook 返回值与磁盘数据。`PreCompact` 与 `SessionStart(compact)` 均包含准确的规则哈希与索引 ID，未包含测试文件名或正文。消息 `b85b40b1-b2a2-46fb-bf79-d615d0a2ff59` 中，模型未调用工具即复述了准确的恢复 ID。消息 `035cf63d-7851-4fc4-91b9-a2d47897a14a` 和 `99d753ca-08d7-47e5-a5f7-6cf61d061618` 均在 `ToolSearch` 后结束，未发出查找调用。
+
+随后在隔离会话 `local_cc12ff29-bde5-4d0b-8380-aebc182e46c3` 将操作拆成独立回合。`a7fd3258-3a3e-4805-a18d-32b378608234` 产生压缩边界，`88c6ebdc-4e56-4f49-88f5-7eda64f4a4e3` 无工具复述恢复 ID，`a0aafa24-abe0-4510-a475-27988c20e311` 传入该 ID 并收到相对路径，`c1eb83e0-f621-461a-bb5a-cc63e042abb1` 的 Read 回执包含测试笔记标记。提示未提供 ID、文件名或正文。
+
+定向测试验证安全子目录的缺省路径搜索、不同角色的拒绝、外部编辑冲突和基准／结果哈希恢复。浏览器 `assistant-proposals` 在明暗主题用 Desktop IPC 和配对手机 RPC 走真实 Controller 和持久提案账本，验证保存前后差异、确认后才改隔离 `PROFILE.md`。真实 Windows、完整安装包和实体手机审批未取证。
+
 ## Cleanup boundary
 
 The runners append the checkout's `scripts/recycle-cleanup.cjs` to `NODE_OPTIONS`,

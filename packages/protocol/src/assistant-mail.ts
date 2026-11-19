@@ -31,10 +31,16 @@ export interface BridgeMailAccount {
 }
 
 export const ASSISTANT_WORKSPACE_POLICY = "stage1-fenced-workspace";
+export const ASSISTANT_MEMORY_POLICY = "stage3-fenced-memory";
+export type AssistantWorkspacePolicy = typeof ASSISTANT_WORKSPACE_POLICY | typeof ASSISTANT_MEMORY_POLICY;
+
+export function isAssistantWorkspacePolicy(value: unknown): value is AssistantWorkspacePolicy {
+  return value === ASSISTANT_WORKSPACE_POLICY || value === ASSISTANT_MEMORY_POLICY;
+}
 
 export interface BridgeAssistantWorkspace {
   path: string;
-  policy: typeof ASSISTANT_WORKSPACE_POLICY;
+  policy: AssistantWorkspacePolicy;
   nativeSessionId?: string;
   toolIsolation: "unobserved" | "compatible" | "warning";
   unexpectedTools?: string[];

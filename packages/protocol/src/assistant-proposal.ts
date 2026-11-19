@@ -10,6 +10,16 @@ export type AgendaProposalAction =
   | { kind: "calendar.reschedule"; recordId: string; value: AgendaEventInput }
   | { kind: "calendar.delete"; recordId: string };
 
+export type MemoryRuleProposalAction = {
+  kind: "memory.rule_upsert";
+  category: string;
+  ruleId: string;
+  operation: "add" | "update" | "delete";
+  text?: string | undefined;
+  reason: string;
+};
+export type AssistantProposalAction = AgendaProposalAction | MemoryRuleProposalAction;
+
 export interface ProposalRevisionRef {
   proposalId: string;
   revision: number;
@@ -20,10 +30,11 @@ export type ProposalState = "pending" | "executing" | "applied" | "dismissed" | 
 
 export interface BridgeActionProposal extends ProposalRevisionRef {
   sessionId: string;
-  action: AgendaProposalAction;
+  action: AssistantProposalAction;
   sourceId: string;
   sourceLabel: string;
   before?: AgendaTodoInput | AgendaEventInput;
+  profile?: { before: string | null; baseProfileSha256: string };
   state: ProposalState;
 }
 

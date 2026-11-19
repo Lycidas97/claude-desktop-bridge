@@ -627,7 +627,7 @@ it("restores the previous workspace token when committing the replacement bindin
   vi.spyOn(service, "setBinding").mockImplementationOnce(() => { throw new Error("SQLite write failed"); });
   await expect(run.request("plugin.assistant-mail.workspace.initialize", { workspacePath })).rejects.toThrow("SQLite write failed");
   expect(store.binding()?.managed?.token).toBe(previous.token);
-  expect(restore).toHaveBeenCalledExactlyOnceWith(previous.token, previous.path);
+  expect(restore).toHaveBeenCalledExactlyOnceWith(previous.token, previous.path, previous.policy);
 });
 
 it("rejects manual binding to a previous managed session", async () => {

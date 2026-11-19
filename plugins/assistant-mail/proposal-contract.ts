@@ -13,6 +13,14 @@ export const proposalAction = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("calendar.create"), sourceId, value: eventInput }),
   z.strictObject({ kind: z.literal("calendar.reschedule"), recordId, value: eventInput }),
   z.strictObject({ kind: z.literal("calendar.delete"), recordId }),
+  z.strictObject({
+    kind: z.literal("memory.rule_upsert"),
+    category: z.string().regex(/^[a-z][a-z0-9-]{0,31}$/u),
+    ruleId: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/u),
+    operation: z.enum(["add", "update", "delete"]),
+    text: z.string().trim().min(1).max(4_000).optional(),
+    reason: z.string().trim().min(1).max(1_000),
+  }).refine(({ operation, text }) => (operation === "delete") === (text === undefined)),
 ]);
 export const proposalRef = z.strictObject({
   proposalId: z.uuid(), revision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER), payloadHash: z.string().regex(/^[a-f0-9]{64}$/u),

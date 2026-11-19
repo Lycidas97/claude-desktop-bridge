@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import {
+  ASSISTANT_MEMORY_POLICY,
   DEFAULT_BRIDGE_ICE_SERVERS_JSON,
   DEFAULT_BRIDGE_SERVICE_ORIGIN,
   DEFAULT_PUBLIC_RELAY_URL,
@@ -171,16 +172,21 @@ export async function createServiceRuntime(options: {
     const assistantAgenda = new AssistantAgendaService(agendaStore, agendaCredentials);
     assistantAgenda.on("error", () => process.stderr.write("Bridge assistant calendar sync failed.\n"));
     resources.defer("Assistant agenda", () => assistantAgenda.close());
-    const proposals = new ProposalExecutor(proposalStore, agendaStore, agendaCredentials, sourceId => {
-      void assistantAgenda.proposalChanged(sourceId).catch(error => assistantAgenda.emit("error", error));
-    });
-    proposals.on("error", () => process.stderr.write("Bridge assistant proposal recovery failed.\n"));
-    resources.defer("Assistant proposals", () => proposals.close());
     const workspace = new WorkspaceProvisioner({ userDataPath, appPath: app.getAppPath(), execPath: process.execPath });
     const managed = assistantMail.binding()?.managed;
-    const assistantWorkspacePath = managed ? await workspace.restore(managed.token, managed.path) : workspace.path;
+    const assistantWorkspacePath = managed ? await workspace.restore(managed.token, managed.path, managed.policy) : workspace.path;
+    const memoryAllowed = (sessionId: string) => {
+      const binding = assistantMail.binding();
+      return !workspace.repairFailed && binding?.nativeSessionId === sessionId && binding.managed?.policy === ASSISTANT_MEMORY_POLICY;
+    };
+    const proposals = new ProposalExecutor(proposalStore, agendaStore, agendaCredentials, sourceId => {
+      void assistantAgenda.proposalChanged(sourceId).catch(error => assistantAgenda.emit("error", error));
+    }, undefined, { memory: workspace.memory, allowed: memoryAllowed });
+    proposals.on("error", () => process.stderr.write("Bridge assistant proposal recovery failed.\n"));
+    resources.defer("Assistant proposals", () => proposals.close());
     const mailTools = await serveAssistantMailTools({
       userDataPath, service: assistantMail, agenda: assistantAgenda, proposals,
+      lookupMemory: (sessionId, entryId) => memoryAllowed(sessionId) ? workspace.memory.lookup(entryId) : undefined,
       authorizeManagedToken: token => {
         const binding = assistantMail.binding();
         return !workspace.repairFailed && binding?.managed?.token === token ? binding.nativeSessionId ?? undefined : undefined;

@@ -141,6 +141,16 @@ Bridge 后台进程退出并重新启动；新标记未见首收，重启后仅�
 真实 `uncertain` 后的原 UUID 对账未验收。Sleep/Wake 依据用户日常休眠使用、未单独取证；其余隔离
 用例也未验收，该次实测未开启自动投递。证据与缺口见[阶段 1 实测](testing.md#阶段-1-托管工作区实机复核)。
 
+### 阶段 3 受控记忆
+
+`stage3-fenced-memory` 默认不启用。该档位仍由 Desktop 原生权限和 `PreToolUse` 执行，不是 OS 沙盒。主会话只写 `outputs/`；`memory-curator` 只写 `memory/threads/`、`memory/notes/`；`mail-triager`、`schedule-planner` 不可写文件。挂钩识别 Native 子代理身份，拒绝角色之外的业务调用、非专职委派、链接逃逸及嵌套的原生指令文件。`Glob`、`Grep` 缺省路径按 Native cwd 检查；若递归范围含凭据配置或链接，整次拒绝。`autoMemoryEnabled` 保持关闭。
+
+宿主管理 `CLAUDE.md`、`PROFILE.md` 和 `memory/INDEX.md`。只有 `PROFILE.md` 随项目规则导入。笔记、线程及文件名都是按需读取的低信任资料，即使来自人工回合或以前的邮件。索引仅含宿主计算的条目标识和修改时间；按标识查找返回低信任路径，不返回正文。压缩恢复只增加规则版本哈希和这些标识。
+
+`memory.rule_upsert` 只创建不可变提案。宿主将前后规则和基准哈希一起冻结；审批消耗提交版本后，记录的目标哈希在同目录临时文件写入、`fsync` 和原子重命名前已持久化。外部变更判冲突；启动恢复按结果哈希、基准哈希或第三种状态分别记为已写入、未写入或冲突，不自动重放。笔记中的导入语法不能随规则提案获得递归载入权限。
+
+实机证据和未通过的启用条件见[阶段 3 门禁](testing.md#阶段-3-受控记忆门禁)。
+
 ## 提供方与接力边界
 
 Claude 的 provider 配置和授权由 Desktop 管理，Bridge 不再提供 standalone API Key

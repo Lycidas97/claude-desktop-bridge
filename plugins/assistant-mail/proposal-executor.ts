@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import type { AgendaProposalAction, BridgeActionProposal, BridgeProposalSnapshot, ProposalRevisionRef } from "../../packages/protocol/src/assistant-proposal.js";
+import type { AssistantProposalAction, BridgeActionProposal, BridgeProposalSnapshot, ProposalRevisionRef } from "../../packages/protocol/src/assistant-proposal.js";
 import type { AgendaCredentials } from "./agenda.js";
+import type { AssistantMemory } from "./assistant-memory.js";
 import { AgendaEditError, type AgendaStore, LOCAL_AGENDA_ID } from "./agenda-store.js";
 import { CalDavError, requestCalDavMember } from "./caldav.js";
 import { canonicalCalendarBody, proposalCalendarBody } from "./proposal-ical.js";
@@ -20,26 +21,28 @@ export class ProposalExecutor extends EventEmitter {
     private readonly credentials: AgendaCredentials,
     private readonly notifyAgenda: (sourceId: string) => void,
     private readonly memberRequest = requestCalDavMember,
+    private readonly profile?: { memory: AssistantMemory; allowed(sessionId: string): boolean },
   ) { super(); }
 
   snapshot(): BridgeProposalSnapshot {
     return { changeToken: this.changeToken, pendingCount: this.store.pendingCount(), sources: this.agenda.proposalSources() };
   }
 
-  create(sessionId: string, action: AgendaProposalAction): ProposalRevisionRef {
+  create(sessionId: string, action: AssistantProposalAction): ProposalRevisionRef {
     const id = randomUUID();
-    const proposal = this.store.insert(sessionId, id, 1, this.freeze(action, id));
+    const proposal = this.store.insert(sessionId, id, 1, this.freeze(action, id, sessionId));
     this.changed(true);
     return refOf(proposal);
   }
 
-  revise(ref: ProposalRevisionRef, action: AgendaProposalAction, sessionId?: string): BridgeActionProposal {
+  revise(ref: ProposalRevisionRef, action: AssistantProposalAction, sessionId?: string): BridgeActionProposal {
     const proposal = this.store.transaction(() => {
       const current = this.store.requirePending(ref, sessionId);
       if (action.kind !== current.action.kind) throw new AgendaEditError("INVALID_PARAMS", "不能更改提案的动作类型。");
       const sameRecord = "recordId" in action && "recordId" in current.action && action.recordId === current.action.recordId;
       // A manual field edit keeps the baseline the user reviewed. A model revision can re-read it.
-      const payload = this.freeze(action, current.proposalId, sameRecord && sessionId === undefined ? current : undefined);
+      const payload = this.freeze(action, current.proposalId, current.sessionId,
+        sessionId === undefined && (sameRecord || action.kind === "memory.rule_upsert") ? current : undefined);
       return this.store.insert(current.sessionId, current.proposalId, current.revision + 1, { ...payload,
         ...(sessionId === undefined ? { nativeRevision: current.nativeRevision ?? current.revision } : {}),
       });
@@ -48,7 +51,7 @@ export class ProposalExecutor extends EventEmitter {
     return publicProposal(proposal);
   }
 
-  reviseFromTool(sessionId: string, ref: ProposalRevisionRef, action: AgendaProposalAction): ProposalRevisionRef {
+  reviseFromTool(sessionId: string, ref: ProposalRevisionRef, action: AssistantProposalAction): ProposalRevisionRef {
     return refOf(this.revise(ref, action, sessionId));
   }
 
@@ -77,6 +80,14 @@ export class ProposalExecutor extends EventEmitter {
       if (localResult.state === "applied") this.notifyAgenda(LOCAL_AGENDA_ID);
       return localResult;
     }
+    if (proposal.intent.backend === "profile") {
+      // Claim and expected hash are durable before touching the file. Keep the local compare
+      // and rename synchronous so two approvals in this process cannot share a baseline.
+      const state = this.profile?.allowed(proposal.sessionId) ? this.profile.memory.apply(proposal.intent) : "conflict";
+      const result = this.store.finish(proposal, state);
+      this.changed();
+      return result;
+    }
     return this.track(this.applyRemote(proposal));
   }
 
@@ -92,7 +103,15 @@ export class ProposalExecutor extends EventEmitter {
     finally { this.active.delete(job); }
   }
 
-  private freeze(action: AgendaProposalAction, proposalId: string, keepBase?: StoredProposal): ProposalPayload {
+  private freeze(action: AssistantProposalAction, proposalId: string, sessionId: string, keepBase?: StoredProposal): ProposalPayload {
+    if (action.kind === "memory.rule_upsert") {
+      if (!this.profile?.allowed(sessionId)) throw new AgendaEditError("UNSUPPORTED", "此会话未启用受控记忆。");
+      const frozen = this.profile.memory.freeze(action);
+      if (keepBase && frozen.intent.baseProfileSha256 !== keepBase.profile?.baseProfileSha256) {
+        throw new AgendaEditError("CONFLICT", "PROFILE.md 已变更，请让助理重新核对。");
+      }
+      return { action, sourceId: "profile", sourceLabel: "助理规则", ...frozen };
+    }
     const kind = action.kind.startsWith("todo.") ? "todo" : "calendar";
     const record = "recordId" in action ? this.agenda.proposalRecord(kind, action.recordId) : undefined;
     const sourceId = record?.sourceId ?? ("sourceId" in action ? action.sourceId : LOCAL_AGENDA_ID);
@@ -169,6 +188,12 @@ export class ProposalExecutor extends EventEmitter {
 
   private async recover(proposal: StoredProposal): Promise<BridgeActionProposal> {
     const { intent } = proposal;
+    if (intent.backend === "profile") {
+      if (!this.profile) throw new Error("Profile recovery requires the managed workspace");
+      const result = this.store.finish(proposal, this.profile.memory.reconcile(intent));
+      this.changed();
+      return result;
+    }
     if (intent.backend !== "caldav") throw new Error("A local proposal cannot have an interrupted execution");
     const credentials = this.remoteCredentials(proposal, intent.collection);
     if (!credentials) return this.finishRemote(proposal, "uncertain");

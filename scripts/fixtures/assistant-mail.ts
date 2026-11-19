@@ -53,19 +53,20 @@ export async function startAssistantMailFixture(directory: string, historyCount 
   let proposalStore!: ProposalStore;
   await service.initialize(db => { store = new AgendaStore(db); proposalStore = new ProposalStore(db); });
   const agenda = new AssistantAgendaService(store);
-  const smtpAttempts: SmtpMessage[] = [];
+  const smtp = { attempts: [] as SmtpMessage[], resultGate: undefined as Promise<void> | undefined };
   const proposals = new ProposalExecutor(proposalStore, store, {
     available: () => false, encrypt: () => { throw new Error("No calendar credentials in fixture"); },
     decrypt: () => { throw new Error("No calendar credentials in fixture"); },
   }, sourceId => { void agenda.proposalChanged(sourceId); }, undefined, service, async (_channel, _credential, message) => {
-    smtpAttempts.push(message);
+    smtp.attempts.push(message);
+    await smtp.resultGate;
     return { state: "applied", accepted: [...message.to, ...message.cc], rejected: [] };
   });
   const idle = once(seedInbox, "idle");
   await service.enable({ ...seedAccount, password: "synthetic-only" });
   await idle;
   return {
-    service, agenda, proposals, smtpAttempts,
+    service, agenda, proposals, smtp,
     seedCalendar(...resources: string[]) {
       const url = "https://caldav.example.test/fixtures/";
       const source = store.addSource({ url, user: "fixture", label: "外部日历" }, Buffer.from("sealed"));

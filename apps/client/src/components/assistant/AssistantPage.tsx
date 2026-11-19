@@ -369,12 +369,13 @@ function MailAccounts({ accounts, configUnavailable, credentialsSupported, onlin
         <div className="assistant-actions assistant-account-actions">
           <button type="button" className="assistant-session-link" aria-label={`更新密码：${account.user}`} disabled={disabled} onClick={() => { setError(""); setAction({ kind: "edit", accountKey: account.accountKey }); }}>更新密码</button>
           <button type="button" className="assistant-session-link" aria-label={`${account.enabled ? "停用" : "启用"}：${account.user}`} disabled={disabled} onClick={() => { void update("plugin.assistant-mail.account.set-enabled", { accountKey: account.accountKey, enabled: !account.enabled }); }}>{account.enabled ? "停用" : "启用"}</button>
+          {supportsSmtp && <button type="button" className="assistant-session-link" disabled={disabled}
+            aria-label={`${account.smtp ? "SMTP 已配置" : "配置 SMTP"}：${account.user}`}
+            onClick={() => { setError(""); setAction({ kind: "smtp", accountKey: account.accountKey }); }}>
+            {account.smtp ? "SMTP 已配置" : "配置 SMTP"}
+          </button>}
           <button type="button" className="assistant-session-link assistant-remove" aria-label={`移除：${account.user}`} disabled={disabled} onClick={() => { setError(""); setAction({ kind: "remove", accountKey: account.accountKey }); }}>移除</button>
         </div>
-        {supportsSmtp && <button type="button" className="assistant-session-link" disabled={disabled}
-          aria-label={`发信设置：${account.user}`} onClick={() => { setError(""); setAction({ kind: "smtp", accountKey: account.accountKey }); }}>
-          {account.smtp ? "SMTP 已配置" : "配置 SMTP"}
-        </button>}
         {supportsPolling && account.pollIntervalSeconds !== undefined && <label className="assistant-account-polling">
           备用轮询间隔
           <select value={pendingInterval?.accountKey === account.accountKey ? pendingInterval.value : account.pollIntervalSeconds ?? "off"} disabled={disabled}
@@ -414,7 +415,11 @@ function MailAccounts({ accounts, configUnavailable, credentialsSupported, onlin
           <label>SMTP 服务器<input name="host" required defaultValue={smtpAccount.smtp?.host} autoCapitalize="none" spellCheck={false} /></label>
           <label>端口<input name="port" type="number" required min={1} max={65535} defaultValue={smtpAccount.smtp?.port ?? 465} /></label>
         </div>
-        <label>加密方式<select name="security" defaultValue={smtpAccount.smtp?.security ?? "tls"}>
+        <label>加密方式<select name="security" defaultValue={smtpAccount.smtp?.security ?? "tls"} onChange={event => {
+          const port = event.currentTarget.form!.elements.namedItem("port") as HTMLInputElement;
+          const startTls = event.currentTarget.value === "starttls";
+          if (port.value === (startTls ? "465" : "587")) port.value = startTls ? "587" : "465";
+        }}>
           <option value="tls">TLS</option><option value="starttls">STARTTLS</option>
         </select></label>
         <label>登录名<input name="user" required defaultValue={smtpAccount.smtp?.user ?? smtpAccount.user} autoCapitalize="none" spellCheck={false} /></label>

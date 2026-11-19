@@ -54,7 +54,7 @@ export function MailProposalSheet({ proposal, action, editing, stale, mobile, on
     </button>
   </>}>
     <form id={formId} className={`mail-proposal-sheet${editing ? " agenda-form" : ""}`} onSubmit={event => void submit(event)}>
-      {stale && <p role="status">提案已更新或处理。关闭后重新核对。</p>}
+      {!busy && stale && <p role="status">提案已更新或处理。关闭后重新核对。</p>}
       <dl className="proposal-fields">
         <dt>发件账号</dt><dd>{proposal.sourceLabel}</dd>
         <dt>发件人</dt><dd>{action.from}</dd>

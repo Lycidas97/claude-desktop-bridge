@@ -69,13 +69,16 @@ export class ProposalExecutor extends EventEmitter {
     return this.mail?.status().accounts.flatMap(account => account.enabled && account.smtp ? [{ accountKey: account.accountKey, from: account.smtp.from }] : []) ?? [];
   }
 
-  page(query: Parameters<ProposalStore["page"]>[0], sessionId?: string) { return this.store.page(query, sessionId); }
+  page(query: Parameters<ProposalStore["page"]>[0], sessionId?: string) {
+    return this.store.page(sessionId === undefined ? query : { ...query, includeMemory: this.profile?.allowed(sessionId) }, sessionId);
+  }
   resolve(...params: Parameters<ProposalStore["resolve"]>) { return this.store.resolve(...params); }
   pending(ref: ProposalRevisionRef, sessionId?: string) { return publicProposal(this.store.requirePending(ref, sessionId)); }
 
-  dismiss(ref: ProposalRevisionRef, actor: string) {
+  dismiss(ref: ProposalRevisionRef & { includeMemory?: true | undefined }, actor: string) {
     const proposal = this.store.transaction(() => {
       const proposal = this.store.requirePending(ref);
+      if (proposal.intent.backend === "profile" && !ref.includeMemory) throw new AgendaEditError("NOT_FOUND", "找不到此提案。");
       this.store.claim(proposal, actor, "dismissed");
       return publicProposal({ ...proposal, state: "dismissed" });
     });
@@ -83,9 +86,12 @@ export class ProposalExecutor extends EventEmitter {
     return proposal;
   }
 
-  async commit(ref: ProposalRevisionRef & { confirmMail?: true | undefined }, actor: string): Promise<BridgeActionProposal> {
+  async commit(ref: ProposalRevisionRef & { confirmMail?: true | undefined; confirmMemory?: true | undefined }, actor: string): Promise<BridgeActionProposal> {
     const claimed = this.store.transaction(() => {
       const proposal = this.store.requirePending(ref);
+      if (proposal.intent.backend === "profile" && !ref.confirmMemory) {
+        throw new AgendaEditError("INVALID_PARAMS", "请在支持规则提案的 Bridge 中核对并确认变更。");
+      }
       if (proposal.intent.backend === "smtp" && "accountKey" in proposal.action) {
         if (!ref.confirmMail) throw new AgendaEditError("INVALID_PARAMS", "请在发信确认抽屉中核对并发送。");
         const account = this.mailService().smtpAccount(proposal.action.accountKey);

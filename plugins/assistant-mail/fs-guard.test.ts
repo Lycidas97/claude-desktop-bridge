@@ -34,6 +34,7 @@ function check(tool_name: string, tool_input: Record<string, unknown>, cwd = wor
 it("allows workspace reads and output writes, including files with missing ancestors", async () => {
   await expect(check("Read", { file_path: ".bridge-uploads/upload/attachment.txt" })).resolves.toBe(true);
   await expect(check("Write", { file_path: "outputs/folder/new.txt" })).resolves.toBe(true);
+  await expect(check("Write", { file_path: "outputs/site/index.md" })).resolves.toBe(true);
   await expect(check("Edit", { file_path: join(outputs, "draft.txt") })).resolves.toBe(true);
   await expect(check("MultiEdit", { file_path: join(outputs, "draft.txt") })).resolves.toBe(true);
   await expect(check("Read", { file_path: privateFile })).resolves.toBe(false);
@@ -109,15 +110,16 @@ it("fences Stage 3 child roles and keeps generated instructions out of writable 
     await expect(stage3("Write", write, role)).resolves.toBe(false);
   }
   await expect(stage3("Write", { file_path: "outputs/export.txt" })).resolves.toBe(true);
+  await expect(stage3("Write", { file_path: "outputs/site/index.md" })).resolves.toBe(true);
   await expect(stage3("Write", { file_path: "outputs/export.txt" }, "memory-curator")).resolves.toBe(false);
   await expect(stage3("Glob", { pattern: "**/*.txt" }, "schedule-planner", outputs)).resolves.toBe(true);
   await expect(stage3("Grep", { pattern: "draft" }, "mail-triager", outputs)).resolves.toBe(true);
   await expect(stage3("Grep", { pattern: "draft" })).resolves.toBe(false);
-  for (const path of ["PROFILE.md", "memory/INDEX.md", "memory/notes/CLAUDE.md", "memory/threads/claude.local.md",
+  for (const path of ["PROFILE.md", "MEMORY.md", "memory/INDEX.md", "memory/notes/CLAUDE.md", "memory/threads/claude.local.md",
     "memory/notes/sub/AGENTS.md", "memory/notes/sub/.claude/rules/instructions.md", "memory/notes/../threads/out.md"]) {
     await expect(stage3("Write", { file_path: path }, "memory-curator")).resolves.toBe(false);
   }
-  await expect(check("Write", { file_path: "outputs/nested/CLAUDE.md" })).resolves.toBe(false);
+  await expect(stage3("Write", { file_path: "outputs/nested/CLAUDE.md" })).resolves.toBe(false);
   await symlink(root, join(workspace, "memory/notes/outside"), "junction");
   await expect(stage3("Write", { file_path: "memory/notes/outside/new/note.md" }, "memory-curator")).resolves.toBe(false);
 
@@ -126,6 +128,12 @@ it("fences Stage 3 child roles and keeps generated instructions out of writable 
   await expect(stage3(draft, { action: { kind: "memory.rule_upsert" } }, "mail-triager")).resolves.toBe(false);
   await expect(stage3(draft, { action: { kind: "todo.create" } }, "schedule-planner")).resolves.toBe(true);
   await expect(stage3("mcp__assistant-mail__mail_read_event", {}, "schedule-planner")).resolves.toBe(false);
+  await expect(stage3("mcp__assistant-mail__mail_update_analysis", {}, "mail-triager")).resolves.toBe(true);
+  await expect(stage3("mcp__assistant-mail__mail_set_processing_status", {}, "mail-triager")).resolves.toBe(false);
+  for (const role of ["mail-triager", "schedule-planner", "memory-curator"]) {
+    await expect(stage3("mcp__assistant-mail__proposal_list", {}, role)).resolves.toBe(false);
+  }
+  await expect(stage3("mcp__assistant-mail__proposal_list", {})).resolves.toBe(true);
   const delegation = { subagent_type: "memory-curator", prompt: "整理资料" };
   await expect(stage3("Task", delegation)).resolves.toBe(true);
   await expect(stage3("Agent", delegation, "mail-triager")).resolves.toBe(false);

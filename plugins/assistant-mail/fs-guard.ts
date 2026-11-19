@@ -16,10 +16,12 @@ export const ASSISTANT_TOOLS = [
   ...AGENDA_TOOLS, ...PROPOSAL_NATIVE_TOOLS, ...fileTools, "Agent", "ToolSearch", "TodoWrite", ...mailTools,
 ];
 export const MEMORY_LOOKUP_TOOL = `mcp__${ASSISTANT_MCP}__memory_lookup_entry`;
+const proposalDraftTools = PROPOSAL_NATIVE_TOOLS.slice(0, 2);
+const triageTools = mailTools.filter(name => !name.endsWith("__mail_list_unfinished_triggers") && !name.endsWith("__mail_set_processing_status"));
 export const ASSISTANT_SPECIALISTS: ReadonlyMap<string, readonly string[]> = new Map([
-  ["mail-triager", [...readTools, "ToolSearch", ...mailTools, ...PROPOSAL_NATIVE_TOOLS]],
-  ["schedule-planner", [...readTools, "ToolSearch", ...AGENDA_TOOLS, ...PROPOSAL_NATIVE_TOOLS]],
-  ["memory-curator", [...fileTools, "ToolSearch", MEMORY_LOOKUP_TOOL, ...PROPOSAL_NATIVE_TOOLS]],
+  ["mail-triager", [...readTools, "ToolSearch", ...triageTools, ...proposalDraftTools]],
+  ["schedule-planner", [...readTools, "ToolSearch", ...AGENDA_TOOLS, ...proposalDraftTools]],
+  ["memory-curator", [...fileTools, "ToolSearch", MEMORY_LOOKUP_TOOL, ...proposalDraftTools]],
 ]);
 export const ASSISTANT_MEMORY_ROOTS = ["memory/threads", "memory/notes"];
 
@@ -75,7 +77,7 @@ async function searchableTree(path: string): Promise<boolean> {
   return true;
 }
 
-const protectedNames = new Set(["claude.md", "claude.local.md", "agents.md", "profile.md", "index.md", "memory.md", ".claude", ".mcp.json", ".bridge-uploads"]);
+const protectedNames = new Set(["claude.md", "claude.local.md", "agents.md", ".claude", ".mcp.json", ".bridge-uploads"]);
 
 export async function allowAssistantTool(workspace: string, input: unknown, policy: string = ASSISTANT_WORKSPACE_POLICY): Promise<boolean> {
   if (!isAssistantWorkspacePolicy(policy) || typeof input !== "object" || input === null) return false;
@@ -94,7 +96,7 @@ export async function allowAssistantTool(workspace: string, input: unknown, poli
       : target === ASSISTANT_HELPER && params.run_in_background === false) &&
       Object.keys(params).every(key => ["subagent_type", "description", "prompt", "model", "effort", "run_in_background"].includes(key));
   }
-  if (specialist && (name === PROPOSAL_NATIVE_TOOLS[0] || name === PROPOSAL_NATIVE_TOOLS[1])) {
+  if (specialist && proposalDraftTools.includes(name)) {
     const kind = (params.action as { kind?: unknown } | undefined)?.kind;
     if (typeof kind !== "string" || !(agentType === "mail-triager" ? kind.startsWith("mail.")
       : agentType === "schedule-planner" ? /^(todo|calendar)\./.test(kind) : kind === "memory.rule_upsert")) return false;
@@ -118,7 +120,7 @@ export async function allowAssistantTool(workspace: string, input: unknown, poli
     (!physical.info.isDirectory() && !(physical.info.isFile() && physical.info.nlink === 1))) return false;
   if (!writing) return physical.info.isDirectory() ? search && await searchableTree(physical.path) : true;
 
-  if ([candidate, physical.path].some(path => relative(root, path).split(sep).some(part => protectedNames.has(part.toLowerCase())))) return false;
+  if (memory && [candidate, physical.path].some(path => relative(root, path).split(sep).some(part => protectedNames.has(part.toLowerCase())))) return false;
   const writeRoots = specialist && agentType === "memory-curator" ? ASSISTANT_MEMORY_ROOTS : ["outputs"];
   const allowed = writeRoots.map(dir => join(root, dir)).find(dir =>
     relative(dir, physical.path) !== "" && withinPath(dir, candidate) && withinPath(dir, physical.path));

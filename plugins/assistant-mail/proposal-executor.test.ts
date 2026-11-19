@@ -1,4 +1,5 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -10,6 +11,11 @@ import { requestCalDavMember } from "./caldav.js";
 import { proposalAction } from "./proposal-contract.js";
 import { ProposalExecutor } from "./proposal-executor.js";
 import { ProposalStore } from "./proposal-store.js";
+
+vi.mock("node:fs", async importOriginal => {
+  const fs = await importOriginal<typeof import("node:fs")>();
+  return { ...fs, openSync: vi.fn(fs.openSync) };
+});
 
 const meeting: AgendaEventInput = { title: "Review", startAt: "2027-01-04T14:00:00.000Z", endAt: "2027-01-04T15:00:00.000Z", allDay: false, timeZone: "UTC" };
 const window = { from: "2027-01-04T00:00:00Z", to: "2027-01-05T00:00:00Z" };
@@ -65,8 +71,14 @@ it("shows a frozen rule diff, applies only the confirmed revision, and rejects a
   const revision = await service.reviseFromTool("bound-session", original, { ...rule, text: `${rule.text}\nUse local time.` }, () => {});
   expect(service.pending(revision)).toMatchObject({ profile: { before: null, baseProfileSha256: expect.stringMatching(/^[a-f0-9]{64}$/) } });
   expect(readFileSync(profile, "utf8")).toBe(baseline);
+  expect(service.snapshot()).toMatchObject({ pendingCount: 0, pendingMemoryCount: 1 });
+  expect(service.page({ limit: 10 }).proposals).toEqual([]);
+  expect(service.page({ limit: 10 }, "bound-session").proposals.map(proposal => proposal.proposalId)).toEqual([revision.proposalId]);
+  expect(service.resolve("bound-session", [revision])).toEqual([]);
+  await expect(service.commit(revision, "legacy-phone")).rejects.toMatchObject({ code: "INVALID_PARAMS" });
+  expect(() => service.dismiss(revision, "legacy-phone")).toThrow(/找不到此提案/u);
   await expect(service.commit(original, "stale-phone")).rejects.toMatchObject({ code: "CONFLICT" });
-  await expect(service.commit(revision, "paired-phone")).resolves.toMatchObject({ state: "applied" });
+  await expect(service.commit({ ...revision, confirmMemory: true }, "paired-phone")).resolves.toMatchObject({ state: "applied" });
   expect(readFileSync(profile, "utf8")).toContain("&#64;memory/notes/untrusted.md");
   expect(readFileSync(profile, "utf8")).toContain("Keep this existing rule.");
   await expect(service.commit(revision, "desktop")).rejects.toMatchObject({ code: "CONFLICT" });
@@ -75,10 +87,57 @@ it("shows a frozen rule diff, applies only the confirmed revision, and rejects a
   const deletion = await service.create("bound-session", { ...deleteRule, operation: "delete" });
   expect(service.pending(update).profile?.before).toBe(`${rule.text}\nUse local time.`);
   writeFileSync(profile, "# External edit\n");
-  await expect(service.commit(update, "desktop")).resolves.toMatchObject({ state: "conflict" });
-  await expect(service.commit(deletion, "desktop")).resolves.toMatchObject({ state: "conflict" });
+  await expect(service.commit({ ...update, confirmMemory: true }, "desktop")).resolves.toMatchObject({ state: "conflict" });
+  await expect(service.commit({ ...deletion, confirmMemory: true }, "desktop")).resolves.toMatchObject({ state: "conflict" });
   expect(readFileSync(profile, "utf8")).toBe("# External edit\n");
   expect(notifyAgenda).not.toHaveBeenCalled();
+});
+
+it("finishes a claimed profile proposal when the temporary file cannot be opened", async () => {
+  const profile = join(directory, "PROFILE.md");
+  const baseline = "# PROFILE\n";
+  writeFileSync(profile, baseline);
+  const ref = await service.create("bound-session", rule);
+  vi.mocked(openSync).mockImplementationOnce(() => { throw Object.assign(new Error("fixture quota full"), { code: "ENOSPC", syscall: "open" }); });
+  await expect(service.commit({ ...ref, confirmMemory: true }, "paired-phone")).resolves.toMatchObject({ state: "failed" });
+  expect(ledger.interrupted()).toEqual([]);
+  expect(service.resolve("bound-session", [ref], false, false, true)[0]?.state).toBe("failed");
+  expect(readFileSync(profile, "utf8")).toBe(baseline);
+});
+
+it("keeps index refresh and lookup inside the workspace when the memory directory is replaced by a link", () => {
+  const workspace = join(directory, "workspace");
+  const path = join(workspace, "memory");
+  const other = join(directory, "other");
+  mkdirSync(join(path, "notes"), { recursive: true });
+  mkdirSync(join(path, "threads"));
+  mkdirSync(join(other, "notes"), { recursive: true });
+  mkdirSync(join(other, "threads"));
+  writeFileSync(join(other, "INDEX.md"), "outside fixture");
+  writeFileSync(join(other, "notes", "outside.md"), "outside fixture note");
+  const memory = new AssistantMemory(workspace);
+  memory.refreshIndex();
+  renameSync(path, join(workspace, "original-memory"));
+  symlinkSync(other, path, "junction");
+  const entryId = createHash("sha256").update("memory/notes/outside.md").digest("hex");
+  expect(() => memory.lookup(entryId)).toThrow(/宿主管理/u);
+  expect(() => memory.refreshIndex()).toThrow(/宿主管理/u);
+  expect(readFileSync(join(other, "INDEX.md"), "utf8")).toBe("outside fixture");
+});
+
+it("handles CRLF rule markers and hashes the original bytes", async () => {
+  const profile = join(directory, "PROFILE.md");
+  const baseline = "# PROFILE\r\n\r\n<!-- bridge-rule format/brief -->\r\n> Existing rule\r\n<!-- /bridge-rule -->\r\n";
+  writeFileSync(profile, baseline);
+  await expect(service.create("bound-session", rule)).rejects.toMatchObject({ code: "CONFLICT" });
+  const updated = await service.create("bound-session", { ...rule, operation: "update", text: "Updated rule" });
+  expect(service.pending(updated).profile).toEqual({ before: "Existing rule", baseProfileSha256: createHash("sha256").update(baseline).digest("hex") });
+  await expect(service.commit({ ...updated, confirmMemory: true }, "desktop")).resolves.toMatchObject({ state: "applied" });
+  expect(readFileSync(profile, "utf8")).toBe(baseline.replace("Existing rule", "Updated rule"));
+  const { text: _text, ...deleteRule } = rule;
+  const deletion = await service.create("bound-session", { ...deleteRule, operation: "delete" });
+  await expect(service.commit({ ...deletion, confirmMemory: true }, "desktop")).resolves.toMatchObject({ state: "applied" });
+  expect(readFileSync(profile, "utf8")).toBe("# PROFILE\r\n\r\n");
 });
 
 it.each(["before-rename", "after-rename", "external-edit"] as const)("reconciles interrupted profile writes (%s) without replaying", async interruption => {
@@ -97,7 +156,7 @@ it.each(["before-rename", "after-rename", "external-edit"] as const)("reconciles
   open();
   service.start();
   await service.close();
-  expect(service.resolve("bound-session", [ref])[0]?.state).toBe(
+  expect(service.resolve("bound-session", [ref], false, false, true)[0]?.state).toBe(
     interruption === "after-rename" ? "applied" : interruption === "before-rename" ? "failed" : "conflict");
   expect(readFileSync(profile, "utf8")).toBe(current);
   await expect(service.commit(ref, "desktop")).rejects.toMatchObject({ code: "CONFLICT" });

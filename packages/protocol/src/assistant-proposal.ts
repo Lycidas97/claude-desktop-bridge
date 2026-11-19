@@ -1,6 +1,7 @@
 import type { AgendaEventInput, AgendaTodoInput } from "./assistant-agenda.js";
 
 export const ASSISTANT_PROPOSAL_CAPABILITY = "assistant.proposal.v1";
+export const ASSISTANT_MEMORY_PROPOSAL_CAPABILITY = "assistant.proposal.memory.v1";
 
 export type AgendaProposalAction =
   | { kind: "todo.create"; sourceId: string; value: AgendaTodoInput }
@@ -64,6 +65,7 @@ export interface BridgeProposalSnapshot {
   changeToken: string;
   pendingCount: number;
   pendingMailCount?: number;
+  pendingMemoryCount?: number;
   sources: { id: string; label: string; kinds: ("todo" | "calendar")[] }[];
 }
 

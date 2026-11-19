@@ -118,6 +118,16 @@ export async function verifyAssistantProposals(page, host, steps, directory, vie
   }
   const rule = await host.nativeApproval.draftProposal(memoryProposalFixture);
   assert.ok(!(await host.nativeApproval.readFixtureProfile()).includes(memoryProposalFixture.text));
+  const legacyRequest = (method, params) => host.nativeApproval.controllerRequest(desktopFixtureRequest({ method, params }), "mobile");
+  assert.deepEqual((await legacyRequest("assistant.proposal.list", {})).proposals.map(proposal => proposal.proposalId), [detached.proposalId]);
+  assert.deepEqual((await legacyRequest("assistant.proposal.list", { includeMail: true })).proposals.map(proposal => proposal.proposalId), [detached.proposalId]);
+  assert.deepEqual((await legacyRequest("assistant.proposal.resolve", { sessionId: host.session.sessionId, refs: [rule.result] })).proposals, []);
+  assert.equal(host.snapshot.assistantProposals.pendingCount, 1);
+  assert.equal(host.snapshot.assistantProposals.pendingMemoryCount, 1);
+  await assert.rejects(legacyRequest("assistant.proposal.commit", rule.result), { code: "INVALID_PARAMS" });
+  await assert.rejects(legacyRequest("assistant.proposal.dismiss", rule.result), { code: "NOT_FOUND" });
+  await assert.rejects(legacyRequest("assistant.proposal.replan", { ...rule.result, feedback: "adjust" }), { code: "UNSUPPORTED" });
+  assert.ok(!(await host.nativeApproval.readFixtureProfile()).includes(memoryProposalFixture.text));
   const mail = await seedMailProposal(host);
   const desktop = await page.context().newPage();
   desktop.setDefaultTimeout(15_000);
@@ -179,7 +189,9 @@ export async function verifyAssistantProposals(page, host, steps, directory, vie
   await ruleDetail.getByRole("button", { name: "确认保存规则" }).click();
   await ruleDetail.getByText("已写入", { exact: true }).waitFor();
   assert.ok((await host.nativeApproval.readFixtureProfile()).includes(memoryProposalFixture.text));
-  assert.equal(desktopRequests.find(request => request.method === "assistant.proposal.commit" && request.params.proposalId === rule.result.proposalId).params.payloadHash, rule.result.payloadHash);
+  const ruleCommit = desktopRequests.find(request => request.method === "assistant.proposal.commit" && request.params.proposalId === rule.result.proposalId);
+  assert.equal(ruleCommit.params.payloadHash, rule.result.payloadHash);
+  assert.equal(ruleCommit.params.confirmMemory, true);
 
   await host.nativeApproval.draftProposal({ ...memoryProposalFixture, operation: "update", text: "先列结论，再用三条以内的要点说明。" });
   await page.locator(".assistant-page-mobile").getByRole("button", { name: "返回", exact: true }).click();
@@ -189,6 +201,7 @@ export async function verifyAssistantProposals(page, host, steps, directory, vie
   await capture(page, "mobile-profile-rule-diff");
   await detail.getByRole("button", { name: "确认保存规则" }).click();
   await detail.getByText("已写入", { exact: true }).waitFor();
+  assert.ok(host.requests.some(request => request.method === "assistant.proposal.commit" && request.params.confirmMemory === true));
   assert.ok((await host.nativeApproval.readFixtureProfile()).includes("先列结论，再用三条以内的要点说明。"));
   steps.push("Desktop and paired phone confirm a frozen rule diff; the isolated PROFILE.md changes only after approval");
   const { smtp } = host.nativeApproval.assistantMail;

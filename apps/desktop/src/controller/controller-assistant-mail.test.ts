@@ -1,8 +1,8 @@
 import { EventEmitter } from "node:events";
-import { mkdtemp, realpath, rm } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
-  ARTIFACT_MAX_BYTES, BridgeCrypto, PROTOCOL_VERSION,
+  ARTIFACT_MAX_BYTES, ASSISTANT_MEMORY_POLICY, BridgeCrypto, PROTOCOL_VERSION,
   type BridgeArtifactTransferInfo, type BridgeTransport, type BridgeEvent, type EncryptedEnvelope,
   type BridgeMailDetail, type BridgeMailPage, type BridgeRequest, type BridgeSessionInfo, type DesktopControlSnapshot,
 } from "@bridge/protocol";
@@ -486,6 +486,24 @@ it("bounds compact context and points to the next page of unfinished references"
     refs: [{ kind: "mail.received", eventId: oldest.mailRefId, batchId: expect.any(String) }],
   });
   expect(coordinator.compactContext("native-first", "PostCompact")).toBeUndefined();
+});
+
+it("indexes entries after an ordinary managed turn without including their names or contents", async () => {
+  const workspace = run.controller.assistantMailCoordinator!.workspace!;
+  const path = await workspace.prepare("fixture", ASSISTANT_MEMORY_POLICY);
+  const index = join(path, "memory/INDEX.md");
+  service.setBinding({ assistantId: "assistant", nativeSessionId: "native-first", sectionId: null, previousSessionIds: [],
+    managed: { path, policy: ASSISTANT_MEMORY_POLICY, token: "fixture" } });
+  await writeFile(join(path, "memory/notes/private-title.md"), "external material");
+  const completed: BridgeEvent = { eventId: "done", seq: 1, timestamp: 1, origin: "claude-desktop", type: "turn.completed", data: {} };
+  run.eventLog.emit("event", { ...completed, sessionId: "native-second" });
+  expect(await readFile(index, "utf8")).not.toMatch(/^[a-f0-9]{64} /mu);
+  run.eventLog.emit("event", { ...completed, sessionId: "native-first" });
+  const contents = await readFile(index, "utf8");
+  const [entryId] = contents.match(/^[a-f0-9]{64}(?= \d{4}-)/mu) ?? [];
+  expect(entryId).toBeDefined();
+  expect(workspace.memory.lookup(entryId!)).toEqual({ path: "memory/notes/private-title.md" });
+  expect(contents).not.toMatch(/private-title|external material/u);
 });
 
 it("loads all cards by exact session and batch, independent of inbox pagination", async () => {

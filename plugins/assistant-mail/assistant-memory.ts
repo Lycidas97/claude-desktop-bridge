@@ -39,7 +39,8 @@ export class AssistantMemory {
     const source = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(profile);
     const heading = `<!-- bridge-rule ${action.category}/${action.ruleId} -->`;
     const end = "<!-- /bridge-rule -->";
-    const lines = source.split("\n");
+    const lineEnding = source.includes("\r\n") ? "\r\n" : "\n";
+    const lines = source.split(/\r?\n/u);
     const start = lines.indexOf(heading);
     const stop = lines.indexOf(end, start + 1);
     if ((action.operation === "add") !== (start < 0) || (start >= 0 && (stop < 0 ||
@@ -50,10 +51,10 @@ export class AssistantMemory {
       .replaceAll("&#64;", "@").replaceAll("&amp;", "&");
     // A rule must not recursively import model-written files or introduce a section delimiter.
     const block = action.text === undefined ? [] : [heading,
-      ...action.text.replaceAll("&", "&amp;").replaceAll("@", "&#64;").split("\n").map(line => `> ${line}`), end];
+      ...action.text.replaceAll("&", "&amp;").replaceAll("@", "&#64;").split(/\r?\n/u).map(line => `> ${line}`), end];
     if (start < 0) lines.push(...block, "");
     else lines.splice(start, stop - start + 1, ...block);
-    const resultText = lines.join("\n");
+    const resultText = lines.join(lineEnding);
     const baseProfileSha256 = sha256(profile);
     return {
       profile: { before, baseProfileSha256 },
@@ -61,16 +62,22 @@ export class AssistantMemory {
     };
   }
 
-  apply(intent: ProfileIntent): "applied" | "conflict" {
-    if (this.profileSha256() !== intent.baseProfileSha256) return "conflict";
-    const temporary = join(this.workspace, `.bridge-profile-${randomUUID()}.tmp`);
-    const fd = openSync(temporary, "wx", 0o600);
+  apply(intent: ProfileIntent): "applied" | "conflict" | "failed" {
     try {
-      writeFileSync(fd, intent.resultText);
-      fsyncSync(fd);
-    } finally { closeSync(fd); }
-    renameSync(temporary, this.profilePath);
-    return "applied";
+      if (this.profileSha256() !== intent.baseProfileSha256) return "conflict";
+      const temporary = join(this.workspace, `.bridge-profile-${randomUUID()}.tmp`);
+      const fd = openSync(temporary, "wx", 0o600);
+      try {
+        writeFileSync(fd, intent.resultText);
+        fsyncSync(fd);
+      } finally { closeSync(fd); }
+      renameSync(temporary, this.profilePath);
+      return "applied";
+    } catch (error) {
+      // A failed filesystem operation leaves the original file in place.
+      if (error instanceof Error && "code" in error && "syscall" in error) return "failed";
+      throw error;
+    }
   }
 
   reconcile(intent: ProfileIntent): "applied" | "failed" | "conflict" {
@@ -84,6 +91,14 @@ export class AssistantMemory {
       if ((error instanceof AgendaEditError && error.code === "CONFLICT") || (error instanceof Error && "code" in error && error.code === "ENOENT")) return undefined;
       throw error;
     }
+  }
+
+  private requireMemoryDirectory(): string {
+    const parent = join(this.workspace, "memory");
+    if (!lstatSync(parent, { throwIfNoEntry: false })?.isDirectory()) {
+      throw new AgendaEditError("CONFLICT", "宿主管理的记忆目录不可用。");
+    }
+    return parent;
   }
 
   private *entries(directories = ASSISTANT_MEMORY_ROOTS.map(area => join(this.workspace, area))): Generator<{ id: string; path: string; updatedAt: number }> {
@@ -104,12 +119,13 @@ export class AssistantMemory {
   }
 
   lookup(entryId: string): { path: string } | undefined {
+    this.requireMemoryDirectory();
     for (const entry of this.entries()) if (entry.id === entryId) return { path: entry.path };
   }
 
   refreshIndex(): string[] {
+    const path = join(this.requireMemoryDirectory(), "INDEX.md");
     const entries = [...this.entries()].sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id)).slice(0, 100);
-    const path = join(this.workspace, "memory", "INDEX.md");
     regularFile(path, true);
     writeFileSync(path, ["# 资料索引", ...entries.map(({ id, updatedAt }) => `${id} ${new Date(updatedAt).toISOString()}`), ""].join("\n"), { mode: 0o600 });
     return entries.map(({ id }) => id);

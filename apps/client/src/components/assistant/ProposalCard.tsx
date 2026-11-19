@@ -93,7 +93,8 @@ export function ProposalCard({ proposal, mobile, review = false, replaced = fals
     setBusy(true);
     setError("");
     try {
-      const { proposal: result } = mailResult<{ proposal: BridgeActionProposal }>(await controller!.request(method, { ...proposalRef(current) }));
+      const review = memory ? method === "assistant.proposal.commit" ? { confirmMemory: true } : { includeMemory: true } : {};
+      const { proposal: result } = mailResult<{ proposal: BridgeActionProposal }>(await controller!.request(method, { ...proposalRef(current), ...review }));
       setOutcome(result);
       onResult?.(result);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "无法处理提案。"); }

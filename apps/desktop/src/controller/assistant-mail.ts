@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { ARTIFACT_MAX_BYTES, ASSISTANT_MEMORY_POLICY, ASSISTANT_SMTP_CAPABILITY, isAssistantWorkspacePolicy, isMailPollInterval, mailAttachmentPreviewKind } from "@bridge/protocol";
+import { ARTIFACT_MAX_BYTES, ASSISTANT_MEMORY_POLICY, ASSISTANT_MEMORY_PROPOSAL_CAPABILITY, ASSISTANT_SMTP_CAPABILITY, isAssistantWorkspacePolicy, isMailPollInterval, mailAttachmentPreviewKind } from "@bridge/protocol";
+import { AgendaEditError } from "../../../../plugins/assistant-mail/agenda-store.js";
 import { configureSmtp } from "../../../../plugins/assistant-mail/proposal-contract.js";
 import type {
   BridgeAssistantMailSnapshot,
@@ -139,6 +140,7 @@ export class AssistantMailCoordinator {
   capabilities() {
     return [
       ...ASSISTANT_MAIL_CAPABILITIES,
+      ...(this.workspace?.policy === ASSISTANT_MEMORY_POLICY ? [ASSISTANT_MEMORY_PROPOSAL_CAPABILITY] as const : []),
       ...(this.workspace && this.host.broker?.canProvisionAssistantWorkspace() ? ["plugin.assistant-mail.workspace.v1"] as const : []),
       ...(this.dispatcher ? ["plugin.assistant-mail.triggers.v1", "plugin.assistant-mail.batches.v1"] as const : []),
     ];
@@ -196,7 +198,17 @@ export class AssistantMailCoordinator {
     this.confirmReady = ready;
   }
 
-  observeDelivery(event: BridgeEvent): void { this.dispatcher?.observe(event); }
+  observeDelivery(event: BridgeEvent): void {
+    this.dispatcher?.observe(event);
+    if (event.origin !== "claude-desktop" || event.type !== "turn.completed" || !this.workspace || this.workspace.repairFailed) return;
+    const binding = this.mail.binding();
+    if (binding?.managed?.policy !== ASSISTANT_MEMORY_POLICY || binding.nativeSessionId !== event.sessionId) return;
+    try { this.workspace.memory.refreshIndex(); }
+    catch (error) {
+      if (!(error instanceof AgendaEditError) && !(error instanceof Error && "code" in error && "syscall" in error)) throw error;
+      process.stderr.write("Bridge assistant memory index refresh failed.\n");
+    }
+  }
 
   observeToolCatalog(sessionId: string, tools: string[]): void {
     const binding = this.mail.binding();

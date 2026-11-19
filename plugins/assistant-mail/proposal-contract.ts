@@ -31,6 +31,14 @@ export const proposalAction = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("calendar.create"), sourceId, value: eventInput }),
   z.strictObject({ kind: z.literal("calendar.reschedule"), recordId, value: eventInput }),
   z.strictObject({ kind: z.literal("calendar.delete"), recordId }),
+  z.strictObject({
+    kind: z.literal("memory.rule_upsert"),
+    category: z.string().regex(/^[a-z][a-z0-9-]{0,31}$/u),
+    ruleId: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/u),
+    operation: z.enum(["add", "update", "delete"]),
+    text: z.string().trim().min(1).max(4_000).optional(),
+    reason: z.string().trim().min(1).max(1_000),
+  }).refine(({ operation, text }) => (operation === "delete") === (text === undefined)),
   z.strictObject({ kind: z.literal("mail.reply"), ...mailDraft, mailRefId: z.uuid(), to: recipients.optional(), subject: subject.optional() }),
   z.strictObject({ kind: z.literal("mail.send"), ...mailDraft, to: recipients, subject }),
 ]);
@@ -40,10 +48,10 @@ export const proposalRef = z.strictObject({
 export const reviseProposal = z.strictObject({ ...proposalRef.shape, action: proposalAction });
 export const listProposals = z.strictObject({ cursor, limit });
 export const proposalRequests = {
-  "assistant.proposal.list": listProposals.extend({ history: z.boolean().default(false), includeMail: z.literal(true).optional() }),
-  "assistant.proposal.resolve": z.strictObject({ sessionId: z.string().min(1).max(512), refs: z.array(proposalRef).max(100), latestForReview: z.boolean().optional(), includeMail: z.literal(true).optional() }),
+  "assistant.proposal.list": listProposals.extend({ history: z.boolean().default(false), includeMail: z.literal(true).optional(), includeMemory: z.literal(true).optional() }),
+  "assistant.proposal.resolve": z.strictObject({ sessionId: z.string().min(1).max(512), refs: z.array(proposalRef).max(100), latestForReview: z.boolean().optional(), includeMail: z.literal(true).optional(), includeMemory: z.literal(true).optional() }),
   "assistant.proposal.revise": reviseProposal,
-  "assistant.proposal.commit": proposalRef.extend({ confirmMail: z.literal(true).optional() }),
-  "assistant.proposal.dismiss": proposalRef,
+  "assistant.proposal.commit": proposalRef.extend({ confirmMail: z.literal(true).optional(), confirmMemory: z.literal(true).optional() }),
+  "assistant.proposal.dismiss": proposalRef.extend({ includeMemory: z.literal(true).optional() }),
   "assistant.proposal.replan": z.strictObject({ ...proposalRef.shape, feedback: z.string().trim().min(1).max(4000) }),
 };

@@ -8,7 +8,7 @@ import { ProposalStore } from "../../plugins/assistant-mail/proposal-store.js";
 import type { SmtpMessage } from "../../plugins/assistant-mail/smtp.js";
 
 /** Synthetic IMAP boundary; the real receiver, SQLite store and MIME reader run unchanged. */
-export async function startAssistantMailFixture(directory: string, historyCount = 0) {
+export async function startAssistantMailFixture(directory: string, historyCount = 0, profile?: ConstructorParameters<typeof ProposalExecutor>[7]) {
   const seedAccount = { host: "imap.example.test", user: "assistant@example.test" };
   const seedInbox = new EventEmitter();
   const messages: FetchMessageObject[] = [];
@@ -61,7 +61,7 @@ export async function startAssistantMailFixture(directory: string, historyCount 
     smtp.attempts.push(message);
     await smtp.resultGate;
     return { state: "applied", accepted: [...message.to, ...message.cc], rejected: [] };
-  });
+  }, profile);
   const idle = once(seedInbox, "idle");
   await service.enable({ ...seedAccount, password: "synthetic-only" });
   await idle;

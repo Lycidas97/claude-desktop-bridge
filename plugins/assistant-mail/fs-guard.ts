@@ -1,23 +1,33 @@
 import { lstat, readdir, realpath, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
+import { ASSISTANT_MEMORY_POLICY, ASSISTANT_WORKSPACE_POLICY, isAssistantWorkspacePolicy } from "../../packages/protocol/src/assistant-mail.js";
 import { PROPOSAL_TOOLS } from "../../packages/protocol/src/assistant-proposal.js";
 
-const fileTools = ["Read", "Write", "Edit", "MultiEdit", "Glob", "Grep"];
+const readTools = ["Read", "Glob", "Grep"];
+export const ASSISTANT_FILE_WRITES = ["Write", "Edit", "MultiEdit"];
+const fileTools = ["Read", ...ASSISTANT_FILE_WRITES, "Glob", "Grep"];
 export const ASSISTANT_HELPER = "assistant-helper";
 export const ASSISTANT_MCP = "assistant-mail";
 export const ASSISTANT_TOKEN_ENV = "BRIDGE_ASSISTANT_SESSION_TOKEN";
 export const AGENDA_TOOLS = ["todo_list", "calendar_list_events", "calendar_find_free_slots"].map(name => `mcp__${ASSISTANT_MCP}__${name}`);
 export const PROPOSAL_NATIVE_TOOLS = PROPOSAL_TOOLS.map(name => `mcp__${ASSISTANT_MCP}__${name.replace(".", "_")}`);
 export const ASSISTANT_MARK_READ_TOOL = `mcp__${ASSISTANT_MCP}__mail_mark_read`;
+const mailTools = ["list_events", "list_unfinished_triggers", "read_event", "read_attachment", "update_analysis", "set_processing_status"].map(name => `mcp__${ASSISTANT_MCP}__mail_${name}`);
 export const ASSISTANT_TOOLS = [
-  ...AGENDA_TOOLS, ...PROPOSAL_NATIVE_TOOLS,
-  ...fileTools, "Agent", "ToolSearch", "TodoWrite",
-  ...["list_events", "list_unfinished_triggers", "read_event", "read_attachment", "update_analysis", "set_processing_status"].map(name => `mcp__${ASSISTANT_MCP}__mail_${name}`),
-  ASSISTANT_MARK_READ_TOOL,
+  ...AGENDA_TOOLS, ...PROPOSAL_NATIVE_TOOLS, ...fileTools, "Agent", "ToolSearch", "TodoWrite", ...mailTools, ASSISTANT_MARK_READ_TOOL,
 ];
+export const MEMORY_LOOKUP_TOOL = `mcp__${ASSISTANT_MCP}__memory_lookup_entry`;
+const proposalDraftTools = PROPOSAL_NATIVE_TOOLS.slice(0, 2);
+const triageTools = mailTools.filter(name => !name.endsWith("__mail_list_unfinished_triggers") && !name.endsWith("__mail_set_processing_status"));
+export const ASSISTANT_SPECIALISTS: ReadonlyMap<string, readonly string[]> = new Map([
+  ["mail-triager", [...readTools, "ToolSearch", ...triageTools, ...proposalDraftTools]],
+  ["schedule-planner", [...readTools, "ToolSearch", ...AGENDA_TOOLS, ...proposalDraftTools]],
+  ["memory-curator", [...fileTools, "ToolSearch", MEMORY_LOOKUP_TOOL, ...proposalDraftTools]],
+]);
+export const ASSISTANT_MEMORY_ROOTS = ["memory/threads", "memory/notes"];
 
-export function isAssistantTool(name: string): boolean {
-  return ASSISTANT_TOOLS.includes(name);
+export function isAssistantTool(name: string, policy?: string): boolean {
+  return ASSISTANT_TOOLS.includes(name) || (policy === ASSISTANT_MEMORY_POLICY && name === MEMORY_LOOKUP_TOOL);
 }
 
 export function withinPath(root: string, path: string): boolean {
@@ -68,17 +78,30 @@ async function searchableTree(path: string): Promise<boolean> {
   return true;
 }
 
-export async function allowAssistantTool(workspace: string, input: unknown): Promise<boolean> {
-  if (typeof input !== "object" || input === null) return false;
-  const { cwd, tool_name: name, tool_input: args, hook_event_name: event } = input as Record<string, unknown>;
-  if (event !== "PreToolUse" || typeof name !== "string" || !isAssistantTool(name) ||
+const protectedNames = new Set(["claude.md", "claude.local.md", "agents.md", ".claude", ".mcp.json", ".bridge-uploads"]);
+
+export async function allowAssistantTool(workspace: string, input: unknown, policy: string = ASSISTANT_WORKSPACE_POLICY): Promise<boolean> {
+  if (!isAssistantWorkspacePolicy(policy) || typeof input !== "object" || input === null) return false;
+  const { cwd, tool_name: rawName, tool_input: args, hook_event_name: event, agent_id: agentId, agent_type: agentType } = input as Record<string, unknown>;
+  const name = rawName === "Task" ? "Agent" : rawName;
+  const memory = policy === ASSISTANT_MEMORY_POLICY;
+  if (event !== "PreToolUse" || typeof name !== "string" || !isAssistantTool(name, policy) ||
     typeof args !== "object" || args === null || Array.isArray(args)) return false;
   const params = args as Record<string, unknown>;
+  const specialist = memory && typeof agentType === "string" ? ASSISTANT_SPECIALISTS.get(agentType) : undefined;
+  if (memory && (specialist ? !specialist.includes(name) : agentId !== undefined)) return false;
+  if (name === ASSISTANT_MARK_READ_TOOL && agentId !== undefined) return false;
   if (name === "Agent") {
-    // Limit delegation to the project helper with its own tool list. Resume,
-    // worktree and teammate modes carry a different execution scope.
-    return params.subagent_type === ASSISTANT_HELPER && params.run_in_background === false &&
+    // Resume, worktree, background and teammate modes carry a different execution scope.
+    const target = params.subagent_type;
+    return (memory ? typeof target === "string" && ASSISTANT_SPECIALISTS.has(target) && params.run_in_background !== true
+      : target === ASSISTANT_HELPER && params.run_in_background === false) &&
       Object.keys(params).every(key => ["subagent_type", "description", "prompt", "model", "effort", "run_in_background"].includes(key));
+  }
+  if (specialist && proposalDraftTools.includes(name)) {
+    const kind = (params.action as { kind?: unknown } | undefined)?.kind;
+    if (typeof kind !== "string" || !(agentType === "mail-triager" ? kind.startsWith("mail.")
+      : agentType === "schedule-planner" ? /^(todo|calendar)\./.test(kind) : kind === "memory.rule_upsert")) return false;
   }
   if (!fileTools.includes(name)) return true;
   if (!safePathInput(cwd) || !isAbsolute(cwd)) return false;
@@ -93,22 +116,25 @@ export async function allowAssistantTool(workspace: string, input: unknown): Pro
   if (!withinPath(root, dir)) return false;
   const candidate = resolve(dir, target);
   if (!withinPath(root, candidate) || isMcpConfig(candidate)) return false;
-  const writing = name === "Write" || name === "Edit" || name === "MultiEdit";
+  const writing = ASSISTANT_FILE_WRITES.includes(name);
   const physical = await resolveWorkspacePath(candidate, writing);
   if (!withinPath(root, physical.path) || isMcpConfig(physical.path) ||
     (!physical.info.isDirectory() && !(physical.info.isFile() && physical.info.nlink === 1))) return false;
   if (!writing) return physical.info.isDirectory() ? search && await searchableTree(physical.path) : true;
 
-  const outputs = join(root, "outputs");
-  return relative(outputs, physical.path) !== "" && withinPath(outputs, candidate) && withinPath(outputs, physical.path) &&
-    (await lstat(outputs)).isDirectory() && (physical.missing ? physical.info.isDirectory() : physical.info.isFile());
+  if (memory && [candidate, physical.path].some(path => relative(root, path).split(sep).some(part => protectedNames.has(part.toLowerCase())))) return false;
+  const writeRoots = specialist && agentType === "memory-curator" ? ASSISTANT_MEMORY_ROOTS : ["outputs"];
+  const allowed = writeRoots.map(dir => join(root, dir)).find(dir =>
+    relative(dir, physical.path) !== "" && withinPath(dir, candidate) && withinPath(dir, physical.path));
+  return allowed !== undefined && (await lstat(allowed)).isDirectory() &&
+    (physical.missing ? physical.info.isDirectory() : physical.info.isFile());
 }
 
-export async function runAssistantFsGuard(workspace: string): Promise<void> {
+export async function runAssistantFsGuard(workspace: string, policy?: string): Promise<void> {
   let stdin = "";
   for await (const chunk of process.stdin.setEncoding("utf8")) stdin += chunk;
   try {
-    if (await allowAssistantTool(workspace, JSON.parse(stdin))) return;
+    if (await allowAssistantTool(workspace, JSON.parse(stdin), policy)) return;
   } catch (error) {
     if (!(error instanceof Error && (error instanceof SyntaxError || "code" in error))) throw error;
   }

@@ -7,7 +7,7 @@ import { ImapFlow, type ImapFlowOptions } from "imapflow";
 import { KeychainMailCredentials, type MailCredentials } from "./credentials.js";
 import { MailReceiver, type MailState } from "./receiver.js";
 import { AssistantMailStore, type AssistantBinding, type MailAnalysis, type MailProcessingStatus } from "./store.js";
-import type { BridgeMailAttachmentRef } from "../../packages/protocol/src/assistant-mail.js";
+import { DEFAULT_MAIL_POLL_INTERVAL, isMailPollInterval, type BridgeMailAttachmentRef, type MailPollInterval } from "../../packages/protocol/src/assistant-mail.js";
 import { attachmentText, MAIL_TEXT_MAX_BYTES, supportsAttachmentText } from "./attachment-text.js";
 import { MailAttachmentError, parseMail } from "./mime.js";
 export { MailAttachmentError, MailBodyParseError } from "./mime.js";
@@ -18,7 +18,7 @@ export interface MailAccount {
   user: string;
 }
 
-type SavedAccount = MailAccount & { enabled: boolean };
+type SavedAccount = MailAccount & { enabled: boolean; pollIntervalSeconds: MailPollInterval };
 export type MailAccountStatus = SavedAccount & { accountKey: string; state: MailState; errorCode?: string };
 
 function parseAccount(value: MailAccount): MailAccount {
@@ -79,7 +79,9 @@ export class AssistantMailService extends EventEmitter {
       const value = JSON.parse(saved) as SavedAccount | SavedAccount[];
       configs = (Array.isArray(value) ? value : [value]).map(config => {
         if (typeof config?.enabled !== "boolean") throw new Error("Invalid saved IMAP account");
-        return { ...parseAccount(config), enabled: config.enabled };
+        const interval = config.pollIntervalSeconds;
+        if (interval !== undefined && !isMailPollInterval(interval)) throw new Error("Invalid saved polling interval");
+        return { ...parseAccount(config), enabled: config.enabled, pollIntervalSeconds: interval === undefined ? DEFAULT_MAIL_POLL_INTERVAL : interval };
       });
     } catch {
       this.accountConfigError = "mail_account_config_unavailable";
@@ -99,7 +101,7 @@ export class AssistantMailService extends EventEmitter {
       state: this.closed ? "closed" : config.enabled ? receiver.state : "disabled",
       ...(config.enabled && !this.closed && receiver.errorCode ? { errorCode: receiver.errorCode } : {}),
     }));
-    const current = accounts.find(account => account.state === "connected") ?? accounts.find(account => account.enabled) ?? accounts[0];
+    const current = accounts.find(account => account.state === "connected" || account.state === "polling") ?? accounts.find(account => account.enabled) ?? accounts[0];
     return {
       state: this.closed ? "closed" : this.accountConfigError ? "error" : current?.state ?? "disabled",
       credentialsSupported: this.credentials.supported, accounts,
@@ -115,7 +117,8 @@ export class AssistantMailService extends EventEmitter {
 
   async enable(input: { host: string; port?: number; user: string; password: string }): Promise<void> {
     if (!this.credentials.supported) throw new Error("mail_credentials_unsupported");
-    const config = { ...parseAccount({ host: input.host, port: input.port ?? 993, user: input.user }), enabled: true };
+    const config: SavedAccount = { ...parseAccount({ host: input.host, port: input.port ?? 993, user: input.user }), enabled: true,
+      pollIntervalSeconds: DEFAULT_MAIL_POLL_INTERVAL };
     const key = accountKey(config);
     await this.mutateAccount(key, async () => {
       const existing = this.accounts.get(key);
@@ -152,6 +155,18 @@ export class AssistantMailService extends EventEmitter {
 
   setAccountEnabled(accountKey: string, enabled: boolean): Promise<void> {
     return this.mutateAccount(accountKey, () => this.updateEnabled(accountKey, enabled));
+  }
+
+  setAccountPollInterval(accountKey: string, pollIntervalSeconds: MailPollInterval): Promise<void> {
+    return this.mutateAccount(accountKey, async () => {
+      const { config, receiver } = this.requireAccount(accountKey);
+      if (config.pollIntervalSeconds === pollIntervalSeconds) return;
+      this.saveAccounts(Array.from(this.accounts, ([key, { config }]) => key === accountKey ? { ...config, pollIntervalSeconds } : config));
+      config.pollIntervalSeconds = pollIntervalSeconds;
+      if (config.enabled && receiver.state === "unsupported") await this.restartReceiver(accountKey);
+      else if (config.enabled && receiver.state === "polling") receiver.resume();
+      this.emit("changed");
+    });
   }
 
   private async updateEnabled(accountKey: string, enabled: boolean): Promise<void> {
@@ -273,7 +288,7 @@ export class AssistantMailService extends EventEmitter {
   }
 
   private addAccount(accountKey: string, config: SavedAccount) {
-    const receiver = new MailReceiver({ ...config, accountKey }, this.store, this.credentials, this.createClient, {
+    const receiver = new MailReceiver(accountKey, config, this.store, this.credentials, this.createClient, {
       changed: () => this.emit("changed"), mail: event => this.emit("mail", event), error: error => this.emit("error", error),
     });
     const account = { config, receiver };

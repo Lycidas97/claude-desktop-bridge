@@ -1,4 +1,4 @@
-import type { BridgeDirectoryListing, BridgeHostSnapshot, BridgeMailAccount, BridgeMethod, BridgeSessionInfo } from "@bridge/protocol";
+import { MAIL_POLL_INTERVALS, type BridgeDirectoryListing, type BridgeHostSnapshot, type BridgeMailAccount, type BridgeMethod, type BridgeSessionInfo } from "@bridge/protocol";
 import { ChevronRight, RefreshCw, Settings } from "lucide-react";
 import { useEffect, useId, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { formatSessionModelLabel } from "../../lib/conversation-timeline.js";
@@ -171,6 +171,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
       configUnavailable={mail.assistant?.accountConfigError === "mail_account_config_unavailable"}
       credentialsSupported={mail.assistant?.credentialsSupported === true}
       online={mail.online}
+      supportsPolling={capabilities.includes("plugin.assistant-mail.polling.v1")}
       request={mail.request}
     />}
     {displayedView === "settings" && agenda && <AgendaSources />}
@@ -221,16 +222,18 @@ const RECEIVER_ERRORS = new Map([
   ["mail_idle_unsupported", { label: "不支持持续收件", state: "unsupported" }],
 ]);
 
-function MailAccounts({ accounts, configUnavailable, credentialsSupported, online, request }: {
+function MailAccounts({ accounts, configUnavailable, credentialsSupported, online, supportsPolling, request }: {
   accounts: BridgeMailAccount[];
   configUnavailable: boolean;
   credentialsSupported: boolean;
   online: boolean;
+  supportsPolling: boolean;
   request: AssistantRequest;
 }) {
   const headingId = useId();
   const [action, setAction] = useState<{ kind: "add" } | { kind: "edit" | "remove"; accountKey: string }>();
   const [busy, setBusy] = useState(false);
+  const [pendingInterval, setPendingInterval] = useState<{ accountKey: string; value: string }>();
   const [error, setError] = useState("");
   const disabled = !online || configUnavailable || !credentialsSupported || busy;
   const editedAccount = action?.kind === "edit" ? accounts.find(account => account.accountKey === action.accountKey) : undefined;
@@ -241,10 +244,11 @@ function MailAccounts({ accounts, configUnavailable, credentialsSupported, onlin
     setError("");
     try {
       mailResult(await request(method, params));
-      setAction(undefined);
+      if (method !== "plugin.assistant-mail.account.set-poll-interval") setAction(undefined);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "邮箱账号设置失败");
     } finally {
+      setPendingInterval(undefined);
       setBusy(false);
     }
   }
@@ -276,17 +280,35 @@ function MailAccounts({ accounts, configUnavailable, credentialsSupported, onlin
     {accounts.map(account => {
       const state = account.enabled ? account.state : "disabled";
       const failure = account.enabled && account.errorCode ? RECEIVER_ERRORS.get(account.errorCode) : undefined;
+      const status = supportsPolling && state === "connected"
+        ? account.receivingMode === "polling" ? "轮询中" : "已连接（IDLE）"
+        : supportsPolling && account.errorCode === "mail_idle_unsupported" && state === "unsupported"
+          ? "不支持持续收件，轮询已关闭"
+          : failure?.label ?? RECEIVER_LABELS[state];
       return <div className="assistant-account-row" key={account.accountKey}>
         <div className="assistant-account-identity">
           <strong>{account.user}</strong>
           <span>{account.host}:{account.port}</span>
         </div>
-        <span className="assistant-account-state" data-state={failure?.state ?? state}>{failure?.label ?? RECEIVER_LABELS[state]}</span>
+        <span className="assistant-account-state" data-state={failure?.state ?? state}>{status}</span>
         <div className="assistant-actions assistant-account-actions">
           <button type="button" className="assistant-session-link" aria-label={`更新密码：${account.user}`} disabled={disabled} onClick={() => { setError(""); setAction({ kind: "edit", accountKey: account.accountKey }); }}>更新密码</button>
           <button type="button" className="assistant-session-link" aria-label={`${account.enabled ? "停用" : "启用"}：${account.user}`} disabled={disabled} onClick={() => { void update("plugin.assistant-mail.account.set-enabled", { accountKey: account.accountKey, enabled: !account.enabled }); }}>{account.enabled ? "停用" : "启用"}</button>
           <button type="button" className="assistant-session-link assistant-remove" aria-label={`移除：${account.user}`} disabled={disabled} onClick={() => { setError(""); setAction({ kind: "remove", accountKey: account.accountKey }); }}>移除</button>
         </div>
+        {supportsPolling && account.pollIntervalSeconds !== undefined && <label className="assistant-account-polling">
+          备用轮询间隔
+          <select value={pendingInterval?.accountKey === account.accountKey ? pendingInterval.value : account.pollIntervalSeconds ?? "off"} disabled={disabled}
+            aria-label={`备用轮询间隔：${account.user} (${account.host}:${account.port})`}
+            onChange={event => {
+              const value = event.currentTarget.value;
+              setPendingInterval({ accountKey: account.accountKey, value });
+              void update("plugin.assistant-mail.account.set-poll-interval", { accountKey: account.accountKey, pollIntervalSeconds: value === "off" ? null : Number(value) });
+            }}>
+            <option value="off">关闭</option>
+            {MAIL_POLL_INTERVALS.map(seconds => <option key={seconds} value={seconds}>{seconds < 60 ? `${seconds} 秒` : `${seconds / 60} 分钟`}</option>)}
+          </select>
+        </label>}
       </div>;
     })}
     {(action?.kind === "add" || editedAccount) && <form key={editedAccount?.accountKey ?? "add"} onSubmit={save} autoComplete="off">

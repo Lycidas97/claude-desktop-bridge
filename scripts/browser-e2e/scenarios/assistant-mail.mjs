@@ -492,13 +492,39 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await accounts.getByLabel("密码", { exact: true }).fill("fixture-credential-add");
   await accounts.getByRole("button", { name: "添加账号", exact: true }).click();
   await extraAccount.getByText("imap.second.example.test:993", { exact: true }).waitFor();
-  await extraAccount.getByText("已连接", { exact: true }).waitFor();
+  await accounts.getByText("已连接（IDLE）", { exact: true }).waitFor();
+  await extraAccount.getByText("轮询中", { exact: true }).waitFor();
   const { accountKey } = host.snapshot.assistantMail.accounts.find(account => account.user === extraUser);
+  const pollInterval = extraAccount.getByRole("combobox", { name: /^备用轮询间隔/u });
+  assert.equal(await pollInterval.inputValue(), "60");
+  await accounts.getByRole("button", { name: "添加邮箱", exact: true }).click();
+  const draftAddress = accounts.getByLabel("邮箱地址", { exact: true });
+  await draftAddress.fill("unsaved@example.test");
+  const allowPollingUpdate = Promise.withResolvers();
+  host.pollIntervalGate = allowPollingUpdate.promise;
+  try {
+    await pollInterval.selectOption("off");
+    await eventually(() => pollInterval.isDisabled(), true, "The interval control is disabled during the settings request");
+    assert.equal(await pollInterval.inputValue(), "off", "The pending selection is visible before the host acknowledges it");
+  } finally {
+    host.pollIntervalGate = undefined;
+    allowPollingUpdate.resolve();
+  }
+  await extraAccount.getByText("不支持持续收件，轮询已关闭", { exact: true }).waitFor();
+  assert.equal(await draftAddress.count(), 1, "Saving a polling interval keeps the open account form");
+  assert.equal(await draftAddress.inputValue(), "unsaved@example.test");
+  await accounts.getByRole("button", { name: "取消", exact: true }).click();
+  await pollInterval.selectOption("30");
+  await extraAccount.getByText("轮询中", { exact: true }).waitFor();
+  assert.equal(await pollInterval.inputValue(), "30");
+  const { client: _client, ...pollingParams } = host.requests.findLast(request => request.method === "plugin.assistant-mail.account.set-poll-interval").params;
+  assert.deepEqual(pollingParams, { accountKey, pollIntervalSeconds: 30 });
+  assert.equal(host.snapshot.assistantMail.accounts.find(account => account.accountKey !== accountKey).pollIntervalSeconds, 60);
   assert.equal(JSON.stringify(host.snapshot).includes("fixture-credential-add"), false);
   for (const [state, errorCode, label, tone] of [
     ["reconnecting", "mail_authentication_failed", "密码错误", "error"],
     ["error", "mail_credentials_unavailable", "凭据不可用", "error"],
-    ["unsupported", "mail_idle_unsupported", "不支持持续收件", "unsupported"],
+    ["unsupported", "mail_idle_unsupported", "不支持持续收件，轮询已关闭", "unsupported"],
   ]) {
     const assistantMail = host.snapshot.assistantMail;
     await host.send({ kind: "snapshot", snapshot: { ...host.snapshot, assistantMail: {
@@ -771,6 +797,12 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   steps.push("real DesktopDashboard defaults to the controlled bound conversation, omits the ordinary directory, shares mail selection and submits the selected reference through Controller to native sendMessage");
 
   await extraAccount.getByText("已停用", { exact: true }).waitFor();
+  assert.equal(await pollInterval.inputValue(), "30");
+  await pollInterval.selectOption("120");
+  await eventually(() => host.snapshot.assistantMail.accounts.find(account => account.accountKey === accountKey)?.pollIntervalSeconds,
+    120, "Desktop saves the same account's polling interval");
+  assert.deepEqual(desktopRequests.findLast(request => request.method === "plugin.assistant-mail.account.set-poll-interval").params,
+    { accountKey, pollIntervalSeconds: 120 });
   await accounts.getByRole("button", { name: `更新密码：${extraUser}`, exact: true }).click();
   const credential = accounts.getByLabel("密码", { exact: true });
   assert.equal(await credential.inputValue(), "", "Stored credentials are never prefilled");
@@ -784,7 +816,8 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await eventually(() => host.snapshot.assistantMail.accounts.find(account => account.accountKey === accountKey)?.state,
     "connected", "The re-enabled synthetic receiver reconnects after its RPC acknowledgement");
   await page.evaluate(assistantMail => window.assistantDesktopSnapshot({ assistantMail }), host.snapshot.assistantMail);
-  await extraAccount.getByText("已连接", { exact: true }).waitFor();
+  await extraAccount.getByText("轮询中", { exact: true }).waitFor();
+  assert.equal(await pollInterval.inputValue(), "120");
   await accounts.getByRole("button", { name: `移除：${extraUser}`, exact: true }).click();
   assert.ok(host.snapshot.assistantMail.accounts.some(account => account.accountKey === accountKey));
   await accounts.getByRole("button", { name: "确认移除", exact: true }).click();

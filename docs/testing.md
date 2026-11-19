@@ -309,6 +309,77 @@ npm run ci:run -- exec -w @bridge/desktop -- vitest run src/claude/claude-deskto
 成功/拒绝结果和未运行项，满足[安全启用条件](SECURITY.md#外部邮件自动投递门禁)
 后才能启用自动处理；不为补证据添加自动重发、恢复循环或第二条执行队列。
 
+### 阶段 1 托管工作区实机复核
+
+[Issue 222](https://github.com/Lycidas97/claude-desktop-bridge/issues/222)，2026-11-19 UTC：
+**部分验证，自动投递保持关闭**。主机是 macOS 27.2（26B123），Claude Desktop 5.11492.5，
+原生 `system/init` 和重启版本查询均为 Claude Code 2.1.325。Bridge 是本机签名 dogfood
+`1.3.8-dev.18.diag`，安装日志来源 `07de59dd35e6b6d78be313a7477d1f537bd702ee`，
+安装包 ASAR SHA-256 `d2c666e18413fc887e93fdf7e56ce16e6fd06e61095d2c3c0a68a255f184d70c`。
+
+本轮从源码的 `WorkspaceProvisioner` 生成隔离工作区，`PreToolUse` 和 stdio MCP 由已安装
+Bridge 的 Electron 和 `app.asar/dist` 启动。用真实 Desktop 的 `LocalSessions` 执行；
+没有更改生产绑定、启动第二条 Native 事件流或读取业务邮件。配置为 `assistant-runner`、
+`dontAsk`、`PreToolUse` `onFailure: "block"`（10 秒）；使用现有绑定的原生 model ID，
+其 SHA-256 前 12 位为 `46feb8e13ad1`，未独立核实服务端模型版本。配置摘要不是 Native
+最终合并配置取证。
+
+自有会话 `local_8f0fc461-95ab-4cf5-a2ec-d452b5eaa47e` 的 CLI 会话 ID 为
+`8939a22f-0267-4d2b-8491-5d47a64935c7`。11:54:17.065 的 init（本地 `/agents` 消息
+`ccb89668-0e6b-4f32-85fc-b8c07d682ec5`）显示 7 项工具、无白名单外项；`Task` 按 Native
+别名视为 `Agent`，当时邮件 MCP 仍为 `pending`。11:55:59.126 的 init 显示 15 项，
+其中 8 项为邮件和议程工具，MCP 为 `connected`，仍无白名单外项。目录与 `connected`
+都不是业务调用证据。
+
+#### 文件守卫与故障
+
+下表的时间均为 UTC。每行调用 ID 与对应 `tool_result.tool_use_id` 相同。文件用例
+均属于消息 `deca0bb4-67eb-4a4f-a1b8-87d44eebe001`，Native 于 11:55:59.119 接收。
+
+| 检查 | 调用 → 结果时间 | 调用 ID | 实际结果 |
+| --- | --- | --- | --- |
+| `Read` 工作区内标记 | 11:56:03.073 → .182 | `call_00_wAG18tSU2O445udKSTh06919` | 成功，返回自有标记 |
+| `Write` 新建 `outputs/new-dir/owned-result.txt` | 11:56:03.378 → .498 | `call_01_2dxKMWQesGXcX0cDcos91622` | 成功，核对落盘标记 |
+| `Read` 工作区外自有文件 | 11:56:03.715 → .807 | `call_02_oHGMuNZvOAU5GqPuKf2g2415` | 守卫拒绝，`is_error: true` |
+| `Write` 新建 `.bridge-uploads/denied-check.txt` | 11:56:03.925 → 11:56:04.010 | `call_03_xkxHF0xfkuYDz3VhqfoJ2461` | 守卫拒绝，文件不存在 |
+| `Glob` 不传 `path` | 11:56:04.106 → .192 | `call_04_lUD37HOz5sniWy4wwFcy9317` | 守卫拒绝，`is_error: true` |
+| `Grep` 指定无链接的 `fixtures` 子目录 | 11:56:04.422 → .543 | `call_05_nLsgompT7DxWE3INvJ6V7371` | 成功，找到自有标记 |
+
+在同一隔离会话分别冷启动，故障探针只替换隔离工作区的 hook 命令，保留 `onFailure: "block"`
+与 10 秒限制。下列三个 `Read` 都以正常可读的工作区内文件为目标；Native 均返回
+`is_error: true`，将拒绝归因于 `PreToolUse` 故障，而非模型口头拒绝。
+
+| 守卫故障 | 消息 UUID | 调用 → 拒绝时间 | 调用 ID |
+| --- | --- | --- | --- |
+| 脚本不存在 | `6aef80d5-a3c2-4af0-9f6e-b1caa7e34232` | 11:56:14.810 → .928 | `call_00_L4FN1rKv7TIqetP9wokz0942` |
+| 脚本抛异常 | `6090739e-25b3-46e1-b42e-4ffb5d0b1249` | 11:56:19.892 → 11:56:20.000 | `call_00_6cXsUm8qjw3UFKMA8KgY9327` |
+| 脚本超过 10 秒 | `538539a6-b24a-4e11-89d7-eab5e0afbccc` | 11:56:23.742 → 11:56:33.886 | `call_00_ET_D5cpN8zIJHhGV3ywnDhn3858` |
+
+子代理消息 `df5b0917-2d9b-40f2-b53d-a8a7fa408f02` 尝试 `Agent`，调用
+`call_00_JpOWJfEOqDTlhzxCHr4W0844` 于 11:56:09.615 发出、.727 被守卫拒绝。
+该次未启动子代理，不能证明获准的子代理权限或网关归因。
+
+#### 原生压缩
+
+带自定义指令的 `/compact` 消息 `c9d5c731-acb3-4229-a4eb-886d83a17e2e` 于
+11:56:37.327 接收。隔离工作区的 `PreCompact`（11:56:37.420，`trigger: manual`，有
+`custom_instructions`）、`SessionStart`（11:56:48.792，`source: compact`）、
+`PostCompact`（11:56:48.891，`trigger: manual`）顺序触发，hook 输入的 `session_id`
+均等于上述 CLI 会话 ID，不是 Desktop `local_…` ID。Native `compact_boundary` UUID
+为 `886e7028-2b19-4f73-ae64-248a7c5d03c0`（11:56:48.684）。压缩后的无工具消息
+`e4ed37f4-c856-473f-9cc0-642a09d98e55` 回复同时复述了仅来自 `PreCompact` stdout
+与 `SessionStart` 注入的两个标记。未独立读取汇总正文，不能只凭回复定位标记的储存位置。
+
+#### 尚未验收
+
+| 项目 | 本轮证据与缺口 |
+| --- | --- |
+| 一键初始化、真实邮件 MCP、归因 | [早期安装包观察](https://github.com/Lycidas97/claude-desktop-bridge/issues/222#issuecomment-7000436347)记录过初始化和空页往返；新版本只确认此隔离会话的打包 MCP `connected`，未重绑生产工作区、调用新版真实邮箱 MCP 或核对主会话/子代理的绑定归因 |
+| 工具边界 | 白名单外目录项未出现；没有终端、浏览器预览、定时任务、Shell、外网、继承 MCP 或跨会话工具实际拒绝回执。最终合并配置、获准子代理、原生 `@`、配置及规则写入、符号链接祖先和无路径 `Grep` 尚未验证 |
+| 关窗、锁屏、睡眠和断线对账 | 新版服务 PID `96791` 持有 macOS `NoIdleSleepAssertion`（`Electron`）；配套 APK 已构建，但未核实实体手机安装，也未用手机在关窗、退出窗口、锁屏或强制睡眠唤醒时提交消息，未以实体手机的原 UUID 做断线对账。电源断言不证明锁屏期间接收或睡眠期间可执行 |
+| 自动压缩和故障 | 上述探针只触发手动压缩；自动压缩的 `trigger`、压缩 hook 异常和超时是否影响完成未验证 |
+| EventKit | 与 dogfood 同证书签名的独立探针已构建并通过 `codesign --verify --strict`。未启动授权请求、读取日程/提醒事项或实测 `EKEventStoreChanged`，不构成产品或 TCC 验收 |
+
 ## Cleanup boundary
 
 The runners append the checkout's `scripts/recycle-cleanup.cjs` to `NODE_OPTIONS`,

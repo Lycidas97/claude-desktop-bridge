@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { ARTIFACT_MAX_BYTES, ASSISTANT_MEMORY_POLICY, isAssistantWorkspacePolicy, isMailPollInterval, mailAttachmentPreviewKind } from "@bridge/protocol";
+import { ARTIFACT_MAX_BYTES, ASSISTANT_MEMORY_POLICY, ASSISTANT_SMTP_CAPABILITY, isAssistantWorkspacePolicy, isMailPollInterval, mailAttachmentPreviewKind } from "@bridge/protocol";
+import { configureSmtp } from "../../../../plugins/assistant-mail/proposal-contract.js";
 import type {
   BridgeAssistantMailSnapshot,
   BridgeEvent,
@@ -23,6 +24,7 @@ export const ASSISTANT_MAIL_CAPABILITIES = [
   "plugin.assistant-mail.v1",
   "plugin.assistant-mail.manual-reference.v1",
   "plugin.assistant-mail.account.v1",
+  ASSISTANT_SMTP_CAPABILITY,
   "plugin.assistant-mail.polling.v1",
   "plugin.assistant-mail.attachments.v1",
   "plugin.assistant-mail.history.v1",
@@ -455,6 +457,11 @@ export class AssistantMailCoordinator {
         }
         await this.mail.enable({ host: stringParam(params, "host")!, user: stringParam(params, "user")!,
           ...(port === undefined ? {} : { port }), password: stringParam(params, "credential")! });
+      } else if (method === "plugin.assistant-mail.account.set-smtp") {
+        const { client: _client, ...input } = params;
+        const parsed = configureSmtp.safeParse(input);
+        if (!parsed.success) throw new BridgeRequestError("INVALID_PARAMS", "请检查 SMTP 服务器、发件地址和凭据。");
+        await this.mail.setSmtp(parsed.data.accountKey, parsed.data.smtp);
       } else {
         const accountKey = stringParam(params, "accountKey")!;
         if (method === "plugin.assistant-mail.account.update-credential") {

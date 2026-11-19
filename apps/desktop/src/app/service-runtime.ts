@@ -181,8 +181,8 @@ export async function createServiceRuntime(options: {
     };
     const proposals = new ProposalExecutor(proposalStore, agendaStore, agendaCredentials, sourceId => {
       void assistantAgenda.proposalChanged(sourceId).catch(error => assistantAgenda.emit("error", error));
-    }, undefined, { memory: workspace.memory, allowed: memoryAllowed });
-    proposals.on("error", () => process.stderr.write("Bridge assistant proposal recovery failed.\n"));
+    }, undefined, assistantMail, undefined, { memory: workspace.memory, allowed: memoryAllowed });
+    proposals.on("error", () => process.stderr.write("Bridge assistant proposal execution or recovery failed.\n"));
     resources.defer("Assistant proposals", () => proposals.close());
     const mailTools = await serveAssistantMailTools({
       userDataPath, service: assistantMail, agenda: assistantAgenda, proposals,

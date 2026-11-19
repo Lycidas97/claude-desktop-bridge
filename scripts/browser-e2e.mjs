@@ -19,7 +19,7 @@ import { verifyRound4Boundaries, verifyRound5Ux } from "./browser-e2e/scenarios/
 import { verifyDesktopDiagnostics, verifyDesktopQuota, verifyDesktopConversation } from "./browser-e2e/scenarios/desktop.mjs";
 import { verifyMobileSafeArea } from "./browser-e2e/scenarios/mobile-safe-area.mjs";
 import { verifyAssistantMail, verifyAssistantMailHistory, verifyAssistantMailUnread } from "./browser-e2e/scenarios/assistant-mail.mjs";
-import { memoryProposalFixture, seedAssistantProposals, verifyAssistantProposals } from "./browser-e2e/scenarios/assistant-proposals.mjs";
+import { memoryProposalFixture, seedAssistantProposals, seedMailProposal, verifyAssistantProposals } from "./browser-e2e/scenarios/assistant-proposals.mjs";
 import { scanDesktopPairingQr } from "./browser-e2e/scenarios/pairing-qr.mjs";
 import { createPreviousPairedHost, verifyPairedHostStatus } from "./browser-e2e/scenarios/paired-host-status.mjs";
 import { incomingFileFixture, installIncomingFileFixture, verifyIncomingFile } from "./browser-e2e/scenarios/incoming-file.mjs";
@@ -442,6 +442,7 @@ try {
     if (proposalPreview) {
       await seedAssistantProposals(host);
       await host.nativeApproval.draftProposal(memoryProposalFixture);
+      await seedMailProposal(host);
     }
     if (projectGroupingPreview) Object.assign(host.snapshot, await host.nativeApproval.projectCatalog());
     if (projectGroupingPreview && process.argv.includes("--project-order-scroll-preview")) addScrollProjects(host, 30);

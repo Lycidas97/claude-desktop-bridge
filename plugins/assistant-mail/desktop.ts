@@ -1,8 +1,12 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { z } from "zod";
+import { AgendaEditError } from "./agenda-store.js";
+import { smtpChannel } from "./proposal-contract.js";
 import { EventEmitter } from "node:events";
 import { renameSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { Readable } from "node:stream";
 import { ImapFlow, type ImapFlowOptions } from "imapflow";
 import { KeychainMailCredentials, type MailCredentials } from "./credentials.js";
 import { MailReceiver, type MailState } from "./receiver.js";
@@ -18,8 +22,11 @@ export interface MailAccount {
   user: string;
 }
 
-type SavedAccount = MailAccount & { enabled: boolean; pollIntervalSeconds: MailPollInterval };
-export type MailAccountStatus = SavedAccount & { accountKey: string; state: MailState; errorCode?: string };
+const savedSmtpChannel = smtpChannel.extend({ version: z.uuid() });
+type SavedSmtpChannel = z.output<typeof savedSmtpChannel>;
+type SavedAccount = MailAccount & { enabled: boolean; pollIntervalSeconds: MailPollInterval; smtp?: SavedSmtpChannel };
+export type MailAccountStatus = Omit<SavedAccount, "smtp"> & { accountKey: string; state: MailState; errorCode?: string;
+  smtp?: Omit<SavedSmtpChannel, "version"> };
 export type MailAccountFailure = { accountKey: string; errorCode: string };
 
 function parseAccount(value: MailAccount): MailAccount {
@@ -82,7 +89,8 @@ export class AssistantMailService extends EventEmitter {
         if (typeof config?.enabled !== "boolean") throw new Error("Invalid saved IMAP account");
         const interval = config.pollIntervalSeconds;
         if (interval !== undefined && !isMailPollInterval(interval)) throw new Error("Invalid saved polling interval");
-        return { ...parseAccount(config), enabled: config.enabled, pollIntervalSeconds: interval === undefined ? DEFAULT_MAIL_POLL_INTERVAL : interval };
+        return { ...parseAccount(config), enabled: config.enabled, pollIntervalSeconds: interval === undefined ? DEFAULT_MAIL_POLL_INTERVAL : interval,
+          ...(config.smtp ? { smtp: savedSmtpChannel.parse(config.smtp) } : {}) };
       });
     } catch {
       this.accountConfigError = "mail_account_config_unavailable";
@@ -103,8 +111,9 @@ export class AssistantMailService extends EventEmitter {
     history: { available: boolean; loading: boolean; failed: boolean };
   } {
     const receivers = Array.from(this.accounts.values()).filter(({ config }) => config.enabled && !this.closed).map(({ receiver }) => receiver);
-    const accounts = Array.from(this.accounts, ([key, { config, receiver }]): MailAccountStatus => ({
+    const accounts = Array.from(this.accounts, ([key, { config: { smtp, ...config }, receiver }]): MailAccountStatus => ({
       ...config, accountKey: key,
+      ...(smtp ? { smtp: { host: smtp.host, port: smtp.port, security: smtp.security, user: smtp.user, from: smtp.from } } : {}),
       state: this.closed ? "closed" : config.enabled ? receiver.state : "disabled",
       ...(config.enabled && !this.closed && receiver.errorCode ? { errorCode: receiver.errorCode } : {}),
     }));
@@ -162,6 +171,63 @@ export class AssistantMailService extends EventEmitter {
     });
   }
 
+  setSmtp(accountKey: string, input: z.output<typeof smtpChannel> & { credential: string } | null): Promise<void> {
+    return this.mutateAccount(accountKey, async () => {
+      if (!this.credentials.supported) throw new Error("mail_credentials_unsupported");
+      const { config } = this.requireAccount(accountKey);
+      const previous = config.smtp;
+      let next: SavedSmtpChannel | undefined;
+      if (input) {
+        const { credential, ...fields } = input;
+        if (previous && previous.host === fields.host && previous.port === fields.port && previous.security === fields.security &&
+          previous.user === fields.user && previous.from === fields.from) {
+          await this.savePassword(`smtp-${previous.version}`, credential);
+          return;
+        }
+        next = { ...fields, version: randomUUID() };
+        await this.savePassword(`smtp-${next.version}`, credential);
+      } else if (!previous) return;
+      const persist = (smtp: SavedSmtpChannel | undefined) => {
+        const { smtp: _smtp, ...receiving } = config;
+        this.saveAccounts(Array.from(this.accounts, ([key, entry]) => key === accountKey
+          ? { ...receiving, ...(smtp ? { smtp } : {}) } : entry.config));
+        if (smtp) config.smtp = smtp;
+        else delete config.smtp;
+      };
+      try { persist(next); }
+      catch (error) {
+        if (next) await this.credentials.delete(`smtp-${next.version}`);
+        throw error;
+      }
+      try {
+        if (previous) await this.credentials.delete(`smtp-${previous.version}`);
+      } catch {
+        persist(previous);
+        if (next) await this.credentials.delete(`smtp-${next.version}`);
+        throw new Error("mail_credentials_unavailable");
+      }
+      this.emit("changed");
+    });
+  }
+
+  smtpAccount(key: string) {
+    const config = this.accounts.get(key)?.config;
+    if (config?.enabled && config.smtp && this.credentials.supported) return { smtp: config.smtp, label: `${config.user} · ${config.host}` };
+  }
+
+  async smtpPassword(version: string): Promise<string | undefined> {
+    return this.credentials.get(`smtp-${version}`).catch((error: unknown) => {
+      if (error instanceof Error && error.message === "mail_credentials_unavailable") return undefined;
+      throw error;
+    });
+  }
+
+  replySource(accountKey: string, mailRefId: string): { subject: string; source: Readable } {
+    const event = this.store.event(mailRefId);
+    if (!event || event.accountKey !== accountKey) throw new AgendaEditError("NOT_FOUND", "此账号下找不到原邮件。");
+    return { subject: event.subject, source: this.store.stream(mailRefId)! };
+  }
+
   setAccountEnabled(accountKey: string, enabled: boolean): Promise<void> {
     return this.mutateAccount(accountKey, () => this.updateEnabled(accountKey, enabled));
   }
@@ -197,12 +263,20 @@ export class AssistantMailService extends EventEmitter {
     return this.mutateAccount(accountKey, async () => {
       const account = this.requireAccount(accountKey);
       if (!this.credentials.supported) throw new Error("mail_credentials_unsupported");
+      const smtpKey = account.config.smtp && `smtp-${account.config.smtp.version}`;
+      const smtpPassword = smtpKey ? await this.credentials.get(smtpKey) : undefined;
       this.saveAccounts(Array.from(this.accounts.values()).filter(entry => entry !== account).map(entry => entry.config));
       this.accounts.delete(accountKey);
       this.removingAccounts.set(accountKey, account.receiver);
+      let deletedSmtp = false;
       try {
+        if (smtpKey) {
+          await this.credentials.delete(smtpKey);
+          deletedSmtp = true;
+        }
         await this.credentials.delete(accountKey);
       } catch {
+        if (deletedSmtp && smtpPassword) await this.savePassword(smtpKey!, smtpPassword);
         this.saveAccounts([...Array.from(this.accounts.values(), entry => entry.config), account.config]);
         this.accounts.set(accountKey, account);
         this.emit("changed");

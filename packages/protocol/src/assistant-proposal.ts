@@ -18,7 +18,28 @@ export type MemoryRuleProposalAction = {
   text?: string | undefined;
   reason: string;
 };
-export type AssistantProposalAction = AgendaProposalAction | MemoryRuleProposalAction;
+
+type MailDraftFields = { accountKey: string; cc?: string[] | undefined; replyTo?: string | undefined; bodyText: string };
+export type MailProposalDraft = MailDraftFields & (
+  | { kind: "mail.reply"; mailRefId: string; to?: string[] | undefined; subject?: string | undefined }
+  | { kind: "mail.send"; to: string[]; subject: string }
+);
+
+export type MailProposalAction = {
+  accountKey: string;
+  from: string;
+  to: string[];
+  cc: string[];
+  replyTo?: string;
+  subject: string;
+  bodyText: string;
+} & (
+  | { kind: "mail.send" }
+  | { kind: "mail.reply"; mailRefId: string; originalFrom: string[]; originalReplyTo: string[]; replyToDiffers: boolean;
+      foreignReplyTo: boolean; inReplyTo?: string; references?: string[] }
+);
+
+export type ProposalDraftAction = AgendaProposalAction | MailProposalDraft | MemoryRuleProposalAction;
 
 export interface ProposalRevisionRef {
   proposalId: string;
@@ -26,21 +47,23 @@ export interface ProposalRevisionRef {
   payloadHash: string;
 }
 
-export type ProposalState = "pending" | "executing" | "applied" | "dismissed" | "conflict" | "failed" | "uncertain";
+export type ProposalState = "pending" | "executing" | "applied" | "dismissed" | "conflict" | "failed" | "uncertain" | "delivery_uncertain" | "delivery_partial";
 
 export interface BridgeActionProposal extends ProposalRevisionRef {
   sessionId: string;
-  action: AssistantProposalAction;
+  action: AgendaProposalAction | MailProposalAction | MemoryRuleProposalAction;
   sourceId: string;
   sourceLabel: string;
   before?: AgendaTodoInput | AgendaEventInput;
   profile?: { before: string | null; baseProfileSha256: string };
   state: ProposalState;
+  rejectedRecipients?: string[];
 }
 
 export interface BridgeProposalSnapshot {
   changeToken: string;
   pendingCount: number;
+  pendingMailCount?: number;
   sources: { id: string; label: string; kinds: ("todo" | "calendar")[] }[];
 }
 

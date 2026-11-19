@@ -53,6 +53,17 @@
 .assistant-proposal-dock .permission-dock { grid-template-columns: auto minmax(0, 1fr) auto; }
 .assistant-proposal-dock .permission-dock[data-empty="true"] { min-height: 44px; background: transparent; border-color: var(--line); }
 .assistant-proposal-dock .permission-dock[data-empty="true"] .permission-dock-icon { background: none; color: var(--muted); }
+.mail-proposal-sheet { overflow-wrap: anywhere; color: var(--text); }
+.mail-proposal-sheet > .proposal-fields { margin: 0 0 12px; gap: 6px 16px; }
+.mail-proposal-sheet > p[role="alert"], .mail-proposal-sheet > p[role="status"],
+.proposal-status:is([data-state="delivery_partial"], [data-state="delivery_uncertain"]) { color: var(--danger-ink); }
+.mail-proposal-address-warning { padding: 10px 12px; margin: 12px 0; background: var(--surface); border-inline-start: 3px solid var(--line); font-size: calc(13px * var(--font-scale)); }
+.mail-proposal-address-warning[data-foreign="true"] { background: var(--danger-soft); border-color: var(--danger-ink); }
+.mail-proposal-address-warning[data-foreign="true"] > strong { color: var(--danger-ink); }
+.mail-proposal-address-warning > dl { margin-bottom: 0; }
+.mail-proposal-letter { border-top: 1px solid var(--line); padding: 14px 0 4px; }
+.mail-proposal-letter h3 { margin: 0; font-size: calc(16px * var(--font-scale)); }
+.mail-proposal-letter p { line-height: 1.6; white-space: pre-wrap; }
 @media (max-width: 480px) {
   .proposal-card .proposal-actions button, .proposal-edit-form > nav button, .m-sheet.is-fullscreen .proposal-actions button { min-height: 44px; }
   .proposal-edit-form .agenda-form-pair { grid-template-columns: repeat(2, minmax(0, 1fr)); }

@@ -26,6 +26,24 @@ export async function seedAssistantProposals(host) {
   return { inline: inline.result, detached: detached.result };
 }
 
+const mailSubject = "确认周一评审安排";
+const mailTo = ["sender@example.test", "second@example.test"];
+const mailCc = ["team@example.test", "archive@example.test"];
+
+export async function seedMailProposal(host) {
+  const native = host.nativeApproval;
+  const original = await native.assistantMail.deliver(1, Buffer.from([
+    "From: sender@example.test", "Reply-To: ops@outside.example.org", "Message-ID: <origin@example.test>", "",
+    "请确认周一安排。",
+  ].join("\r\n")));
+  await native.controllerRequest(desktopFixtureRequest({ method: "plugin.assistant-mail.account.set-smtp", params: {
+    accountKey: original.accountKey, smtp: { host: "smtp.example.test", port: 465, security: "tls", user: "fixture",
+      from: "writer@example.test", credential: "for-test-only" },
+  } }), "desktop");
+  return (await native.draftProposal({ kind: "mail.reply", accountKey: original.accountKey, mailRefId: original.mailRefId,
+    subject: mailSubject, to: mailTo, cc: mailCc, bodyText: "周一 14:00 开始评审。\n请带上最新议程。" })).result;
+}
+
 export async function verifyAssistantProposals(page, host, steps, directory, viewports, baseUrl) {
   const capture = async (surface, name) => {
     await surface.screenshot({ path: resolve(directory, `${name}.png`) });
@@ -100,6 +118,7 @@ export async function verifyAssistantProposals(page, host, steps, directory, vie
   }
   const rule = await host.nativeApproval.draftProposal(memoryProposalFixture);
   assert.ok(!(await host.nativeApproval.readFixtureProfile()).includes(memoryProposalFixture.text));
+  const mail = await seedMailProposal(host);
   const desktop = await page.context().newPage();
   desktop.setDefaultTimeout(15_000);
   const desktopRequests = [];
@@ -172,5 +191,94 @@ export async function verifyAssistantProposals(page, host, steps, directory, vie
   await detail.getByText("已写入", { exact: true }).waitFor();
   assert.ok((await host.nativeApproval.readFixtureProfile()).includes("先列结论，再用三条以内的要点说明。"));
   steps.push("Desktop and paired phone confirm a frozen rule diff; the isolated PROFILE.md changes only after approval");
+  const { smtp } = host.nativeApproval.assistantMail;
+  const { attempts } = smtp;
+  const mailRequest = (method, params) => host.nativeApproval.controllerRequest(desktopFixtureRequest({ method, params }), "desktop");
+  assert.deepEqual((await mailRequest("assistant.proposal.list", {})).proposals, []);
+  await assert.rejects(mailRequest("assistant.proposal.commit", mail), { code: "INVALID_PARAMS" });
+  await page.locator(".assistant-page-mobile").getByRole("button", { name: "返回", exact: true }).click();
+  await rows.getByRole("button", { name: new RegExp(mailSubject, "u") }).click();
+  const commitsBeforeReview = host.requests.filter(request => request.method === "assistant.proposal.commit").length;
+  await detail.getByRole("button", { name: "核对并发送…" }).click();
+  const sheet = page.getByRole("dialog", { name: "核对并发送" });
+  const verifyMailSheet = async (drawer, subject, to, body) => {
+    assert.equal(await drawer.evaluate(element => element.classList.contains("m-sheet")), true);
+    await drawer.getByRole("heading", { name: subject }).waitFor();
+    await drawer.getByText(body, { exact: false }).waitFor();
+    const fields = await drawer.locator(".mail-proposal-sheet > dl dd").allTextContents();
+    assert.equal(fields[1], "writer@example.test");
+    assert.deepEqual(fields[3].split("\n"), to);
+    assert.deepEqual(fields[4].split("\n"), mailCc);
+    await drawer.getByText("原信的 Reply-To 来自不同域名").waitFor();
+    assert.equal(await drawer.locator("[data-foreign='true']").getByText("ops@outside.example.org").count(), 1);
+  };
+  await verifyMailSheet(sheet, mailSubject, mailTo, "周一 14:00 开始评审。");
+  await capture(page, "mobile-mail-confirmation");
+  assert.equal(host.requests.filter(request => request.method === "assistant.proposal.commit").length, commitsBeforeReview);
+  assert.equal(attempts.length, 0);
+
+  await desktop.getByRole("button", { name: "返回列表" }).click();
+  await desktop.locator(".proposal-list").getByRole("button", { name: new RegExp(mailSubject, "u") }).click();
+  const mailDetail = desktop.getByRole("region", { name: "提案详情" });
+  await mailDetail.getByRole("button", { name: "编辑", exact: true }).click();
+  const mailEdit = desktop.getByRole("dialog", { name: "编辑邮件提案" });
+  const finalSubject = `${mailSubject}（更新）`;
+  const finalTo = [...mailTo, "new@example.net"];
+  const finalBody = "周一 15:00 开始评审。";
+  await mailEdit.getByLabel("收件人 (To)").fill(finalTo.join("\n"));
+  await mailEdit.getByLabel("主题", { exact: true }).fill(finalSubject);
+  await mailEdit.getByLabel("正文", { exact: true }).fill(finalBody);
+  await mailEdit.getByRole("button", { name: "保存新版本" }).click();
+  await sheet.getByText("提案已更新或处理。关闭后重新核对。").waitFor();
+  assert.equal(await sheet.getByRole("button", { name: "确认立即发出" }).isEnabled(), false);
+  await assert.rejects(mailRequest("assistant.proposal.commit", { ...mail, confirmMail: true }), { code: "CONFLICT" });
+  assert.equal(attempts.length, 0);
+  await sheet.getByRole("button", { name: "取消", exact: true }).click();
+  await mailDetail.getByRole("button", { name: "核对并发送…" }).click();
+  const desktopSheet = desktop.getByRole("dialog", { name: "核对并发送" });
+  await verifyMailSheet(desktopSheet, finalSubject, finalTo, finalBody);
+  await capture(desktop, "desktop-mail-confirmation");
+  assert.equal(attempts.length, 0);
+  await desktopSheet.getByRole("button", { name: "取消", exact: true }).click();
+  await page.locator(".assistant-page-mobile").getByRole("button", { name: "返回", exact: true }).click();
+  await rows.getByRole("button", { name: /^确认周一评审安排（更新）/u }).click();
+  await detail.getByRole("button", { name: "核对并发送…" }).click();
+  const smtpResult = Promise.withResolvers();
+  smtp.resultGate = smtpResult.promise;
+  try {
+    await page.clock.install();
+    await sheet.getByRole("button", { name: "确认立即发出" }).click();
+    await detail.locator('[data-state="executing"]').waitFor({ state: "attached" });
+    await page.clock.fastForward(20_001);
+    assert.equal(await sheet.getByText("电脑响应超时", { exact: true }).count(), 0, "SMTP wait must not time out the approval RPC");
+    await sheet.waitFor({ state: "hidden" });
+    await detail.getByText("正在发送…", { exact: true }).waitFor();
+  } finally { smtpResult.resolve(); }
+  await detail.getByText("发送服务器已接受").waitFor();
+  await detail.getByRole("button", { name: "查看邮件版本" }).click();
+  const approvalRecord = page.getByRole("dialog", { name: "邮件提案记录" });
+  await verifyMailSheet(approvalRecord, finalSubject, finalTo, finalBody);
+  assert.equal(await approvalRecord.getByRole("button", { name: "确认立即发出" }).count(), 0);
+  await approvalRecord.getByRole("button", { name: "关闭" }).click();
+  const mailCommit = host.requests.find(request => request.method === "assistant.proposal.commit" && request.params.proposalId === mail.proposalId);
+  assert.equal(mailCommit.params.revision, 2);
+  assert.equal(mailCommit.params.confirmMail, true);
+  assert.notEqual(mailCommit.params.payloadHash, mail.payloadHash);
+  await assert.rejects(mailRequest("assistant.proposal.commit", mailCommit.params), { code: "CONFLICT" });
+  assert.deepEqual(attempts.map(({ from, to, cc, subject, bodyText }) => ({ from, to, cc, subject, bodyText })),
+    [{ from: "writer@example.test", to: finalTo, cc: mailCc, subject: finalSubject, bodyText: finalBody }]);
+  steps.push("Mail confirmation displays the pinned envelope, rejects a stale confirmation, and keeps its in-flight state until one send finishes");
+  await desktop.getByRole("button", { name: "助理设置", exact: true }).click();
+  await desktop.locator(".assistant-account-actions").getByRole("button", { name: /^SMTP 已配置：/u }).click();
+  const smtpForm = desktop.getByRole("group", { name: /的发信设置/u });
+  const port = smtpForm.getByLabel("端口", { exact: true });
+  const security = smtpForm.getByLabel("加密方式");
+  assert.equal(await port.inputValue(), "465");
+  await security.selectOption("starttls");
+  assert.equal(await port.inputValue(), "587");
+  await port.fill("2525");
+  await security.selectOption("tls");
+  assert.equal(await port.inputValue(), "2525");
+  steps.push("SMTP switches to the conventional STARTTLS port without overwriting a custom port");
   await desktop.close();
 }

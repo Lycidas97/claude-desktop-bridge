@@ -1,12 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import type { AssistantProposalAction, BridgeActionProposal, BridgeProposalSnapshot, ProposalRevisionRef } from "../../packages/protocol/src/assistant-proposal.js";
+import type { BridgeSmtpChannel } from "../../packages/protocol/src/assistant-mail.js";
+import type { AgendaProposalAction, BridgeActionProposal, BridgeProposalSnapshot, MemoryRuleProposalAction, ProposalDraftAction, ProposalRevisionRef } from "../../packages/protocol/src/assistant-proposal.js";
 import type { AgendaCredentials } from "./agenda.js";
 import type { AssistantMemory } from "./assistant-memory.js";
 import { AgendaEditError, type AgendaStore, LOCAL_AGENDA_ID } from "./agenda-store.js";
 import { CalDavError, requestCalDavMember } from "./caldav.js";
 import { canonicalCalendarBody, proposalCalendarBody } from "./proposal-ical.js";
 import { ProposalStore, publicProposal, type ProposalPayload, type StoredProposal } from "./proposal-store.js";
+import type { AssistantMailService } from "./desktop.js";
+import { freezeMailDraft } from "./proposal-mail.js";
+import { submitSmtp, type SmtpResult } from "./smtp.js";
 
 const refOf = ({ proposalId, revision, payloadHash }: ProposalRevisionRef): ProposalRevisionRef => ({ proposalId, revision, payloadHash });
 
@@ -21,27 +25,33 @@ export class ProposalExecutor extends EventEmitter {
     private readonly credentials: AgendaCredentials,
     private readonly notifyAgenda: (sourceId: string) => void,
     private readonly memberRequest = requestCalDavMember,
+    private readonly mail?: AssistantMailService,
+    private readonly send = submitSmtp,
     private readonly profile?: { memory: AssistantMemory; allowed(sessionId: string): boolean },
   ) { super(); }
 
   snapshot(): BridgeProposalSnapshot {
-    return { changeToken: this.changeToken, pendingCount: this.store.pendingCount(), sources: this.agenda.proposalSources() };
+    return { changeToken: this.changeToken, ...this.store.pendingCounts(), sources: this.agenda.proposalSources() };
   }
 
-  create(sessionId: string, action: AssistantProposalAction): ProposalRevisionRef {
+  async create(sessionId: string, action: ProposalDraftAction, assertAuthorized?: () => void): Promise<ProposalRevisionRef> {
     const id = randomUUID();
-    const proposal = this.store.insert(sessionId, id, 1, this.freeze(action, id, sessionId));
+    const payload = "accountKey" in action ? await freezeMailDraft(this.mailService(), action) : this.freeze(action, id, sessionId);
+    assertAuthorized?.();
+    const proposal = this.store.insert(sessionId, id, 1, payload);
     this.changed(true);
     return refOf(proposal);
   }
 
-  revise(ref: ProposalRevisionRef, action: AssistantProposalAction, sessionId?: string): BridgeActionProposal {
+  async revise(ref: ProposalRevisionRef, action: ProposalDraftAction, sessionId?: string, assertAuthorized?: () => void): Promise<BridgeActionProposal> {
+    const mailPayload = "accountKey" in action ? await freezeMailDraft(this.mailService(), action) : undefined;
+    assertAuthorized?.();
     const proposal = this.store.transaction(() => {
       const current = this.store.requirePending(ref, sessionId);
       if (action.kind !== current.action.kind) throw new AgendaEditError("INVALID_PARAMS", "不能更改提案的动作类型。");
       const sameRecord = "recordId" in action && "recordId" in current.action && action.recordId === current.action.recordId;
       // A manual field edit keeps the baseline the user reviewed. A model revision can re-read it.
-      const payload = this.freeze(action, current.proposalId, current.sessionId,
+      const payload = mailPayload ?? this.freeze(action as AgendaProposalAction | MemoryRuleProposalAction, current.proposalId, current.sessionId,
         sessionId === undefined && (sameRecord || action.kind === "memory.rule_upsert") ? current : undefined);
       return this.store.insert(current.sessionId, current.proposalId, current.revision + 1, { ...payload,
         ...(sessionId === undefined ? { nativeRevision: current.nativeRevision ?? current.revision } : {}),
@@ -51,12 +61,16 @@ export class ProposalExecutor extends EventEmitter {
     return publicProposal(proposal);
   }
 
-  reviseFromTool(sessionId: string, ref: ProposalRevisionRef, action: AssistantProposalAction): ProposalRevisionRef {
-    return refOf(this.revise(ref, action, sessionId));
+  async reviseFromTool(sessionId: string, ref: ProposalRevisionRef, action: ProposalDraftAction, assertAuthorized: () => void): Promise<ProposalRevisionRef> {
+    return refOf(await this.revise(ref, action, sessionId, assertAuthorized));
+  }
+
+  smtpAccounts() {
+    return this.mail?.status().accounts.flatMap(account => account.enabled && account.smtp ? [{ accountKey: account.accountKey, from: account.smtp.from }] : []) ?? [];
   }
 
   page(query: Parameters<ProposalStore["page"]>[0], sessionId?: string) { return this.store.page(query, sessionId); }
-  resolve(sessionId: string, refs: ProposalRevisionRef[], latestForReview?: boolean) { return this.store.resolve(sessionId, refs, latestForReview); }
+  resolve(...params: Parameters<ProposalStore["resolve"]>) { return this.store.resolve(...params); }
   pending(ref: ProposalRevisionRef, sessionId?: string) { return publicProposal(this.store.requirePending(ref, sessionId)); }
 
   dismiss(ref: ProposalRevisionRef, actor: string) {
@@ -69,17 +83,33 @@ export class ProposalExecutor extends EventEmitter {
     return proposal;
   }
 
-  async commit(ref: ProposalRevisionRef, actor: string): Promise<BridgeActionProposal> {
-    const { proposal, localResult } = this.store.transaction(() => {
+  async commit(ref: ProposalRevisionRef & { confirmMail?: true | undefined }, actor: string): Promise<BridgeActionProposal> {
+    const claimed = this.store.transaction(() => {
       const proposal = this.store.requirePending(ref);
+      if (proposal.intent.backend === "smtp" && "accountKey" in proposal.action) {
+        if (!ref.confirmMail) throw new AgendaEditError("INVALID_PARAMS", "请在发信确认抽屉中核对并发送。");
+        const account = this.mailService().smtpAccount(proposal.action.accountKey);
+        if (!account || account.smtp.version !== proposal.intent.channelVersion) {
+          throw new AgendaEditError("CONFLICT", "发信账号已更改或停用。请调整提案后重新核对。");
+        }
+        const messageId = `<${proposal.proposalId}.${proposal.revision}@${proposal.action.from.split("@")[1]}>`;
+        this.store.claim(proposal, actor, "executing", messageId);
+        return { proposal, smtp: account.smtp, messageId };
+      }
       this.store.claim(proposal, actor, "executing");
       return { proposal, localResult: proposal.intent.backend === "local" ? this.applyLocal(proposal, proposal.intent.baseRevision) : undefined };
     });
     this.changed();
-    if (localResult) {
-      if (localResult.state === "applied") this.notifyAgenda(LOCAL_AGENDA_ID);
-      return localResult;
+    if (claimed.smtp) {
+      // The approval acknowledgment must not wait for the SMTP server's final response.
+      void this.track(this.applySmtp(claimed.proposal, claimed.smtp, claimed.messageId)).catch(error => this.emit("error", error));
+      return publicProposal({ ...claimed.proposal, state: "executing" });
     }
+    if (claimed.localResult) {
+      if (claimed.localResult.state === "applied") this.notifyAgenda(LOCAL_AGENDA_ID);
+      return claimed.localResult;
+    }
+    const { proposal } = claimed;
     if (proposal.intent.backend === "profile") {
       // Claim and expected hash are durable before touching the file. Keep the local compare
       // and rename synchronous so two approvals in this process cannot share a baseline.
@@ -103,7 +133,24 @@ export class ProposalExecutor extends EventEmitter {
     finally { this.active.delete(job); }
   }
 
-  private freeze(action: AssistantProposalAction, proposalId: string, sessionId: string, keepBase?: StoredProposal): ProposalPayload {
+  private mailService(): AssistantMailService {
+    if (!this.mail) throw new AgendaEditError("UNSUPPORTED", "当前宿主未启用发信提案。");
+    return this.mail;
+  }
+
+  private async applySmtp(proposal: StoredProposal, channel: BridgeSmtpChannel & { version: string }, messageId: string) {
+    if (!("accountKey" in proposal.action)) throw new Error("Expected an SMTP proposal");
+    const password = await this.mailService().smtpPassword(channel.version);
+    return this.finishSmtp(proposal, password ? await this.send(channel, password, proposal.action, messageId) : { state: "failed" });
+  }
+
+  private finishSmtp(proposal: StoredProposal, result: SmtpResult) {
+    const finished = this.store.finishSmtp(proposal, result);
+    this.changed();
+    return finished;
+  }
+
+  private freeze(action: AgendaProposalAction | MemoryRuleProposalAction, proposalId: string, sessionId: string, keepBase?: StoredProposal): ProposalPayload {
     if (action.kind === "memory.rule_upsert") {
       if (!this.profile?.allowed(sessionId)) throw new AgendaEditError("UNSUPPORTED", "此会话未启用受控记忆。");
       const frozen = this.profile.memory.freeze(action);
@@ -194,6 +241,7 @@ export class ProposalExecutor extends EventEmitter {
       this.changed();
       return result;
     }
+    if (intent.backend === "smtp") return this.finishSmtp(proposal, { state: "delivery_uncertain" });
     if (intent.backend !== "caldav") throw new Error("A local proposal cannot have an interrupted execution");
     const credentials = this.remoteCredentials(proposal, intent.collection);
     if (!credentials) return this.finishRemote(proposal, "uncertain");

@@ -3,12 +3,12 @@ import { ArrowLeft, ChevronRight } from "lucide-react";
 import { useEffect, useState } from "react";
 import { mailResult } from "./AssistantMailProvider.js";
 import { proposalRef, useAssistantProposals } from "./AssistantProposalProvider.js";
-import { ProposalCard, proposalKindLabel, proposalStateLabel, proposalTitle } from "./ProposalCard.js";
+import { ProposalCard, proposalKindLabel, proposalStatus, proposalTitle } from "./ProposalCard.js";
 
 export function ProposalPanel({ mobile, selected, onSelect }: {
   mobile: boolean; selected: BridgeActionProposal | undefined; onSelect(proposal: BridgeActionProposal | undefined): void;
 }) {
-  const { request, online, refreshKey } = useAssistantProposals()!;
+  const { request, online, refreshKey, supportsMail } = useAssistantProposals()!;
   const [history, setHistory] = useState(false);
   const [pages, setPages] = useState<BridgeProposalPage>();
   const [live, setLive] = useState<BridgeActionProposal>();
@@ -17,26 +17,26 @@ export function ProposalPanel({ mobile, selected, onSelect }: {
   useEffect(() => {
     if (!online) return;
     let current = true;
-    void request("assistant.proposal.list", { history }).then(response => {
+    void request("assistant.proposal.list", { history, ...(supportsMail ? { includeMail: true, limit: 8 } : {}) }).then(response => {
       if (current) { setPages(mailResult<BridgeProposalPage>(response)); setError(""); }
     }).catch(reason => { if (current) setError(reason instanceof Error ? reason.message : "无法读取提案。"); });
     return () => { current = false; };
-  }, [history, online, refreshKey, request]);
+  }, [history, online, refreshKey, request, supportsMail]);
   useEffect(() => {
     if (!selected || !online) return;
     let current = true;
-    void request("assistant.proposal.resolve", { sessionId: selected.sessionId, refs: [proposalRef(selected)], latestForReview: true }).then(response => {
+    void request("assistant.proposal.resolve", { sessionId: selected.sessionId, refs: [proposalRef(selected)], latestForReview: true, ...(supportsMail ? { includeMail: true } : {}) }).then(response => {
       if (current) setLive(mailResult<{ proposals: BridgeActionProposal[] }>(response).proposals[0]);
     }).catch(reason => { if (current) setError(reason instanceof Error ? reason.message : "无法核对提案。"); });
     return () => { current = false; };
-  }, [online, refreshKey, request, selected]);
+  }, [online, refreshKey, request, selected, supportsMail]);
 
   async function loadMore() {
     const cursor = pages?.nextCursor;
     if (!cursor) return;
     setMore(true);
     try {
-      const page = mailResult<BridgeProposalPage>(await request("assistant.proposal.list", { history, cursor }));
+      const page = mailResult<BridgeProposalPage>(await request("assistant.proposal.list", { history, cursor, ...(supportsMail ? { includeMail: true, limit: 8 } : {}) }));
       setPages(current => current?.nextCursor === cursor ? { ...page, proposals: [...current.proposals, ...page.proposals] } : current);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "无法读取更多提案。"); }
     finally { setMore(false); }
@@ -66,7 +66,7 @@ export function ProposalPanel({ mobile, selected, onSelect }: {
         <button type="button" onClick={() => onSelect(proposal)}>
           <span><strong>{proposalTitle(proposal)}</strong><small>{proposalKindLabel[proposal.action.kind]}
             {proposal.action.kind !== "memory.rule_upsert" && ` · ${proposal.sourceLabel}`}
-            {history && ` · ${proposalStateLabel[proposal.state]}`}</small></span>
+            {history && ` · ${proposalStatus(proposal)}`}</small></span>
           <ChevronRight size={16} aria-hidden="true" />
         </button>
       </li>)}

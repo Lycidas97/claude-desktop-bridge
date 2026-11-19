@@ -243,11 +243,11 @@
 .assistant-account-form { display: grid; min-width: 0; max-width: 30rem; gap: 12px; margin: 16px 0 0; padding: 0; border: 0; }
 .assistant-account-form legend { margin-bottom: 12px; padding: 0; font-size: calc(14px * var(--font-scale)); font-weight: 600; overflow-wrap: anywhere; }
 .assistant-account-form label { display: grid; gap: 5px; color: var(--muted); font-size: calc(13px * var(--font-scale)); }
-.assistant-account-form input { width: 100%; min-width: 0; min-height: 36px; padding: 7px 10px; border: 1px solid var(--line-strong); border-radius: var(--r-input); color: var(--text); background: var(--surface); font: inherit; }
+.assistant-account-form :is(input, select) { width: 100%; min-width: 0; min-height: 36px; padding: 7px 10px; border: 1px solid var(--line-strong); border-radius: var(--r-input); color: var(--text); background: var(--surface); font: inherit; }
 .assistant-account-server { display: grid; grid-template-columns: minmax(0, 1fr) 6rem; gap: 12px; }
 .assistant-page-mobile .assistant-account-row { grid-template-columns: minmax(0, 1fr) auto; }
 .assistant-page-mobile .assistant-account-actions { grid-column: 1 / -1; }
-.assistant-page-mobile .assistant-account-form input { min-height: 44px; font-size: max(16px, calc(13px * var(--font-scale))); }
+.assistant-page-mobile .assistant-account-form :is(input, select) { min-height: 44px; font-size: max(16px, calc(13px * var(--font-scale))); }
 .assistant-page-mobile .assistant-accounts-heading button, .assistant-page-mobile .assistant-account-actions button { min-width: 44px; }
 
 .assistant-attachments { margin: 12px 0; }

@@ -1,5 +1,7 @@
 import { EventEmitter, once } from "node:events";
 import type { FetchMessageObject, ImapFlow } from "imapflow";
+import { AssistantAgendaService } from "../../plugins/assistant-mail/agenda.js";
+import { AgendaStore } from "../../plugins/assistant-mail/agenda-store.js";
 import { AssistantMailService } from "../../plugins/assistant-mail/desktop.js";
 
 /** Synthetic IMAP boundary; the real receiver, SQLite store and MIME reader run unchanged. */
@@ -32,12 +34,19 @@ export async function startAssistantMailFixture(directory: string) {
       delete: async key => { credentials.delete(key); },
     },
   });
-  await service.initialize();
+  let store!: AgendaStore;
+  await service.initialize(db => { store = new AgendaStore(db); });
+  const agenda = new AssistantAgendaService(store);
   const idle = once(seedInbox, "idle");
   await service.enable({ ...seedAccount, password: "synthetic-only" });
   await idle;
   return {
-    service,
+    service, agenda,
+    seedCalendar(...resources: string[]) {
+      const url = "https://caldav.example.test/fixtures/";
+      const source = store.addSource({ url, user: "fixture", label: "外部日历" }, Buffer.from("sealed"));
+      store.applySync(source, { removed: [], changed: resources.map((data, index) => ({ href: `${url}${index}.ics`, etag: '"1"', data })) });
+    },
     async deliver(count: number, source?: Buffer) {
       const next = messages.length + 1;
       for (let uid = next; uid < next + count; uid++) messages.push({

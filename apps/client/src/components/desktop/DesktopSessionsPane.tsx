@@ -1,12 +1,13 @@
-import type {
-  BridgeDesktopRuntimeId,
-  BridgeDirectoryListing,
-  BridgeEvent,
-  BridgeProjectInfo,
-  BridgeResponse,
-  BridgeSessionInfo,
-  DesktopControlSnapshot,
-  LocalBridgeRequest,
+import {
+  ASSISTANT_AGENDA_CAPABILITY,
+  type BridgeDesktopRuntimeId,
+  type BridgeDirectoryListing,
+  type BridgeEvent,
+  type BridgeProjectInfo,
+  type BridgeResponse,
+  type BridgeSessionInfo,
+  type DesktopControlSnapshot,
+  type LocalBridgeRequest,
 } from "@bridge/protocol";
 import {
   AlertTriangle,
@@ -556,7 +557,7 @@ export function DesktopSessions({
           </div>
 
           <div className="desktop-sidebar-top-stack">
-            {snapshot.host.capabilities.includes("plugin.assistant-mail.v1") && onSelectTab && (
+            {(snapshot.host.capabilities.includes("plugin.assistant-mail.v1") || snapshot.host.capabilities.includes(ASSISTANT_AGENDA_CAPABILITY)) && onSelectTab && (
               <DesktopAssistantNavButton
                 active={activeTab === "assistant"}
                 onSelect={() => onSelectTab("assistant")}

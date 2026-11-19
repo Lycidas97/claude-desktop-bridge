@@ -30,6 +30,9 @@ import {
 import type { App } from "electron";
 import { diag, diagnostics } from "../app/diag.js";
 import type { MemoryRecorder } from "../app/memory-recorder.js";
+import { ASSISTANT_AGENDA_CAPABILITY } from "@bridge/protocol";
+import type { AssistantAgendaService } from "../../../../plugins/assistant-mail/agenda.js";
+import type { BridgeAgendaSnapshot } from "@bridge/protocol";
 import type { AssistantMailService } from "../../../../plugins/assistant-mail/desktop.js";
 import { createMagpieQuotaPlugin } from "../../../../plugins/magpie-quota/desktop.js";
 import type { ClaudeDesktopLifecycle } from "../app/claude-desktop-lifecycle.js";
@@ -123,6 +126,7 @@ export class DesktopController extends EventEmitter {
     private readonly memoryRecorder?: Pick<MemoryRecorder, "diagnostics">,
     readonly assistantMail?: AssistantMailService,
     assistantWorkspace?: import("./assistant-workspace.js").WorkspaceProvisioner,
+    readonly assistantAgenda?: AssistantAgendaService,
   ) {
     super();
     this.updater = updater;
@@ -190,6 +194,7 @@ export class DesktopController extends EventEmitter {
       if (event.type !== "runtime.updated" || event.itemId !== "session:subagent-activity") this.queuePublish();
     });
     this.assistantMailCoordinator?.start();
+    this.assistantAgenda?.on("changed", this.onAgendaChanged);
     this.broker.on("system.init", (sessionId: string, tools: string[]) => {
       this.assistantMailCoordinator?.observeToolCatalog(sessionId, tools);
     });
@@ -257,6 +262,7 @@ export class DesktopController extends EventEmitter {
           "turn.queue.cancel.v1",
           "transcript.toolDetail.v1",
           "plugin.magpie-quota.v1",
+          ...(this.assistantAgenda ? [ASSISTANT_AGENDA_CAPABILITY] as const : []),
           ...(this.assistantMailCoordinator?.capabilities() ?? []),
           ...(this.updater ? ["system.update.v1" as const] : []),
         ],
@@ -286,6 +292,7 @@ export class DesktopController extends EventEmitter {
       diagnosticsEnabled: diagnostics.enabled,
       managedDesktopEnabled: this.config.managedDesktopEnabled,
       ...await this.desktopAppSnapshot(),
+      ...(this.assistantAgenda ? { assistantAgenda: this.assistantAgenda.snapshot() } : {}),
       ...(this.assistantMailCoordinator ? { assistantMail: this.assistantMailCoordinator.snapshot() } : {}),
       ...(this.updater ? { updater: this.updater.snapshot() } : {}),
       ...(this.inspectorStatus ? { claudeInspector: this.inspectorStatus } : {}),
@@ -629,6 +636,7 @@ export class DesktopController extends EventEmitter {
 
   async close(): Promise<void> {
     this.assistantMailCoordinator?.close();
+    this.assistantAgenda?.off("changed", this.onAgendaChanged);
     this.uploads.close();
     this.socket?.close();
   }
@@ -811,6 +819,11 @@ export class DesktopController extends EventEmitter {
   private cacheResponse(response: BridgeResponse): void {
     cacheDeviceResponse(this.responseCache, response);
   }
+
+  private readonly onAgendaChanged = (assistantAgenda: BridgeAgendaSnapshot) => {
+    void this.eventLog.append({ origin: "system", type: "plugin.assistant-agenda.changed", data: { assistantAgenda } });
+    this.queuePublish();
+  };
 
   /** Coalesce passive snapshots through completion; permissions still publish immediately. */
   private queuePublish(): void {

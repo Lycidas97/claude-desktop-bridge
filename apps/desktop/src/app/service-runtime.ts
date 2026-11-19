@@ -39,6 +39,8 @@ import { ServiceResources } from "./service-resources.js";
 import { WorkspaceProvisioner } from "../controller/assistant-workspace.js";
 import { diagnostics } from "./diag.js";
 import type { MemoryRecorder } from "./memory-recorder.js";
+import { AssistantAgendaService } from "../../../../plugins/assistant-mail/agenda.js";
+import { AgendaStore } from "../../../../plugins/assistant-mail/agenda-store.js";
 import { AssistantMailService } from "../../../../plugins/assistant-mail/desktop.js";
 import { serveAssistantMailTools } from "../../../../plugins/assistant-mail/local-channel.js";
 
@@ -150,12 +152,21 @@ export async function createServiceRuntime(options: {
     assistantMail.on("error", () => process.stderr.write("Bridge assistant mail storage failed; receiving paused.\n"));
     resources.defer("Assistant mail", () => assistantMail.close());
     options.onStage?.("打开邮件数据库");
-    await assistantMail.initialize();
+    let agendaStore!: AgendaStore;
+    await assistantMail.initialize(database => { agendaStore = new AgendaStore(database); });
+    const assistantAgenda = new AssistantAgendaService(agendaStore, {
+      available: () => safeStorage.isEncryptionAvailable() &&
+        (process.platform !== "linux" || safeStorage.getSelectedStorageBackend() !== "basic_text"),
+      encrypt: value => safeStorage.encryptString(value),
+      decrypt: value => safeStorage.decryptString(Buffer.from(value)),
+    });
+    assistantAgenda.on("error", () => process.stderr.write("Bridge assistant calendar sync failed.\n"));
+    resources.defer("Assistant agenda", () => assistantAgenda.close());
     const workspace = new WorkspaceProvisioner({ userDataPath, appPath: app.getAppPath(), execPath: process.execPath });
     const managed = assistantMail.binding()?.managed;
     const assistantWorkspacePath = managed ? await workspace.restore(managed.token, managed.path) : workspace.path;
     const mailTools = await serveAssistantMailTools({
-      userDataPath, service: assistantMail,
+      userDataPath, service: assistantMail, agenda: assistantAgenda,
       authorizeManagedToken: token => {
         const binding = assistantMail.binding();
         return !workspace.repairFailed && binding?.managed?.token === token ? binding.nativeSessionId ?? undefined : undefined;
@@ -207,12 +218,14 @@ export async function createServiceRuntime(options: {
       options.memoryRecorder,
       assistantMail,
       workspace,
+      assistantAgenda,
     );
 
     // The service owns the Claude broker and controller.
     resources.defer("Desktop controller", () => controller.close());
     options.onStage?.("初始化运行时与中继连接");
     await controller.initialize();
+    assistantAgenda.start();
     if (process.platform === "win32" || process.platform === "darwin" || process.platform === "linux") {
       const updater = new DesktopUpdater({
         platform: process.platform,
@@ -272,6 +285,7 @@ export async function createServiceRuntime(options: {
     };
     const onResume = () => {
       assistantMail.resume();
+      assistantAgenda.resume();
       void controller.reconnect().catch((error: unknown) => {
         process.stderr.write(`Bridge resume failed: ${String(error)}\n`);
       });

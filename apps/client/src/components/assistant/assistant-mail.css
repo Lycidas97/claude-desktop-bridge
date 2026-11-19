@@ -74,6 +74,9 @@
 .assistant-model-settings > svg { flex-shrink: 0; }
 .assistant-binding p, .assistant-page-content > p { color: var(--muted); font-size: calc(13px * var(--font-scale)); line-height: 1.6; }
 .assistant-binding p[role="alert"], .assistant-page-content > p[role="alert"] { color: var(--danger-ink); }
+.assistant-tool-warning { font-size: calc(13px * var(--font-scale)); line-height: 1.6; }
+.assistant-tool-warning summary { padding: 6px 0; color: var(--danger-ink); cursor: pointer; }
+.assistant-tool-warning ul { max-height: 8rem; overflow-y: auto; overflow-wrap: anywhere; margin: 0 0 8px; padding-inline-start: 20px; border-bottom: 1px solid var(--line); }
 .assistant-binding-form { display: grid; gap: 12px; margin: 14px 0; }
 .assistant-binding-form label { display: grid; gap: 6px; font-size: calc(13px * var(--font-scale)); color: var(--muted); }
 .assistant-binding-form select { width: 100%; min-width: 0; max-width: 100%; padding: 10px 12px; color: var(--text); background: var(--surface); border: 1px solid var(--line-strong); border-radius: var(--r-input); font: inherit; }

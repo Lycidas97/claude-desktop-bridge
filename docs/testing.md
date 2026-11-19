@@ -314,8 +314,10 @@ npm run ci:run -- exec -w @bridge/desktop -- vitest run src/claude/claude-deskto
 [Issue 222](https://github.com/Lycidas97/claude-desktop-bridge/issues/222)，2026-11-19 UTC：
 **部分验证，自动投递保持关闭**。主机是 macOS 27.2（26B123），Claude Desktop 5.11492.5，
 原生 `system/init` 和重启版本查询均为 Claude Code 2.1.325。Bridge 是本机签名 dogfood
-`1.3.8-dev.18.diag`，安装日志来源 `07de59dd35e6b6d78be313a7477d1f537bd702ee`，
-安装包 ASAR SHA-256 `d2c666e18413fc887e93fdf7e56ce16e6fd06e61095d2c3c0a68a255f184d70c`。
+`1.3.8-dev.18.diag`，基准提交 `07de59dd35e6b6d78be313a7477d1f537bd702ee`。
+`.diag` 表示构建时工作树不干净；用安装包 ASAR SHA-256
+`d2c666e18413fc887e93fdf7e56ce16e6fd06e61095d2c3c0a68a255f184d70c` 标识实物，不把
+基准提交当作该安装包完整内容的标识。
 
 本轮从源码的 `WorkspaceProvisioner` 生成隔离工作区，`PreToolUse` 和 stdio MCP 由已安装
 Bridge 的 Electron 和 `app.asar/dist` 启动。用真实 Desktop 的 `LocalSessions` 执行；
@@ -339,8 +341,8 @@ Bridge SQLite 的 `recorded_at` 为 12:06:35.360，`mailRefId` 为
 
 在当前实际托管会话发出一次只读消息 `b9633988-027a-4148-90d4-4d5efea06672`，
 Native 于 12:09:14.265 接收，新的 `system/init` 于 12:09:14.292 显示邮件 MCP
-`connected`，CLI 会话 ID 为 `8dc0d6a2-22fd-474f-9633-9c71a7acd79c`。新起的 MCP 进程
-使用安装包 Electron 和 `app.asar/dist/assistant-mcp.cjs --managed`。仅用 `ToolSearch`
+`connected`，CLI 会话 ID 的 SHA-256 前 12 位为 `91f63a4c1ff5`。新起的 MCP 进程使用
+安装包 Electron 和 `app.asar/dist/assistant-mcp.cjs --managed`。仅用 `ToolSearch`
 加载指定工具，随后调用一次 `mcp__assistant-mail__mail_read_event`，参数只含上述 `mailRefId`。
 
 | 证据 | UTC 时间 | 记录 |
@@ -376,9 +378,10 @@ Native 于 12:09:14.265 接收，新的 `system/init` 于 12:09:14.292 显示邮
 | 脚本抛异常 | `6090739e-25b3-46e1-b42e-4ffb5d0b1249` | 11:56:19.892 → 11:56:20.000 | `call_00_6cXsUm8qjw3UFKMA8KgY9327` |
 | 脚本超过 10 秒 | `538539a6-b24a-4e11-89d7-eab5e0afbccc` | 11:56:23.742 → 11:56:33.886 | `call_00_ET_D5cpN8zIJHhGV3ywnDhn3858` |
 
-子代理消息 `df5b0917-2d9b-40f2-b53d-a8a7fa408f02` 尝试 `Agent`，调用
-`call_00_JpOWJfEOqDTlhzxCHr4W0844` 于 11:56:09.615 发出、.727 被守卫拒绝。
-该次未启动子代理，不能证明获准的子代理权限或网关归因。
+消息 `df5b0917-2d9b-40f2-b53d-a8a7fa408f02` 请求启动前台 `assistant-helper`。
+实际观察到 `Agent` 调用 `call_00_JpOWJfEOqDTlhzxCHr4W0844` 于 11:56:09.615 发出、.727
+被守卫拒绝；未核实工具调用的最终参数。该次未启动子代理，不能判断是否拒绝了本应允许
+的调用，也不能证明获准子代理的权限或网关归因。
 
 #### 原生压缩
 
@@ -393,12 +396,18 @@ Native 于 12:09:14.265 接收，新的 `system/init` 于 12:09:14.292 显示邮
 
 #### 实体 Android 后台投递
 
-已配对手机安装同源 `Bridge-Android-07de59dd35e6-debug.apk`，APK SHA-256
-`f616a7be538ae382dbd715ff3a9000cda36c732d36a739cd088aeffd3f77505c`（构建产物），手机设置
-显示 manifest 版本 `1.3.7`。使用独立 Native 会话 `local_9d6a63ae-94df-4e09-b2d2-9a86795693d2`
-（CLI `e2ee0e68-5ef9-4f77-8be8-83e34b63b12d`），不是业务会话。下表时间均为 UTC；窗口和锁屏
-状态在 Mac 上记录，首收时间取 Bridge `message.delivery`（`origin: mobile`），Native 接收
-时间用相同 UUID 的原生用户消息核对，不依赖手机气泡或回复文字。
+用户确认已配对手机安装 `Bridge-Android-07de59dd35e6-debug.apk`；APK 与 Mac `.diag` 包
+使用同一基准提交，不据此推断两者构建时的源码一致。APK 构建产物的 SHA-256 为
+`f616a7be538ae382dbd715ff3a9000cda36c732d36a739cd088aeffd3f77505c`，手机设置显示 manifest
+版本 `1.3.7`。使用独立 Native 会话 `local_9d6a63ae-94df-4e09-b2d2-9a86795693d2`
+（CLI `e2ee0e68-5ef9-4f77-8be8-83e34b63b12d`），不是业务会话。下表时间均为 UTC；
+Mac 观察器记录窗口和锁屏状态，Bridge `message.delivery`（`origin: mobile`）记录首收，
+Native transcript 用同一 UUID 核对接收和完成。未独立记录手机点击发送的时刻，结论仅限于
+相应 Mac 状态下接收、完成，不推断客户端的提交时序。
+
+普通关窗的实时观察只记录到窗口隐藏及进程状态。首收时间事后从 Bridge 事件日志按本轮
+命令 `330113cb-d5b0-4cd9-9da8-2dffdbea1c84` 和下表原消息 UUID 查得，接收与完成时间从
+同一原 UUID 的 Native transcript 补取；另用 SQLite 持久收据确认该命令为 `completed`。
 
 | Mac 状态 | 状态变化 → Bridge 首收 → Native 接收 | 原消息 UUID | 结果 |
 | --- | --- | --- | --- |
@@ -415,8 +424,9 @@ Native 于 12:09:14.265 接收，新的 `system/init` 于 12:09:14.292 显示邮
 | 项目 | 本轮证据与缺口 |
 | --- | --- |
 | 一键初始化与子代理归因 | [早期安装包观察](https://github.com/Lycidas97/claude-desktop-bridge/issues/222#issuecomment-7000436347)记录过初始化和空页往返；本轮未重新初始化已绑定工作区。新版已验证真实邮件只读往返和主会话归因；子代理和其他绑定的拒绝未验证 |
-| 工具边界 | 白名单外目录项未出现；没有终端、浏览器预览、定时任务、Shell、外网、继承 MCP 或跨会话工具实际拒绝回执。最终合并配置、获准子代理、原生 `@`、配置及规则写入、符号链接祖先和无路径 `Grep` 尚未验证 |
-| 系统强制睡眠和生产断线对账 | 已确认关窗及锁屏的新投递和原 UUID，但没有强制睡眠／唤醒或故意造成生产投递不确定；不能从三条正常收据推断睡眠后补扫或断线时按原 UUID 对账 |
+| 工具边界 | 隔离会话目录未见白名单外项；没有终端、浏览器预览、定时任务、Shell、外网、继承 MCP 或跨会话工具实际拒绝回执。最终合并配置、获准子代理、原生 `@`、配置及规则写入、符号链接祖先、无路径 `Grep` 以及 `Glob` / `Grep` 的递归结果集尚未验证 |
+| 项目规则与自动记忆 | 阶段 0 仅在临时配置上验证了项目规则加载、自动记忆开关及显式读取。本轮未在目标托管配置上验证项目规则加载或实际自动记忆策略；规则文件写入限制不是加载证据 |
+| 系统强制睡眠和生产断线对账 | 已核对关窗及锁屏期间接收、完成与原 UUID，但没有强制睡眠／唤醒或故意造成生产投递不确定；不能从三条正常收据推断睡眠后补扫或断线时按原 UUID 对账 |
 | 自动压缩和故障 | 上述探针只触发手动压缩；自动压缩的 `trigger`、压缩 hook 异常和超时是否影响完成未验证 |
 | EventKit | 独立探针初版已用 dogfood 同一证书签名并通过 `codesign --verify --strict`。加入结果记录后重签阻塞，专用签名钥匙串解锁返回 51（密码不被接受）；未改钥匙串设置，也未启动 TCC 请求、读取条目或实测 `EKEventStoreChanged` |
 

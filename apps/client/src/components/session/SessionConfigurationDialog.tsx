@@ -1,9 +1,10 @@
-import type {
-  BridgeEffort,
-  BridgeModelInfo,
-  BridgeSDKPermissionMode,
-  BridgeSessionConfiguration,
-  BridgeSessionInfo,
+import {
+  isBridgeEffort,
+  type BridgeEffort,
+  type BridgeModelInfo,
+  type BridgeSDKPermissionMode,
+  type BridgeSessionConfiguration,
+  type BridgeSessionInfo,
 } from "@bridge/protocol";
 import { LoaderCircle, Settings2, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -36,8 +37,13 @@ export function modelEffortOptions(model: BridgeModelInfo | undefined, fallback:
   const levels = model?.supportsEffort === false ? []
     : declared ? model.supportedEffortLevels ?? []
     : model?.supportedEffortLevels?.length ? model.supportedEffortLevels : fallback;
-  const unavailable = declared?.filter(level => !levels.some(option => option === level)).map(effortLabel).join("、");
-  return { levels, unavailable: unavailable ? `当前模型不可用：${unavailable}` : undefined };
+  const unavailable = declared?.filter(level => !levels.some(option => option === level));
+  return {
+    levels,
+    unavailable: unavailable?.length
+      ? `${unavailable.some(isBridgeEffort) ? "当前模型不可用" : "原生会话不支持"}：${unavailable.map(effortLabel).join("、")}`
+      : undefined,
+  };
 }
 
 export const PERMISSION_MODE_OPTIONS: ReadonlyArray<{ value: BridgeSDKPermissionMode; label: string }> = [

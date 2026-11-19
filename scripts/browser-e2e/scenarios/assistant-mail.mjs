@@ -45,7 +45,7 @@ async function openDesktopAssistant(page, host, baseUrl, requests) {
   await page.locator(".assistant-conversation textarea").waitFor();
 }
 
-async function verifyAssistantConfiguration(page, host, requests, model, effort, effortLabel, screenshot) {
+async function verifyAssistantConfiguration(page, host, requests, { model, effort, effortLabel, unavailableLabel, screenshot }) {
   const binding = structuredClone(host.snapshot.assistantMail.binding);
   const { nativeSessionId } = binding;
   const chat = page.locator(".assistant-conversation textarea");
@@ -59,15 +59,16 @@ async function verifyAssistantConfiguration(page, host, requests, model, effort,
   await selectCustomOption(page, modelSelect, model);
   assert.equal(await dialog.getByLabel("Desktop 授权模式").count(), 0);
   const effortGroup = dialog.getByRole("group", { name: /^思考强度/u });
-  if (model === "synthetic-model") {
-    assert.deepEqual(await effortGroup.getByRole("button").allTextContents(), ["低", "高"]);
-  }
+  await effortGroup.getByText(`原生会话不支持：${unavailableLabel}`, { exact: true }).waitFor();
+  assert.deepEqual(await effortGroup.getByRole("button").allTextContents(), ["低", "高", "最大"]);
   const effortChoice = effortGroup.getByRole("button", { name: effortLabel, exact: true });
   await effortChoice.click();
+  const beforeSave = host.nativeApproval.calls.length;
   await dialog.getByRole("button", { name: "保存配置", exact: true }).click();
   await dialog.waitFor({ state: "hidden" });
   const { client: _client, ...change } = requests.findLast(request => request.method === "session.configure").params;
   assert.deepEqual(change, { sessionId: nativeSessionId, model, effort });
+  assert.deepEqual(host.nativeApproval.calls.slice(beforeSave).filter(call => call.method === "setEffort").map(call => call.args), [[nativeSessionId, effort]]);
   assert.deepEqual(host.snapshot.assistantMail.binding, binding);
   const nativeSession = (await host.nativeApproval.sectionCatalog()).sessions.find(session => session.sessionId === nativeSessionId);
   assert.equal(nativeSession.nativePermissionMode, "dontAsk");
@@ -474,18 +475,22 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   assert.equal(managedSession.cwd, workspacePath);
   assert.equal(managedSession.nativePermissionMode, "dontAsk");
   assert.equal(host.snapshot.projects.find(project => project.projectId === managedSession.projectId).managedAssistant, true);
-  await verifyAssistantConfiguration(page, host, host.requests, "synthetic-model-large[1m]", "high", "高",
-    resolve(directory, "mobile-assistant-configuration.png"));
+  await verifyAssistantConfiguration(page, host, host.requests, {
+    model: "synthetic-model-large[1m]", effort: "max", effortLabel: "最大", unavailableLabel: "超高",
+    screenshot: resolve(directory, "mobile-assistant-configuration.png"),
+  });
   const managedDesktop = await page.context().newPage();
   try {
     const requests = [];
     await openDesktopAssistant(managedDesktop, host, baseUrl, requests);
-    await verifyAssistantConfiguration(managedDesktop, host, requests, "synthetic-model", "low", "低",
-      resolve(directory, "desktop-assistant-configuration.png"));
+    await verifyAssistantConfiguration(managedDesktop, host, requests, {
+      model: "synthetic-model", effort: "low", effortLabel: "低", unavailableLabel: "关闭",
+      screenshot: resolve(directory, "desktop-assistant-configuration.png"),
+    });
   } finally {
     await managedDesktop.close();
   }
-  steps.push("mobile and desktop settings save and reopen host-confirmed model and effort on the same managed session, preserving its draft, binding and dontAsk permission");
+  steps.push("mobile and desktop settings explain unsupported gateway efforts and save and reopen a Native effort on the same managed session, preserving its draft, binding and dontAsk permission");
   const managedMail = host.snapshot.assistantMail;
   const unexpectedTools = [
     "mcp__terminal__run_in_terminal", "mcp__Claude_Browser__preview_start", "mcp__scheduled-tasks__list_scheduled_tasks",

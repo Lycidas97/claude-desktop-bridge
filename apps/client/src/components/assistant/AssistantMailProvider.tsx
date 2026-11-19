@@ -16,6 +16,7 @@ interface AssistantMailState {
   assistant: BridgeAssistantMailSnapshot | undefined;
   selectedMail: BridgeMailCard | undefined;
   canReference: boolean;
+  supportsAttachments: boolean;
   selectMail(card: BridgeMailCard): void;
   clearReference(): void;
   referenceFor(sessionId: string): string | undefined;
@@ -127,6 +128,7 @@ export function AssistantMailProvider({ snapshot, online, request, loadCache, sa
   const selectedMail = selection?.sessionId === assistant?.binding?.nativeSessionId ? cache.cards.find(card => card.mailRefId === selection?.mailRefId) : undefined;
   return <AssistantMailContext.Provider value={enabled ? {
     cache, unreadCount, assistant, canReference, selectedMail,
+    supportsAttachments: capabilities.includes("plugin.assistant-mail.attachments.v1"),
     accountLabel: accountKey => {
       const label = accountLabels.get(accountKey);
       if (accounts && !label) return "已移除的邮箱";

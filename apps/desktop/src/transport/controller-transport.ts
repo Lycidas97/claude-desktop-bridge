@@ -295,15 +295,20 @@ export async function deliverTransportMessage(
     host.socket?.ack([encrypted.id]);
     return;
   }
-  const method = diagnostics.method(message.payload.method);
+  const requestMethod = message.payload.method;
+  const method = diagnostics.method(requestMethod);
+  const artifactResponse = requestMethod.startsWith("artifact.");
+  const previewResponse = artifactResponse || requestMethod === "session.tool.detail";
+  const cacheable = requestMethod !== "artifact.preview" && requestMethod !== "artifact.transfer.read" &&
+    requestMethod !== "session.tool.detail" && !(requestMethod === "artifact.transfer.open" && message.payload.params.mailAttachment !== undefined);
   const delivered = diagnostics.begin(`rpc.${method}`);
   try {
     await host.rememberDevice(message.header.fromDeviceId, message.payload.params);
-    const cached = host.responseCache.get(message.payload.requestId);
+    const cached = cacheable ? host.responseCache.get(message.payload.requestId) : undefined;
     if (cached) {
       diagnostics.cacheHit();
       const sent = diagnostics.begin(`send.${method}`);
-      try { await host.sendToDevice(cached, message.header.fromDeviceId, undefined, false, message.payload.method !== "snapshot.get"); }
+      try { await host.sendToDevice(cached, message.header.fromDeviceId, artifactResponse ? ARTIFACT_TRANSFER_TTL_MS : undefined, artifactResponse, requestMethod !== "snapshot.get"); }
       finally { sent(); }
       host.socket?.ack([encrypted.id]);
       return;
@@ -316,20 +321,14 @@ export async function deliverTransportMessage(
       response = formatError(message.payload.requestId, error);
     }
     diagnostics.response(response, method);
-    if (
-      message.payload.method !== "artifact.preview" &&
-      message.payload.method !== "artifact.transfer.read" &&
-      message.payload.method !== "session.tool.detail"
-    ) host.cacheResponse(response);
+    if (cacheable) host.cacheResponse(response);
     const temporaryResponse = message.payload.method !== "turn.start" && message.payload.method !== "turn.steer";
     const sent = diagnostics.begin(`send.${method}`);
     try {
       await host.sendToDevice(
         response,
         message.header.fromDeviceId,
-        message.payload.method.startsWith("artifact.") || message.payload.method === "session.tool.detail"
-          ? ARTIFACT_TRANSFER_TTL_MS
-          : undefined,
+        previewResponse ? ARTIFACT_TRANSFER_TTL_MS : undefined,
         temporaryResponse,
         message.payload.method !== "snapshot.get",
       ).catch(() => undefined);

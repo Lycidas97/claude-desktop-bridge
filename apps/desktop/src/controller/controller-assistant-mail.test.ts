@@ -2,12 +2,15 @@ import { EventEmitter } from "node:events";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { join } from "node:path";
 import {
-  BridgeCrypto, PROTOCOL_VERSION,
+  ARTIFACT_MAX_BYTES, BridgeCrypto, PROTOCOL_VERSION,
+  type BridgeArtifactTransferInfo,
   type BridgeMailDetail, type BridgeMailPage, type BridgeRequest, type BridgeSessionInfo, type DesktopControlSnapshot,
 } from "@bridge/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AssistantMailService } from "../../../../plugins/assistant-mail/desktop.js";
 import { AssistantMailStore } from "../../../../plugins/assistant-mail/store.js";
+import { EvidenceManager } from "../evidence/evidence-manager.js";
+import { EvidenceStore } from "../evidence/evidence-store.js";
 import type { LoadedDesktopConfig } from "../transport/config.js";
 import { assistantMailSnapshot } from "./assistant-mail.js";
 import { WorkspaceProvisioner } from "./assistant-workspace.js";
@@ -19,7 +22,7 @@ vi.mock("electron", () => ({ shell: {} }));
 type ControllerArguments = ConstructorParameters<typeof DesktopController>;
 type ControllerInternals = {
   publish(): Promise<DesktopControlSnapshot>;
-  handleRequest(request: BridgeRequest, origin: "mobile"): Promise<unknown>;
+  handleRequest(request: BridgeRequest, origin: "mobile", deviceId?: string): Promise<unknown>;
 };
 
 let root: string;
@@ -62,10 +65,13 @@ async function fixture() {
     history: vi.fn(async (sessionId: string) => ({ sessionId, items: [], hasMore: false })),
     forkSession: vi.fn(), startTurn: vi.fn(), steerTurn: vi.fn(),
   });
-  const evidence = { list: vi.fn((sessionId: string, cursor?: string) => ({
-    sessionId, items: [], hasMore: cursor === undefined, ...(cursor === undefined ? { nextCursor: "evidence-next" } : {}),
-  })) };
   const eventLog = Object.assign(new EventEmitter(), { append: vi.fn(async () => undefined), latestSeq: () => 0 });
+  const evidenceStore = new EvidenceStore({ databasePath: join(root, "evidence.sqlite"), blobsPath: join(root, "blobs"), masterSecret: Buffer.alloc(32, 5).toString("base64url") });
+  const evidence = new EvidenceManager({ eventLog: eventLog as unknown as ControllerArguments[5], store: evidenceStore,
+    previewRenderer: { image: async (bytes, mimeType) => ({ bytes, mimeType }), html: async () => { throw new Error("Unexpected HTML preview"); } } });
+  vi.spyOn(evidence, "list").mockImplementation((sessionId, cursor) => ({
+    sessionId, items: [], hasMore: cursor === undefined, ...(cursor === undefined ? { nextCursor: "evidence-next" } : {}),
+  }));
   const relayUrl = "ws://127.0.0.1:18789/ws";
   const host = await BridgeCrypto.createHost(relayUrl, "Mail fixture");
   const config: LoadedDesktopConfig = {
@@ -83,7 +89,7 @@ async function fixture() {
     { loadOrCreate: async () => config, save: vi.fn(async () => undefined) } as unknown as ControllerArguments[1],
     "http://127.0.0.1:18789", relayUrl,
     broker as unknown as ControllerArguments[4], eventLog as unknown as ControllerArguments[5],
-    evidence as unknown as ControllerArguments[6], { status: async () => ({ state: "stopped" }) } as unknown as ControllerArguments[7],
+    evidence, { status: async () => ({ state: "stopped" }) } as unknown as ControllerArguments[7],
     undefined, undefined, undefined, undefined, undefined, service, workspace,
   );
   // Keep initialization subscriptions and snapshot/RPC/publication logic real; stop at external I/O and scheduling.
@@ -95,10 +101,10 @@ async function fixture() {
   await controller.initialize();
   const internals = controller as unknown as ControllerInternals;
   return {
-    controller, broker, eventLog, sessions, projects, workspace, broadcast: boundaries.broadcast, queuePublish: boundaries.queuePublish,
+    controller, broker, eventLog, sessions, projects, workspace, evidenceStore, broadcast: boundaries.broadcast, queuePublish: boundaries.queuePublish,
     publish: () => internals.publish(),
-    request: <T = unknown>(method: BridgeRequest["method"], params: Record<string, unknown> = {}) => internals.handleRequest(
-      { kind: "request", requestId: "mail-request", idempotencyKey: "mail-key", method, params }, "mobile",
+    request: <T = unknown>(method: BridgeRequest["method"], params: Record<string, unknown> = {}, deviceId = "synthetic-phone") => internals.handleRequest(
+      { kind: "request", requestId: "mail-request", idempotencyKey: "mail-key", method, params }, "mobile", deviceId,
     ) as Promise<T>,
   };
 }
@@ -187,7 +193,9 @@ describe("assistant mail mobile RPC projections", () => {
     const analysis = { summary: "Model suggestion", suggestions: ["Ask the user"], questions: ["Was this expected?"] };
     service.updateAnalysis(fourth.mailRefId, analysis);
     service.setProcessingStatus(fourth.mailRefId, "processed");
+    const readOriginal = vi.spyOn(service, "readEvent");
     const { mailPage } = await run.request<{ mailPage: BridgeMailPage }>("plugin.assistant-mail.list", { limit: 2 });
+    expect(readOriginal).not.toHaveBeenCalled();
     expect(mailPage).toEqual({
       cards: [
         { seq: fourth.seq, mailRefId: fourth.mailRefId, accountKey: fourth.accountKey, mailbox: "INBOX",
@@ -226,7 +234,7 @@ describe("assistant mail mobile RPC projections", () => {
     await expect(run.request("plugin.assistant-mail.read", { mailRefId: oversized.mailRefId })).rejects.toThrow(/HTML too long for parsing/u);
   });
 
-  it("reads cleaned MIME text without HTML, attachments, raw bytes or a native ACK", async () => {
+  it("reads cleaned MIME text and attachment metadata without raw bytes or a native ACK", async () => {
     run.broker.capabilities.mockReturnValue([]);
     const event = await record(1, [
       "MIME-Version: 1.0", 'Content-Type: multipart/mixed; boundary="mail"', "",
@@ -237,12 +245,42 @@ describe("assistant mail mobile RPC projections", () => {
     ].join("\r\n"));
     const result = await run.request<{ mailDetail: BridgeMailDetail }>("plugin.assistant-mail.read", { mailRefId: event.mailRefId });
     expect(result).toEqual({
-      mailDetail: { mailRefId: event.mailRefId, bodyText: expect.stringContaining("Hello reader"), truncated: false },
+      mailDetail: { mailRefId: event.mailRefId, bodyText: expect.stringContaining("Hello reader"), truncated: false, attachmentCount: 1,
+        attachments: [{ attachmentId: "2", filename: "private.bin", mimeType: "application/octet-stream", size: 17 }] },
     });
     expect(result.mailDetail.bodyText).not.toMatch(/<[^>]*>|ATTACHMENT SECRET|\u0000/u);
     expect(run.broker.startTurn).not.toHaveBeenCalled();
     expect(run.broker.createSession).not.toHaveBeenCalled();
     expect(service.binding()).toBeUndefined();
+  });
+
+  it("probes without decoding, isolates leases per device and bypasses evidence storage", async () => {
+    const event = await record(1, 'Content-Type: text/plain\r\nContent-Disposition: attachment; filename="notes.txt"\r\n\r\nBounded bytes');
+    const mailAttachment = { mailRefId: event.mailRefId, attachmentId: "0" };
+    const extract = vi.spyOn(service, "attachmentBytes");
+    const evidenceLookup = vi.spyOn(run.evidenceStore, "artifact");
+    const evidenceWrite = vi.spyOn(run.evidenceStore, "cachePreview");
+    expect(await run.request("artifact.transfer.open", { mailAttachment, purpose: "stat" })).toEqual({ metadata: { name: "notes.txt", mimeType: "text/plain", size: 13 } });
+    expect(extract).not.toHaveBeenCalled();
+    const transfers: BridgeArtifactTransferInfo[] = [];
+    for (let count = 0; count < 4; count++) {
+      transfers.push((await run.request<{ transfer: BridgeArtifactTransferInfo }>("artifact.transfer.open", { mailAttachment })).transfer);
+    }
+    await expect(run.request("artifact.transfer.open", { mailAttachment })).rejects.toThrow(/Too many artifact transfers/u);
+    await expect(run.request("artifact.transfer.read", { transferId: transfers[0]!.transferId, index: 0 }, "other-phone")).rejects.toThrow(/expired/u);
+    expect(await run.request("artifact.transfer.close", { transferId: transfers[0]!.transferId }, "other-phone")).toEqual({ closed: false });
+    expect(await run.request("artifact.transfer.read", { transferId: transfers[0]!.transferId, index: 0 })).toMatchObject({ chunk: { data: Buffer.from("Bounded bytes").toString("base64") } });
+    expect(await run.request("artifact.transfer.close", { transferId: transfers[0]!.transferId })).toEqual({ closed: true });
+    await expect(run.request("artifact.transfer.open", { mailAttachment, path: "anything" })).rejects.toMatchObject({ code: "INVALID_PARAMS" });
+    expect(evidenceLookup).not.toHaveBeenCalled();
+    expect(evidenceWrite).not.toHaveBeenCalled();
+  });
+
+  it("reports the original size of an oversized attachment and refuses transfer before reading it", async () => {
+    const event = await record(1, `Content-Type: application/octet-stream\r\nContent-Disposition: attachment\r\n\r\n${"x".repeat(ARTIFACT_MAX_BYTES + 1)}`);
+    const mailAttachment = { mailRefId: event.mailRefId, attachmentId: "0" };
+    expect(await run.request("artifact.transfer.open", { mailAttachment, purpose: "stat" })).toMatchObject({ metadata: { size: ARTIFACT_MAX_BYTES + 1 } });
+    await expect(run.request("artifact.transfer.open", { mailAttachment })).rejects.toMatchObject({ code: "MAIL_ATTACHMENT_TOO_LARGE" });
   });
 
   it.each([256_000, 256_001])("bounds read body text at 256000 characters for length %s", async length => {

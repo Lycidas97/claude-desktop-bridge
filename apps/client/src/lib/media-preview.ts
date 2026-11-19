@@ -4,6 +4,7 @@ import type {
   BridgeArtifactTransferInfo,
   BridgeEvidenceBundle,
   BridgeNativeImageRef,
+  BridgeMailAttachmentRef,
   BridgeRequest,
   BridgeResponse,
 } from "@bridge/protocol";
@@ -18,6 +19,8 @@ export interface MediaTarget {
   name: string;
   kind: "image" | "pdf" | "text";
   artifactId?: string;
+  mailAttachment?: BridgeMailAttachmentRef;
+  charset?: string;
   sessionId?: string;
   path?: string;
   resolveRelativeLink?: true;
@@ -25,7 +28,8 @@ export interface MediaTarget {
   nativeImage?: BridgeNativeImageRef;
 }
 
-export function mediaFileParams(target: Pick<MediaTarget, "artifactId" | "sessionId" | "path" | "resolveRelativeLink">) {
+export function mediaFileParams(target: Pick<MediaTarget, "artifactId" | "sessionId" | "path" | "resolveRelativeLink" | "mailAttachment">) {
+  if (target.mailAttachment) return { mailAttachment: target.mailAttachment };
   return target.artifactId ? { artifactId: target.artifactId } : {
     sessionId: target.sessionId,
     path: target.path?.trim().replace(/:\d+(?::\d+)?$/u, ""),
@@ -68,14 +72,16 @@ export function textPreviewLanguage(path: string): string | undefined {
   } as Record<string, string>)[extension];
 }
 
-export async function readTextPreview(source: { transfer: Pick<BridgeArtifactTransferInfo, "size">; read(begin: number, end: number): Promise<Uint8Array> }): Promise<string> {
+export async function readTextPreview(source: { transfer: Pick<BridgeArtifactTransferInfo, "size">; read(begin: number, end: number): Promise<Uint8Array> }, charset = "utf-8"): Promise<string> {
   const bytes = await source.read(0, source.transfer.size);
-  if (bytes.includes(0)) throw new Error("文件包含二进制内容，无法作为文本预览，请下载查看");
+  let text: string;
   try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    text = new TextDecoder(charset, { fatal: true }).decode(bytes);
   } catch {
-    throw new Error("文件不是有效的 UTF-8 文本，无法预览，请下载查看");
+    throw new Error(charset === "utf-8" ? "文件不是有效的 UTF-8 文本，无法预览，请下载查看" : "文件编码不受支持或内容不符合声明的编码，请下载查看");
   }
+  if (text.includes("\0")) throw new Error("文件包含二进制内容，无法作为文本预览，请下载查看");
+  return text;
 }
 
 export function artifactMediaTarget(artifact: BridgeArtifactManifest): MediaTarget | undefined {

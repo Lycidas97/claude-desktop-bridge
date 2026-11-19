@@ -143,10 +143,11 @@ it("migrates an existing event and persists analysis/status on the same identity
   const event = (await store.record(message()))!;
   store.close();
   const legacy = new DatabaseSync(join(root, "private", "assistant", "assistant.sqlite"));
-  legacy.exec("ALTER TABLE mail_events DROP COLUMN analysis_json");
+  legacy.exec("ALTER TABLE mail_events DROP COLUMN analysis_json; ALTER TABLE mail_events DROP COLUMN mime_projection");
   legacy.close();
   store = new AssistantMailStore(root);
   await store.initialize();
+  await store.backfillMimeProjections(new AbortController().signal);
   expect(store.page().events[0]?.analysis).toBeNull();
   const analysis = { summary: "External email asks for a payment", suggestions: ["Check with the user"], questions: ["Is this expected?"] };
   expect(store.updateAnalysis(event.mailRefId, analysis)).toEqual({ ...event, analysis });
@@ -177,4 +178,41 @@ it("creates the assistant business tables and private POSIX files including WAL/
   }
   const raw = await fs.readdir(join(store.directory, "raw-mail"));
   expect((await fs.stat(join(store.directory, "raw-mail", raw[0]!))).mode & 0o777).toBe(0o600);
+});
+
+it("keeps paginated previews and attachment metadata when the original is unavailable", async () => {
+  store.openMailbox("test-account", "1", 5);
+  const event = await store.record({ ...message(), source: Buffer.from('Content-Type: text/plain\r\nContent-Disposition: attachment; filename="notes.txt"\r\n\r\nPrivate text') });
+  await fs.rename(join(store.directory, "raw-mail"), join(store.directory, "detached-raw-mail"));
+  expect(store.page().events[0]).toMatchObject({ mailRefId: event?.mailRefId, attachmentCount: 1,
+    attachments: [{ attachmentId: "0", filename: "notes.txt", mimeType: "text/plain", size: 12 }] });
+});
+
+it("bounds the preview on Unicode code-point boundaries", async () => {
+  store.openMailbox("test-account", "1", 5);
+  const source = Buffer.from(`Content-Type: text/plain; charset=utf-8\r\n\r\n${"📬🧪".repeat(130)}`);
+  const event = await store.record({ ...message(), source });
+  expect(event?.preview).toBe("📬🧪".repeat(120));
+});
+
+it("opens and pages a legacy store while a historical MIME stream is still pending", async () => {
+  store.openMailbox("test-account", "1", 5);
+  const event = (await store.record(message()))!;
+  store.close();
+  const database = new DatabaseSync(join(root, "private", "assistant", "assistant.sqlite"));
+  database.exec("UPDATE mail_events SET mime_projection = NULL");
+  database.close();
+  store = new AssistantMailStore(root);
+  await store.initialize();
+  expect(store.page().events[0]).toMatchObject({ mailRefId: event.mailRefId, preview: "" });
+  const abort = new AbortController();
+  const interrupted = store.backfillMimeProjections(abort.signal);
+  abort.abort();
+  expect(await interrupted).toBe(false);
+  store.close();
+  store = new AssistantMailStore(root);
+  await store.initialize();
+  expect(store.page().events[0]?.preview).toBe("");
+  expect(await store.backfillMimeProjections(new AbortController().signal)).toBe(true);
+  expect(store.page().events[0]).toEqual(event);
 });

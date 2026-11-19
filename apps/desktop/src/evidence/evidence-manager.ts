@@ -722,6 +722,22 @@ export class EvidenceManager {
     return this.options.store.details(evidenceId, kind, cursor, limit);
   }
 
+  private async renderImage(bytes: Buffer, mimeType: string) {
+    const renderer = this.options.previewRenderer;
+    if (!renderer) return { bytes, mimeType };
+    this.inFlightPreviewRenders += 1;
+    try { return await renderer.image(bytes, mimeType); }
+    finally { this.inFlightPreviewRenders -= 1; }
+  }
+
+  /** Use the renderer on bytes without looking up or persisting evidence. */
+  async previewUnstoredImage(artifactId: string, bytes: Buffer, mimeType: string): Promise<BridgeArtifactPreview> {
+    if (!this.options.previewRenderer) throw new Error("Image preview is unavailable");
+    const rendered = await this.renderImage(bytes, mimeType);
+    return { artifactId, mode: "image", mimeType: rendered.mimeType, encoding: "base64",
+      data: rendered.bytes.toString("base64"), truncated: false, generatedAt: Date.now() };
+  }
+
   async preview(artifactId: string): Promise<BridgeArtifactPreview> {
     const artifact = this.options.store.artifact(artifactId);
     if (!artifact) throw new Error("Artifact not found");
@@ -740,17 +756,7 @@ export class EvidenceManager {
     }
     const bytes = await this.ensureArtifactSnapshot(artifactId);
     if (artifact.manifest.previewMode === "image") {
-      let rendered: { bytes: Buffer; mimeType: string };
-      if (this.options.previewRenderer) {
-        this.inFlightPreviewRenders += 1;
-        try {
-          rendered = await this.options.previewRenderer.image(bytes, artifact.manifest.mimeType);
-        } finally {
-          this.inFlightPreviewRenders -= 1;
-        }
-      } else {
-        rendered = { bytes, mimeType: artifact.manifest.mimeType };
-      }
+      const rendered = await this.renderImage(bytes, artifact.manifest.mimeType);
       await this.options.store.cachePreview(artifactId, rendered.bytes, rendered.mimeType);
       return {
         artifactId,

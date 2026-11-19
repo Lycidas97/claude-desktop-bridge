@@ -56,7 +56,7 @@ export function MediaPreviewProvider({ request, supportsFileStat = false, childr
   useEffect(() => {
     if (!pending || pending.metadata || pending.error) return;
     // Older hosts interpret unknown purposes as content opens. Never probe them.
-    if (!supportsFileStat) {
+    if (!supportsFileStat && !pending.target.mailAttachment) {
       setPending({ ...pending, error: "此电脑尚不支持文件大小预检。请更新电脑端 Bridge，然后重新连接再预览。" });
       return;
     }

@@ -49,6 +49,23 @@ async function writeWorkspaceFile(path: string, text: string, replace: boolean, 
   await writeFile(path, text, { mode: 0o600, flag: current ? "w" : "wx" });
 }
 
+async function writeAssistantRunner(agents: string, posix: boolean): Promise<string> {
+  const marker = "---\n# Managed by Bridge: assistant-runner\n";
+  for (let suffix = 1; ; suffix++) {
+    const name = suffix === 1 ? "assistant-runner" : `assistant-runner-${suffix}`;
+    const path = join(agents, `${name}.md`);
+    const current = await lstat(path).catch(error => {
+      if (!isMissingPath(error)) throw error;
+    });
+    if (current && (!current.isFile() || current.nlink !== 1 || !(await readFile(path, "utf8")).startsWith(marker))) continue;
+    // Empty body keeps the default system prompt; only the main session's tools change.
+    const content = `${marker}name: ${name}\ndescription: 托管助理主会话\ntools: ${ASSISTANT_TOOLS.join(", ")}\n---\n`;
+    if (current) await writeWorkspaceFile(path, content, true, posix);
+    else await writeFile(path, content, { mode: 0o600, flag: "wx" });
+    return name;
+  }
+}
+
 function guardCommand(execPath: string, guardPath: string, workspace: string, platform: NodeJS.Platform) {
   if (platform !== "win32") return {
     command: "/usr/bin/env", args: ["ELECTRON_RUN_AS_NODE=1", execPath, guardPath, workspace],
@@ -122,8 +139,10 @@ export class WorkspaceProvisioner {
       if (posix) await chmod(dir, 0o700);
     }
     const workspace = await realpath(this.path);
+    const agents = join(workspace, ".claude", "agents");
     const mcpArgs = [join(appPath, "dist", "assistant-mcp.cjs"), join(dirname(workspace), "mail-tools.json"), "--managed"];
     const settings = {
+      agent: await writeAssistantRunner(agents, posix),
       permissions: {
         defaultMode: "dontAsk", allow: ASSISTANT_TOOLS, deny,
         blockReadsOutsideWorkingDirectories: true, blockWritesOutsideWorkingDirectories: true,
@@ -144,7 +163,7 @@ export class WorkspaceProvisioner {
       env: { ELECTRON_RUN_AS_NODE: "1", [ASSISTANT_TOKEN_ENV]: sessionToken },
     } } };
     await writeWorkspaceFile(join(workspace, "CLAUDE.md"), rules, false, posix);
-    const helperPath = join(workspace, ".claude", "agents", `${ASSISTANT_HELPER}.md`);
+    const helperPath = join(agents, `${ASSISTANT_HELPER}.md`);
     await writeWorkspaceFile(helperPath, helperTemplate(ASSISTANT_TOOLS), false, posix);
     if (await readFile(helperPath, "utf8") === helperTemplate(ASSISTANT_TOOLS.filter(name => !AGENDA_TOOLS.includes(name)))) {
       await writeWorkspaceFile(helperPath, helperTemplate(ASSISTANT_TOOLS), true, posix);

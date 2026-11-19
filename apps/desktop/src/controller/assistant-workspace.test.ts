@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { link, mkdir, mkdtemp, readFile, realpath, stat, symlink, writeFile } from "node:fs/promises";
+import { link, lstat, mkdir, mkdtemp, readFile, realpath, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, expect, it } from "vitest";
@@ -22,6 +22,7 @@ it("writes the exact project policy and bundled MCP launch, preserving templates
   const settings = join(workspace, ".claude", "settings.json");
   const projectRules = join(workspace, "CLAUDE.md");
   const helper = join(workspace, ".claude", "agents", "assistant-helper.md");
+  const runner = join(workspace, ".claude", "agents", "assistant-runner.md");
   expect(await readFile(projectRules, "utf8")).toContain("outputs/");
   expect(await readFile(helper, "utf8")).toContain("name: assistant-helper");
   await writeFile(projectRules, "existing rules");
@@ -38,6 +39,7 @@ it("writes the exact project policy and bundled MCP launch, preserving templates
   } } });
   const policy = JSON.parse(await readFile(settings, "utf8"));
   expect(policy).toMatchObject({
+    agent: "assistant-runner",
     autoMemoryEnabled: false, enableAllProjectMcpServers: false, enabledMcpjsonServers: ["assistant-mail"],
     permissions: {
       defaultMode: "dontAsk",
@@ -46,6 +48,7 @@ it("writes the exact project policy and bundled MCP launch, preserving templates
     hooks: { PreToolUse: [{ matcher: "*", hooks: [{ type: "command", onFailure: "block" }] }] },
   });
   expect(policy.permissions.allow.every(isAssistantTool)).toBe(true);
+  expect(await readFile(runner, "utf8")).toBe(`---\n# Managed by Bridge: assistant-runner\nname: assistant-runner\ndescription: 托管助理主会话\ntools: ${policy.permissions.allow.join(", ")}\n---\n`);
   expect(JSON.stringify(policy)).not.toContain(rotated);
   if (process.platform !== "win32") {
     const [entry] = policy.hooks.PreToolUse[0].hooks;
@@ -56,6 +59,27 @@ it("writes the exact project policy and bundled MCP launch, preserving templates
     }
     for (const file of [config, settings]) expect((await stat(file)).mode & 0o777).toBe(0o600);
   }
+});
+
+it.each(["file", "link"])("restores the workspace without taking over an existing runner %s", async kind => {
+  const provisioner = new WorkspaceProvisioner(options);
+  const agents = join(provisioner.path, ".claude", "agents");
+  const existing = join(agents, "assistant-runner.md");
+  const custom = "---\nname: assistant-runner\ndescription: User agent\ntools: Read\n---\nUser instructions\n";
+  await mkdir(agents, { recursive: true });
+  if (kind === "file") await writeFile(existing, custom);
+  else await symlink(root, existing, "junction");
+
+  await expect(provisioner.restore("saved-token", provisioner.path)).resolves.toBe(provisioner.path);
+  if (kind === "file") expect(await readFile(existing, "utf8")).toBe(custom);
+  else expect((await lstat(existing)).isSymbolicLink()).toBe(true);
+  expect(provisioner.repairFailed).toBe(false);
+  const settings = join(provisioner.path, ".claude", "settings.json");
+  const policy = JSON.parse(await readFile(settings, "utf8"));
+  expect(policy.agent).not.toBe("assistant-runner");
+  expect(await readFile(join(agents, `${policy.agent}.md`), "utf8")).toContain(`tools: ${policy.permissions.allow.join(", ")}`);
+  await provisioner.restore("saved-token", provisioner.path);
+  expect(JSON.parse(await readFile(settings, "utf8")).agent).toBe(policy.agent);
 });
 
 it("checks physical membership through directory aliases and refuses to overwrite linked configs", async () => {

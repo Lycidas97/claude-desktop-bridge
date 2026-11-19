@@ -70,10 +70,57 @@ const browser = packaged
   ? await _electron.launch({ ...(process.env.BRIDGE_ELECTRON_PATH ? { executablePath: process.env.BRIDGE_ELECTRON_PATH } : {}), args: [resolve(output, "electron-media-main.cjs")] })
   : await chromium.launch({ channel: "chrome", headless: true });
 const results = [];
+
+async function verifyMediaGestures(page, media) {
+  const touch = await page.context().newCDPSession(page);
+  const viewport = page.locator(".media-viewer-viewport");
+  const initial = await media.boundingBox();
+  const initialBitmapWidth = await media.evaluate((element) => element instanceof HTMLCanvasElement ? element.width : 0);
+  const anchor = { x: initial.x + initial.width * 0.58, y: initial.y + initial.height * 0.45 };
+  const points = (distance) => [-1, 1].map((side, id) => ({ x: anchor.x + side * distance, y: anchor.y, id }));
+  await touch.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: points(36) });
+  for (const distance of [54, 72, 90]) {
+    await touch.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: points(distance) });
+  }
+  await page.waitForFunction((width) => document.querySelector(".media-viewer-viewport :is(img, canvas)").getBoundingClientRect().width > width * 2, initial.width);
+  const zoomed = await media.boundingBox();
+  if (initialBitmapWidth) assert.equal(await media.evaluate((canvas) => canvas.width), initialBitmapWidth, "Pinching does not rerasterize the PDF while fingers are down");
+  assert.ok(Math.abs(zoomed.x + zoomed.width * 0.58 - anchor.x) <= 2, "Pinch preserves the horizontal content under the fingers");
+  assert.ok(Math.abs(zoomed.y + zoomed.height * 0.45 - anchor.y) <= 2, "Pinch preserves the vertical content under the fingers");
+  assert.equal(await page.evaluate(() => visualViewport.scale), 1, "Pinch leaves the browser page scale at 1:1");
+  await touch.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  if (initialBitmapWidth) {
+    await page.waitForFunction((width) => document.querySelector(".media-viewer canvas").width > width && !document.querySelector(".media-viewer-status"), initialBitmapWidth);
+    const rasterized = await media.boundingBox();
+    assert.ok(Math.abs(rasterized.x - zoomed.x) <= 2 && Math.abs(rasterized.y - zoomed.y) <= 2, "The sharper PDF bitmap stays at the pinch position");
+  }
+
+  await touch.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ ...anchor, id: 0 }] });
+  await touch.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: anchor.x - 35, y: anchor.y - 30, id: 0 }] });
+  await touch.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  const panned = await media.boundingBox();
+  assert.ok(Math.abs(panned.x - zoomed.x + 35) <= 2, "Zoomed media follows a one-finger horizontal drag");
+  assert.ok(Math.abs(panned.y - zoomed.y + 30) <= 2, "Zoomed media follows a one-finger vertical drag");
+  if (initialBitmapWidth) {
+    const bounds = await viewport.boundingBox();
+    const center = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
+    const bitmapWidth = await media.evaluate((canvas) => canvas.width);
+    await page.getByRole("button", { name: "放大", exact: true }).click();
+    await page.waitForFunction((width) => document.querySelector(".media-viewer canvas").width > width && !document.querySelector(".media-viewer-status"), bitmapWidth);
+    const afterRender = await media.boundingBox();
+    assert.ok(Math.abs(afterRender.x + (center.x - panned.x) * afterRender.width / panned.width - center.x) <= 2, "PDF toolbar zoom keeps the same horizontal content at the viewport center");
+    assert.ok(Math.abs(afterRender.y + (center.y - panned.y) * afterRender.height / panned.height - center.y) <= 2, "PDF toolbar zoom keeps the same vertical content at the viewport center");
+  }
+  await page.getByRole("button", { name: "适合窗口", exact: true }).click();
+  const fitted = await media.boundingBox();
+  assert.deepEqual(fitted, initial, "Fit returns to the initial scale and position");
+  await touch.detach();
+}
+
 try {
   for (const viewport of [{ width: 1200, height: 850 }, { width: 375, height: 812 }]) {
     if ((packaged && viewport.width === 375) || (mobile && viewport.width !== 375)) continue;
-    const page = packaged ? await browser.firstWindow() : await browser.newPage({ viewport, serviceWorkers: "block" });
+    const page = packaged ? await browser.firstWindow() : await browser.newPage({ viewport, serviceWorkers: "block", isMobile: mobile, hasTouch: mobile });
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     page.on("console", (message) => { if (message.type() === "error") errors.push(message.text()); });
@@ -97,7 +144,7 @@ try {
           window.__mediaRequests.push({ method, params });
           if (method === "session.open") return response({ session: snapshot.sessions[0], history });
           if (method === "evidence.list") return response({ evidence });
-          if (method === "artifact.preview") return response({ preview: { artifactId: "image", mode: "image", mimeType: "image/svg+xml", encoding: "base64", data: btoa('<svg xmlns="http://www.w3.org/2000/svg" width="800" height="500"><rect width="800" height="500" fill="#dce8ef"/><circle cx="400" cy="210" r="100" fill="#245778"/><text x="270" y="410" font-size="32">Research figure</text></svg>'), truncated: false, generatedAt: Date.now() } });
+          if (method === "artifact.preview") return response({ preview: { artifactId: "image", mode: "image", mimeType: "image/svg+xml", encoding: "base64", data: btoa('<svg xmlns="http://www.w3.org/2000/svg" width="800" height="1000"><rect width="800" height="1000" fill="#dce8ef"/><circle cx="400" cy="210" r="100" fill="#245778"/><text x="270" y="410" font-size="32">Research figure</text></svg>'), truncated: false, generatedAt: Date.now() } });
           if (method === "artifact.transfer.open" && params.purpose === "stat") {
             const isSvg = params.artifactId === "svg" || params.path?.endsWith(".svg");
             const isImage = params.artifactId === "image" || params.path?.endsWith(".png");
@@ -181,6 +228,7 @@ try {
     const pageOne = await page.evaluate(() => ({ reads: window.__mediaRequests.filter((r) => r.method === "artifact.transfer.read").map((r) => r.params.index), width: document.querySelector("canvas").width, pages: document.querySelector(".media-page-controls").textContent }));
     assert.ok(pageOne.reads.length > 0 && new Set(pageOne.reads).size <= 4, "First page must fetch only the PDF ranges it needs");
     await page.screenshot({ path: `${output}/${packaged ? "electron-" : mobile ? "mobile-" : ""}media-pdf-${viewport.width}.png` });
+    if (mobile) await verifyMediaGestures(page, page.locator(".media-viewer canvas"));
     await page.getByRole("button", { name: "下一页", exact: true }).click();
     await page.waitForFunction(() => !document.querySelector(".media-viewer-status") && document.querySelector('[aria-label="页码"]').value === "2");
     await page.getByRole("button", { name: "放大", exact: true }).click();
@@ -202,6 +250,7 @@ try {
     await page.locator(".media-viewer img").waitFor();
     await page.waitForFunction(() => document.querySelector(".media-viewer img")?.naturalWidth > 0);
     await page.screenshot({ path: `${output}/${packaged ? "electron-" : mobile ? "mobile-" : ""}media-image-${viewport.width}.png` });
+    if (mobile) await verifyMediaGestures(page, page.locator(".media-viewer img"));
     await page.getByRole("button", { name: "关闭查看器" }).click();
     await page.locator(".media-file.image").filter({ hasText: "Diagram.svg" }).first().click();
     await page.waitForFunction(() => document.querySelector(".media-viewer img")?.naturalWidth > 0 || document.querySelector('.media-viewer [role="alert"]'));

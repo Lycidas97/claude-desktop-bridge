@@ -1,6 +1,6 @@
 # 个人助理架构 v5
 
-本文定义个人助理的目标架构和分阶段验收条件。Bridge 负责接收邮件、同步待办与日历、展示状态并执行用户已批准的提案。Claude Desktop 负责会话执行、原生队列、工具权限与历史。用户可以手动引用邮件、上传文件和核对提案。外部事件自动投递须通过 [#162 实机门禁](SECURITY.md#外部邮件自动投递门禁)。
+本文定义个人助理的目标架构和分阶段验收条件。Bridge 负责接收邮件、同步待办与日历、展示状态并执行用户已批准的提案。Claude Desktop 负责会话执行、原生队列、工具权限与历史。用户可以手动引用邮件、上传文件和核对提案。外部事件自动投递默认关闭，须由用户在当前托管绑定中开启，并满足[运行时投递条件](SECURITY.md#外部邮件自动投递门禁)。[Issue 222 的用户决议](https://github.com/Lycidas97/claude-desktop-bridge/issues/222#issuecomment-7011727311)撤销了原实机启用门禁，实测结果及缺口仍保留。
 
 ## 交付顺序
 
@@ -9,7 +9,7 @@
 | [#213](https://github.com/Lycidas97/claude-desktop-bridge/issues/213) | 多账号收件、托管工作区装配、单顶栏与稳定输入栏。自动投递关闭 |
 | [#222](https://github.com/Lycidas97/claude-desktop-bridge/issues/222) | 对实际交付的托管档位做工具与后台投递实机验收 |
 | [#223](https://github.com/Lycidas97/claude-desktop-bridge/issues/223) | 收件入库后即可开发双端附件，独立于自动投递 |
-| [#214](https://github.com/Lycidas97/claude-desktop-bridge/issues/214) | 门禁通过后开放邮件事件触发、原生收据对账和批次卡。单独验证原生压缩命令 |
+| [#214](https://github.com/Lycidas97/claude-desktop-bridge/issues/214) | 托管绑定可选开启邮件事件触发，复用原生收据对账与批次卡。压缩命令的实测证据单独记录 |
 | [#215](https://github.com/Lycidas97/claude-desktop-bridge/issues/215) · [#216](https://github.com/Lycidas97/claude-desktop-bridge/issues/216) | 同步待办与日程，再交付统一提案、确认和按后端执行 |
 | [#217](https://github.com/Lycidas97/claude-desktop-bridge/issues/217) | 实测记忆文件能力、专职子代理与原生压缩归因，逐步启用维护 |
 

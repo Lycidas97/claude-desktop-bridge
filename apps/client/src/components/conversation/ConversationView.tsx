@@ -58,6 +58,7 @@ import { desktopRuntimeId, desktopRuntimeName } from "../../lib/runtime-labels.j
 import { sessionQueueLabel } from "../../lib/session-activity.js";
 import { useStreamEntrance } from "../../lib/stream-entrance.js";
 import { useInlineProposals } from "../assistant/AssistantProposalProvider.js";
+import { AssistantTriggerBatch } from "../assistant/AssistantTriggerBatch.js";
 import { MailCard } from "../assistant/MailCard.js";
 import { ProposalCard } from "../assistant/ProposalCard.js";
 import { ConfirmationDialog } from "../common/ConfirmationDialog.js";
@@ -461,9 +462,12 @@ export function ConversationView({
   const inlineQueuedIds = new Set<string>();
   if (effectiveSessionView === "conversation" && session.pendingCount > 0) {
     for (const node of displayNodes) {
-      if (node.kind === "message" && node.item.role === "user" && !node.item.sessionNotice
-        && node.item.commandId && isQueuedConversationMessage(node.item, session)) {
-        inlineQueuedIds.add(node.item.commandId);
+      const item = node.kind === "message" ? node.item : node.kind === "assistant-trigger-batch" ? node.nativeMessage : undefined;
+      if (item?.role === "user" && !item.sessionNotice && item.commandId && isQueuedConversationMessage(item, session)) {
+        inlineQueuedIds.add(item.commandId);
+      } else if (node.kind === "assistant-trigger-batch") {
+        const delivery = node.cards[0]?.nativeDelivery;
+        if (delivery?.state === "queued" && delivery.commandId) inlineQueuedIds.add(delivery.commandId);
       }
     }
   }
@@ -490,9 +494,9 @@ export function ConversationView({
   const timelineStreamKeys = useMemo(() => timeline.map((entry) => (
     entry.kind === "evidence"
       ? `evidence:${entry.evidence.id}`
-      : entry.kind === "mail"
-        ? `mail:${entry.card.mailRefId}`
-        : entry.kind === "proposal" ? `proposal:${entry.proposal.proposalId}` : entry.item.id
+      : entry.kind === "mail" ? `mail:${entry.card.mailRefId}`
+        : entry.kind === "proposal" ? `proposal:${entry.proposal.proposalId}`
+          : entry.kind === "assistant-trigger-batch" ? `assistant-trigger:${entry.batchId}` : entry.item.id
   )), [timeline]);
   const streamEntering = useStreamEntrance(session.sessionId, timelineStreamKeys);
 
@@ -552,6 +556,7 @@ export function ConversationView({
       if (
         event.sessionId !== session.sessionId
         || event.type !== "message.delivery"
+        || event.data.source === "assistant-trigger"
         || typeof event.data.commandId !== "string"
       ) continue;
       const previous = latest.get(event.data.commandId);
@@ -859,6 +864,10 @@ export function ConversationView({
               {...(node.nativeMessage ? { nativeMessage: node.nativeMessage } : {})}
             />
           );
+        }
+        if (node.kind === "assistant-trigger-batch") {
+          return <AssistantTriggerBatch key={`${hostId}:${session.sessionId}:${node.batchId}`} sessionId={session.sessionId}
+            batchId={node.batchId} cards={node.cards} nativeMessage={node.nativeMessage} onCancel={onCancelQueuedTurn} />;
         }
         if (node.kind === "evidence") {
           return (

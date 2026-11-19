@@ -161,7 +161,7 @@ export async function createServiceRuntime(options: {
     await assistantMail.initialize(database => {
       agendaStore = new AgendaStore(database);
       proposalStore = new ProposalStore(database);
-    });
+    }, false);
     const agendaCredentials = {
       available: () => safeStorage.isEncryptionAvailable() &&
         (process.platform !== "linux" || safeStorage.getSelectedStorageBackend() !== "basic_text"),
@@ -187,6 +187,17 @@ export async function createServiceRuntime(options: {
       },
       onManagedCall: (sessionId, tool) => {
         void eventLog.append({ sessionId, origin: "system", type: "plugin.assistant-mail.tool-invoked", data: { tool } });
+      },
+      compact: {
+        async cliSessionId(sessionId) {
+          return (await controller.assistantMailCoordinator?.readManagedNativeSession(sessionId))?.cliSessionId;
+        },
+        observed(sessionId, hook) {
+          void eventLog.append({ sessionId, origin: "system", type: "plugin.assistant-mail.compact-hook",
+            data: { event: hook.event, ...(hook.event === "SessionStart" ? { source: hook.source } : { trigger: hook.trigger }) },
+          });
+          return controller.assistantMailCoordinator?.compactContext(sessionId, hook.event);
+        },
       },
     });
     resources.defer("Assistant mail tools", () => mailTools.close());
@@ -240,6 +251,7 @@ export async function createServiceRuntime(options: {
     resources.defer("Desktop controller", () => controller.close());
     options.onStage?.("初始化运行时与中继连接");
     await controller.initialize();
+    assistantMail.startReceivers();
     assistantAgenda.start();
     proposals.start();
     if (process.platform === "win32" || process.platform === "darwin" || process.platform === "linux") {
@@ -302,7 +314,7 @@ export async function createServiceRuntime(options: {
     const onResume = () => {
       assistantMail.resume();
       assistantAgenda.resume();
-      void controller.reconnect().catch((error: unknown) => {
+      void controller.reconnect().then(() => controller.assistantMailCoordinator?.runtimeChanged(true)).catch((error: unknown) => {
         process.stderr.write(`Bridge resume failed: ${String(error)}\n`);
       });
     };

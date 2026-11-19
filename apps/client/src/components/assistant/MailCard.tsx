@@ -7,8 +7,9 @@ import { useMediaPreview, useMediaRequest } from "../evidence/MediaPreviewProvid
 import { useAssistantMail } from "./AssistantMailProvider.js";
 import "./assistant-mail.css";
 
-const DELIVERY_LABELS = {
-  "not-submitted": "未提交", submitting: "提交中", submitted: "已提交", observed: "原生已观测", uncertain: "不确定", failed: "失败",
+export const DELIVERY_LABELS: Record<BridgeMailCard["nativeDelivery"]["state"], string> = {
+  "not-submitted": "未提交", pending: "待提交", paused: "已暂停", submitting: "提交中", submitted: "已提交", queued: "排队中",
+  observed: "原生已观测", uncertain: "不确定", failed: "失败", cancelled: "已撤回",
 };
 const PROCESSING_LABELS = { pending: "待处理", processing: "处理中", processed: "已处理" };
 
@@ -43,7 +44,9 @@ function MailAttachmentRow({ attachment, mailRefId, enabled }: { attachment: Bri
   </li>;
 }
 
-export function MailCard({ card, nativeMessage, onDiscuss }: { card: BridgeMailCard; nativeMessage?: BridgeHistoryItem; onDiscuss?(): void }) {
+export function MailCard({ card, nativeMessage, onDiscuss, showBatchDelivery = true }: {
+  card: BridgeMailCard; nativeMessage?: BridgeHistoryItem; onDiscuss?(): void; showBatchDelivery?: boolean;
+}) {
   const mail = useAssistantMail();
   const accountLabel = mail?.accountLabel(card.accountKey) ?? "邮件插件";
   const [detail, setDetail] = useState<BridgeMailDetail>();
@@ -66,7 +69,7 @@ export function MailCard({ card, nativeMessage, onDiscuss }: { card: BridgeMailC
     {card.previewError && <p className="assistant-mail-from" role="status">{card.previewError}</p>}
     <dl className="assistant-mail-status">
       <div><dt>输入</dt><dd>已记录</dd></div>
-      <div><dt>原生投递</dt><dd>{DELIVERY_LABELS[card.nativeDelivery.state]}</dd></div>
+      {!card.nativeDelivery.batchId || showBatchDelivery ? <div><dt>原生投递</dt><dd>{DELIVERY_LABELS[card.nativeDelivery.state]}</dd></div> : null}
       <div><dt>业务处理</dt><dd>{PROCESSING_LABELS[card.processingStatus]}</dd></div>
     </dl>
     {card.analysis && <details><summary>分析结果</summary>

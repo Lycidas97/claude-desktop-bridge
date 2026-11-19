@@ -67,7 +67,7 @@ async function writeAssistantRunner(agents: string, posix: boolean): Promise<str
   }
 }
 
-function guardCommand(execPath: string, guardPath: string, workspace: string, platform: NodeJS.Platform) {
+function hookCommand(execPath: string, guardPath: string, workspace: string, platform: NodeJS.Platform) {
   if (platform !== "win32") return {
     command: "/usr/bin/env", args: ["ELECTRON_RUN_AS_NODE=1", execPath, guardPath, workspace],
   };
@@ -142,6 +142,9 @@ export class WorkspaceProvisioner {
     const workspace = await realpath(this.path);
     const agents = join(workspace, ".claude", "agents");
     const mcpArgs = [join(appPath, "dist", "assistant-mcp.cjs"), join(dirname(workspace), "mail-tools.json"), "--managed"];
+    const compactHook = {
+      type: "command", ...hookCommand(execPath, join(appPath, "dist", "assistant-compact-hook.cjs"), workspace, this.platform), timeout: 5,
+    };
     const settings = {
       agent: await writeAssistantRunner(agents, posix),
       permissions: {
@@ -154,10 +157,15 @@ export class WorkspaceProvisioner {
       // Project MCP approval cannot control all inherited Desktop tools. #222
       // verifies the catch-all hook, effective native settings and @ references.
       allowedMcpServers: [{ serverCommand: [execPath, ...mcpArgs] }],
-      hooks: { PreToolUse: [{ matcher: "*", hooks: [{
-        type: "command", ...guardCommand(execPath, join(appPath, "dist", "assistant-fs-guard.cjs"), workspace, this.platform),
-        onFailure: "block", timeout: 10,
-      }] }] },
+      hooks: {
+        PreToolUse: [{ matcher: "*", hooks: [{
+          type: "command", ...hookCommand(execPath, join(appPath, "dist", "assistant-fs-guard.cjs"), workspace, this.platform),
+          onFailure: "block", timeout: 10,
+        }] }],
+        PreCompact: [{ matcher: "manual|auto", hooks: [compactHook] }],
+        PostCompact: [{ matcher: "manual|auto", hooks: [compactHook] }],
+        SessionStart: [{ matcher: "compact", hooks: [compactHook] }],
+      },
     };
     const mcp = { mcpServers: { [ASSISTANT_MCP]: {
       type: "stdio", command: execPath, args: mcpArgs,
@@ -165,10 +173,15 @@ export class WorkspaceProvisioner {
     } } };
     await writeWorkspaceFile(join(workspace, "CLAUDE.md"), rules, false, posix);
     const helperPath = join(agents, `${ASSISTANT_HELPER}.md`);
-    await writeWorkspaceFile(helperPath, helperTemplate(ASSISTANT_TOOLS), false, posix);
+    const helper = helperTemplate(ASSISTANT_TOOLS);
+    await writeWorkspaceFile(helperPath, helper, false, posix);
     const previousTools = ASSISTANT_TOOLS.filter(name => !PROPOSAL_NATIVE_TOOLS.includes(name));
-    if ([helperTemplate(previousTools), helperTemplate(previousTools.filter(name => !AGENDA_TOOLS.includes(name)))].includes(await readFile(helperPath, "utf8"))) {
-      await writeWorkspaceFile(helperPath, helperTemplate(ASSISTANT_TOOLS), true, posix);
+    const beforeTriggers = previousTools.filter(name => name !== `mcp__${ASSISTANT_MCP}__mail_list_unfinished_triggers`);
+    const previousHelpers = [previousTools, beforeTriggers].flatMap(tools => [
+      helperTemplate(tools), helperTemplate(tools.filter(name => !AGENDA_TOOLS.includes(name))),
+    ]);
+    if (previousHelpers.includes(await readFile(helperPath, "utf8"))) {
+      await writeWorkspaceFile(helperPath, helper, true, posix);
     }
     await writeWorkspaceFile(join(workspace, ".claude", "settings.json"), `${JSON.stringify(settings, null, 2)}\n`, true, posix);
     await writeWorkspaceFile(join(workspace, ".mcp.json"), `${JSON.stringify(mcp, null, 2)}\n`, true, posix);

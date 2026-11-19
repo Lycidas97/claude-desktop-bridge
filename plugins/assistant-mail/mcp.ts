@@ -1,14 +1,14 @@
 import { readFile } from "node:fs/promises";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { isProposalTool, MAIL_TOOLS, MailToolConnection } from "./tool-contract.js";
+import { MAIL_TOOLS, MANAGED_MAIL_TOOLS, MailToolConnection } from "./tool-contract.js";
 
 const ManagedDescriptor = MailToolConnection.pick({ port: true }).strip();
 
 /** A protocol adapter only: no mail store, receiver, credentials or Desktop IPC imports. */
 export function createMailMcpServer(connectionPath: string, managedToken?: string): Server {
   const server = new Server({ name: "assistant-mail", version: "0.1.0" }, { capabilities: { tools: {} } });
-  server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: managedToken ? MAIL_TOOLS : MAIL_TOOLS.filter(tool => tool.name !== "mail.read_attachment" && !isProposalTool(tool.name)) }));
+  server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: managedToken ? MAIL_TOOLS : MAIL_TOOLS.filter(tool => !MANAGED_MAIL_TOOLS.has(tool.name)) }));
   server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
     const descriptor: unknown = JSON.parse(await readFile(connectionPath, "utf8"));
     const connection = managedToken === undefined ? MailToolConnection.parse(descriptor) : {

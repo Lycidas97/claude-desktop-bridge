@@ -6,13 +6,14 @@ import { DatabaseSync } from "node:sqlite";
 import type { BridgeMailAttachment } from "../../packages/protocol/src/assistant-mail.js";
 import { MailBodyParseError, parseMail } from "./mime.js";
 import { MailPageParameters } from "./tool-contract.js";
+import { AssistantTriggerStore } from "./trigger-store.js";
 
 export interface AssistantBinding {
   assistantId: string;
   nativeSessionId: string | null;
   sectionId: string | null;
   previousSessionIds: string[];
-  managed?: { path: string; policy: string; token: string };
+  managed?: { path: string; policy: string; token: string; automaticDelivery?: boolean };
 }
 
 export interface MailIdentity {
@@ -98,6 +99,7 @@ function eventFromRow(row: EventRow): MailEvent {
 export class AssistantMailStore {
   readonly directory: string;
   private database: DatabaseSync | undefined;
+  triggers!: AssistantTriggerStore;
 
   constructor(private readonly userDataPath: string) {
     this.directory = join(userDataPath, "private", "assistant");
@@ -168,6 +170,7 @@ export class AssistantMailStore {
     if (!columns.includes("mime_projection")) this.database.exec("ALTER TABLE mail_events ADD COLUMN mime_projection TEXT");
     if (!columns.includes("historical")) this.database.exec("ALTER TABLE mail_events ADD COLUMN historical INTEGER NOT NULL DEFAULT 0");
     this.database.exec(`CREATE INDEX IF NOT EXISTS mail_events_page_order ON mail_events (${mailOrder})`);
+    this.triggers = new AssistantTriggerStore(this.database);
     extend?.(this.database);
   }
 
@@ -235,6 +238,11 @@ export class AssistantMailStore {
     }
   }
 
+  setAutomaticDelivery(enabled: boolean): void {
+    this.db().prepare(`UPDATE assistant_managed_binding SET managed_json =
+      json_set(managed_json, '$.automaticDelivery', json(?)) WHERE singleton = 1`).run(JSON.stringify(enabled));
+  }
+
   /** Resume a committed generation, or establish a new baseline when a next UID is available. */
   openMailbox(accountKey: string, uidValidity: string, uidNext: number | undefined): number | undefined {
     const row = this.db().prepare("SELECT uid_validity, last_persisted_uid FROM imap_watermarks WHERE account_key = ? AND mailbox = 'INBOX'")
@@ -276,6 +284,7 @@ export class AssistantMailStore {
     // No database record can reference a file that is still being written.
     await writeFile(join(this.directory, "raw-mail", rawFile), message.source, { flag: "wx", mode: 0o600 });
     const projection = await projectMail(message.source);
+    const recordedAt = Date.now();
     const db = this.db();
     db.exec("BEGIN");
     try {
@@ -283,8 +292,10 @@ export class AssistantMailStore {
         INSERT INTO mail_events (mail_ref_id, account_key, mailbox, uid_validity, uid, subject, from_json,
           received_at, recorded_at, raw_file, mime_projection, historical) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(mailRefId, message.accountKey, message.mailbox, message.uidValidity, message.uid, message.subject,
-        JSON.stringify(message.from), message.receivedAt, Date.now(), rawFile, JSON.stringify(projection), message.historical ? 1 : 0);
+        JSON.stringify(message.from), message.receivedAt, recordedAt, rawFile, JSON.stringify(projection), message.historical ? 1 : 0);
       if (!message.historical) {
+        this.triggers.record({ kind: "mail.received", eventId: mailRefId },
+          JSON.stringify([message.accountKey, message.mailbox, message.uidValidity, message.uid]), recordedAt);
         const watermark = db.prepare(`
           UPDATE imap_watermarks SET last_persisted_uid = MAX(last_persisted_uid, ?)
           WHERE account_key = ? AND mailbox = ? AND uid_validity = ?

@@ -15,6 +15,10 @@ export interface NativeDesktopReceipt {
   sessionId: string;
   messageId: string;
   displayText?: string;
+  source?: "assistant-trigger";
+  /** Native transport confirmed no request was written. The host may reuse this receipt. */
+  notDispatched?: true;
+  previousMessageIds?: string[];
   queueSettled?: true;
   queueMode?: "deferred" | "steered";
   state: "dispatching" | "submitted" | "session-received" | "queued" | "running" | "completed" | "cancelled" | "uncertain" | "failed";

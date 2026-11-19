@@ -3,7 +3,7 @@ import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { join } from "node:path";
 import {
   ARTIFACT_MAX_BYTES, BridgeCrypto, PROTOCOL_VERSION,
-  type BridgeArtifactTransferInfo,
+  type BridgeArtifactTransferInfo, type BridgeTransport, type BridgeEvent, type EncryptedEnvelope,
   type BridgeMailDetail, type BridgeMailPage, type BridgeRequest, type BridgeSessionInfo, type DesktopControlSnapshot,
 } from "@bridge/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,6 +16,7 @@ import { assistantMailSnapshot } from "./assistant-mail.js";
 import { WorkspaceProvisioner } from "./assistant-workspace.js";
 import { DesktopController } from "./controller.js";
 import { createControllerFixture } from "./controller-fixture.js";
+import { ConversationStateStore } from "./conversation-state-store.js";
 
 vi.mock("electron", () => ({ shell: {} }));
 
@@ -23,6 +24,8 @@ type ControllerArguments = ConstructorParameters<typeof DesktopController>;
 type ControllerInternals = {
   publish(): Promise<DesktopControlSnapshot>;
   handleRequest(request: BridgeRequest, origin: "mobile", deviceId?: string): Promise<unknown>;
+  setMailWakeRelay(socket?: BridgeTransport): void;
+  acknowledgeMailWake(ids: string[]): void;
 };
 
 let root: string;
@@ -63,7 +66,7 @@ async function fixture() {
     configureSession: vi.fn(async () => ({ nativePermissionMode: "dontAsk" })),
     refreshDesktopSession: vi.fn(async () => undefined),
     history: vi.fn(async (sessionId: string) => ({ sessionId, items: [], hasMore: false })),
-    forkSession: vi.fn(), startTurn: vi.fn(), steerTurn: vi.fn(),
+    forkSession: vi.fn(), startTurn: vi.fn(), steerTurn: vi.fn(), runCommand: vi.fn(async () => ({ state: "sent" })),
   });
   const eventLog = Object.assign(new EventEmitter(), { append: vi.fn(async () => undefined), latestSeq: () => 0 });
   const evidenceStore = new EvidenceStore({ databasePath: join(root, "evidence.sqlite"), blobsPath: join(root, "blobs"), masterSecret: Buffer.alloc(32, 5).toString("base64url") });
@@ -84,13 +87,15 @@ async function fixture() {
     defaultPermissionMode: "standard", runtimePermissionModes: {},
     devices: [{ deviceId: "synthetic-phone", name: "Phone", platform: "android", secret: host.secret, createdAt: 1, expiresAt: 2, pairedAt: 1 }],
   };
+  const receiptStore = new ConversationStateStore({ databasePath: join(root, "receipts.sqlite") });
+  await receiptStore.initialize();
   const controller = new DesktopController(
     { getVersion: () => "synthetic", getLoginItemSettings: () => ({ openAtLogin: false }) } as ControllerArguments[0],
     { loadOrCreate: async () => config, save: vi.fn(async () => undefined) } as unknown as ControllerArguments[1],
     "http://127.0.0.1:18789", relayUrl,
     broker as unknown as ControllerArguments[4], eventLog as unknown as ControllerArguments[5],
     evidence, { status: async () => ({ state: "stopped" }) } as unknown as ControllerArguments[7],
-    undefined, undefined, undefined, undefined, undefined, service, workspace,
+    undefined, undefined, receiptStore, undefined, undefined, service, workspace,
   );
   // Keep initialization subscriptions and snapshot/RPC/publication logic real; stop at external I/O and scheduling.
   const boundaries = {
@@ -101,10 +106,10 @@ async function fixture() {
   await controller.initialize();
   const internals = controller as unknown as ControllerInternals;
   return {
-    controller, broker, eventLog, sessions, projects, workspace, evidenceStore, broadcast: boundaries.broadcast, queuePublish: boundaries.queuePublish,
+    controller, broker, eventLog, sessions, projects, workspace, evidenceStore, receiptStore, internals, broadcast: boundaries.broadcast, queuePublish: boundaries.queuePublish,
     publish: () => internals.publish(),
-    request: <T = unknown>(method: BridgeRequest["method"], params: Record<string, unknown> = {}, deviceId = "synthetic-phone") => internals.handleRequest(
-      { kind: "request", requestId: "mail-request", idempotencyKey: "mail-key", method, params }, "mobile", deviceId,
+    request: <T = unknown>(method: BridgeRequest["method"], params: Record<string, unknown> = {}, deviceId = "synthetic-phone", idempotencyKey = "mail-key") => internals.handleRequest(
+      { kind: "request", requestId: "mail-request", idempotencyKey, method, params }, "mobile", deviceId,
     ) as Promise<T>,
   };
 }
@@ -125,6 +130,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await run.controller.close();
+  run.receiptStore.close();
   await service.close();
   store.close();
   vi.restoreAllMocks();
@@ -462,6 +468,82 @@ describe("assistant native session binding", () => {
   });
 });
 
+it("bounds compact context and points to the next page of unfinished references", async () => {
+  run.broker.capabilities.mockReturnValue([]);
+  service.setBinding({ assistantId: "assistant", nativeSessionId: "native-first", sectionId: null, previousSessionIds: [],
+    managed: { path: "/synthetic/assistant", policy: "stage1-fenced-workspace", token: "fixture", automaticDelivery: true } });
+  const oldest = await record(1);
+  for (let uid = 2; uid <= 101; uid++) await record(uid);
+  const coordinator = run.controller.assistantMailCoordinator!;
+  for (const event of ["PreCompact", "SessionStart"] as const) {
+    const context = coordinator.compactContext("native-first", event)!;
+    expect(context.match(/mail\.received/g)).toHaveLength(100);
+    expect(context).not.toContain(oldest.mailRefId);
+    expect(context).not.toMatch(/Subject 1|Body 1|sender@example\.test/);
+    expect(context).toContain('mail.list_unfinished_triggers({"cursor":2})');
+  }
+  expect(service.triggers.unfinished("native-first", 2)).toEqual({
+    refs: [{ kind: "mail.received", eventId: oldest.mailRefId, batchId: expect.any(String) }],
+  });
+  expect(coordinator.compactContext("native-first", "PostCompact")).toBeUndefined();
+});
+
+it("loads all cards by exact session and batch, independent of inbox pagination", async () => {
+  run.broker.capabilities.mockReturnValue([]);
+  service.setBinding({ assistantId: "assistant", nativeSessionId: "native-first", sectionId: null, previousSessionIds: [],
+    managed: { path: "/synthetic/assistant", policy: "stage1-fenced-workspace", token: "fixture", automaticDelivery: true } });
+  const first = await record(1);
+  const second = await record(2);
+  service.setProcessingStatus(second.mailRefId, "processed");
+  const batchId = store.triggers.batchForEvent("mail.received", first.mailRefId)!.batchId;
+  const top = await run.request<{ mailPage: BridgeMailPage }>("plugin.assistant-mail.list", { limit: 1 });
+  expect(top.mailPage.cards.map(card => card.mailRefId)).toEqual([second.mailRefId]);
+  await expect(run.request("plugin.assistant-mail.batch", { sessionId: "native-first", batchId })).resolves.toMatchObject({ mailPage: {
+    cards: [{ mailRefId: first.mailRefId, processingStatus: "pending" }, { mailRefId: second.mailRefId, processingStatus: "processed" }],
+  } });
+  await expect(run.request("plugin.assistant-mail.batch", { sessionId: "native-second", batchId })).rejects.toMatchObject({ code: "NOT_FOUND" });
+  await expect(run.request("plugin.assistant-mail.batch", { sessionId: "native-first", batchId, cursor: "1" })).resolves.toMatchObject({ mailPage: {
+    cards: [{ mailRefId: second.mailRefId }],
+  } });
+  await expect(run.request("plugin.assistant-mail.batch", { sessionId: "native-first", batchId, cursor: "32" })).rejects.toMatchObject({ code: "INVALID_PARAMS" });
+});
+
+it("coalesces disconnected mail and analysis wakes and clears them only after the Relay stores the ciphertext", async () => {
+  const receipts: EncryptedEnvelope[] = [];
+  const received: unknown[] = [];
+  const send = vi.fn<BridgeTransport["send"]>(async (payload, to, options) => {
+    const crypto = options!.crypto!;
+    const envelope = await crypto.encrypt(payload, "desktop", to, undefined, undefined, options!.toDeviceId, options!.temporary);
+    receipts.push(envelope);
+    received.push((await crypto.withSenderDevice("synthetic-phone").decrypt(envelope)).payload);
+    return envelope.id;
+  });
+  const socket = { send } as unknown as BridgeTransport;
+  const event = await record(1);
+  service.emit("mail", event);
+  service.updateAnalysis(event.mailRefId, { summary: "Private result", suggestions: [], questions: [] });
+  const changes = run.eventLog.append.mock.calls as unknown as [Omit<BridgeEvent, "eventId" | "seq" | "timestamp">][];
+  expect(changes).toHaveLength(2);
+  for (const [index, [draft]] of changes.entries()) {
+    run.eventLog.emit("event", { ...draft, eventId: `wake-${index}`, seq: index, timestamp: 1 });
+  }
+  expect(run.broadcast).not.toHaveBeenCalled();
+  expect(send).not.toHaveBeenCalled();
+  run.internals.setMailWakeRelay(socket);
+  await vi.waitFor(() => expect(received).toHaveLength(1));
+  expect(receipts[0]).toMatchObject({ to: "mobile", toDeviceId: "synthetic-phone", ciphertext: expect.any(String) });
+  expect(receipts[0]!.temporary).toBeUndefined();
+  expect(JSON.stringify(receipts)).not.toContain("assistantMail");
+  expect(received[0]).toMatchObject({ kind: "event", event: { eventId: "wake-1", type: "plugin.assistant-mail.changed" } });
+  run.internals.setMailWakeRelay(undefined);
+  run.internals.setMailWakeRelay(socket);
+  await vi.waitFor(() => expect(received).toHaveLength(2));
+  run.internals.acknowledgeMailWake([receipts[1]!.id]);
+  run.internals.setMailWakeRelay(undefined);
+  run.internals.setMailWakeRelay(socket);
+  expect(send).toHaveBeenCalledTimes(2);
+});
+
 describe("assistant mail snapshot publication", () => {
   it("publishes a mail analysis change marker to mobile while sessions, binding and receiver stay unchanged", async () => {
     const event = await record(1);
@@ -473,7 +555,7 @@ describe("assistant mail snapshot publication", () => {
     expect(run.queuePublish).toHaveBeenCalledOnce();
     expect(run.eventLog.append).toHaveBeenCalledExactlyOnceWith({
       origin: "system", type: "plugin.assistant-mail.changed",
-      data: { assistantMail: { ...before.assistantMail, changeToken: expect.any(String) } },
+      data: { assistantMail: { ...before.assistantMail, changeToken: expect.any(String) }, wakePhone: true },
     });
     const after = await run.publish();
     expect(after.assistantMail).toEqual({ ...before.assistantMail, changeToken: expect.any(String) });
@@ -515,6 +597,37 @@ it("binds the provisioned Native conversation only after checking the confirmed 
   expect(store.binding()).toMatchObject({ nativeSessionId: "native-second", previousSessionIds: ["local-managed"] });
   expect(store.binding()).not.toHaveProperty("managed");
   expect((await run.publish()).assistantMail?.workspace).toMatchObject({ toolIsolation: "unobserved" });
+});
+
+it.each(["session.command", "turn.start", "turn.steer"] as const)("reserves the assistant receipt key for %s", async method => {
+  const params = { sessionId: "native-first", text: "/compact" };
+  await expect(run.request(method, params, undefined, "assistant-trigger/fixture-batch")).rejects.toMatchObject({ code: "INVALID_PARAMS" });
+  expect(run.broker.runCommand).not.toHaveBeenCalled();
+  expect(run.broker.startTurn).not.toHaveBeenCalled();
+  expect(run.broker.steerTurn).not.toHaveBeenCalled();
+  if (method === "session.command") {
+    await expect(run.request(method, params)).resolves.toMatchObject({ command: { state: "sent" } });
+    expect(run.broker.runCommand).toHaveBeenCalledWith(expect.objectContaining({ idempotencyKey: "mail-key" }));
+  }
+});
+
+it("persists the canonical workspace returned by provisioning, not the path from the request", async () => {
+  const canonical = join(root, "resolved-user-data", "private", "assistant", "workspace");
+  vi.spyOn(run.workspace, "prepare").mockResolvedValueOnce(canonical);
+  await run.request("plugin.assistant-mail.workspace.initialize", { workspacePath: run.workspace.path });
+  expect(run.broker.createSession).toHaveBeenCalledExactlyOnceWith(canonical, "助理", undefined, true);
+  expect(store.binding()?.managed?.path).toBe(canonical);
+});
+
+it("restores the previous workspace token when committing the replacement binding fails", async () => {
+  const workspacePath = run.workspace.path;
+  await run.request("plugin.assistant-mail.workspace.initialize", { workspacePath });
+  const previous = store.binding()!.managed!;
+  const restore = vi.spyOn(run.workspace, "restore");
+  vi.spyOn(service, "setBinding").mockImplementationOnce(() => { throw new Error("SQLite write failed"); });
+  await expect(run.request("plugin.assistant-mail.workspace.initialize", { workspacePath })).rejects.toThrow("SQLite write failed");
+  expect(store.binding()?.managed?.token).toBe(previous.token);
+  expect(restore).toHaveBeenCalledExactlyOnceWith(previous.token, previous.path);
 });
 
 it("rejects manual binding to a previous managed session", async () => {

@@ -5,7 +5,7 @@ import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { ASSISTANT_PROPOSAL_CAPABILITY, BridgeCrypto, BridgeSocket } from "../../packages/protocol/dist/index.js";
 import { remotePreview, sectionCreatePreview, assistantMailPreview, nativePreview, sessionId, originalTitle, userText, replyText } from "./config.mjs";
-import { syncNativeSections } from "./helpers.mjs";
+import { desktopFixtureRequest, syncNativeSections } from "./helpers.mjs";
 
 let nativeFixtureSequence = 0;
 
@@ -362,6 +362,11 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
         if (host.mailOffline || !host.nativeApproval) return;
         void host.send({ kind: "event", event }).catch(error => errors.push(`mail event: ${error.stack}`));
       },
+      onTriggerMessage(nativeEvent) {
+        const event = { ...nativeEvent, seq: ++snapshot.latestSeq };
+        events.push(event);
+        void host.send({ kind: "event", event }).catch(error => errors.push(`assistant trigger: ${error.stack}`));
+      },
       onRequested(request) {
         snapshot.permissions.push(request);
         session.turnState = "waiting";
@@ -478,10 +483,12 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
         case "plugin.assistant-agenda.event.save":
         case "plugin.assistant-agenda.todo.complete":
         case "plugin.assistant-mail.list":
+        case "plugin.assistant-mail.batch":
         case "plugin.assistant-mail.history":
         case "plugin.assistant-mail.read":
         case "plugin.assistant-mail.bind":
         case "plugin.assistant-mail.workspace.initialize":
+        case "plugin.assistant-mail.automatic-delivery.set":
         case "plugin.assistant-mail.account.add":
         case "plugin.assistant-mail.account.update-credential":
         case "plugin.assistant-mail.account.set-enabled":
@@ -492,6 +499,9 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
             if (request.method === "plugin.assistant-mail.read" && host.mailReadFailure) throw new Error("隔离邮件原文读取失败");
             if (request.method === "plugin.assistant-mail.account.set-poll-interval" && host.pollIntervalGate) await host.pollIntervalGate;
             result = await host.nativeApproval.controllerRequest(request);
+            if (request.method === "plugin.assistant-mail.list" && host.partialMailPage) {
+              result.mailPage = { cards: result.mailPage.cards.slice(0, 1) };
+            }
             if (request.method === "plugin.assistant-mail.workspace.initialize") {
               await syncNativeSections(host);
               await host.send({ kind: "snapshot", snapshot });
@@ -738,9 +748,13 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
         case "turn.queue.steer":
         case "turn.queue.cancel": {
           try {
-            const update = await host.nativeApproval.request(request);
-            result = update.result;
-            await host.syncNativeQueue(update);
+            if (assistantMail && request.params.sessionId !== sessionId) {
+              result = await host.nativeApproval.controllerRequest(request);
+            } else {
+              const update = await host.nativeApproval.request(request);
+              result = update.result;
+              await host.syncNativeQueue(update);
+            }
           } catch (failure) {
             error = { code: "NATIVE_QUEUE_REJECTED", message: failure.message };
           }
@@ -828,7 +842,7 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
     return { response, afterAck };
   };
   host.desktopRequest = async (input) => {
-    const { response, afterAck } = await host.handleRequest(input);
+    const { response, afterAck } = await host.handleRequest(desktopFixtureRequest(input));
     await afterAck();
     return response;
   };

@@ -50,6 +50,8 @@ export interface DesktopTransportHost {
   relayHealthy: boolean;
   transportMetrics: BridgeTransportMetrics | undefined;
   registerPendingDevices(): void;
+  setMailWakeRelay?(relay: BridgeTransport | undefined): void;
+  acknowledgeMailWake?(ids: string[]): void;
   checkRelayHealth(endpoint: string): Promise<void>;
   acceptsDevice(deviceId: string): boolean;
   isPairedDevice(deviceId: string): boolean;
@@ -199,6 +201,10 @@ export function connectDesktopTransport(host: DesktopTransportHost): void {
     }),
   }));
   const relay = new TransportRouter(candidates);
+  relay.onState(state => host.setMailWakeRelay?.(state === "connected" ? relay : undefined));
+  relay.onFrame(frame => {
+    if (frame.type === "stored") host.acknowledgeMailWake?.(frame.ids);
+  });
   const socket: BridgeTransport = host.RTCPeerConnectionImpl
     ? new WebRtcTransport({
         relay,
@@ -300,7 +306,7 @@ export async function deliverTransportMessage(
   const method = diagnostics.method(requestMethod);
   const artifactResponse = requestMethod.startsWith("artifact.");
   const previewResponse = artifactResponse || requestMethod === "session.tool.detail";
-  const cacheable = requestMethod !== "artifact.preview" && requestMethod !== "artifact.transfer.read" &&
+  const cacheable = requestMethod !== "plugin.assistant-mail.batch" && requestMethod !== "artifact.preview" && requestMethod !== "artifact.transfer.read" &&
     requestMethod !== "session.tool.detail" && !(requestMethod === "artifact.transfer.open" && message.payload.params.mailAttachment !== undefined);
   const delivered = diagnostics.begin(`rpc.${method}`);
   try {

@@ -11,7 +11,7 @@ export const PROPOSAL_NATIVE_TOOLS = PROPOSAL_TOOLS.map(name => `mcp__${ASSISTAN
 export const ASSISTANT_TOOLS = [
   ...AGENDA_TOOLS, ...PROPOSAL_NATIVE_TOOLS,
   ...fileTools, "Agent", "ToolSearch", "TodoWrite",
-  ...["list_events", "read_event", "read_attachment", "update_analysis", "set_processing_status"].map(name => `mcp__${ASSISTANT_MCP}__mail_${name}`),
+  ...["list_events", "list_unfinished_triggers", "read_event", "read_attachment", "update_analysis", "set_processing_status"].map(name => `mcp__${ASSISTANT_MCP}__mail_${name}`),
 ];
 
 export function isAssistantTool(name: string): boolean {

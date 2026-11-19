@@ -51,9 +51,12 @@ export interface BridgeAssistantMailSnapshot {
   workspace?: BridgeAssistantWorkspace;
   changeToken: string;
   history?: { available: boolean; loading: boolean; failed: boolean };
-  /** The native delivery gate is closed. Enabling delivery belongs to a later capability. */
-  automaticDelivery: false;
+  /** User opt-in. A missing session or invalid policy can still pause submissions. */
+  automaticDelivery: boolean;
+  automaticDeliveryAvailable?: boolean;
 }
+
+export type AssistantTriggerKind = "mail.received" | "todo.due" | "calendar.upcoming" | "schedule.tick";
 
 export function mailAttachmentPreviewKind(mimeType: string): "image" | "pdf" | "text" | undefined {
   if (mimeType === "image/png" || mimeType === "image/jpeg") return "image";
@@ -93,9 +96,12 @@ export interface BridgeMailCard {
   analysis?: { summary?: string; suggestions?: string[]; questions?: string[] };
   /** Correlation supplied by the host, never inferred from mail or transcript text. */
   nativeDelivery: {
-    state: "not-submitted" | "submitting" | "submitted" | "observed" | "uncertain" | "failed";
+    state: "not-submitted" | "pending" | "paused" | "submitting" | "submitted" | "queued" | "observed" | "uncertain" | "failed" | "cancelled";
+    batchId?: string;
+    readyAt?: number;
     nativeSessionId?: string;
     messageId?: string;
+    previousMessageIds?: string[];
     commandId?: string;
   };
 }

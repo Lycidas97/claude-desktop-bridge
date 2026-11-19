@@ -243,6 +243,7 @@ export function nativeItemEventDraft(
       text: receipt?.displayText ?? item.text,
       ...(item.attachments ? { attachments: item.attachments } : {}),
       ...(receipt ? { commandId: receipt.commandId, requestId: receipt.requestId, messageId: receipt.messageId, delivery: receipt.state === "dispatching" ? "host-received" : receipt.state } : {}),
+      ...(receipt?.source ? { source: receipt.source } : {}),
       ...(receipt?.queueSettled ? { queueSettled: true } : {}),
       ...(item.toolName ? { toolName: item.toolName } : {}),
       ...(item.interactivePrompt ? { interactivePrompt: item.interactivePrompt } : {}),

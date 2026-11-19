@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
-import { eventually, openMobileDrawer } from "../helpers.mjs";
+import { desktopFixtureRequest, eventually, openMobileDrawer } from "../helpers.mjs";
 import { openDesktopAssistant } from "./assistant-mail.mjs";
 
 const action = { kind: "calendar.create", sourceId: "local", value: {
@@ -80,7 +80,7 @@ export async function verifyAssistantProposals(page, host, steps, directory, vie
   await editor.getByRole("button", { name: "保存修改", exact: true }).click();
   await detail.getByText("版本 2", { exact: true }).waitFor();
   assert.equal(agenda.listEvents(window).records.length, 0);
-  const stale = await host.nativeApproval.controllerRequest({ kind: "request", requestId: "fixture-stale", method: "assistant.proposal.commit", params: inline }, "desktop").catch(error => error);
+  const stale = await host.nativeApproval.controllerRequest(desktopFixtureRequest({ method: "assistant.proposal.commit", params: inline }), "desktop").catch(error => error);
   assert.equal(stale.code, "CONFLICT");
   assert.equal(agenda.listEvents(window).records.length, 0);
   await detail.getByRole("button", { name: "确认写入", exact: true }).click();

@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
 import { sessionId } from "./config.mjs";
+
+// Mirror DesktopController.dispatchLocal for browser fixtures that bypass Electron IPC.
+export function desktopFixtureRequest(input) {
+  return { kind: "request", requestId: randomUUID(), idempotencyKey: input.idempotencyKey ?? randomUUID(),
+    method: input.method, params: input.params ?? {} };
+}
 
 // Bounded polling is only for observable browser/protocol state, never a fixed
 // sleep intended to hide a race. Unexpected selector or transport errors surface.

@@ -234,6 +234,8 @@ export type BridgeCapability =
   | "plugin.assistant-mail.polling.v1"
   | "plugin.assistant-mail.attachments.v1"
   | "plugin.assistant-mail.history.v1"
+  | "plugin.assistant-mail.triggers.v1"
+  | "plugin.assistant-mail.batches.v1"
   | "system.update.v1";
 
 /**
@@ -959,6 +961,8 @@ export interface BridgeHistoryItem {
   /** Bridge receipt identity for a user message sent through the paired channel. */
   commandId?: string;
   requestId?: string;
+  /** Set by the host from its receipt, not inferred from transcript text. */
+  source?: "assistant-trigger";
   /** Last native delivery stage observed for this exact session and user UUID. */
   delivery?: BridgeDeliveryState;
   /** Desktop observed an idle, drained queue after acknowledging this input. */
@@ -1400,10 +1404,12 @@ export type BridgeMethod =
   | "assistant.proposal.dismiss"
   | "assistant.proposal.replan"
   | "plugin.assistant-mail.list"
+  | "plugin.assistant-mail.batch"
   | "plugin.assistant-mail.history"
   | "plugin.assistant-mail.read"
   | "plugin.assistant-mail.bind"
   | "plugin.assistant-mail.workspace.initialize"
+  | "plugin.assistant-mail.automatic-delivery.set"
   | "plugin.assistant-mail.account.add"
   | "plugin.assistant-mail.account.update-credential"
   | "plugin.assistant-mail.account.set-enabled"
@@ -1439,6 +1445,7 @@ export type BridgeEventType =
   | "assistant.proposal.receipt"
   | "plugin.assistant-mail.changed"
   | "plugin.assistant-mail.tool-invoked"
+  | "plugin.assistant-mail.compact-hook"
   | "session.created"
   | "session.observed"
   | "session.ownership"

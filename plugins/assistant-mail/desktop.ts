@@ -61,7 +61,7 @@ export class AssistantMailService extends EventEmitter {
     this.createClient = options.createClient ?? ((config) => new ImapFlow(config));
   }
 
-  async initialize(extendStore?: (database: import("node:sqlite").DatabaseSync) => void): Promise<void> {
+  async initialize(extendStore?: (database: import("node:sqlite").DatabaseSync) => void, startReceivers = true): Promise<void> {
     await this.store.initialize(extendStore);
     this.mimeBackfill = this.store.backfillMimeProjections(this.mimeBackfillAbort.signal)
       .then(updated => { if (updated) this.emit("changed", true); })
@@ -89,6 +89,10 @@ export class AssistantMailService extends EventEmitter {
       return;
     }
     for (const config of configs) this.addAccount(accountKey(config), config);
+    if (startReceivers) this.startReceivers();
+  }
+
+  startReceivers(): void {
     for (const { config, receiver } of this.accounts.values()) if (config.enabled) receiver.start();
   }
 
@@ -228,8 +232,10 @@ export class AssistantMailService extends EventEmitter {
     if (receivers.map(receiver => receiver.requestOlder()).some(Boolean)) this.emit("changed");
   }
 
+  get triggers() { return this.store.triggers; }
   binding(): AssistantBinding | undefined { return this.store.binding(); }
-  setBinding(binding: AssistantBinding): void { this.store.setBinding(binding); this.emit("changed"); }
+  setBinding(binding: AssistantBinding): void { this.store.setBinding(binding); this.emit("changed", true); }
+  setAutomaticDelivery(enabled: boolean): void { this.store.setAutomaticDelivery(enabled); this.emit("changed", true); }
   page(...options: Parameters<AssistantMailStore["page"]>): ReturnType<AssistantMailStore["page"]> { return this.store.page(...options); }
   read(mailRefId: string): ReturnType<AssistantMailStore["read"]> { return this.store.read(mailRefId); }
   event(mailRefId: string) { return this.store.event(mailRefId); }
@@ -263,7 +269,7 @@ export class AssistantMailService extends EventEmitter {
   }
   updateAnalysis(mailRefId: string, analysis: MailAnalysis) {
     const event = this.store.updateAnalysis(mailRefId, analysis);
-    if (event) this.emit("changed", true);
+    if (event) this.emit("changed", true, true);
     return event;
   }
   setProcessingStatus(mailRefId: string, status: MailProcessingStatus) {

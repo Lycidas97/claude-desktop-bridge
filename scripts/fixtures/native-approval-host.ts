@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
-  BridgeAssistantMailSnapshot, BridgeEffort, BridgePendingPrompt, BridgePermissionInfo, BridgePermissionResolution, BridgePullRequest, BridgeRequest, BridgeSDKPermissionMode,
+  BridgeAssistantMailSnapshot, BridgeEffort, BridgeEvent, BridgePendingPrompt, BridgePermissionInfo, BridgePermissionResolution, BridgePullRequest, BridgeRequest, BridgeSDKPermissionMode,
 } from "../../packages/protocol/src/index.js";
 import { ClaudeDesktopBridge } from "../../apps/desktop/src/claude/claude-desktop-bridge.js";
 import { InspectorDisconnectedError } from "../../apps/desktop/src/claude/claude-desktop-inspector.js";
@@ -51,6 +51,7 @@ export async function startNativeApprovalHost(options: {
   assistantMail?: boolean;
   initialMailHistory?: number;
   onMailChanged?(snapshot: BridgeAssistantMailSnapshot): void;
+  onTriggerMessage?(event: BridgeEvent): void;
   onAgendaChanged?(snapshot: import("../../packages/protocol/src/index.js").BridgeAgendaSnapshot): void;
   onProposalsChanged?(snapshot: import("../../packages/protocol/src/index.js").BridgeProposalSnapshot): void;
 }) {
@@ -251,10 +252,19 @@ export async function startNativeApprovalHost(options: {
           messages.push({ type: "user", uuid: args[7], timestamp: Date.now(), message: { content: args[1] } });
           return reportQueued ? { delivered: true, queued: true } : { delivered: true };
         }
+        if (textArg.startsWith("助理事件批次 ")) {
+          if (target.turnRunning) {
+            assert.equal(args[5], "later");
+            queued.add(String(args[7]));
+            return { delivered: true, queued: true };
+          }
+          inspector.emit("event", { type: "message", sessionId: target.sessionId,
+            message: { type: "user", uuid: args[7], timestamp: Date.now(), message: { content: args[1] } } });
+        }
         return { delivered: true };
       }
       if (["promoteQueuedMessage", "sendSteeredNow", "cancelQueuedMessage"].includes(method)) {
-        assert.equal(args[0], options.sessionId);
+        assert.ok(nativeSessions.some(session => session.sessionId === args[0]));
         if (queueGate) await queueGate;
         const accepted = queued.has(String(args[1])) && queueResults.get(method) !== false;
         if (accepted && method === "cancelQueuedMessage") queued.delete(String(args[1]));
@@ -407,10 +417,17 @@ export async function startNativeApprovalHost(options: {
         allProjects: () => broker.listProjects(),
         canStartTurn: () => broker.capabilities().includes("turn.start"),
         onChanged: snapshot => options.onMailChanged?.(snapshot),
-        broker,
+        broker, receipts: state,
       }, workspace)
     : undefined;
   assistantMailCoordinator?.start();
+  assistantMailCoordinator?.startTriggers();
+  eventLog.on("event", event => {
+    assistantMailCoordinator?.observeDelivery(event);
+    if ((event.type === "user.message.accepted" || event.type === "message.delivery") && event.data.source === "assistant-trigger") {
+      options.onTriggerMessage?.(event);
+    }
+  });
   const mailSnapshot = () => assistantMailCoordinator?.snapshot();
   const controller = createControllerFixture({
     broker, evidence, eventLog, assistantMailCoordinator, assistantAgenda: assistantMail?.agenda, proposals,
@@ -561,6 +578,11 @@ export async function startNativeApprovalHost(options: {
     session: () => structuredClone(broker.session(options.sessionId)!),
     receipts: () => state.listNativeDesktopReceipts(),
     queuedReply(enabled: boolean) { reportQueued = enabled; },
+    setSessionBusy(sessionId: string, busy: boolean) {
+      const target = nativeSessions.find(session => session.sessionId === sessionId);
+      assert.ok(target);
+      target.turnRunning = busy;
+    },
     queueResult(method: "promoteQueuedMessage" | "sendSteeredNow" | "cancelQueuedMessage", accepted: boolean) {
       queueResults.set(method, accepted);
     },

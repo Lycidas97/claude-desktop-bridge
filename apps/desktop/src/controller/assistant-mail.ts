@@ -2,6 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { ARTIFACT_MAX_BYTES, ASSISTANT_WORKSPACE_POLICY, isMailPollInterval, mailAttachmentPreviewKind } from "@bridge/protocol";
 import type {
   BridgeAssistantMailSnapshot,
+  BridgeEvent,
   BridgeMailAttachmentRef,
   BridgeMailCard,
   BridgeMailDetail,
@@ -15,6 +16,8 @@ import type { EvidenceManager } from "../evidence/evidence-manager.js";
 import type { ClaudeDesktopBridge } from "../claude/claude-desktop-bridge.js";
 import { isAssistantTool, type WorkspaceProvisioner } from "./assistant-workspace.js";
 import { BridgeRequestError, stringParam } from "./request-error.js";
+import { EventTriggerDispatcher } from "./event-trigger-dispatcher.js";
+import type { ConversationStateStore } from "./conversation-state-store.js";
 
 export const ASSISTANT_MAIL_CAPABILITIES = [
   "plugin.assistant-mail.v1",
@@ -26,18 +29,19 @@ export const ASSISTANT_MAIL_CAPABILITIES = [
 ] as const;
 
 const managedHistoryMethods = new Set([
-  "session.open", "session.history", "session.tool.detail", "session.configuration", "session.permissions",
+  "session.open", "session.history", "session.tool.detail", "session.configuration", "session.permissions", "plugin.assistant-mail.batch",
   "session.archive", "session.delete", "turn.interrupt", "turn.queue.cancel", "prompt.list",
   "evidence.list", "artifact.preview", "artifact.transfer.open", "artifact.transfer.read", "artifact.transfer.close",
   "file.stat", "file.transfer.open", "file.transfer.read", "file.transfer.close",
 ]);
 
 export interface AssistantMailCoordinatorHost {
-  broker?: Pick<ClaudeDesktopBridge, "canProvisionAssistantWorkspace" | "createSession" | "configureSession" | "session">;
+  broker?: Pick<ClaudeDesktopBridge, "canProvisionAssistantWorkspace" | "createSession" | "configureSession" | "session" | "startTurn" | "resolveUncertainDelivery" | "readNativeSessionIdentity">;
+  receipts?: ConversationStateStore | undefined;
   allSessions(): BridgeSessionInfo[];
   allProjects(): BridgeProjectInfo[];
   canStartTurn(): boolean;
-  onChanged?(snapshot: BridgeAssistantMailSnapshot): void;
+  onChanged?(snapshot: BridgeAssistantMailSnapshot, wakePhone: boolean): void;
 }
 
 export function assistantMailSnapshot(
@@ -63,7 +67,7 @@ export function assistantMailSnapshot(
     credentialsSupported,
     ...(history.available || history.loading || history.failed ? { history } : {}),
     ...(accountConfigError ? { accountConfigError } : {}),
-    automaticDelivery: false,
+    automaticDelivery: stored?.managed?.automaticDelivery === true,
     changeToken,
   };
 }
@@ -83,18 +87,23 @@ function sliceSurrogateSafeCodeUnits(text: string, maxUnits: number): string {
   return text.slice(0, safeEnd);
 }
 
-export function assistantMailPage(mail: AssistantMailService, options: Parameters<AssistantMailService["page"]>[0], includeHistory: boolean): BridgeMailPage {
+function projectMailCard(event: NonNullable<ReturnType<AssistantMailService["event"]>>, nativeDelivery: BridgeMailCard["nativeDelivery"] = { state: "not-submitted" }): BridgeMailCard {
+  return {
+    seq: event.seq, mailRefId: event.mailRefId, accountKey: event.accountKey, mailbox: event.mailbox,
+    subject: event.subject, from: event.from, receivedAt: event.receivedAt, recordedAt: event.recordedAt,
+    processingStatus: event.processingStatus, preview: event.preview,
+    ...(event.analysis ? { analysis: event.analysis } : {}),
+    ...(event.previewError ? { previewError: event.previewError } : {}),
+    ...(event.attachmentCount ? { attachments: event.attachments.slice(0, 32), attachmentCount: event.attachmentCount } : {}),
+    nativeDelivery,
+  };
+}
+
+export function assistantMailPage(mail: AssistantMailService, options: Parameters<AssistantMailService["page"]>[0], includeHistory: boolean,
+  delivery?: (mailRefId: string) => BridgeMailCard["nativeDelivery"] | undefined): BridgeMailPage {
   const page = mail.page(options, includeHistory);
   return {
-    cards: page.events.map(event => ({
-      seq: event.seq, mailRefId: event.mailRefId, accountKey: event.accountKey, mailbox: event.mailbox,
-      subject: event.subject, from: event.from, receivedAt: event.receivedAt, recordedAt: event.recordedAt,
-      processingStatus: event.processingStatus, preview: event.preview,
-      ...(event.analysis ? { analysis: event.analysis } : {}),
-      ...(event.previewError ? { previewError: event.previewError } : {}),
-      ...(event.attachmentCount ? { attachments: event.attachments, attachmentCount: event.attachmentCount } : {}),
-      nativeDelivery: { state: "not-submitted" },
-    } satisfies BridgeMailCard)),
+    cards: page.events.map(event => projectMailCard(event, delivery?.(event.mailRefId))),
     ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
   };
 }
@@ -107,11 +116,17 @@ export class AssistantMailCoordinator {
   private initializingWorkspace = false;
   private toolCatalog: { sessionId: string; unexpectedTools: string[] } | undefined;
   private readonly unconfirmedSessions = new Set<string>();
-  private readonly onServiceChanged = (mailDataChanged?: boolean) => {
+  private dispatcher: EventTriggerDispatcher | undefined;
+  private confirmReady = false;
+  private readonly publishMailChange = (mailDataChanged = false, wakePhone = false) => {
     if (mailDataChanged) this.changeToken = randomUUID();
-    this.host.onChanged?.(this.snapshot());
+    this.host.onChanged?.(this.snapshot(), wakePhone);
   };
-  private readonly onMailRecorded = () => this.onServiceChanged(true);
+  private readonly onServiceChanged = (mailDataChanged?: boolean, wakePhone?: boolean) => {
+    this.publishMailChange(mailDataChanged, wakePhone);
+    this.dispatcher?.wake();
+  };
+  private readonly onMailRecorded = () => this.onServiceChanged(true, true);
 
   constructor(
     private readonly mail: AssistantMailService,
@@ -120,10 +135,63 @@ export class AssistantMailCoordinator {
   ) {}
 
   capabilities() {
-    return this.workspace && this.host.broker?.canProvisionAssistantWorkspace()
-      ? [...ASSISTANT_MAIL_CAPABILITIES, "plugin.assistant-mail.workspace.v1" as const]
-      : ASSISTANT_MAIL_CAPABILITIES;
+    return [
+      ...ASSISTANT_MAIL_CAPABILITIES,
+      ...(this.workspace && this.host.broker?.canProvisionAssistantWorkspace() ? ["plugin.assistant-mail.workspace.v1"] as const : []),
+      ...(this.dispatcher ? ["plugin.assistant-mail.triggers.v1", "plugin.assistant-mail.batches.v1"] as const : []),
+    ];
   }
+
+  private eligibleTarget(): string | undefined {
+    const binding = this.mail.binding();
+    const sessionId = binding?.nativeSessionId;
+    if (!sessionId || binding.managed?.policy !== ASSISTANT_WORKSPACE_POLICY || !this.workspace ||
+      this.workspace.repairFailed || this.initializingWorkspace || !this.host.canStartTurn() ||
+      (this.toolCatalog?.sessionId === sessionId && this.toolCatalog.unexpectedTools.length)) return undefined;
+    const session = this.host.broker?.session(sessionId);
+    if (session && !session.archivedAt && session.nativePermissionMode === "dontAsk" &&
+      session.cwd === binding.managed.path && this.workspace.matches(session.cwd)) return sessionId;
+    return undefined;
+  }
+
+  async readManagedNativeSession(sessionId: string) {
+    const binding = this.mail.binding();
+    if (binding?.nativeSessionId !== sessionId || !binding.managed) return undefined;
+    const native = await this.host.broker?.readNativeSessionIdentity(sessionId);
+    return native && native.cwd === binding.managed.path && !native.archived && native.permissionMode === "dontAsk" ? native : undefined;
+  }
+
+  compactContext(sessionId: string, event: "PreCompact" | "PostCompact" | "SessionStart"): string | undefined {
+    if (event === "PostCompact") return undefined;
+    const { refs, nextCursor } = this.mail.triggers.unfinished(sessionId);
+    return [
+      ...(event === "PreCompact" ? ["保留当前托管绑定、未结批次与待批提案的宿主标识。不要将外部邮件标题、发件人、正文或附件名写入摘要。"] : []),
+      "绑定：当前托管会话。未结事件（批次、类型、引用）：",
+      ...refs.map(({ batchId, kind, eventId }) => `${batchId} ${kind} ${eventId}`),
+      ...(nextCursor === undefined ? [] : [`还有更早的未结事件。调用 mail.list_unfinished_triggers({"cursor":${nextCursor}}) 继续读取。`]),
+    ].join("\n");
+  }
+
+  startTriggers(): void {
+    const { receipts, broker } = this.host;
+    if (!this.workspace || !receipts || !broker) return;
+    this.dispatcher = new EventTriggerDispatcher(this.mail.triggers, receipts, broker,
+      () => this.mail.binding()?.managed?.automaticDelivery ? this.eligibleTarget() : undefined,
+      () => this.host.canStartTurn(),
+      sessionId => this.readManagedNativeSession(sessionId),
+      () => this.publishMailChange(true));
+    this.runtimeChanged(true);
+  }
+
+  runtimeChanged(resume = false): void {
+    if (!this.dispatcher) return;
+    const sessionId = this.mail.binding()?.nativeSessionId;
+    const ready = this.host.canStartTurn() && Boolean(sessionId && this.host.broker?.session(sessionId));
+    this.dispatcher.wake(resume || (ready && !this.confirmReady));
+    this.confirmReady = ready;
+  }
+
+  observeDelivery(event: BridgeEvent): void { this.dispatcher?.observe(event); }
 
   observeToolCatalog(sessionId: string, tools: string[]): void {
     const binding = this.mail.binding();
@@ -143,6 +211,8 @@ export class AssistantMailCoordinator {
   close(): void {
     if (!this.started) return;
     this.started = false;
+    this.dispatcher?.close();
+    this.dispatcher = undefined;
     this.mail.off("mail", this.onMailRecorded);
     this.mail.off("changed", this.onServiceChanged);
   }
@@ -174,7 +244,8 @@ export class AssistantMailCoordinator {
     const nativeSessionId = binding?.managed?.policy === ASSISTANT_WORKSPACE_POLICY ? binding.nativeSessionId : null;
     const catalog = nativeSessionId && this.toolCatalog?.sessionId === nativeSessionId ? this.toolCatalog : undefined;
     const repairFailed = Boolean(nativeSessionId && this.workspace.repairFailed);
-    return { ...snapshot, ...(repairFailed ? { bindingState: "unavailable" as const } : {}), workspace: {
+    return { ...snapshot, ...(this.dispatcher ? { automaticDeliveryAvailable: Boolean(this.eligibleTarget()) } : {}),
+      ...(repairFailed ? { bindingState: "unavailable" as const } : {}), workspace: {
       path: this.workspace.path,
       ...(repairFailed ? { repairFailed: true as const } : {}),
       policy: ASSISTANT_WORKSPACE_POLICY,
@@ -215,12 +286,13 @@ export class AssistantMailCoordinator {
       const session = await broker.createSession(path, "助理", undefined, true);
       this.unconfirmedSessions.add(session.sessionId);
       const configured = await broker.configureSession({ sessionId: session.sessionId, permissionMode: "dontAsk" });
-      const observed = broker.session(session.sessionId);
-      if (configured.nativePermissionMode !== "dontAsk" || observed?.cwd !== path) {
+      const confirmed = broker.session(session.sessionId);
+      if (configured.nativePermissionMode !== "dontAsk" || confirmed?.cwd !== path) {
         throw new BridgeRequestError("ASSISTANT_POLICY_UNCONFIRMED", "Claude Desktop 未确认托管工作区和会话权限。");
       }
-      this.unconfirmedSessions.delete(session.sessionId);
-      this.bindSession(observed, { path, token, policy: ASSISTANT_WORKSPACE_POLICY });
+      this.unconfirmedSessions.delete(confirmed.sessionId);
+      this.initializingWorkspace = false;
+      this.bindSession(confirmed, { path, token, policy: ASSISTANT_WORKSPACE_POLICY });
     } catch (error) {
       if (previous) {
         await workspace.restore(previous.token, previous.path);
@@ -292,7 +364,38 @@ export class AssistantMailCoordinator {
       if (includeHistory !== undefined && typeof includeHistory !== "boolean") {
         throw new BridgeRequestError("INVALID_PARAMS", "请选择是否包含历史邮件。");
       }
-      return { mailPage: assistantMailPage(this.mail, pageParams, includeHistory === true) };
+      const binding = this.mail.binding();
+      const enabledSessionId = binding?.managed?.automaticDelivery ? binding.nativeSessionId ?? undefined : undefined;
+      return { mailPage: assistantMailPage(this.mail, pageParams, includeHistory === true, this.dispatcher && (mailRefId => {
+        const batch = this.mail.triggers.batchForEvent("mail.received", mailRefId);
+        return batch ? this.dispatcher!.project(batch, enabledSessionId) : undefined;
+      })) };
+    }
+    if (method === "plugin.assistant-mail.batch") {
+      const sessionId = stringParam(params, "sessionId")!;
+      const batchId = stringParam(params, "batchId")!;
+      this.assertSessionRequest(sessionId, method);
+      if (!this.dispatcher) throw new BridgeRequestError("UNSUPPORTED", "当前电脑不支持助理批次读取。");
+      const batch = this.mail.triggers.batch(batchId);
+      if (batch?.nativeSessionId !== sessionId) throw new BridgeRequestError("NOT_FOUND", "此会话没有该助理批次。");
+      const cursor = stringParam(params, "cursor", false);
+      if (cursor !== undefined && !/^(?:[1-9]|[12]\d|3[01])$/u.test(cursor)) throw new BridgeRequestError("INVALID_PARAMS", "批次游标无效。");
+      const binding = this.mail.binding();
+      const delivery = this.dispatcher.project(batch, binding?.managed?.automaticDelivery ? binding.nativeSessionId ?? undefined : undefined);
+      const refs = this.mail.triggers.refs(batchId);
+      const cards: BridgeMailCard[] = [];
+      let bytes = 0;
+      for (let index = Number(cursor ?? 0); index < refs.length; index++) {
+        const ref = refs[index]!;
+        const event = ref.kind === "mail.received" ? this.mail.event(ref.eventId) : undefined;
+        if (!event) continue;
+        const card = projectMailCard(event, delivery);
+        bytes += Buffer.byteLength(JSON.stringify(card));
+        // Always return at least one card, including a large but schema-valid analysis.
+        if (cards.length && bytes > 512 * 1024) return { mailPage: { cards, nextCursor: String(index) } satisfies BridgeMailPage };
+        cards.push(card);
+      }
+      return { mailPage: { cards } satisfies BridgeMailPage };
     }
     if (method === "plugin.assistant-mail.history") {
       const { client: _client, ...input } = params;
@@ -327,6 +430,15 @@ export class AssistantMailCoordinator {
       }
     } else if (method === "plugin.assistant-mail.workspace.initialize") {
       await this.initializeWorkspace(stringParam(params, "workspacePath")!);
+    } else if (method === "plugin.assistant-mail.automatic-delivery.set") {
+      const { enabled } = params;
+      const sessionId = stringParam(params, "sessionId")!;
+      if (typeof enabled !== "boolean") throw new BridgeRequestError("INVALID_PARAMS", "请选择是否启用主动助理。");
+      const binding = this.mail.binding();
+      if (!this.dispatcher || !binding?.managed || binding.nativeSessionId !== sessionId || (enabled && this.eligibleTarget() !== sessionId)) {
+        throw new BridgeRequestError("INVALID_TARGET", "当前托管会话不可启用主动助理。请检查会话和权限模式。");
+      }
+      this.mail.setAutomaticDelivery(enabled);
     } else if (method.startsWith("plugin.assistant-mail.account.")) {
       if (!this.mail.status().credentialsSupported) {
         throw new BridgeRequestError("UNSUPPORTED", "当前电脑不支持存储邮箱凭据。");

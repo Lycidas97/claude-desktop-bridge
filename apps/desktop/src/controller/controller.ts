@@ -102,6 +102,8 @@ export class DesktopController extends EventEmitter {
   private transportMetrics: BridgeTransportMetrics | undefined;
   private relayHealthy = false;
   readonly assistantMailCoordinator: AssistantMailCoordinator | undefined;
+  private mailWakeRelay: BridgeTransport | undefined;
+  private readonly mailWakes = new Map<string, { event: BridgeEvent; flight?: { eventId: string; envelopeId?: string } }>();
   private lastPublishedSessionKey = "";
   private lastPublishedSessions = new Map<string, string>();
   private lastPublishedPermissions = new Map<string, BridgePermissionInfo>();
@@ -137,11 +139,12 @@ export class DesktopController extends EventEmitter {
           allSessions: () => this.allSessions(),
           allProjects: () => this.allProjects(),
           canStartTurn: () => this.broker.capabilities().includes("turn.start"),
-          onChanged: (snapshot) => {
+          receipts: this.conversationState,
+          onChanged: (snapshot, wakePhone) => {
             void this.eventLog.append({
               origin: "system",
               type: "plugin.assistant-mail.changed",
-              data: { assistantMail: snapshot },
+              data: { assistantMail: snapshot, ...(wakePhone ? { wakePhone: true } : {}) },
             });
             this.queuePublish();
           },
@@ -182,6 +185,7 @@ export class DesktopController extends EventEmitter {
     this.eventLog.on("event", (record: BridgeEvent) => {
       const event = summarizeEvidenceEvent(record);
       this.emit("event", event);
+      this.assistantMailCoordinator?.observeDelivery(event);
       if (
         event.type === "session.desktop-registration" ||
         (event.origin === "claude-desktop" && event.type === "evidence.updated")
@@ -189,10 +193,20 @@ export class DesktopController extends EventEmitter {
         this.queuePublish();
         return;
       }
-      const persistOffline = event.type === "permission.requested" || event.type === "question.requested" ||
-        event.type === "turn.completed" || event.type === "turn.failed" ||
-        (event.type === "assistant.proposal.changed" && event.data.wake === true);
-      void this.broadcast({ kind: "event", event }, !persistOffline);
+      if (event.type === "plugin.assistant-mail.changed" && event.data.wakePhone === true) {
+        for (const device of this.config?.devices ?? []) {
+          if (!device.pairedAt || device.revokedAt) continue;
+          const pending = this.mailWakes.get(device.deviceId);
+          if (pending) pending.event = event;
+          else this.mailWakes.set(device.deviceId, { event });
+        }
+        this.flushMailWakes();
+      } else {
+        const persistOffline = event.type === "permission.requested" || event.type === "question.requested" ||
+          event.type === "turn.completed" || event.type === "turn.failed" ||
+          (event.type === "assistant.proposal.changed" && event.data.wake === true);
+        void this.broadcast({ kind: "event", event }, !persistOffline);
+      }
       if (event.type !== "runtime.updated" || event.itemId !== "session:subagent-activity") this.queuePublish();
     });
     this.assistantMailCoordinator?.start();
@@ -203,10 +217,12 @@ export class DesktopController extends EventEmitter {
     });
     this.broker.on("changed", () => {
       this.assistantMailCoordinator?.pauseIfArchived();
+      this.assistantMailCoordinator?.runtimeChanged();
       this.queuePublish();
     });
     await this.broker.initialize();
     await this.connect();
+    this.assistantMailCoordinator?.startTriggers();
     if (!this.config.devices.some((device) => (
       !device.revokedAt && (Boolean(device.pairedAt) || device.expiresAt > Date.now())
     ))) {
@@ -782,6 +798,41 @@ export class DesktopController extends EventEmitter {
   private async broadcast(payload: BridgePayload, temporary = false): Promise<void> {
     const devices = this.config?.devices.filter((device) => device.pairedAt && !device.revokedAt) ?? [];
     await Promise.allSettled(devices.map((device) => this.sendToDevice(payload, device.deviceId, undefined, temporary)));
+  }
+
+  private setMailWakeRelay(relay: BridgeTransport | undefined): void {
+    if (this.mailWakeRelay === relay) return;
+    this.mailWakeRelay = relay;
+    for (const pending of this.mailWakes.values()) delete pending.flight;
+    this.flushMailWakes();
+  }
+
+  private flushMailWakes(): void {
+    const relay = this.mailWakeRelay;
+    if (!relay) return;
+    for (const [deviceId, pending] of this.mailWakes) {
+      if (!this.isPairedDevice(deviceId)) {
+        this.mailWakes.delete(deviceId);
+        continue;
+      }
+      if (pending.flight) continue;
+      const flight: { eventId: string; envelopeId?: string } = { eventId: pending.event.eventId };
+      pending.flight = flight;
+      void sendPayloadToDevice(relay, "connected", this.deviceCryptos, this.deflateDevices, { kind: "event", event: pending.event }, deviceId)
+        .then(envelopeId => { flight.envelopeId = envelopeId; }, () => {
+          if (pending.flight === flight) delete pending.flight;
+        });
+    }
+  }
+
+  private acknowledgeMailWake(ids: string[]): void {
+    for (const [deviceId, pending] of this.mailWakes) {
+      const flight = pending.flight;
+      if (!flight?.envelopeId || !ids.includes(flight.envelopeId)) continue;
+      if (pending.event.eventId === flight.eventId) this.mailWakes.delete(deviceId);
+      else delete pending.flight;
+    }
+    this.flushMailWakes();
   }
 
   private registerPendingDevices(): void {

@@ -61,6 +61,18 @@ it("writes the exact project policy and bundled MCP launch, preserving templates
   }
 });
 
+it.each([false, true])("upgrades a generated helper without proposals (has trigger tool: %s)", async hasTriggerTool => {
+  const provisioner = new WorkspaceProvisioner(options);
+  const workspace = await provisioner.prepare("session-token");
+  const helper = join(workspace, ".claude", "agents", "assistant-helper.md");
+  const current = await readFile(helper, "utf8");
+  const previous = current.replace(/mcp__assistant-mail__proposal_\w+, /gu, "");
+  await writeFile(helper, hasTriggerTool ? previous : previous.replace("mcp__assistant-mail__mail_list_unfinished_triggers, ", ""));
+
+  await provisioner.restore("session-token", workspace);
+  expect(await readFile(helper, "utf8")).toBe(current);
+});
+
 it.each(["file", "link"])("restores the workspace without taking over an existing runner %s", async kind => {
   const provisioner = new WorkspaceProvisioner(options);
   const agents = join(provisioner.path, ".claude", "agents");

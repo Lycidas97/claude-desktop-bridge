@@ -1,4 +1,4 @@
-import type { BridgeEvidenceBundle, BridgeMailCard } from "@bridge/protocol";
+import type { BridgeActionProposal, BridgeEvidenceBundle, BridgeMailCard } from "@bridge/protocol";
 import { describe, expect, it } from "vitest";
 import { conversationTimeline, type ConversationItem } from "./conversation-timeline.js";
 
@@ -47,6 +47,62 @@ describe("mail conversation timeline", () => {
     expect(conversationTimeline([item], [], [mail])).toEqual([
       { kind: "mail", card: mail },
       { kind: "message", item },
+    ]);
+  });
+
+  it("replaces old and current native UUIDs with one batch without merging each mail's business state", () => {
+    const nativeDelivery = { state: "observed" as const, batchId: "batch", nativeSessionId: "native-session",
+      messageId: "native-message", previousMessageIds: ["before-rekey"] };
+    const first = card({ nativeDelivery });
+    const second = card({ nativeDelivery, seq: 2, mailRefId: "second", processingStatus: "processed" });
+    const alias = message({ id: "before-rekey", createdAt: 1 });
+    const other = message({ sessionId: "other-session", createdAt: 10 });
+    const native = message();
+    const batch = { kind: "assistant-trigger-batch", batchId: "batch", cards: [first, second] };
+    expect(conversationTimeline([alias, other, native], [], [second, first])).toEqual([
+      { kind: "message", item: other }, { ...batch, nativeMessage: native },
+    ]);
+    expect(conversationTimeline([alias], [], [first, second])).toEqual([{ ...batch, nativeMessage: alias }]);
+    expect(conversationTimeline([], [], [first, second])).toEqual([batch]);
+  });
+
+  it("keeps a proposal inline after a rekeyed trigger and orders late mail around it", () => {
+    const trigger = card({ nativeDelivery: { state: "observed", batchId: "batch", nativeSessionId: "native-session",
+      messageId: "native-message", previousMessageIds: ["before-rekey"] } });
+    const alias = message({ id: "before-rekey", createdAt: 10 });
+    const native = message();
+    const tool = message({ id: "draft-tool", role: "tool", createdAt: 30 });
+    const proposal: BridgeActionProposal = {
+      proposalId: "draft", revision: 1, payloadHash: "a".repeat(64), sessionId: native.sessionId,
+      action: { kind: "todo.create", sourceId: "local", value: { title: "Review email", status: "pending" } },
+      sourceId: "local", sourceLabel: "Local", state: "pending",
+    };
+    const receipt = message({ id: "draft-receipt", role: "tool", createdAt: 31,
+      proposalReceipt: { toolUseId: tool.id, proposalId: proposal.proposalId, revision: proposal.revision, payloadHash: proposal.payloadHash } });
+    const mail = card({ seq: 2, mailRefId: "late-mail", recordedAt: 25 });
+
+    expect(conversationTimeline([alias, native, tool, receipt], [], [trigger, mail], new Map([[tool.id, proposal]]))).toEqual([
+      { kind: "assistant-trigger-batch", batchId: "batch", cards: [trigger], nativeMessage: native },
+      { kind: "mail", card: mail },
+      { kind: "proposal", proposal, createdAt: tool.createdAt },
+    ]);
+  });
+
+  it("recognizes a Native trigger when the inbox has not loaded any of its cards", () => {
+    const native = message({ turnId: "native-message", source: "assistant-trigger", requestId: "batch", delivery: "session-received" });
+    const alias = message({ ...native, id: "before-rekey" });
+    const manual = message({ id: "manual", requestId: "batch", text: native.text });
+    expect(conversationTimeline([alias, native, manual], [], [])).toEqual([
+      { kind: "assistant-trigger-batch", batchId: "batch", cards: [], nativeMessage: native },
+      { kind: "message", item: manual },
+    ]);
+  });
+
+  it("joins a live Native trigger to its batch before the mail list receives the message UUID", () => {
+    const native = message({ source: "assistant-trigger", requestId: "batch", delivery: "session-received" });
+    const first = card({ nativeDelivery: { state: "submitting", batchId: "batch", nativeSessionId: native.sessionId } });
+    expect(conversationTimeline([native], [], [first])).toEqual([
+      { kind: "assistant-trigger-batch", batchId: "batch", cards: [first], nativeMessage: native },
     ]);
   });
 

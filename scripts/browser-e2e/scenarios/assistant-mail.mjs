@@ -409,9 +409,18 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await accounts.getByText("已连接（IDLE）", { exact: true }).waitFor();
   await extraAccount.getByText("轮询中", { exact: true }).waitFor();
   const { accountKey } = host.snapshot.assistantMail.accounts.find(account => account.user === extraUser);
-  const pollInterval = extraAccount.getByRole("combobox", { name: /^轮询间隔/u });
+  const pollInterval = extraAccount.getByRole("combobox", { name: /^备用轮询间隔/u });
   assert.equal(await pollInterval.inputValue(), "60");
-  await pollInterval.selectOption("off");
+  const allowPollingUpdate = Promise.withResolvers();
+  host.pollIntervalGate = allowPollingUpdate.promise;
+  try {
+    await pollInterval.selectOption("off");
+    await eventually(() => pollInterval.isDisabled(), true, "The interval control is disabled during the settings request");
+    assert.equal(await pollInterval.inputValue(), "off", "The pending selection is visible before the host acknowledges it");
+  } finally {
+    host.pollIntervalGate = undefined;
+    allowPollingUpdate.resolve();
+  }
   await extraAccount.getByText("不支持持续收件，轮询已关闭", { exact: true }).waitFor();
   await pollInterval.selectOption("30");
   await extraAccount.getByText("轮询中", { exact: true }).waitFor();

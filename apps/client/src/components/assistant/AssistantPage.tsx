@@ -233,6 +233,7 @@ function MailAccounts({ accounts, configUnavailable, credentialsSupported, onlin
   const headingId = useId();
   const [action, setAction] = useState<{ kind: "add" } | { kind: "edit" | "remove"; accountKey: string }>();
   const [busy, setBusy] = useState(false);
+  const [pendingInterval, setPendingInterval] = useState<{ accountKey: string; value: string }>();
   const [error, setError] = useState("");
   const disabled = !online || configUnavailable || !credentialsSupported || busy;
   const editedAccount = action?.kind === "edit" ? accounts.find(account => account.accountKey === action.accountKey) : undefined;
@@ -247,6 +248,7 @@ function MailAccounts({ accounts, configUnavailable, credentialsSupported, onlin
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "邮箱账号设置失败");
     } finally {
+      setPendingInterval(undefined);
       setBusy(false);
     }
   }
@@ -295,11 +297,12 @@ function MailAccounts({ accounts, configUnavailable, credentialsSupported, onlin
           <button type="button" className="assistant-session-link assistant-remove" aria-label={`移除：${account.user}`} disabled={disabled} onClick={() => { setError(""); setAction({ kind: "remove", accountKey: account.accountKey }); }}>移除</button>
         </div>
         {supportsPolling && account.pollIntervalSeconds !== undefined && <label className="assistant-account-polling">
-          轮询间隔
-          <select value={account.pollIntervalSeconds ?? "off"} disabled={disabled}
-            aria-label={`轮询间隔：${account.user} (${account.host}:${account.port})`}
+          备用轮询间隔
+          <select value={pendingInterval?.accountKey === account.accountKey ? pendingInterval.value : account.pollIntervalSeconds ?? "off"} disabled={disabled}
+            aria-label={`备用轮询间隔：${account.user} (${account.host}:${account.port})`}
             onChange={event => {
               const value = event.currentTarget.value;
+              setPendingInterval({ accountKey: account.accountKey, value });
               void update("plugin.assistant-mail.account.set-poll-interval", { accountKey: account.accountKey, pollIntervalSeconds: value === "off" ? null : Number(value) });
             }}>
             <option value="off">关闭</option>

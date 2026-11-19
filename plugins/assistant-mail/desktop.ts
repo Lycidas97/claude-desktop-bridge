@@ -20,6 +20,7 @@ export interface MailAccount {
 
 type SavedAccount = MailAccount & { enabled: boolean; pollIntervalSeconds: MailPollInterval };
 export type MailAccountStatus = SavedAccount & { accountKey: string; state: MailState; errorCode?: string };
+export type MailAccountFailure = { accountKey: string; errorCode: string };
 
 function parseAccount(value: MailAccount): MailAccount {
   if (typeof value.host !== "string" || !value.host.trim() || /\s/.test(value.host.trim()) ||
@@ -289,7 +290,8 @@ export class AssistantMailService extends EventEmitter {
 
   private addAccount(accountKey: string, config: SavedAccount) {
     const receiver = new MailReceiver(accountKey, config, this.store, this.credentials, this.createClient, {
-      changed: () => this.emit("changed"), mail: event => this.emit("mail", event), error: error => this.emit("error", error),
+      changed: () => this.emit("changed"), mail: event => this.emit("mail", event),
+      error: error => this.emit("error", error, { accountKey, errorCode: receiver.errorCode ?? "mail_receiver_failed" } satisfies MailAccountFailure),
     });
     const account = { config, receiver };
     this.accounts.set(accountKey, account);

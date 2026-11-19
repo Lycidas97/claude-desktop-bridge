@@ -94,10 +94,24 @@ export class MailReceiver {
             if (this.stopped || ended) break;
             const generation = mailbox.uidValidity.toString();
             if (uidValidity !== generation) {
-              uidValidity = generation;
               storageFailure = true;
-              lastUid = this.store.openMailbox(accountKey, uidValidity, mailbox.uidNext);
+              let watermark = this.store.openMailbox(accountKey, generation, mailbox.uidNext);
               storageFailure = false;
+              if (watermark === undefined) {
+                // Some servers omit UIDNEXT. Read only the tail UID; don't import history.
+                let nextUid = 1;
+                if (mailbox.exists !== 0) {
+                  const tail = await client.fetchOne("*", { uid: true });
+                  if (this.stopped || ended) break;
+                  if (!tail || !tail.uid) throw new Error("IMAP tail UID unavailable");
+                  nextUid = tail.uid + 1;
+                }
+                storageFailure = true;
+                watermark = this.store.openMailbox(accountKey, generation, nextUid)!;
+                storageFailure = false;
+              }
+              uidValidity = generation;
+              lastUid = watermark;
             }
             if (useIdle) this.setState("connected");
           }

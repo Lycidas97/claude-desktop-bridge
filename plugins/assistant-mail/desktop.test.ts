@@ -363,6 +363,69 @@ it.each(["NO", "BYE"])("receives new mail after an IMAP server advertising IDLE 
   }
 });
 
+it.each([0, 1])("polls an IMAP mailbox without UIDNEXT, with %s old messages", async oldCount => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const oldUid = 2_500_000_000;
+  const newUid = oldUid + 1;
+  const commands: string[] = [];
+  let delivered = 0;
+  const source = "Subject: mail without UIDNEXT\r\n\r\nbody\r\n";
+  const server = createServer(socket => {
+    socket.write("* PREAUTH test mailbox\r\n");
+    createInterface({ input: socket }).on("line", line => {
+      const [tag, command] = line.split(" ");
+      commands.push(line.slice(tag!.length + 1));
+      const ok = `${tag} OK done\r\n`;
+      const count = oldCount + delivered;
+      const tail = `* ${count} FETCH (UID ${oldUid + delivered}`;
+      switch (command) {
+        case "CAPABILITY": socket.write(`* CAPABILITY IMAP4rev1\r\n${ok}`); break;
+        case "LIST": socket.write(`* LIST () "/" INBOX\r\n${ok}`); break;
+        case "EXAMINE":
+          socket.write(`* ${count} EXISTS\r\n* OK [UIDVALIDITY 1] valid\r\n${tag} OK [READ-ONLY] examined\r\n`);
+          break;
+        case "FETCH":
+        case "UID":
+          socket.write((!count ? "" : line.includes("BODY.PEEK[]")
+            ? `${tail} BODY[] {${Buffer.byteLength(source)}}\r\n${source})\r\n`
+            : `${tail})\r\n`) + ok);
+          break;
+        default: socket.write(`${tag} BAD unexpected command\r\n`);
+      }
+    });
+  }).listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const { port } = server.address() as { port: number };
+  const service = new AssistantMailService({ userDataPath: root,
+    createClient: options => new ImapFlow({ ...options, secure: false, doSTARTTLS: false }),
+    credentials: { supported: true, get: async () => "fixture", set: async () => {}, delete: async () => {} },
+  });
+  service.on("error", vi.fn());
+  try {
+    await service.initialize();
+    await service.enable({ ...account, host: "127.0.0.1", port });
+    await vi.waitFor(() => expect(service.status().accounts[0]).toMatchObject({ state: "polling" }));
+    expect(service.page().events).toEqual([]);
+    expect(commands).toContain(`UID FETCH ${oldCount ? newUid : 1}:* UID`);
+    expect(commands.some(command => command.includes("BODY.PEEK[]"))).toBe(false);
+
+    delivered++;
+    await vi.advanceTimersByTimeAsync(60_000);
+    await vi.waitFor(() => expect(service.page().events.map(event => event.uid)).toEqual([newUid]));
+    expect((await service.read(service.page().events[0]!.mailRefId))?.source.toString()).toBe(source);
+
+    const { accountKey } = service.status().accounts[0]!;
+    await service.setAccountEnabled(accountKey, false);
+    delivered++;
+    await service.setAccountEnabled(accountKey, true);
+    await vi.waitFor(() => expect(service.page().events.map(event => event.uid)).toEqual([newUid + 1, newUid]));
+    expect(commands.filter(command => command.startsWith("FETCH "))).toEqual(oldCount ? ["FETCH 1 UID"] : []);
+  } finally {
+    await service.close();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});
+
 it("reports a storage failure once and allows explicit disable and re-enable after storage recovers", async () => {
   const inbox = new Inbox();
   const recovered = new Inbox();
@@ -374,7 +437,9 @@ it("reports a storage failure once and allows explicit disable and re-enable aft
   await vi.waitFor(() => expect(inbox.idle).toHaveBeenCalledOnce());
   vi.spyOn(AssistantMailStore.prototype, "record").mockRejectedValueOnce(failure);
   inbox.deliver(5);
-  await vi.waitFor(() => expect(onError).toHaveBeenCalledExactlyOnceWith(failure));
+  await vi.waitFor(() => expect(onError).toHaveBeenCalledExactlyOnceWith(failure, {
+    accountKey: service.status().accounts[0]!.accountKey, errorCode: "mail_storage_failed",
+  }));
   expect(service.status()).toMatchObject({ state: "error", errorCode: "mail_storage_failed" });
   expect(service.page().events).toEqual([]);
   expect(createClient).toHaveBeenCalledOnce();

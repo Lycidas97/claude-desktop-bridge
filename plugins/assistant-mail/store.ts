@@ -225,11 +225,12 @@ export class AssistantMailStore {
     }
   }
 
-  /** A new mailbox generation starts at enable time; an existing one resumes its committed UID. */
-  openMailbox(accountKey: string, uidValidity: string, uidNext: number): number {
+  /** Resume a committed generation, or establish a new baseline when a next UID is available. */
+  openMailbox(accountKey: string, uidValidity: string, uidNext: number | undefined): number | undefined {
     const row = this.db().prepare("SELECT uid_validity, last_persisted_uid FROM imap_watermarks WHERE account_key = ? AND mailbox = 'INBOX'")
       .get(accountKey) as { uid_validity: string; last_persisted_uid: number } | undefined;
     if (row?.uid_validity === uidValidity) return row.last_persisted_uid;
+    if (uidNext === undefined) return undefined;
     this.db().prepare(`
       INSERT INTO imap_watermarks VALUES (?, 'INBOX', ?, ?)
       ON CONFLICT(account_key, mailbox) DO UPDATE SET uid_validity = excluded.uid_validity,

@@ -78,6 +78,7 @@ vi.mock("../transport/webrtc-runtime.js", () => ({ loadDesktopPeerConnection: vi
 beforeEach(() => {
   vi.clearAllMocks();
   resources.serveMailTools.mockResolvedValue(resources.mailTools);
+  resources.assistantMail.removeAllListeners("error");
   resources.assistantMail.binding.mockReturnValue(undefined);
   resources.assistantMail.status.mockReturnValue({ accounts: [] });
   resources.version = "1.3.4";
@@ -87,6 +88,25 @@ beforeEach(() => {
   resources.notificationSupported.mockReturnValue(true);
   for (const name of ["RELAY", "PUBLIC_RELAY", "PAIRING_BASE", "SERVICE_ORIGIN", "ICE_SERVERS"]) {
     vi.stubGlobal(`__BRIDGE_DEFAULT_${name}__`, "");
+  }
+});
+
+it("logs the affected mail account and an error code without logging the raw error", async () => {
+  const { createServiceRuntime } = await import("./service-runtime.js");
+  const runtime = await createServiceRuntime({ userDataPath: "/test/bridge" });
+  const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+  try {
+    const error = new Error("private receiver details");
+    const accountKey = "a".repeat(64);
+    resources.assistantMail.emit("error", error, { accountKey, errorCode: "mail_storage_failed" });
+    resources.assistantMail.emit("error", error);
+    expect(stderr.mock.calls.map(([message]) => message)).toEqual([
+      `Bridge assistant mail account ${accountKey}: mail_storage_failed; receiving paused.\n`,
+      "Bridge assistant mail MIME backfill failed.\n",
+    ]);
+  } finally {
+    stderr.mockRestore();
+    await runtime.close();
   }
 });
 

@@ -58,6 +58,7 @@ function guardCommand(execPath: string, guardPath: string, workspace: string, pl
   // bytes so the hook JSON never enters PowerShell's object pipeline.
   const script = [
     "$ErrorActionPreference = 'Stop'",
+    "$ProgressPreference = 'SilentlyContinue'",
     "[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)",
     "$p = New-Object System.Diagnostics.ProcessStartInfo",
     `$p.FileName = ${literal(execPath)}`,

@@ -89,6 +89,7 @@ it("uses an exec-form Windows launcher that passes raw stdin and propagates the 
   expect(script).toContain(`"${join(options.appPath, "dist", "assistant-fs-guard.cjs").replaceAll("'", "''")}" "${workspace}"`);
   expect(script).toContain("$p.EnvironmentVariables['ELECTRON_RUN_AS_NODE'] = '1'");
   expect(script).toContain("$p.UseShellExecute = $false");
+  expect(script).toContain("$ProgressPreference = 'SilentlyContinue'");
   expect(script).toContain("exit $child.ExitCode");
 });
 
@@ -98,9 +99,11 @@ it.runIf(process.platform === "win32")("passes UTF-8 hook stdin unchanged throug
   const [entry] = policy.hooks.PreToolUse[0].hooks;
   const guard = join(options.appPath, "dist", "assistant-fs-guard.cjs");
   await mkdir(join(options.appPath, "dist"), { recursive: true });
-  await writeFile(guard, `process.stdin.pipe(process.stderr); process.exitCode = 2;`);
-  const input = JSON.stringify({ cwd: workspace, tool_input: { file_path: "outputs/稿件.txt" } });
-  const child = spawnSync(entry.command, entry.args, { input, encoding: "utf8", timeout: 10000 });
-  expect(child.stderr).toBe(input);
+  await writeFile(guard, `process.stdin.pipe(process.stdout); process.stdin.pipe(process.stderr); process.exitCode = 2;`);
+  const input = Buffer.from(JSON.stringify({ cwd: workspace, tool_input: { file_path: "outputs/稿件.txt" } }), "utf8");
+  const child = spawnSync(entry.command, entry.args, { input, timeout: 10000 });
+  expect(child.error).toBeUndefined();
+  expect(child.stdout).toEqual(input);
+  expect(child.stderr).toEqual(input);
   expect(child.status).toBe(2);
 }, 15000);

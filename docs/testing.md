@@ -331,6 +331,27 @@ Bridge 的 Electron 和 `app.asar/dist` 启动。用真实 Desktop 的 `LocalSes
 其中 8 项为邮件和议程工具，MCP 为 `connected`，仍无白名单外项。目录与 `connected`
 都不是业务调用证据。
 
+#### 真实邮件只读往返
+
+浙大 IMAP 的自有测试邮件在 12:05:51 UTC 提交，`received_at` 为 12:06:15.000，
+Bridge SQLite 的 `recorded_at` 为 12:06:35.360，`mailRefId` 为
+`90621904-8dd7-430b-837f-5bc7224ea5d5`。没有读取其他邮件、重绑或改变该邮件的 `pending` 状态。
+
+在当前实际托管会话发出一次只读消息 `b9633988-027a-4148-90d4-4d5efea06672`，
+Native 于 12:09:14.265 接收，新的 `system/init` 于 12:09:14.292 显示邮件 MCP
+`connected`，CLI 会话 ID 为 `8dc0d6a2-22fd-474f-9633-9c71a7acd79c`。新起的 MCP 进程
+使用安装包 Electron 和 `app.asar/dist/assistant-mcp.cjs --managed`。仅用 `ToolSearch`
+加载指定工具，随后调用一次 `mcp__assistant-mail__mail_read_event`，参数只含上述 `mailRefId`。
+
+| 证据 | UTC 时间 | 记录 |
+| --- | --- | --- |
+| Native `tool_use` | 12:09:18.378 | `call_00_ET_kyqHfuP0tsRYkoZD1sSC4473`，主会话调用 |
+| Gateway `plugin.assistant-mail.tool-invoked` | 12:09:18.594 | `44f4d951-54ca-4c7b-9670-97f4185fe4aa`，`mail.read_event`，事件会话确与实际绑定的 Native 会话相同（ID 的 SHA-256 前 12 位 `55ded5238425`） |
+| Native `tool_result` | 12:09:18.607 | 同一调用 ID，`is_error: false`，返回自有测试主题且 `source.authorizesActions: false` |
+
+这证明已安装版的真实收件、内置 MCP 往返和当前主会话归因；不证明其他会话被拒绝、
+子代理归因或自动投递。取证不导出邮件正文、账户凭据或会话令牌。
+
 #### 文件守卫与故障
 
 下表的时间均为 UTC。每行调用 ID 与对应 `tool_result.tool_use_id` 相同。文件用例
@@ -374,7 +395,7 @@ Bridge 的 Electron 和 `app.asar/dist` 启动。用真实 Desktop 的 `LocalSes
 
 | 项目 | 本轮证据与缺口 |
 | --- | --- |
-| 一键初始化、真实邮件 MCP、归因 | [早期安装包观察](https://github.com/Lycidas97/claude-desktop-bridge/issues/222#issuecomment-7000436347)记录过初始化和空页往返；新版本只确认此隔离会话的打包 MCP `connected`，未重绑生产工作区、调用新版真实邮箱 MCP 或核对主会话/子代理的绑定归因 |
+| 一键初始化与子代理归因 | [早期安装包观察](https://github.com/Lycidas97/claude-desktop-bridge/issues/222#issuecomment-7000436347)记录过初始化和空页往返；本轮未重新初始化已绑定工作区。新版已验证真实邮件只读往返和主会话归因；子代理和其他绑定的拒绝未验证 |
 | 工具边界 | 白名单外目录项未出现；没有终端、浏览器预览、定时任务、Shell、外网、继承 MCP 或跨会话工具实际拒绝回执。最终合并配置、获准子代理、原生 `@`、配置及规则写入、符号链接祖先和无路径 `Grep` 尚未验证 |
 | 关窗、锁屏、睡眠和断线对账 | 新版服务 PID `96791` 持有 macOS `NoIdleSleepAssertion`（`Electron`）；配套 APK 已构建，但未核实实体手机安装，也未用手机在关窗、退出窗口、锁屏或强制睡眠唤醒时提交消息，未以实体手机的原 UUID 做断线对账。电源断言不证明锁屏期间接收或睡眠期间可执行 |
 | 自动压缩和故障 | 上述探针只触发手动压缩；自动压缩的 `trigger`、压缩 hook 异常和超时是否影响完成未验证 |

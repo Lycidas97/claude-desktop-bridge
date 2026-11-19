@@ -41,7 +41,7 @@ import { diagnostics } from "./diag.js";
 import type { MemoryRecorder } from "./memory-recorder.js";
 import { AssistantAgendaService } from "../../../../plugins/assistant-mail/agenda.js";
 import { AgendaStore } from "../../../../plugins/assistant-mail/agenda-store.js";
-import { AssistantMailService } from "../../../../plugins/assistant-mail/desktop.js";
+import { AssistantMailService, type MailAccountFailure } from "../../../../plugins/assistant-mail/desktop.js";
 import { serveAssistantMailTools } from "../../../../plugins/assistant-mail/local-channel.js";
 
 declare const __BRIDGE_DEFAULT_RELAY__: string;
@@ -149,7 +149,9 @@ export async function createServiceRuntime(options: {
     options.onStage?.("打开成果数据库");
     await evidence.initialize();
     const assistantMail = new AssistantMailService({ userDataPath, attachmentCMapUrl: join(app.getAppPath(), "dist", "renderer", "pdfjs", "cmaps") + "/" });
-    assistantMail.on("error", () => process.stderr.write("Bridge assistant mail storage failed; receiving paused.\n"));
+    assistantMail.on("error", (_error: unknown, account?: MailAccountFailure) => process.stderr.write(account
+      ? `Bridge assistant mail account ${account.accountKey}: ${account.errorCode}; receiving paused.\n`
+      : "Bridge assistant mail MIME backfill failed.\n"));
     resources.defer("Assistant mail", () => assistantMail.close());
     options.onStage?.("打开邮件数据库");
     let agendaStore!: AgendaStore;

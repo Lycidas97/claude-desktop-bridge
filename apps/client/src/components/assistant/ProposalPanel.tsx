@@ -25,7 +25,7 @@ export function ProposalPanel({ mobile, selected, onSelect }: {
   useEffect(() => {
     if (!selected || !online) return;
     let current = true;
-    void request("assistant.proposal.resolve", { sessionId: selected.sessionId, refs: [proposalRef(selected)] }).then(response => {
+    void request("assistant.proposal.resolve", { sessionId: selected.sessionId, refs: [proposalRef(selected)], latestForReview: true }).then(response => {
       if (current) setLive(mailResult<{ proposals: BridgeActionProposal[] }>(response).proposals[0]);
     }).catch(reason => { if (current) setError(reason instanceof Error ? reason.message : "无法核对提案。"); });
     return () => { current = false; };

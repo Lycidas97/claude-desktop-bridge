@@ -40,7 +40,9 @@ export class ProposalExecutor extends EventEmitter {
       const sameRecord = "recordId" in action && "recordId" in current.action && action.recordId === current.action.recordId;
       // A manual field edit keeps the baseline the user reviewed. A model revision can re-read it.
       const payload = this.freeze(action, current.proposalId, sameRecord && sessionId === undefined ? current : undefined);
-      return this.store.insert(current.sessionId, current.proposalId, current.revision + 1, payload);
+      return this.store.insert(current.sessionId, current.proposalId, current.revision + 1, { ...payload,
+        ...(sessionId === undefined ? { nativeRevision: current.nativeRevision ?? current.revision } : {}),
+      });
     });
     this.changed();
     return publicProposal(proposal);
@@ -51,7 +53,7 @@ export class ProposalExecutor extends EventEmitter {
   }
 
   page(query: Parameters<ProposalStore["page"]>[0], sessionId?: string) { return this.store.page(query, sessionId); }
-  resolve(sessionId: string, refs: ProposalRevisionRef[]) { return this.store.resolve(sessionId, refs); }
+  resolve(sessionId: string, refs: ProposalRevisionRef[], latestForReview?: boolean) { return this.store.resolve(sessionId, refs, latestForReview); }
   pending(ref: ProposalRevisionRef, sessionId?: string) { return publicProposal(this.store.requirePending(ref, sessionId)); }
 
   dismiss(ref: ProposalRevisionRef, actor: string) {
@@ -161,7 +163,7 @@ export class ProposalExecutor extends EventEmitter {
       throw error;
     }
     if (status === 412 || (status === 404 && intent.write.etag !== undefined)) return this.finishRemote(proposal, "conflict");
-    if (status >= 500) return this.recover(proposal);
+    if (status === 202 || status >= 500) return this.recover(proposal);
     return this.finishRemote(proposal, status >= 200 && status < 300 ? "applied" : "failed");
   }
 
@@ -177,7 +179,7 @@ export class ProposalExecutor extends EventEmitter {
       throw error;
     }
     const verified = intent.write.method === "DELETE" ? result.status === 404
-      : result.body !== undefined && this.matchesCalendar(result.body, intent.write.body);
+      : result.status === 200 && result.body !== undefined && this.matchesCalendar(result.body, intent.write.body);
     return this.finishRemote(proposal, verified ? "applied" : "uncertain");
   }
 

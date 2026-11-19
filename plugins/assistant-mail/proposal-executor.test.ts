@@ -175,6 +175,68 @@ it("checks that a CalDAV deletion with a lost reply left the reviewed resource a
   expect(fetchDav.mock.calls[0]?.[1]?.headers).toMatchObject({ "If-Match": '"version-one"' });
 });
 
+it("does not let an old Native receipt expose a model revision or its manual descendant", () => {
+  const action = { kind: "todo.create", sourceId: "local", value: { title: "Initial", status: "pending" } } as const;
+  const first = service.create("bound-session", action);
+  const detached = service.reviseFromTool("bound-session", first, { ...action, value: { ...action.value, title: "Unanchored" } });
+  expect(service.resolve("bound-session", [first])).toEqual([]);
+  const edited = service.revise(detached, { ...action, value: { ...action.value, title: "Manually edited" } });
+  expect(service.resolve("bound-session", [first])).toEqual([]);
+  expect(service.resolve("bound-session", [first], true)).toEqual([edited]);
+  expect(service.resolve("other-session", [detached], true)).toEqual([]);
+  expect(service.resolve("bound-session", [detached])).toEqual([edited]);
+});
+
+it("preserves full untouched CalDAV text properties when changing event times", async () => {
+  const notes = `${"x".repeat(8000)}TAIL`;
+  const summary = `${"x".repeat(500)}TITLETAIL`;
+  const location = `${"x".repeat(1000)}PLACETAIL`;
+  seedRemote(sourceBody.replace("SUMMARY:Original", `SUMMARY:${summary}\r\nDESCRIPTION:${notes}\r\nLOCATION:${location}`));
+  const { id, title, notes: displayedNotes, location: displayedLocation } = agenda.listEvents(window).records[0]!;
+  const ref = service.create("bound-session", { kind: "calendar.reschedule", recordId: id,
+    value: { ...meeting, title, notes: displayedNotes, location: displayedLocation } });
+  fetchDav.mockResolvedValueOnce(new Response(null, { status: 204 }));
+  await service.commit(ref, "phone");
+  const unfolded = String(fetchDav.mock.calls[0]?.[1]?.body).replace(/\r\n[ \t]/gu, "");
+  expect(unfolded).toContain(`SUMMARY:${summary}\r\n`);
+  expect(unfolded).toContain(`DESCRIPTION:${notes}\r\n`);
+  expect(unfolded).toContain(`LOCATION:${location}\r\n`);
+});
+
+it("preserves the approved CalDAV event timezone when rescheduling and importing it again", async () => {
+  const sourceId = seedRemote(sourceBody.replace("DTSTART:20270104T120000Z", "DTSTART;TZID=America/New_York:20270104T090000")
+    .replace("DTEND:20270104T130000Z", "DTEND;TZID=America/New_York:20270104T100000"));
+  const event = agenda.listEvents(window).records[0]!;
+  const next = { ...meeting, startAt: "2027-01-04T15:00:00.000Z", endAt: "2027-01-04T16:00:00.000Z", timeZone: event.timeZone };
+  const ref = service.create("bound-session", { kind: "calendar.reschedule", recordId: event.id, value: next });
+  fetchDav.mockResolvedValueOnce(new Response(null, { status: 204 }));
+  await service.commit(ref, "phone");
+  const body = String(fetchDav.mock.calls[0]?.[1]?.body);
+  expect(body).toContain("BEGIN:VTIMEZONE");
+  expect(body).toContain("DTSTART;TZID=America/New_York:20270104T100000");
+  agenda.applySync(sourceId, { changed: [{ href, data: body, etag: '"version-two"' }], removed: [] });
+  expect(agenda.listEvents(window).records[0]).toMatchObject(next);
+});
+
+it("does not silently move a task's approved reminder when moving its deadline", () => {
+  seedRemote(["BEGIN:VCALENDAR", "VERSION:2.0", "BEGIN:VTODO", "UID:work", "SUMMARY:Review task", "DUE:20270105T170000Z",
+    "BEGIN:VALARM", "ACTION:DISPLAY", "DESCRIPTION:Review task", "TRIGGER;RELATED=END:-PT30M", "END:VALARM", "END:VTODO", "END:VCALENDAR", ""].join("\r\n"));
+  const { id, title, status, remindAt } = agenda.listTodos({}).records[0]!;
+  expect(remindAt).toBe("2027-01-05T16:30:00.000Z");
+  expect(() => service.create("bound-session", { kind: "todo.update", recordId: id, value: { title, status, remindAt, dueAt: "2027-01-07T17:00:00.000Z" } })).toThrow("相对提醒");
+  expect(service.snapshot().pendingCount).toBe(0);
+  expect(fetchDav).not.toHaveBeenCalled();
+});
+
+it("reconciles a 202 response without declaring a queued DELETE applied or resending it", async () => {
+  seedRemote();
+  const event = agenda.listEvents(window).records[0]!;
+  const ref = service.create("bound-session", { kind: "calendar.delete", recordId: event.id });
+  fetchDav.mockResolvedValueOnce(new Response(null, { status: 202 })).mockResolvedValueOnce(new Response(sourceBody, { status: 200 }));
+  await expect(service.commit(ref, "phone")).resolves.toMatchObject({ state: "uncertain" });
+  expect(fetchDav.mock.calls.map(([, request]) => request?.method)).toEqual(["DELETE", "GET"]);
+});
+
 it("rejects deleting one occurrence through a resource-wide CalDAV DELETE", () => {
   seedRemote(sourceBody.replace("END:VEVENT", "RRULE:FREQ=DAILY;COUNT=2\r\nEND:VEVENT"));
   const event = agenda.listEvents(window).records[0]!;

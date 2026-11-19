@@ -14,7 +14,7 @@ export class CalDavError extends Error {
 }
 
 type XmlElement = { uri: string; local: string; text: string; children: XmlElement[]; componentName?: string };
-type DavRow = { href: string; status: number | undefined; props: XmlElement[] };
+type DavRow = { href: string; status: number | undefined; props: XmlElement[]; writeMetadataForbidden: boolean };
 
 function invalidResponse(): never {
   throw new CalDavError("response");
@@ -174,7 +174,7 @@ export async function readCalDav(options: {
     throw new CalDavError(response.status === 401 || response.status === 403 ? "credentials" : "response");
   }
 
-  function rows(root: XmlElement): Map<string, DavRow> {
+  function rows(root: XmlElement, readingCollectionMetadata = false): Map<string, DavRow> {
     const result = new Map<string, DavRow>();
     for (const row of root.children) {
       if (row.uri !== dav || row.local !== "response") continue;
@@ -196,13 +196,17 @@ export async function readCalDav(options: {
       if (Boolean(statusElement) === Boolean(propstats.length)) invalidResponse();
       const status = statusElement ? statusCode(statusElement) : undefined;
       const props: XmlElement[] = [];
+      let writeMetadataForbidden = false;
       for (const propstat of propstats) {
         const code = statusCode(property(propstat.children, "status"));
         const prop = property(propstat.children, "prop") ?? invalidResponse();
         if (code >= 200 && code < 300) props.push(...prop.children);
-        else if (code !== 404) invalidResponse();
+        else if (code === 403 && readingCollectionMetadata && isCollection && prop.children.length && prop.children.every(({ local, uri }) =>
+          (local === "current-user-privilege-set" && uri === dav) || (local === "supported-calendar-component-set" && uri === caldav))) {
+          writeMetadataForbidden = true;
+        } else if (code !== 404) invalidResponse();
       }
-      result.set(href, { href, status, props });
+      result.set(href, { href, status, props, writeMetadataForbidden });
     }
     return result;
   }
@@ -211,7 +215,7 @@ export async function readCalDav(options: {
     `<d:propfind xmlns:d="${dav}" xmlns:cs="${calendarserver}" xmlns:c="${caldav}">` +
     `<d:prop><cs:getctag/><d:sync-token/><c:calendar-timezone/><c:supported-calendar-component-set/>` +
     `<d:current-user-privilege-set/></d:prop></d:propfind>`,
-    "0") ?? invalidResponse());
+    "0") ?? invalidResponse(), true);
   const own = metadata.get(collectionHref);
   if (metadata.size !== 1 || !own || own.status !== undefined) invalidResponse();
   const ctag = text(property(own.props, "getctag", calendarserver))?.trim() || undefined;
@@ -219,14 +223,14 @@ export async function readCalDav(options: {
   const calendarTimeZone = text(property(own.props, "calendar-timezone", caldav));
   const components = property(own.props, "supported-calendar-component-set", caldav);
   const privileges = property(own.props, "current-user-privilege-set");
-  const canCreate = !privileges || privileges.children.some(privilege => privilege.uri === dav && privilege.local === "privilege"
-    && privilege.children.some(child => child.uri === dav && ["all", "write", "bind"].includes(child.local)));
+  const canCreate = !own.writeMetadataForbidden && (!privileges || privileges.children.some(privilege => privilege.uri === dav && privilege.local === "privilege"
+    && privilege.children.some(child => child.uri === dav && ["all", "write", "bind"].includes(child.local))));
   const proposalCreateKinds = !canCreate ? [] : (["todo", "calendar"] as const).filter(kind =>
     !components || components.children.some(child => child.componentName === (kind === "todo" ? "VTODO" : "VEVENT")));
   const collectionMetadata = {
     ...(ctag === undefined ? {} : { ctag }),
     ...(calendarTimeZone?.trim() ? { calendarTimeZone } : {}),
-    ...(components || privileges ? { proposalCreateKinds } : {}),
+    ...(components || privileges || own.writeMetadataForbidden ? { proposalCreateKinds } : {}),
   };
   if ((observedToken && observedToken === options.syncToken)
     || (!options.syncToken && !observedToken && ctag && ctag === options.ctag)) {

@@ -91,6 +91,15 @@ describe("readCalDav", () => {
     expect(result).toEqual({ ctag: "same", syncToken: "urn:sync:1", calendarTimeZone, removed: [], changed: [] });
   });
 
+  it("keeps readable collections synced when write capability metadata is forbidden", async () => {
+    const { fetch, options } = fixture(multi(row(path, propstat(token("urn:sync:1")) +
+      propstat("<current-user-privilege-set/><c:supported-calendar-component-set/>", "403 Forbidden"))));
+    await expect(readCalDav({ ...options, syncToken: "urn:sync:1" })).resolves.toEqual({
+      syncToken: "urn:sync:1", proposalCreateKinds: [], removed: [], changed: [],
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("uses ctag alone when sync-token and calendar-timezone are unsupported", async () => {
     const { fetch, options } = fixture(multi(row(path,
       propstat(ctag("same")) + propstat("<sync-token/><c:calendar-timezone/>", "404 Not Found"))));

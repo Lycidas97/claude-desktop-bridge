@@ -156,14 +156,14 @@ function ProposalEditor({ proposal, mobile, stale, onClose, onRevised }: {
       } else if ("value" in action) {
         const title = String(data.get("title")).trim();
         if (!title) throw new Error("请输入标题。");
-        const notes = String(data.get("notes")).trim();
+        const notes = String(data.get("notes"));
         const sourceId = String(data.get("sourceId"));
         let next: AgendaProposalAction;
         if (action.kind === "calendar.create" || action.kind === "calendar.reschedule") {
           const startAt = allDay ? start : agendaInstant(start, timeZone, action.value.startAt);
           const endAt = allDay ? shiftDate(end, 1) : agendaInstant(end, timeZone, action.value.endAt);
           if (startAt >= endAt) throw new Error("结束时间必须晚于开始时间。");
-          const location = String(data.get("location")).trim();
+          const location = String(data.get("location"));
           next = { ...action, ...(action.kind === "calendar.create" ? { sourceId } : {}), value: { title, notes: notes || undefined, location: location || undefined, startAt, endAt, timeZone, allDay } };
         } else {
           const due = String(data.get("dueAt") ?? "");

@@ -21,7 +21,7 @@ export const reviseProposal = z.strictObject({ ...proposalRef.shape, action: pro
 export const listProposals = z.strictObject({ cursor, limit });
 export const proposalRequests = {
   "assistant.proposal.list": listProposals.extend({ history: z.boolean().default(false) }),
-  "assistant.proposal.resolve": z.strictObject({ sessionId: z.string().min(1).max(512), refs: z.array(proposalRef).max(100) }),
+  "assistant.proposal.resolve": z.strictObject({ sessionId: z.string().min(1).max(512), refs: z.array(proposalRef).max(100), latestForReview: z.boolean().optional() }),
   "assistant.proposal.revise": reviseProposal,
   "assistant.proposal.commit": proposalRef,
   "assistant.proposal.dismiss": proposalRef,

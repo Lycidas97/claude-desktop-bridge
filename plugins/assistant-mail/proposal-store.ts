@@ -6,8 +6,8 @@ import type { CalDavWrite } from "./caldav.js";
 
 type Intent = { backend: "local"; baseRevision?: number } |
   { backend: "caldav"; collection: string; write: CalDavWrite };
-export type ProposalPayload = Pick<BridgeActionProposal, "action" | "sourceId" | "sourceLabel" | "before"> & { intent: Intent };
-export type StoredProposal = BridgeActionProposal & { intent: Intent };
+export type ProposalPayload = Pick<BridgeActionProposal, "action" | "sourceId" | "sourceLabel" | "before"> & { intent: Intent; nativeRevision?: number };
+export type StoredProposal = BridgeActionProposal & { intent: Intent; nativeRevision?: number };
 type ExecutionState = Exclude<ProposalState, "pending">;
 type ResultState = Exclude<ExecutionState, "executing">;
 type ProposalRow = { ordinal: number; id: string; revision: number; session_id: string; payload: string; hash: string; state: ProposalState | null };
@@ -21,7 +21,7 @@ function stored(row: ProposalRow): StoredProposal {
   return { ...JSON.parse(payload) as ProposalPayload, proposalId: id, revision, payloadHash: hash, sessionId: session_id, state: state ?? "pending" };
 }
 
-export function publicProposal({ intent: _intent, ...proposal }: StoredProposal): BridgeActionProposal { return proposal; }
+export function publicProposal({ intent: _intent, nativeRevision: _nativeRevision, ...proposal }: StoredProposal): BridgeActionProposal { return proposal; }
 
 export class ProposalStore {
   constructor(private readonly db: DatabaseSync) {
@@ -95,12 +95,14 @@ export class ProposalStore {
     };
   }
 
-  resolve(sessionId: string, refs: ProposalRevisionRef[]): BridgeActionProposal[] {
+  resolve(sessionId: string, refs: ProposalRevisionRef[], latestForReview = false): BridgeActionProposal[] {
     const query = this.db.prepare(`${projection} WHERE p.id = ? AND p.session_id = ? AND ${latest} AND EXISTS (
       SELECT 1 FROM action_proposals proof WHERE proof.id = p.id AND proof.revision = ? AND proof.hash = ?)`);
     return refs.flatMap(({ proposalId, revision, payloadHash }) => {
       const row = query.get(proposalId, sessionId, revision, payloadHash) as ProposalRow | undefined;
-      return row ? [publicProposal(stored(row))] : [];
+      if (!row) return [];
+      const proposal = stored(row);
+      return latestForReview || (proposal.nativeRevision ?? proposal.revision) === revision ? [publicProposal(proposal)] : [];
     });
   }
 }

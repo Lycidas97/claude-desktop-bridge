@@ -1,4 +1,5 @@
 import ICAL from "ical.js";
+import { tzlib_get_ical_block } from "timezones-ical-library";
 import type { AgendaEventInput, AgendaTodoInput } from "../../packages/protocol/src/assistant-agenda.js";
 import type { AgendaProposalAction } from "../../packages/protocol/src/assistant-proposal.js";
 import { AgendaEditError } from "./agenda-store.js";
@@ -30,25 +31,45 @@ export function proposalCalendarBody(
   item.updatePropertyWithValue("dtstamp", now);
   item.updatePropertyWithValue("last-modified", now);
 
-  function date(name: string, value: string | undefined) {
+  function date(name: string, value: string | undefined, zone = ICAL.Timezone.utcTimezone) {
     item.removeAllProperties(name);
-    if (value) item.addPropertyWithValue(name, value.length === 10 ? ICAL.Time.fromDateString(value) : ICAL.Time.fromJSDate(new Date(value), true));
+    if (!value) return;
+    if (value.length === 10) item.addPropertyWithValue(name, ICAL.Time.fromDateString(value));
+    else {
+      const time = ICAL.Time.fromJSDate(new Date(value), true).convertToZone(zone);
+      const property = item.addPropertyWithValue(name, time);
+      if (zone !== ICAL.Timezone.utcTimezone) property.setParameter("tzid", zone.tzid);
+    }
   }
   function field(name: string, value: string | number | undefined) {
     if (value === undefined) item.removeAllProperties(name);
     else item.updatePropertyWithValue(name, value);
   }
   if (action.kind !== "todo.complete") {
-    field("summary", action.value.title);
-    field("description", action.value.notes);
+    if (previous?.value.title !== action.value.title) field("summary", action.value.title);
+    if (previous?.value.notes !== action.value.notes) field("description", action.value.notes);
   }
   if (action.kind === "calendar.create" || action.kind === "calendar.reschedule") {
     const before = previous?.value as AgendaEventInput | undefined;
-    field("location", action.value.location);
-    if (before?.startAt !== action.value.startAt || before?.endAt !== action.value.endAt) {
+    const { location, startAt, endAt, timeZone, allDay } = action.value;
+    if (before?.location !== location) field("location", location);
+    if (before?.startAt !== startAt || before?.endAt !== endAt || before?.timeZone !== timeZone) {
+      let zone = ICAL.Timezone.utcTimezone;
+      if (!allDay && !["UTC", "GMT"].includes(timeZone)) {
+        const existing = calendar.getTimeZoneByID(timeZone);
+        if (existing) zone = existing;
+        else {
+          const data = tzlib_get_ical_block(timeZone);
+          if (!Array.isArray(data) || !data[0]) throw new AgendaEditError("UNSUPPORTED", "缺少此日程的时区定义。");
+          const definition = new ICAL.Component(ICAL.parse(data[0]));
+          definition.updatePropertyWithValue("tzid", timeZone);
+          calendar.addSubcomponent(definition);
+          zone = new ICAL.Timezone(definition);
+        }
+      }
       item.removeAllProperties("duration");
-      date("dtstart", action.value.startAt);
-      date("dtend", action.value.endAt);
+      date("dtstart", startAt, zone);
+      date("dtend", endAt, zone);
     }
     if (previous) item.updatePropertyWithValue("sequence", Number(item.getFirstPropertyValue("sequence") ?? 0) + 1);
   } else {
@@ -64,13 +85,17 @@ export function proposalCalendarBody(
     if (action.kind !== "todo.complete") {
       const before = previous?.value as AgendaTodoInput | undefined;
       const { dueAt, remindAt, priority } = action.value;
-      field("priority", priority);
+      if (before?.priority !== priority) field("priority", priority);
+      const alarms = item.getAllSubcomponents("valarm");
       if (before?.dueAt !== dueAt) {
+        if (before?.remindAt === remindAt && alarms.some(alarm => {
+          const trigger = alarm.getFirstProperty("trigger");
+          return trigger?.getFirstValue() instanceof ICAL.Duration && trigger.getFirstParameter("related")?.toUpperCase() === "END";
+        })) throw new AgendaEditError("UNSUPPORTED", "修改截止时间会移动相对提醒，请同时明确调整提醒。");
         item.removeAllProperties("duration");
         date("due", dueAt);
       }
       if (before?.remindAt !== remindAt) {
-        const alarms = item.getAllSubcomponents("valarm");
         if (alarms.length > 1 || (alarms.length && alarms[0]!.getFirstPropertyValue("action") !== "DISPLAY")) {
           throw new AgendaEditError("UNSUPPORTED", "暂不支持编辑此日历的多个提醒或非显示提醒。");
         }

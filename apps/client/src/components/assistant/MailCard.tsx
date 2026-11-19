@@ -76,7 +76,9 @@ export function MailCard({ card, nativeMessage, onDiscuss }: { card: BridgeMailC
     </details>}
     {attachmentList}
     <details onToggle={event => {
-      if (!event.currentTarget.open || detail || loading || !mail?.online) return;
+      if (!event.currentTarget.open || !mail) return;
+      mail.markViewed(card.mailRefId);
+      if (detail || loading || !mail.online) return;
       setLoading(true); setError("");
       void mail.read(card.mailRefId).then(setDetail)
         .catch(reason => setError(reason instanceof Error ? reason.message : "原文读取失败"))

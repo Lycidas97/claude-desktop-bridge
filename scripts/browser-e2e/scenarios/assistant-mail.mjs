@@ -84,6 +84,64 @@ async function verifyAssistantConfiguration(page, host, requests, { model, effor
   await chat.fill("");
 }
 
+export async function verifyAssistantMailUnread(page, host, steps, directory, viewports, baseUrl) {
+  await openMobileDrawer(page);
+  const badge = page.locator(".drawer-assistant-capsule");
+  const unreadLabel = () => badge.getAttribute("aria-label");
+  const back = page.locator(".assistant-page").getByRole("button", { name: "返回", exact: true });
+  const inbox = page.getByRole("button", { name: "收件", exact: true });
+  const cardFor = ({ mailRefId }) => page.locator(`.assistant-mail-list [data-mail-id="${mailRefId}"]`);
+
+  await eventually(unreadLabel, "助理", "An empty inbox has no badge");
+  const first = await host.nativeApproval.assistantMail.deliver(1);
+  await eventually(unreadLabel, "助理，1 条未读", "One newly arrived pending mail shows one unread");
+  await page.screenshot({ path: resolve(directory, "unread-mail.png") });
+  viewports.push({ page: "unread-mail", ...page.viewportSize() });
+  await badge.click();
+  await cardFor(first).getByText("原文", { exact: true }).click();
+  await cardFor(first).locator("details[open] pre").waitFor();
+  await cardFor(first).getByText("待处理", { exact: true }).waitFor();
+  await back.click();
+  await eventually(unreadLabel, "助理", "Opening one mail clears its badge without marking it processed");
+  await page.screenshot({ path: resolve(directory, "viewed-mail.png") });
+
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await openMobileDrawer(page);
+  await badge.click();
+  await cardFor(first).getByText("待处理", { exact: true }).waitFor();
+  await selectCustomOption(page, page.getByLabel("助理会话", { exact: true }), sessionId);
+  await page.getByRole("button", { name: "绑定会话", exact: true }).click();
+  await page.locator(".assistant-conversation textarea").waitFor();
+  await back.click();
+  await eventually(unreadLabel, "助理", "A reload does not resurrect a viewed pending mail");
+
+  const second = await host.nativeApproval.assistantMail.deliver(1);
+  await eventually(unreadLabel, "助理，1 条未读", "A second arrival shows one unread");
+  await badge.click();
+  await inbox.click();
+  await cardFor(second).getByText("待处理", { exact: true }).waitFor();
+  await cardFor(second).getByRole("button", { name: "讨论此邮件", exact: true }).click();
+  await page.getByRole("complementary", { name: "当前邮件引用" }).waitFor();
+  await back.click();
+  await eventually(unreadLabel, "助理", "Discussing a different mail clears its badge before sending anything");
+  assert.equal((await host.nativeApproval.assistantMail.service.read(second.mailRefId)).event.processingStatus, "pending");
+  assert.equal(host.requests.some(request => request.method === "turn.start"), false);
+
+  await openDesktopAssistant(page, host, baseUrl, []);
+  const desktopBadge = page.locator(".sidebar-assistant-row .desktop-nav-badge");
+  await inbox.click();
+  await eventually(() => desktopBadge.textContent(), "2", "Desktop has its own unread state");
+  const titleBounds = await page.locator(".sidebar-assistant-main").boundingBox();
+  const badgeBounds = await desktopBadge.boundingBox();
+  assert.ok(titleBounds && badgeBounds && titleBounds.x + titleBounds.width <= badgeBounds.x);
+  await cardFor(second).getByText("原文", { exact: true }).click();
+  await cardFor(second).getByText("待处理", { exact: true }).waitFor();
+  await eventually(() => desktopBadge.textContent(), "1", "Desktop opening the newer mail leaves the older one unread");
+  await page.screenshot({ path: resolve(directory, "desktop-mail-unread.png") });
+  viewports.push({ page: "desktop-mail-unread", ...page.viewportSize() });
+  steps.push("Unopened arrivals badge the assistant; opening and discussing clear only the viewed mail while processing stays pending, on mobile and desktop; viewed state survives mobile reload");
+}
+
 export async function verifyAssistantMail(page, host, steps, directory, viewports, baseUrl) {
   const cards = () => page.locator('.assistant-mail-list > [data-mail-id]');
   async function openAssistant() {

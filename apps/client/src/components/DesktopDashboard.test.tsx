@@ -2496,6 +2496,7 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
     const scheduledTimers = new Set<number>();
     let nextTimerId = 1;
     vi.stubGlobal("window", {
+      localStorage: { getItem: vi.fn().mockReturnValue(null) },
       setTimeout: vi.fn((fn: () => void) => {
         const id = nextTimerId++;
         scheduledTimers.add(id);
@@ -2532,11 +2533,11 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
     await settle();
     let dashTree = fullDashboard.draw();
 
-    // Unread badge on pinned sidebar 助理 row reflects real pending mail count (1) and updates on changeToken
+    // Both unopened mails count, including the one the assistant already processed.
     expect(elements(dashTree).some((element) => element.props.className === "desktop-nav-v2")).toBe(false);
     const navBadge = elements(dashTree).find((element) => element.props.className === "desktop-nav-badge")!;
     expect(navBadge.props["aria-hidden"]).toBe("true");
-    expect(navBadge.props.children).toBe(1);
+    expect(navBadge.props.children).toBe(2);
     expect(elements(dashTree).some((element) => String(element.props.className).includes("m-status-dot is-online"))).toBe(true);
 
     mailCards = mailCards.map((card) => ({ ...card, processingStatus: "processed" as const }));
@@ -2548,7 +2549,7 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
     dashTree = fullDashboard.draw();
     await settle();
     dashTree = fullDashboard.draw();
-    expect(elements(dashTree).find((element) => element.props.className === "desktop-nav-badge")).toBeUndefined();
+    expect(elements(dashTree).find((element) => element.props.className === "desktop-nav-badge")?.props.children).toBe(2);
 
     // Switch to 设置 -> 手机配对与设备 and verify folded DesktopDevices, empty state, pairing QR, unmount-safe clipboard, and revoke
     elements(dashTree).find((element) => element.type === "button" && String(element.props.className).includes("desktop-dock-settings"))!.props.onClick();

@@ -17,6 +17,7 @@ interface AssistantMailState {
   selectedMail: BridgeMailCard | undefined;
   canReference: boolean;
   supportsAttachments: boolean;
+  markViewed(mailRefId: string): void;
   selectMail(card: BridgeMailCard): void;
   clearReference(): void;
   referenceFor(sessionId: string): string | undefined;
@@ -31,8 +32,11 @@ interface AssistantMailState {
 const AssistantMailContext = createContext<AssistantMailState | undefined>(undefined);
 export function useAssistantMail(): AssistantMailState | undefined { return useContext(AssistantMailContext); }
 
+export function viewedMailStorageKey(hostId: string): string { return `bridge-viewed-mail:${hostId}`; }
+
 /** Mount keyed by host identity so page state and pending reads never cross computers. */
-export function AssistantMailProvider({ snapshot, online, request, loadCache, saveCache, onDiscuss, children }: {
+export function AssistantMailProvider({ hostId, snapshot, online, request, loadCache, saveCache, onDiscuss, children }: {
+  hostId: string | undefined;
   snapshot: BridgeHostSnapshot | undefined;
   online: boolean;
   request: AssistantRequest;
@@ -47,6 +51,18 @@ export function AssistantMailProvider({ snapshot, online, request, loadCache, sa
   const [error, setError] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
   const [selection, setSelection] = useState<{ sessionId: string; mailRefId: string }>();
+  const storageKey = hostId ? viewedMailStorageKey(hostId) : undefined;
+  const [viewedMail, setViewedMail] = useState(() => new Set(
+    storageKey && typeof window !== "undefined" ? window.localStorage.getItem(storageKey)?.split("\n") : [],
+  ));
+  useEffect(() => {
+    if (storageKey && viewedMail.size) window.localStorage.setItem(storageKey, [...viewedMail].join("\n"));
+  }, [storageKey, viewedMail]);
+
+  function markViewed(mailRefId: string): void {
+    setViewedMail(current => current.has(mailRefId) ? current : new Set(current).add(mailRefId));
+  }
+
   const enabled = snapshot ? snapshot.host.capabilities.includes("plugin.assistant-mail.v1")
     : cache.workspace ? cache.workspace.capabilities.includes("plugin.assistant-mail.v1") : cache.cards.length > 0;
   const assistant = snapshot ? snapshot.assistantMail : cache.workspace?.assistantMail;
@@ -109,7 +125,7 @@ export function AssistantMailProvider({ snapshot, online, request, loadCache, sa
     finally { if (mounted.current) setLoading(false); }
   }
 
-  const unreadCount = cache.cards.reduce((count, card) => count + (card.processingStatus === "pending" ? 1 : 0), 0);
+  const unreadCount = cache.cards.reduce((count, card) => count + (viewedMail.has(card.mailRefId) ? 0 : 1), 0);
   const accounts = assistant?.accounts;
   const { accountLabels, showAccount } = useMemo(() => {
     const seenUsers = new Set<string>();
@@ -139,8 +155,10 @@ export function AssistantMailProvider({ snapshot, online, request, loadCache, sa
       if (!canReference) throw new Error("当前电脑不支持邮件引用，请先清除引用。");
       return selectedMail.mailRefId;
     },
+    markViewed,
     selectMail: card => {
       if (!canReference) return;
+      markViewed(card.mailRefId);
       setSelection({ sessionId: assistant!.binding!.nativeSessionId!, mailRefId: card.mailRefId });
       onDiscuss?.();
     },

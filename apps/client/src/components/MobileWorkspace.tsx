@@ -1,3 +1,4 @@
+import { ASSISTANT_AGENDA_CAPABILITY } from "@bridge/protocol";
 import type {
   BridgeArtifactManifest,
   BridgeArtifactPreview,
@@ -941,7 +942,7 @@ export function MobileWorkspace({
 
   const assistantAvailable = Boolean(
     mobileNav?.assistantAvailable
-    ?? snapshot?.host.capabilities.includes("plugin.assistant-mail.v1"),
+    ?? snapshot?.host.capabilities.some(capability => capability === "plugin.assistant-mail.v1" || capability === ASSISTANT_AGENDA_CAPABILITY),
   );
   const assistantUnreadCount = assistantMail?.unreadCount ?? 0;
 

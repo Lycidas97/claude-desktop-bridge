@@ -33,6 +33,7 @@ import { MobileClientUpdateDialog, type RemoteDesktopUpdateControl } from "./com
 import { MAGPIE_QUOTA_METHOD, type QuotaLoader, type QuotaSnapshot } from "../../../plugins/magpie-quota/contract.js";
 import { MagpieQuotaProvider } from "../../../plugins/magpie-quota/client.js";
 import { AssistantMailProvider, useAssistantMail, type AssistantRequest } from "./components/assistant/AssistantMailProvider.js";
+import { AssistantAgendaProvider } from "./components/assistant/AssistantAgendaProvider.js";
 import { AssistantPage } from "./components/assistant/AssistantPage.js";
 import { MailReference } from "./components/assistant/MailReference.js";
 import { ConversationDraftsProvider, type ConversationDraftsHandle } from "./components/conversation/ConversationDraftsProvider.js";
@@ -210,7 +211,7 @@ function MobileApp({ themeControl }: { themeControl: ThemeControl }) {
   }, [draftsHandle, mobile.forgetHost]);
   // requestMedia is the hook's plain request function; its identity never changes.
   const request = mobile.requestMedia;
-  const mailRequest = useCallback<AssistantRequest>((method, params) => request(method, params, { wait: true, allowOffline: false }), [request]);
+  const assistantRequest = useCallback<AssistantRequest>((method, params) => request(method, params, { wait: true, allowOffline: false }), [request]);
   const loadMagpieQuota = useCallback<QuotaLoader>(async (options) => {
     const requestedRefresh = options?.refresh ?? false;
     const isAutoRefresh = requestedRefresh && autoQuotaRefreshPending.current;
@@ -344,7 +345,8 @@ function MobileApp({ themeControl }: { themeControl: ThemeControl }) {
           <DiagnosticFloatingEntry />
         </>
       ) : (
-    <AssistantMailProvider key={mobile.state.activeHostId ?? ""} snapshot={snapshot} online={mobile.state.connection === "connected" && mobile.state.desktopOnline} request={mailRequest} loadCache={mobile.loadMailCache} saveCache={mobile.saveMailCache} onDiscuss={() => setTab("assistant")}>
+    <AssistantMailProvider key={mobile.state.activeHostId ?? ""} snapshot={snapshot} online={mobile.state.connection === "connected" && mobile.state.desktopOnline} request={assistantRequest} loadCache={mobile.loadMailCache} saveCache={mobile.saveMailCache} onDiscuss={() => setTab("assistant")}>
+    <AssistantAgendaProvider snapshot={snapshot} online={mobile.state.connection === "connected" && mobile.state.desktopOnline} request={assistantRequest}>
     <MobileAppShell
       tab={tab}
       onTabChange={(next) => {
@@ -572,6 +574,7 @@ function MobileApp({ themeControl }: { themeControl: ThemeControl }) {
       <MobileClientUpdateDialog updater={clientUpdater} />
       <DiagnosticFloatingEntry />
     </MobileAppShell>
+    </AssistantAgendaProvider>
     </AssistantMailProvider>
       )}
     </ConversationDraftsProvider>

@@ -20,7 +20,7 @@ export async function serveAssistantMailTools(options: {
   userDataPath: string;
   service: MailTools;
   agenda?: Pick<AssistantAgendaService, "listTodos" | "listEvents" | "freeSlots">;
-  proposals?: Pick<ProposalExecutor, "create" | "reviseFromTool" | "page" | "snapshot">;
+  proposals?: Pick<ProposalExecutor, "create" | "reviseFromTool" | "page" | "snapshot" | "smtpAccounts">;
   authorizeManagedToken?: (token: string) => string | undefined;
   onManagedCall?: (sessionId: string, tool: string) => void;
   compact?: {
@@ -78,14 +78,15 @@ export async function serveAssistantMailTools(options: {
         case "todo.list": result = options.agenda?.listTodos(input.arguments); break;
         case "calendar.list_events": result = options.agenda?.listEvents(input.arguments); break;
         case "calendar.find_free_slots": result = options.agenda?.freeSlots(input.arguments); break;
-        case "proposal.create": result = options.proposals?.create(sessionId!, input.arguments.action); break;
+        case "proposal.create": result = await options.proposals?.create(sessionId!, input.arguments.action); break;
         case "proposal.update_pending": {
           const { action, ...ref } = input.arguments;
-          result = options.proposals?.reviseFromTool(sessionId!, ref, action);
+          result = await options.proposals?.reviseFromTool(sessionId!, ref, action);
           break;
         }
         case "proposal.list": if (options.proposals) {
-          result = { ...options.proposals.page(input.arguments, sessionId!), sources: options.proposals.snapshot().sources };
+          result = { ...options.proposals.page({ ...input.arguments, includeMail: true }, sessionId!), sources: options.proposals.snapshot().sources,
+            mailAccounts: options.proposals.smtpAccounts() };
           break;
         } else break;
         case "mail.list_events": result = options.service.page(input.arguments); break;

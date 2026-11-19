@@ -50,8 +50,8 @@ afterEach(async () => {
 });
 
 it("stores immutable snapshots, rejects stale, wrong hash and repeat approvals, and attributes the one successful write", async () => {
-  const first = service.create("bound-session", { kind: "todo.create", sourceId: "local", value: { title: "Draft", status: "pending" } });
-  const updated = service.revise(first, { kind: "todo.create", sourceId: "local", value: { title: "Revised", status: "pending" } });
+  const first = await service.create("bound-session", { kind: "todo.create", sourceId: "local", value: { title: "Draft", status: "pending" } });
+  const updated = await service.revise(first, { kind: "todo.create", sourceId: "local", value: { title: "Revised", status: "pending" } });
   expect(updated).toMatchObject({ proposalId: first.proposalId, revision: 2 });
   expect(updated.payloadHash).not.toBe(first.payloadHash);
   expect(agenda.listTodos({}).records).toHaveLength(0);
@@ -72,12 +72,12 @@ it("stores immutable snapshots, rejects stale, wrong hash and repeat approvals, 
 it("does not rebase a manual edit or overwrite a changed local task or event", async () => {
   const task = agenda.saveTodo({ title: "Original", status: "pending" });
   const event = agenda.saveEvent(meeting);
-  const finish = service.create("bound-session", { kind: "todo.complete", recordId: task.id });
-  const remove = service.create("bound-session", { kind: "calendar.delete", recordId: event.id });
-  const reschedule = service.create("bound-session", { kind: "calendar.reschedule", recordId: event.id, value: { ...meeting, title: "Proposed" } });
+  const finish = await service.create("bound-session", { kind: "todo.complete", recordId: task.id });
+  const remove = await service.create("bound-session", { kind: "calendar.delete", recordId: event.id });
+  const reschedule = await service.create("bound-session", { kind: "calendar.reschedule", recordId: event.id, value: { ...meeting, title: "Proposed" } });
   agenda.saveTodo({ title: "External edit", status: "pending" }, task);
   agenda.saveEvent({ ...meeting, title: "Externally moved" }, event);
-  expect(() => service.revise(reschedule, { kind: "calendar.reschedule", recordId: event.id, value: meeting })).toThrow("目标记录已更新");
+  await expect(service.revise(reschedule, { kind: "calendar.reschedule", recordId: event.id, value: meeting })).rejects.toThrow("目标记录已更新");
   for (const ref of [finish, remove, reschedule]) await expect(service.commit(ref, "paired-phone")).resolves.toMatchObject({ state: "conflict" });
   expect(agenda.listTodos({}).records[0]).toMatchObject({ title: "External edit", status: "pending" });
   expect(agenda.listEvents(window).records[0]?.title).toBe("Externally moved");
@@ -86,7 +86,7 @@ it("does not rebase a manual edit or overwrite a changed local task or event", a
 it("conditionally updates a CalDAV member without reconstructing its attendees, and returns conflict on 412", async () => {
   seedRemote();
   const event = agenda.listEvents(window).records[0]!;
-  const ref = service.create("bound-session", { kind: "calendar.reschedule", recordId: event.id, value: meeting });
+  const ref = await service.create("bound-session", { kind: "calendar.reschedule", recordId: event.id, value: meeting });
   expect(fetchDav).not.toHaveBeenCalled();
   fetchDav.mockResolvedValueOnce(new Response(null, { status: 412 }));
   await expect(service.commit(ref, "desktop")).resolves.toMatchObject({ state: "conflict" });
@@ -101,8 +101,8 @@ it("conditionally updates a CalDAV member without reconstructing its attendees, 
 
 it("creates at a fixed address with If-None-Match, and duplicates cannot issue a second write while the first is in flight", async () => {
   const sourceId = seedRemote();
-  const initial = service.create("bound-session", { kind: "calendar.create", sourceId: "local", value: meeting });
-  const revised = service.revise(initial, { kind: "calendar.create", sourceId, value: meeting });
+  const initial = await service.create("bound-session", { kind: "calendar.create", sourceId: "local", value: meeting });
+  const revised = await service.revise(initial, { kind: "calendar.create", sourceId, value: meeting });
   expect(revised.payloadHash).not.toBe(initial.payloadHash);
   let release!: (value: Response) => void;
   fetchDav.mockReturnValueOnce(new Promise(resolve => { release = resolve; }));
@@ -120,7 +120,7 @@ it("creates at a fixed address with If-None-Match, and duplicates cannot issue a
 
 it.each([true, false])("recovers a persisted external attempt by GET only (matching remote bytes: %s)", async matches => {
   const sourceId = seedRemote();
-  const ref = service.create("bound-session", { kind: "calendar.create", sourceId, value: meeting });
+  const ref = await service.create("bound-session", { kind: "calendar.create", sourceId, value: meeting });
   const persisted = ledger.requirePending(ref);
   ledger.transaction(() => ledger.claim(persisted, "phone", "executing"));
   if (persisted.intent.backend !== "caldav" || persisted.intent.write.method !== "PUT") throw new Error("Expected persisted PUT");
@@ -138,12 +138,12 @@ it.each([true, false])("recovers a persisted external attempt by GET only (match
 it("applies local task updates, completion and calendar deletion only after confirmation", async () => {
   const task = agenda.saveTodo({ title: "Original task", status: "pending" });
   const event = agenda.saveEvent(meeting);
-  const change = service.create("bound-session", { kind: "todo.update", recordId: task.id, value: { title: "Revised task", status: "pending" } });
-  const remove = service.create("bound-session", { kind: "calendar.delete", recordId: event.id });
+  const change = await service.create("bound-session", { kind: "todo.update", recordId: task.id, value: { title: "Revised task", status: "pending" } });
+  const remove = await service.create("bound-session", { kind: "calendar.delete", recordId: event.id });
   expect(agenda.listTodos({}).records[0]?.title).toBe("Original task");
   expect(agenda.listEvents(window).records).toHaveLength(1);
   await expect(service.commit(change, "desktop")).resolves.toMatchObject({ state: "applied" });
-  const complete = service.create("bound-session", { kind: "todo.complete", recordId: task.id });
+  const complete = await service.create("bound-session", { kind: "todo.complete", recordId: task.id });
   await expect(service.commit(complete, "desktop")).resolves.toMatchObject({ state: "applied" });
   expect(agenda.listTodos({}).records[0]).toMatchObject({ title: "Revised task", status: "completed" });
   await expect(service.commit(remove, "desktop")).resolves.toMatchObject({ state: "applied" });
@@ -154,7 +154,7 @@ it("completes a VTODO with If-Match and preserves its due date and priority", as
   seedRemote(["BEGIN:VCALENDAR", "VERSION:2.0", "BEGIN:VTODO", "UID:work", "SUMMARY:Review task", "DUE;VALUE=DATE:20270104",
     "STATUS:NEEDS-ACTION", "PRIORITY:2", "END:VTODO", "END:VCALENDAR", ""].join("\r\n"));
   const task = agenda.listTodos({}).records[0]!;
-  const ref = service.create("bound-session", { kind: "todo.complete", recordId: task.id });
+  const ref = await service.create("bound-session", { kind: "todo.complete", recordId: task.id });
   fetchDav.mockResolvedValueOnce(new Response(null, { status: 204 }));
   await expect(service.commit(ref, "phone")).resolves.toMatchObject({ state: "applied" });
   const [address, request] = fetchDav.mock.calls[0]!;
@@ -169,19 +169,19 @@ it("completes a VTODO with If-Match and preserves its due date and priority", as
 it("checks that a CalDAV deletion with a lost reply left the reviewed resource absent", async () => {
   seedRemote();
   const event = agenda.listEvents(window).records[0]!;
-  const ref = service.create("bound-session", { kind: "calendar.delete", recordId: event.id });
+  const ref = await service.create("bound-session", { kind: "calendar.delete", recordId: event.id });
   fetchDav.mockRejectedValueOnce(new TypeError("fetch failed")).mockResolvedValueOnce(new Response(null, { status: 404 }));
   await expect(service.commit(ref, "phone")).resolves.toMatchObject({ state: "applied" });
   expect(fetchDav.mock.calls.map(([address, request]) => [String(address), request?.method])).toEqual([[href, "DELETE"], [href, "GET"]]);
   expect(fetchDav.mock.calls[0]?.[1]?.headers).toMatchObject({ "If-Match": '"version-one"' });
 });
 
-it("does not let an old Native receipt expose a model revision or its manual descendant", () => {
+it("does not let an old Native receipt expose a model revision or its manual descendant", async () => {
   const action = { kind: "todo.create", sourceId: "local", value: { title: "Initial", status: "pending" } } as const;
-  const first = service.create("bound-session", action);
-  const detached = service.reviseFromTool("bound-session", first, { ...action, value: { ...action.value, title: "Unanchored" } });
+  const first = await service.create("bound-session", action);
+  const detached = await service.reviseFromTool("bound-session", first, { ...action, value: { ...action.value, title: "Unanchored" } });
   expect(service.resolve("bound-session", [first])).toEqual([]);
-  const edited = service.revise(detached, { ...action, value: { ...action.value, title: "Manually edited" } });
+  const edited = await service.revise(detached, { ...action, value: { ...action.value, title: "Manually edited" } });
   expect(service.resolve("bound-session", [first])).toEqual([]);
   expect(service.resolve("bound-session", [first], true)).toEqual([edited]);
   expect(service.resolve("other-session", [detached], true)).toEqual([]);
@@ -194,7 +194,7 @@ it("preserves full untouched CalDAV text properties when changing event times", 
   const location = `${"x".repeat(1000)}PLACETAIL`;
   seedRemote(sourceBody.replace("SUMMARY:Original", `SUMMARY:${summary}\r\nDESCRIPTION:${notes}\r\nLOCATION:${location}`));
   const { id, title, notes: displayedNotes, location: displayedLocation } = agenda.listEvents(window).records[0]!;
-  const ref = service.create("bound-session", proposalAction.parse({ kind: "calendar.reschedule", recordId: id,
+  const ref = await service.create("bound-session", proposalAction.parse({ kind: "calendar.reschedule", recordId: id,
     value: { ...meeting, title, notes: displayedNotes, location: displayedLocation } }));
   fetchDav.mockResolvedValueOnce(new Response(null, { status: 204 }));
   await service.commit(ref, "phone");
@@ -209,7 +209,7 @@ it("preserves the approved CalDAV event timezone when rescheduling and importing
     .replace("DTEND:20270104T130000Z", "DTEND;TZID=America/New_York:20270104T100000"));
   const event = agenda.listEvents(window).records[0]!;
   const next = { ...meeting, startAt: "2027-01-04T15:00:00.000Z", endAt: "2027-01-04T16:00:00.000Z", timeZone: event.timeZone };
-  const ref = service.create("bound-session", { kind: "calendar.reschedule", recordId: event.id, value: next });
+  const ref = await service.create("bound-session", { kind: "calendar.reschedule", recordId: event.id, value: next });
   fetchDav.mockResolvedValueOnce(new Response(null, { status: 204 }));
   await service.commit(ref, "phone");
   const body = String(fetchDav.mock.calls[0]?.[1]?.body);
@@ -219,12 +219,12 @@ it("preserves the approved CalDAV event timezone when rescheduling and importing
   expect(agenda.listEvents(window).records[0]).toMatchObject(next);
 });
 
-it.each(["05:30", "06:30"])("rejects an ambiguous NY CalDAV start of %s UTC before creating a proposal", start => {
+it.each(["05:30", "06:30"])("rejects an ambiguous NY CalDAV start of %s UTC before creating a proposal", async start => {
   const sourceId = seedRemote();
   const action = proposalAction.parse({ kind: "calendar.create", sourceId, value: {
     ...meeting, startAt: `2027-11-07T${start}:00.000Z`, endAt: "2027-11-07T07:30:00.000Z", timeZone: "America/New_York",
   } });
-  expect(() => service.create("bound-session", action)).toThrow("夏令时");
+  await expect(service.create("bound-session", action)).rejects.toThrow("夏令时");
   expect(service.snapshot().pendingCount).toBe(0);
   expect(fetchDav).not.toHaveBeenCalled();
 });
@@ -232,7 +232,7 @@ it.each(["05:30", "06:30"])("rejects an ambiguous NY CalDAV start of %s UTC befo
 it("round-trips an unambiguous New York event on the DST fallback date", async () => {
   const sourceId = seedRemote();
   const value = { ...meeting, startAt: "2027-11-07T07:30:00.000Z", endAt: "2027-11-07T08:30:00.000Z", timeZone: "America/New_York" };
-  const ref = service.create("bound-session", proposalAction.parse({ kind: "calendar.create", sourceId, value }));
+  const ref = await service.create("bound-session", proposalAction.parse({ kind: "calendar.create", sourceId, value }));
   fetchDav.mockResolvedValueOnce(new Response(null, { status: 201 }));
   await expect(service.commit(ref, "phone")).resolves.toMatchObject({ state: "applied" });
   const [target, request] = fetchDav.mock.calls[0]!;
@@ -241,12 +241,12 @@ it("round-trips an unambiguous New York event on the DST fallback date", async (
   expect(agenda.listEvents({ from: "2027-11-07T00:00:00Z", to: "2027-11-08T00:00:00Z" }).records[0]).toMatchObject(value);
 });
 
-it("does not silently move a task's approved reminder when moving its deadline", () => {
+it("does not silently move a task's approved reminder when moving its deadline", async () => {
   seedRemote(["BEGIN:VCALENDAR", "VERSION:2.0", "BEGIN:VTODO", "UID:work", "SUMMARY:Review task", "DUE:20270105T170000Z",
     "BEGIN:VALARM", "ACTION:DISPLAY", "DESCRIPTION:Review task", "TRIGGER;RELATED=END:-PT30M", "END:VALARM", "END:VTODO", "END:VCALENDAR", ""].join("\r\n"));
   const { id, title, status, remindAt } = agenda.listTodos({}).records[0]!;
   expect(remindAt).toBe("2027-01-05T16:30:00.000Z");
-  expect(() => service.create("bound-session", { kind: "todo.update", recordId: id, value: { title, status, remindAt, dueAt: "2027-01-07T17:00:00.000Z" } })).toThrow("相对提醒");
+  await expect(service.create("bound-session", { kind: "todo.update", recordId: id, value: { title, status, remindAt, dueAt: "2027-01-07T17:00:00.000Z" } })).rejects.toThrow("相对提醒");
   expect(service.snapshot().pendingCount).toBe(0);
   expect(fetchDav).not.toHaveBeenCalled();
 });
@@ -254,15 +254,15 @@ it("does not silently move a task's approved reminder when moving its deadline",
 it("reconciles a 202 response without declaring a queued DELETE applied or resending it", async () => {
   seedRemote();
   const event = agenda.listEvents(window).records[0]!;
-  const ref = service.create("bound-session", { kind: "calendar.delete", recordId: event.id });
+  const ref = await service.create("bound-session", { kind: "calendar.delete", recordId: event.id });
   fetchDav.mockResolvedValueOnce(new Response(null, { status: 202 })).mockResolvedValueOnce(new Response(sourceBody, { status: 200 }));
   await expect(service.commit(ref, "phone")).resolves.toMatchObject({ state: "uncertain" });
   expect(fetchDav.mock.calls.map(([, request]) => request?.method)).toEqual(["DELETE", "GET"]);
 });
 
-it("rejects deleting one occurrence through a resource-wide CalDAV DELETE", () => {
+it("rejects deleting one occurrence through a resource-wide CalDAV DELETE", async () => {
   seedRemote(sourceBody.replace("END:VEVENT", "RRULE:FREQ=DAILY;COUNT=2\r\nEND:VEVENT"));
   const event = agenda.listEvents(window).records[0]!;
-  expect(() => service.create("bound-session", { kind: "calendar.delete", recordId: event.id })).toThrow("重复实例");
+  await expect(service.create("bound-session", { kind: "calendar.delete", recordId: event.id })).rejects.toThrow("重复实例");
   expect(fetchDav).not.toHaveBeenCalled();
 });

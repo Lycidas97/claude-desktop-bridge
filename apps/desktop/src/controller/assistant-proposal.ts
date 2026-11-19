@@ -21,14 +21,14 @@ export async function handleAssistantProposal(
     switch (method) {
       case "assistant.proposal.list": return proposals.page(parse(proposalRequests[method]));
       case "assistant.proposal.resolve": {
-        const { sessionId, refs, latestForReview } = parse(proposalRequests[method]);
-        return { proposals: proposals.resolve(sessionId, refs, latestForReview) };
+        const { sessionId, refs, latestForReview, includeMail } = parse(proposalRequests[method]);
+        return { proposals: proposals.resolve(sessionId, refs, latestForReview, includeMail) };
       }
       case "assistant.proposal.commit": return { proposal: await proposals.commit(parse(proposalRequests[method]), actor) };
       case "assistant.proposal.dismiss": return { proposal: proposals.dismiss(parse(proposalRequests[method]), actor) };
       case "assistant.proposal.revise": {
         const { action, ...ref } = parse(proposalRequests[method]);
-        return { proposal: proposals.revise(ref, action) };
+        return { proposal: await proposals.revise(ref, action) };
       }
       case "assistant.proposal.replan": {
         const { feedback, ...ref } = parse(proposalRequests[method]);

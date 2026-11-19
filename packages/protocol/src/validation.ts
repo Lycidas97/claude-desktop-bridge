@@ -126,6 +126,7 @@ const METHODS = new Set([
   "plugin.assistant-mail.account.set-enabled",
   "plugin.assistant-mail.account.set-poll-interval",
   "plugin.assistant-mail.account.remove",
+  "plugin.assistant-mail.account.set-smtp",
   "system.update",
 ]);
 

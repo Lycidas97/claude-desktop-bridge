@@ -1,4 +1,4 @@
-import { MAIL_POLL_INTERVALS, type BridgeActionProposal, type BridgeDirectoryListing, type BridgeHostSnapshot, type BridgeMailAccount, type BridgeMethod, type BridgeSessionInfo } from "@bridge/protocol";
+import { ASSISTANT_SMTP_CAPABILITY, MAIL_POLL_INTERVALS, type BridgeActionProposal, type BridgeDirectoryListing, type BridgeHostSnapshot, type BridgeMailAccount, type BridgeMethod, type BridgeSessionInfo } from "@bridge/protocol";
 import { Check, ChevronRight, ListChecks, LoaderCircle, RefreshCw, Settings } from "lucide-react";
 import { useEffect, useId, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
@@ -80,7 +80,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
   const fallbackView = session ? "conversation" : mail ? "mail" : "agenda";
   const displayedView = (view === "conversation" && !session) || (view === "mail" && !mail) || (view === "agenda" && !agenda)
     || (view === "proposals" && !proposals) ? fallbackView : view;
-  const pendingCount = proposals?.summary.pendingCount ?? 0;
+  const pendingCount = (proposals?.summary.pendingCount ?? 0) + (proposals?.summary.pendingMailCount ?? 0);
   function openProposals() {
     if (displayedView !== "proposals") { setProposalReturn(displayedView); setSelectedProposal(undefined); }
     setView("proposals");
@@ -228,6 +228,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
       credentialsSupported={mail.assistant?.credentialsSupported === true}
       online={mail.online}
       supportsPolling={capabilities.includes("plugin.assistant-mail.polling.v1")}
+      supportsSmtp={capabilities.includes(ASSISTANT_SMTP_CAPABILITY)}
       request={mail.request}
     />}
     {displayedView === "settings" && agenda && <AgendaSources />}
@@ -289,21 +290,23 @@ const RECEIVER_ERRORS = new Map([
   ["mail_idle_unsupported", { label: "不支持持续收件", state: "unsupported" }],
 ]);
 
-function MailAccounts({ accounts, configUnavailable, credentialsSupported, online, supportsPolling, request }: {
+function MailAccounts({ accounts, configUnavailable, credentialsSupported, online, supportsPolling, supportsSmtp, request }: {
   accounts: BridgeMailAccount[];
   configUnavailable: boolean;
   credentialsSupported: boolean;
   online: boolean;
   supportsPolling: boolean;
+  supportsSmtp: boolean;
   request: AssistantRequest;
 }) {
   const headingId = useId();
-  const [action, setAction] = useState<{ kind: "add" } | { kind: "edit" | "remove"; accountKey: string }>();
+  const [action, setAction] = useState<{ kind: "add" } | { kind: "edit" | "remove" | "smtp"; accountKey: string }>();
   const [busy, setBusy] = useState(false);
   const [pendingInterval, setPendingInterval] = useState<{ accountKey: string; value: string }>();
   const [error, setError] = useState("");
   const disabled = !online || configUnavailable || !credentialsSupported || busy;
   const editedAccount = action?.kind === "edit" ? accounts.find(account => account.accountKey === action.accountKey) : undefined;
+  const smtpAccount = action?.kind === "smtp" ? accounts.find(account => account.accountKey === action.accountKey) : undefined;
   const removedAccount = action?.kind === "remove" ? accounts.find(account => account.accountKey === action.accountKey) : undefined;
 
   async function update(method: BridgeMethod, params: Record<string, unknown>) {
@@ -326,7 +329,12 @@ function MailAccounts({ accounts, configUnavailable, credentialsSupported, onlin
     const data = new FormData(form);
     const credential = String(data.get("credential"));
     form.querySelector<HTMLInputElement>('input[name="credential"]')!.value = "";
-    if (editedAccount) {
+    if (smtpAccount) {
+      void update("plugin.assistant-mail.account.set-smtp", { accountKey: smtpAccount.accountKey, smtp: {
+        host: String(data.get("host")).trim(), port: Number(data.get("port")), security: data.get("security"),
+        user: String(data.get("user")).trim(), from: String(data.get("from")).trim(), credential,
+      } });
+    } else if (editedAccount) {
       void update("plugin.assistant-mail.account.update-credential", { accountKey: editedAccount.accountKey, credential });
     } else {
       const host = String(data.get("host")).trim();
@@ -363,6 +371,10 @@ function MailAccounts({ accounts, configUnavailable, credentialsSupported, onlin
           <button type="button" className="assistant-session-link" aria-label={`${account.enabled ? "停用" : "启用"}：${account.user}`} disabled={disabled} onClick={() => { void update("plugin.assistant-mail.account.set-enabled", { accountKey: account.accountKey, enabled: !account.enabled }); }}>{account.enabled ? "停用" : "启用"}</button>
           <button type="button" className="assistant-session-link assistant-remove" aria-label={`移除：${account.user}`} disabled={disabled} onClick={() => { setError(""); setAction({ kind: "remove", accountKey: account.accountKey }); }}>移除</button>
         </div>
+        {supportsSmtp && <button type="button" className="assistant-session-link" disabled={disabled}
+          aria-label={`发信设置：${account.user}`} onClick={() => { setError(""); setAction({ kind: "smtp", accountKey: account.accountKey }); }}>
+          {account.smtp ? "SMTP 已配置" : "配置 SMTP"}
+        </button>}
         {supportsPolling && account.pollIntervalSeconds !== undefined && <label className="assistant-account-polling">
           备用轮询间隔
           <select value={pendingInterval?.accountKey === account.accountKey ? pendingInterval.value : account.pollIntervalSeconds ?? "off"} disabled={disabled}
@@ -392,6 +404,26 @@ function MailAccounts({ accounts, configUnavailable, credentialsSupported, onlin
         <div className="assistant-actions">
           <button type="button" className="secondary-button" onClick={() => { setError(""); setAction(undefined); }}>取消</button>
           <button type="submit" className="primary-button">{editedAccount ? "保存密码" : "添加账号"}</button>
+        </div>
+      </fieldset>
+    </form>}
+    {smtpAccount && <form key={`smtp:${smtpAccount.accountKey}`} onSubmit={save} autoComplete="off">
+      <fieldset className="assistant-account-form" disabled={disabled}>
+        <legend>{smtpAccount.user} 的发信设置</legend>
+        <div className="assistant-account-server">
+          <label>SMTP 服务器<input name="host" required defaultValue={smtpAccount.smtp?.host} autoCapitalize="none" spellCheck={false} /></label>
+          <label>端口<input name="port" type="number" required min={1} max={65535} defaultValue={smtpAccount.smtp?.port ?? 465} /></label>
+        </div>
+        <label>加密方式<select name="security" defaultValue={smtpAccount.smtp?.security ?? "tls"}>
+          <option value="tls">TLS</option><option value="starttls">STARTTLS</option>
+        </select></label>
+        <label>登录名<input name="user" required defaultValue={smtpAccount.smtp?.user ?? smtpAccount.user} autoCapitalize="none" spellCheck={false} /></label>
+        <label>发件地址<input name="from" type="email" required defaultValue={smtpAccount.smtp?.from ?? smtpAccount.user} /></label>
+        <label>SMTP 密码<input name="credential" type="password" autoComplete="new-password" required /></label>
+        <div className="assistant-actions">
+          <button type="button" className="secondary-button" onClick={() => { setError(""); setAction(undefined); }}>取消</button>
+          {smtpAccount.smtp && <button type="button" className="secondary-button" onClick={() => void update("plugin.assistant-mail.account.set-smtp", { accountKey: smtpAccount.accountKey, smtp: null })}>关闭发信</button>}
+          <button type="submit" className="primary-button">保存发信设置</button>
         </div>
       </fieldset>
     </form>}

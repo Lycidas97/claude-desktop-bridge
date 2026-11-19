@@ -1232,7 +1232,7 @@ describe("mobile session creation", () => {
     await settle();
     elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "模型")!.props.onChange("gateway-model");
     draw();
-    expect(elements(tree).find(element => element.props.className === "effort-unavailable")?.props.children).toBe("当前模型不可用：超高");
+    expect(elements(tree).find(element => element.props.className === "effort-unavailable")?.props.children).toBe("原生会话不支持：超高");
     expect(elements(tree).some(element => element.props['aria-label'] === "思考强度")).toBe(false);
     elements(tree).find(element => element.type === "button" && String(element.props.className).includes("new-chat-empty-create-btn"))!.props.onClick();
     await settle();

@@ -144,12 +144,29 @@ describe("session effort", () => {
     const draw = () => render(() => <SessionConfigurationDialog {...props} />);
     draw(); await settle();
     const tree = draw();
-    expect(textContent(tree)).toContain("当前模型不可用：关闭、超高");
+    expect(textContent(tree)).toContain("原生会话不支持：关闭、超高");
     expect(button(tree, "关闭")).toBeUndefined();
     expect(button(tree, "超高")).toBeUndefined();
     button(tree, "中").props.onClick();
     button(draw(), "保存配置").props.onClick(); await settle();
     expect(props.onSave).toHaveBeenCalledExactlyOnceWith({ effort: "medium" });
+  });
+
+  it.each([
+    { declared: ["low", "ultra"], notice: "当前模型不可用：低、超高" },
+    { declared: ["ultra"], notice: "原生会话不支持：超高" },
+  ])("explains the unavailable levels when a model offers no selectable effort: $notice", async ({ declared, notice }) => {
+    const loaded: BridgeSessionConfiguration = {
+      ...configuration,
+      availableModels: [{ value: "current-model", displayName: "Current", supportsEffort: false, declaredEffortLevels: declared }],
+    };
+    const draw = () => render(() => <SessionConfigurationDialog session={session}
+      onLoad={vi.fn().mockResolvedValue(loaded)} onSave={vi.fn()} onClose={vi.fn()} />);
+    draw(); await settle();
+    const tree = draw();
+    expect(textContent(tree)).toContain(notice);
+    expect(button(tree, "低")).toBeUndefined();
+    expect(button(tree, "超高")).toBeUndefined();
   });
 
   it("starts unset and shows the effort Desktop returns after an explicit change", async () => {

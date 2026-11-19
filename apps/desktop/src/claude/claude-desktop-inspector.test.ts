@@ -1,10 +1,14 @@
 import { createServer } from "node:http";
 import { createContext, runInContext } from "node:vm";
 import { once } from "node:events";
-import { basename } from "node:path";
+import { basename, join } from "node:path";
 import { WebSocketServer } from "ws";
-import { describe, expect, it } from "vitest";
-import { ClaudeDesktopInspector, InspectorDisconnectedError, NativeCallError } from "./claude-desktop-inspector.js";
+import { describe, expect, it, vi } from "vitest";
+import { AssistantMailStore } from "../../../../plugins/assistant-mail/store.js";
+import { EventTriggerDispatcher } from "../controller/event-trigger-dispatcher.js";
+import { fixture as bridgeFixture } from "./claude-desktop-bridge-fixture.js";
+import { ClaudeDesktopBridge } from "./claude-desktop-bridge.js";
+import { ClaudeDesktopInspector, InspectorDisconnectedError, InspectorNotDispatchedError, NativeCallError } from "./claude-desktop-inspector.js";
 
 async function fixture() {
   const events = new Set<(value: unknown) => void>();
@@ -503,16 +507,63 @@ describe("native Desktop inspector", () => {
     } finally { await f.close(); }
   });
 
-  it("detects a replaced renderer and can establish a new subscription", async () => {
+  it.each(["reloaded page", "missing page"])("recovers the original assistant batch after a %s rejects before LocalSessions", async change => {
+    const f = await fixture();
+    const env = await bridgeFixture();
+    const broker = new ClaudeDesktopBridge({ ...env.options, inspector: f.inspector });
+    const mail = new AssistantMailStore(join(env.directory, "mail"));
+    await mail.initialize();
+    const sessionId = "local-native";
+    const dispatcher = new EventTriggerDispatcher(mail.triggers, env.state, broker, () => sessionId,
+      () => f.inspector.ready, id => broker.readNativeSessionIdentity(id), () => undefined);
+    const sends = () => f.calls.filter(call => call[0] === sessionId);
+    try {
+      await broker.initialize();
+      mail.setBinding({ assistantId: "assistant", nativeSessionId: sessionId, sectionId: null, previousSessionIds: [],
+        managed: { path: "/project", policy: "stage1-fenced-workspace", token: "fixture", automaticDelivery: true } });
+      mail.triggers.record({ kind: "todo.due", eventId: "fixture-event" }, "fixture-event", Date.now() - 3_000);
+      const batch = mail.triggers.nextPending(sessionId)!;
+      const append = env.eventLog.append.bind(env.eventLog);
+      let original: ReturnType<typeof env.state.nativeDesktopReceipt>;
+      vi.spyOn(env.eventLog, "append").mockImplementationOnce(async draft => {
+        expect(draft.data?.delivery).toBe("host-received");
+        original = env.state.nativeDesktopReceipt(batch.idempotencyKey);
+        expect(f.inspector.ready).toBe(true);
+        if (change === "reloaded page") f.reload();
+        else f.setPageAvailable(false);
+        return append(draft);
+      });
+      dispatcher.wake();
+      await expect.poll(() => dispatcher.project(batch, sessionId)).toMatchObject({ state: "pending", commandId: expect.any(String) });
+      expect(original).toBeDefined();
+      expect(f.inspector.ready).toBe(false);
+      expect(sends()).toHaveLength(0);
+      expect(mail.triggers.batch(batch.batchId)?.commandId).toBeNull();
+      f.setPageAvailable(true);
+      expect(await broker.refreshRuntime()).toBe(true);
+      dispatcher.wake(true);
+      await expect.poll(() => mail.triggers.batch(batch.batchId)?.commandId).toBe(original!.commandId);
+      expect(env.state.nativeDesktopReceipt(batch.idempotencyKey)?.messageId).toBe(original!.messageId);
+      expect(sends().map(args => args[7])).toEqual([original!.messageId]);
+      expect(f.events.size).toBe(1);
+    } finally {
+      dispatcher.close();
+      mail.close();
+      f.setPageAvailable(true);
+      await broker.close();
+      await env.close();
+      await f.close();
+    }
+  });
+
+  it("does not treat Native error text as proof the call was skipped", async () => {
     const f = await fixture();
     try {
       await f.inspector.connect();
-      f.reload();
-      await expect(f.inspector.call("getAll")).rejects.toThrow(/BRIDGE_RENDERER_RELOADED|Desktop inspector disconnected/u);
-      expect(f.inspector.ready).toBe(false);
-      await f.inspector.connect();
-      expect(await f.inspector.call("getAll")).toHaveLength(1);
-      expect(f.events.size).toBe(1);
+      f.api.sendMessage = (...args) => { f.calls.push(args); throw new Error("BRIDGE_RENDERER_RELOADED"); };
+      await expect(f.inspector.call("sendMessage", ["local-native", "once"])).rejects.toBeInstanceOf(NativeCallError);
+      expect(f.calls).toEqual([["local-native", "once"]]);
+      expect(f.inspector.ready).toBe(true);
     } finally { await f.close(); }
   });
 
@@ -607,9 +658,10 @@ describe("native Desktop inspector", () => {
     try {
       await f.inspector.connect();
       f.api.sendMessage = (...args) => { f.calls.push(args); f.drop(); };
-      await expect(f.inspector.call("sendMessage", ["local-native", "once"])).rejects.toMatchObject({
-        message: "Desktop inspector disconnected; delivery is unconfirmed",
-      });
+      const error = await f.inspector.call("sendMessage", ["local-native", "once"]).catch(error => error);
+      expect(error).toBeInstanceOf(InspectorDisconnectedError);
+      expect(error).not.toBeInstanceOf(InspectorNotDispatchedError);
+      expect(error).toMatchObject({ message: "Desktop inspector disconnected; delivery is unconfirmed" });
       expect(f.calls).toEqual([["local-native", "once"]]);
       expect(f.inspector.ready).toBe(false);
       await f.inspector.connect();
@@ -626,7 +678,7 @@ describe("native Desktop inspector", () => {
       await f.inspector.connect();
       expect(await f.inspector.call("getAll")).toHaveLength(1);
       f.setPageAvailable(false);
-      await expect(f.inspector.call("getAll")).rejects.toBeInstanceOf(NativeCallError);
+      await expect(f.inspector.call("getAll")).rejects.toBeInstanceOf(InspectorNotDispatchedError);
       expect(f.inspector.ready).toBe(false);
       await expect(f.inspector.call("sendMessage", ["local-native", "unavailable"])).rejects.toBeInstanceOf(InspectorDisconnectedError);
       expect(f.calls).toEqual([]);

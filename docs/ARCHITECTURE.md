@@ -226,7 +226,7 @@ inspector 事件流；生产 inspector 的错误分类仍由契约测试覆盖�
 
 用户可在托管助理设置中开启主动投递，默认关闭。开启后，前向 IMAP 收件事务同时写入邮件、触发台账和水位。首条事件固定目标和三秒截止时间，每批最多 32 条。Desktop 不可用时保留未发送批次，重连或系统恢复后补扫。换绑后旧批次仍归原会话。
 
-批次走同一个 Native `turn.start`。忙碌时由 Desktop 排入 `later`。Bridge 按原幂等键找回收据，按原 `commandId` 与收据当前 UUID 对账。只有能确认尚未写入 inspector socket 的调用才会沿用原收据提交。会话时间线用当前 UUID 或 rekey 前的 UUID 关联批次，按会话与批次独立分页读取同批邮件，分别展示投递与各邮件的处理状态。客户端按 Native 队列能力撤回排队批次。
+批次走同一个 Native `turn.start`。忙碌时由 Desktop 排入 `later`。Bridge 按原幂等键找回收据，按原 `commandId` 与收据当前 UUID 对账。只有 socket 未写出或 Bridge 的 renderer 前置检查确认未调用 `LocalSessions` 时，才会沿用原收据提交。会话时间线用当前 UUID 或 rekey 前的 UUID 关联批次，按会话与批次独立分页读取同批邮件，分别展示投递与各邮件的处理状态。客户端按 Native 队列能力撤回排队批次。
 
 新邮件和分析写回经 E2EE 增量通知手机。Host 在内存中按设备合并待发送通知，在 Relay 重连时补发，收到 `stored` 后清除对应通知。Relay 发送无正文 `bridge-wake`。
 

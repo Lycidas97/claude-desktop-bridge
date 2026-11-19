@@ -28,6 +28,7 @@ import {
 import { EmptyState } from "../common/EmptyState.js";
 import { IconButton } from "../common/IconButton.js";
 import { ThemeMenu } from "../common/ThemeMenu.js";
+import { formatHostLastSeen } from "../pairing/host-last-seen.js";
 import { ProjectGroupHeader } from "../session/ProjectGroupHeader.js";
 import { SectionCreateDialog, type SectionCreateState } from "../session/SectionCreateDialog.js";
 import { SectionManageDialog, type SectionManageController } from "../session/SectionManageDialog.js";
@@ -50,7 +51,7 @@ function hostQuickMeta(
 ): string {
   if (host.needsRepair) return "需重配";
   // Inactive hosts have cached catalogs, with no current connection to check their status.
-  if (!isCurrent) return "未连接";
+  if (!isCurrent) return formatHostLastSeen(host.lastSeenAt) ?? "未连接";
   if (!isOnline) return "离线";
   if (transportMetrics?.path === "direct") return "直连";
   if (transportMetrics?.path === "lan-relay") return "局域网";

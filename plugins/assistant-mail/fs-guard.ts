@@ -98,10 +98,11 @@ export async function allowAssistantTool(workspace: string, input: unknown, poli
       : target === ASSISTANT_HELPER && params.run_in_background === false) &&
       Object.keys(params).every(key => ["subagent_type", "description", "prompt", "model", "effort", "run_in_background"].includes(key));
   }
-  if (specialist && proposalDraftTools.includes(name)) {
+  if (proposalDraftTools.includes(name)) {
     const kind = (params.action as { kind?: unknown } | undefined)?.kind;
-    if (typeof kind !== "string" || !(agentType === "mail-triager" ? kind.startsWith("mail.")
-      : agentType === "schedule-planner" ? /^(todo|calendar)\./.test(kind) : kind === "memory.rule_upsert")) return false;
+    if (!memory && agentId !== undefined && kind === "memory.rule_upsert") return false;
+    if (specialist && (typeof kind !== "string" || !(agentType === "mail-triager" ? kind.startsWith("mail.")
+      : agentType === "schedule-planner" ? /^(todo|calendar)\./.test(kind) : kind === "memory.rule_upsert"))) return false;
   }
   if (!fileTools.includes(name)) return true;
   if (!safePathInput(cwd) || !isAbsolute(cwd)) return false;

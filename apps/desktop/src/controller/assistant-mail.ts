@@ -141,7 +141,7 @@ export class AssistantMailCoordinator {
   capabilities() {
     return [
       ...ASSISTANT_MAIL_CAPABILITIES,
-      ...(this.workspace?.policy === ASSISTANT_MEMORY_POLICY ? [ASSISTANT_MEMORY_PROPOSAL_CAPABILITY] as const : []),
+      ...(this.workspace?.ruleProposalSession(this.mail.binding()) ? [ASSISTANT_MEMORY_PROPOSAL_CAPABILITY] as const : []),
       ...(this.workspace && this.host.broker?.canProvisionAssistantWorkspace() ? ["plugin.assistant-mail.workspace.v1"] as const : []),
       ...(this.dispatcher ? ["plugin.assistant-mail.triggers.v1", "plugin.assistant-mail.batches.v1"] as const : []),
     ];

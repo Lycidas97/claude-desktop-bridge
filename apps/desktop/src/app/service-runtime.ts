@@ -177,11 +177,15 @@ export async function createServiceRuntime(options: {
     const assistantWorkspacePath = managed ? await workspace.restore(managed.token, managed.path, managed.policy) : workspace.path;
     const memoryAllowed = (sessionId: string) => {
       const binding = assistantMail.binding();
-      return !workspace.repairFailed && binding?.nativeSessionId === sessionId && binding.managed?.policy === ASSISTANT_MEMORY_POLICY;
+      return binding?.managed?.policy === ASSISTANT_MEMORY_POLICY && workspace.ruleProposalSession(binding) === sessionId;
     };
     const proposals = new ProposalExecutor(proposalStore, agendaStore, agendaCredentials, sourceId => {
       void assistantAgenda.proposalChanged(sourceId).catch(error => assistantAgenda.emit("error", error));
-    }, undefined, assistantMail, undefined, { memory: workspace.memory, allowed: memoryAllowed });
+    }, undefined, assistantMail, undefined, {
+      memory: workspace.memory,
+      allowed: sessionId => workspace.ruleProposalSession(assistantMail.binding()) === sessionId,
+      listFromTool: memoryAllowed,
+    });
     proposals.on("error", () => process.stderr.write("Bridge assistant proposal execution or recovery failed.\n"));
     resources.defer("Assistant proposals", () => proposals.close());
     const mailTools = await serveAssistantMailTools({

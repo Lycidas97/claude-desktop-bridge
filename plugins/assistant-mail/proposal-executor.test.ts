@@ -36,8 +36,9 @@ function open() {
   db = new DatabaseSync(file);
   agenda = new AgendaStore(db, "UTC");
   ledger = new ProposalStore(db);
+  const allowed = (sessionId: string) => sessionId === "bound-session";
   service = new ProposalExecutor(ledger, agenda, credentials, notifyAgenda, options => requestCalDavMember(options, fetchDav),
-    undefined, undefined, { memory: new AssistantMemory(directory), allowed: sessionId => sessionId === "bound-session" });
+    undefined, undefined, { memory: new AssistantMemory(directory), allowed, listFromTool: allowed });
 }
 function seedRemote(body = sourceBody) {
   const id = agenda.addSource({ label: "Work", url: collection, user: "owner" }, Buffer.from("fixture-credential"));

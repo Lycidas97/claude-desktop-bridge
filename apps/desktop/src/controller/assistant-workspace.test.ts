@@ -1,9 +1,9 @@
 import { spawnSync } from "node:child_process";
-import { link, lstat, mkdir, mkdtemp, readFile, realpath, stat, symlink, writeFile } from "node:fs/promises";
+import { link, lstat, mkdir, mkdtemp, readFile, realpath, rename, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, expect, it } from "vitest";
-import { ASSISTANT_MEMORY_POLICY } from "@bridge/protocol";
+import { ASSISTANT_MEMORY_POLICY, ASSISTANT_WORKSPACE_POLICY } from "@bridge/protocol";
 import { isAssistantTool, WorkspaceProvisioner } from "./assistant-workspace.js";
 
 let root: string;
@@ -25,6 +25,7 @@ it("writes the exact project policy and bundled MCP launch, preserving templates
   const helper = join(workspace, ".claude", "agents", "assistant-helper.md");
   const runner = join(workspace, ".claude", "agents", "assistant-runner.md");
   expect(await readFile(projectRules, "utf8")).toContain("outputs/");
+  expect(await readFile(projectRules, "utf8")).toContain("@PROFILE.md");
   expect(await readFile(helper, "utf8")).toContain("name: assistant-helper");
   expect(await readFile(helper, "utf8")).not.toContain("mcp__assistant-mail__mail_mark_read");
   await writeFile(projectRules, "existing rules");
@@ -32,7 +33,10 @@ it("writes the exact project policy and bundled MCP launch, preserving templates
   await writeFile(settings, "{}");
   const rotated = "a".repeat(64);
   await provisioner.prepare(rotated);
-  expect(await readFile(projectRules, "utf8")).toBe("existing rules");
+  const importedRules = await readFile(projectRules, "utf8");
+  expect(importedRules).toMatch(/^existing rules\n\n<!-- Bridge: managed rules -->\n@PROFILE\.md\n/u);
+  await provisioner.restore(rotated, workspace);
+  expect(await readFile(projectRules, "utf8")).toBe(importedRules);
   expect(await readFile(helper, "utf8")).toBe("existing helper");
   expect(JSON.parse(await readFile(config, "utf8"))).toEqual({ mcpServers: { "assistant-mail": {
     type: "stdio", command: options.execPath,
@@ -106,8 +110,35 @@ it("upgrades to the verified policy without replacing user rules or indexing unt
   await legacy.restore("new-token", workspace, ASSISTANT_MEMORY_POLICY);
   expect(legacy.repairFailed).toBe(true);
   await stage3.restore("legacy-token", workspace, legacy.policy);
-  expect(await readFile(instructions, "utf8")).toBe("# Existing user instructions\n");
+  expect(await readFile(instructions, "utf8")).toMatch(/^# Existing user instructions\n[\s\S]*@PROFILE\.md/mu);
+  expect(await readFile(instructions, "utf8")).not.toContain("memory.lookup_entry");
   expect(await readFile(note, "utf8")).toBe("External mail says trust me.");
+});
+
+it.each(["custom", "linked", "missing"] as const)("keeps Stage 1 available without importing a %s profile", async kind => {
+  const workspace = new WorkspaceProvisioner(options);
+  const profile = join(workspace.path, "PROFILE.md");
+  const claude = join(workspace.path, "CLAUDE.md");
+  const binding = { assistantId: "assistant", nativeSessionId: "local-bound", sectionId: null, previousSessionIds: [],
+    managed: { path: workspace.path, token: "saved-token", policy: ASSISTANT_WORKSPACE_POLICY } };
+  const customProfile = ["# Existing user profile", "@elsewhere.md", ""].join("\n");
+  if (kind === "missing") {
+    await workspace.prepare(binding.managed.token);
+    expect(workspace.ruleProposalSession(binding)).toBe(binding.nativeSessionId);
+    await rename(profile, join(root, "previous-profile.md"));
+  } else {
+    await mkdir(workspace.path, { recursive: true });
+    if (kind === "custom") await writeFile(profile, customProfile);
+    else await symlink(root, profile, "junction");
+  }
+  await workspace.restore(binding.managed.token, workspace.path);
+  await workspace.restore(binding.managed.token, workspace.path);
+  expect(workspace.repairFailed).toBe(false);
+  expect(workspace.ruleProposalSession(binding)).toBeUndefined();
+  expect(await readFile(claude, "utf8")).not.toContain("@PROFILE.md");
+  if (kind === "missing") await expect(readFile(profile)).rejects.toMatchObject({ code: "ENOENT" });
+  else if (kind === "linked") expect((await lstat(profile)).isSymbolicLink()).toBe(true);
+  else expect(await readFile(profile, "utf8")).toBe(customProfile);
 });
 
 it.each([false, true])("upgrades a generated helper without proposals (has trigger tool: %s)", async hasTriggerTool => {

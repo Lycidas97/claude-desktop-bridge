@@ -27,7 +27,7 @@ export class ProposalExecutor extends EventEmitter {
     private readonly memberRequest = requestCalDavMember,
     private readonly mail?: AssistantMailService,
     private readonly send = submitSmtp,
-    private readonly profile?: { memory: AssistantMemory; allowed(sessionId: string): boolean },
+    private readonly profile?: { memory: AssistantMemory; allowed(sessionId: string): boolean; listFromTool(sessionId: string): boolean },
   ) { super(); }
 
   snapshot(): BridgeProposalSnapshot {
@@ -70,7 +70,7 @@ export class ProposalExecutor extends EventEmitter {
   }
 
   page(query: Parameters<ProposalStore["page"]>[0], sessionId?: string) {
-    return this.store.page(sessionId === undefined ? query : { ...query, includeMemory: this.profile?.allowed(sessionId) }, sessionId);
+    return this.store.page(sessionId === undefined ? query : { ...query, includeMemory: this.profile?.listFromTool(sessionId) }, sessionId);
   }
   resolve(...params: Parameters<ProposalStore["resolve"]>) { return this.store.resolve(...params); }
   pending(ref: ProposalRevisionRef, sessionId?: string) { return publicProposal(this.store.requirePending(ref, sessionId)); }

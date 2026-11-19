@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { join } from "node:path";
 import { beforeEach, expect, it, vi } from "vitest";
-import type { BridgeInspectorAlert, BridgeInspectorStatus } from "@bridge/protocol";
+import { ASSISTANT_WORKSPACE_POLICY, type BridgeInspectorAlert, type BridgeInspectorStatus } from "@bridge/protocol";
 import { WorkspaceProvisioner } from "../controller/assistant-workspace.js";
 
 const resources = await vi.hoisted(async () => {
@@ -340,6 +340,40 @@ it.each(["invalid JSON", "directory in place of the account file"])("starts the 
   } finally {
     await mail.close();
   }
+});
+
+it("drafts rules for a restored Stage 1 binding and writes them only after confirmation", async () => {
+  const { mkdir, mkdtemp, readFile, realpath, stat, writeFile } = await import("node:fs/promises");
+  const userDataPath = await realpath(await mkdtemp(join(process.env.BRIDGE_TEST_TEMP_ROOT!, "assistant-rules-")));
+  const workspace = join(userDataPath, "private", "assistant", "workspace");
+  await mkdir(workspace, { recursive: true });
+  await writeFile(join(workspace, "CLAUDE.md"), "# Existing workspace rules\n");
+  const binding = { nativeSessionId: "local-assistant", managed: { path: workspace, token: "saved-token", policy: ASSISTANT_WORKSPACE_POLICY, automaticDelivery: true } };
+  resources.assistantMail.binding.mockReturnValue(binding);
+  const { createServiceRuntime } = await import("./service-runtime.js");
+  const runtime = await createServiceRuntime({ userDataPath });
+  try {
+    const { authorizeManagedToken, lookupMemory, proposals } = resources.serveMailTools.mock.calls[0]![0];
+    const action = { kind: "memory.rule_upsert", category: "format", ruleId: "summary", operation: "add", text: "Start with the conclusion.", reason: "User preference" } as const;
+    expect(authorizeManagedToken("saved-token")).toBe(binding.nativeSessionId);
+    expect(authorizeManagedToken("old-token")).toBeUndefined();
+    const ref = await proposals.create(binding.nativeSessionId, action);
+    expect(proposals.page({ limit: 10, includeMemory: true }, binding.nativeSessionId).proposals).toEqual([]);
+    await expect(proposals.create("local-other", action)).rejects.toMatchObject({ code: "UNSUPPORTED" });
+    resources.assistantMail.binding.mockReturnValue({ nativeSessionId: binding.nativeSessionId });
+    await expect(proposals.create(binding.nativeSessionId, action)).rejects.toMatchObject({ code: "UNSUPPORTED" });
+    resources.assistantMail.binding.mockReturnValue(binding);
+    const profile = join(workspace, "PROFILE.md");
+    const before = await readFile(profile, "utf8");
+    expect(before).not.toContain(action.text);
+    await expect(proposals.commit(ref, "old-client")).rejects.toMatchObject({ code: "INVALID_PARAMS" });
+    expect(await readFile(profile, "utf8")).toBe(before);
+    await expect(proposals.commit({ ...ref, confirmMemory: true }, "paired-phone")).resolves.toMatchObject({ state: "applied" });
+    expect(await readFile(profile, "utf8")).toContain(action.text);
+    expect(await readFile(join(workspace, "CLAUDE.md"), "utf8")).toMatch(/^# Existing workspace rules\n[\s\S]*@PROFILE\.md/mu);
+    expect(lookupMemory(binding.nativeSessionId, "a".repeat(64))).toBeUndefined();
+    await expect(stat(join(workspace, "memory"))).rejects.toMatchObject({ code: "ENOENT" });
+  } finally { await runtime.close(); }
 });
 
 it("starts ordinary sessions and mail when a saved managed workspace cannot be repaired", async () => {

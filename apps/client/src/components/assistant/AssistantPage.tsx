@@ -244,7 +244,7 @@ function MailAccounts({ accounts, configUnavailable, credentialsSupported, onlin
     setError("");
     try {
       mailResult(await request(method, params));
-      setAction(undefined);
+      if (method !== "plugin.assistant-mail.account.set-poll-interval") setAction(undefined);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "邮箱账号设置失败");
     } finally {

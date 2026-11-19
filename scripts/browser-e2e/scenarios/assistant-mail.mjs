@@ -412,6 +412,9 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   const { accountKey } = host.snapshot.assistantMail.accounts.find(account => account.user === extraUser);
   const pollInterval = extraAccount.getByRole("combobox", { name: /^备用轮询间隔/u });
   assert.equal(await pollInterval.inputValue(), "60");
+  await accounts.getByRole("button", { name: "添加邮箱", exact: true }).click();
+  const draftAddress = accounts.getByLabel("邮箱地址", { exact: true });
+  await draftAddress.fill("unsaved@example.test");
   const allowPollingUpdate = Promise.withResolvers();
   host.pollIntervalGate = allowPollingUpdate.promise;
   try {
@@ -423,6 +426,9 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
     allowPollingUpdate.resolve();
   }
   await extraAccount.getByText("不支持持续收件，轮询已关闭", { exact: true }).waitFor();
+  assert.equal(await draftAddress.count(), 1, "Saving a polling interval keeps the open account form");
+  assert.equal(await draftAddress.inputValue(), "unsaved@example.test");
+  await accounts.getByRole("button", { name: "取消", exact: true }).click();
   await pollInterval.selectOption("30");
   await extraAccount.getByText("轮询中", { exact: true }).waitFor();
   assert.equal(await pollInterval.inputValue(), "30");

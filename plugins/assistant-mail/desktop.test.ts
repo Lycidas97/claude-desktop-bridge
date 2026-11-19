@@ -180,6 +180,7 @@ it("reconnects with a fresh client and committed watermark, then resumes again a
   await vi.waitFor(() => expect(service.page().events.map(event => event.uid)).toEqual([6, 5]));
   expect(createClient).toHaveBeenCalledTimes(2);
   expect(second.scans[0]).toBe("6:*");
+  await vi.waitFor(() => expect(second.idle).toHaveBeenCalledOnce());
   await service.close();
   services.splice(services.indexOf(service), 1);
   const third = new Inbox();
@@ -301,7 +302,8 @@ it("saves separate polling intervals, applies them to active receivers and resto
   await vi.waitFor(() => expect(restarted.status().accounts[1]).toMatchObject({ state: "polling", pollIntervalSeconds: 120 }));
 });
 
-it("receives new mail after a real tagged NO from an IMAP server advertising IDLE", async () => {
+it.each(["NO", "BYE"])("receives new mail after an IMAP server advertising IDLE replies %s", async refusal => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const commands: string[] = [];
   let delivered = false;
   const source = "Subject: mail after IDLE refusal\r\n\r\nbody\r\n";
@@ -323,7 +325,10 @@ it("receives new mail after a real tagged NO from an IMAP server advertising IDL
             : "* 1 FETCH (UID 5)\r\n") + ok);
           break;
         case "NOOP": socket.write(ok); break;
-        case "IDLE": socket.write(`${tag} NO IDLE disabled\r\n`); break;
+        case "IDLE":
+          if (refusal === "BYE") socket.end("* BYE IDLE disabled\r\n");
+          else socket.write(`${tag} NO IDLE disabled\r\n`);
+          break;
         default: socket.write(`${tag} BAD unexpected command\r\n`);
       }
     });
@@ -337,9 +342,17 @@ it("receives new mail after a real tagged NO from an IMAP server advertising IDL
   try {
     await service.initialize();
     await service.enable({ ...account, host: "127.0.0.1", port });
-    await vi.waitFor(() => expect(service.status()).toMatchObject({ state: "polling" }));
+    if (refusal === "BYE") {
+      await waitForMailState(service, "reconnecting");
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(commands.filter(command => command === "EXAMINE INBOX")).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1);
+    }
+    await waitForMailState(service, "polling");
     delivered = true;
-    service.resume();
+    await vi.advanceTimersByTimeAsync(59_999);
+    expect(service.page().events).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
     await vi.waitFor(() => expect(service.page().events.map(event => event.uid)).toEqual([5]));
     expect(commands.filter(command => command === "IDLE")).toHaveLength(1);
     expect(commands).toContain("EXAMINE INBOX");

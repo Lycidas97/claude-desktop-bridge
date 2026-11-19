@@ -58,6 +58,7 @@ export class MailReceiver {
     const password = await this.credentials.get(accountKey).catch(() => undefined);
     if (this.stopped) return;
     if (!password) { this.setState("error", "mail_credentials_unavailable"); return; }
+    let idleRefusedOnClose = false;
     while (!this.stopped) {
       const client = this.createClient({
         host, port, secure: true,
@@ -78,7 +79,7 @@ export class MailReceiver {
       try {
         await client.connect();
         if (this.stopped) break;
-        useIdle = hasCapability(client, "IDLE");
+        useIdle = !idleRefusedOnClose && hasCapability(client, "IDLE");
         let uidValidity: string | undefined;
         let lastUid = 0;
         while (!this.stopped && !ended) {
@@ -127,7 +128,14 @@ export class MailReceiver {
             const idling = client.idle();
             void idling.then(notify, notify);
             await notified;
-            if (this.stopped || ended) { await idling; break; }
+            if (this.stopped || ended) {
+              const result = await idling;
+              // Only an explicit BYE refusal changes the next connection's mode, not a lost socket.
+              if (!this.stopped && result === false && /\bIDLE\s+(?:is\s+)?(?:disabled|unsupported|not\s+(?:allowed|supported))\b/i.test(client.byeReason ?? "")) {
+                idleRefusedOnClose = true;
+              }
+              break;
+            }
             await client.noop(); // An IMAP command breaks IDLE and checks the connection is still usable.
             if (await idling !== false) continue;
             if (this.stopped || ended) break;
@@ -157,6 +165,10 @@ export class MailReceiver {
         this.requestScan = undefined;
       }
       if (this.stopped) return;
+      if (idleRefusedOnClose && this.account.pollIntervalSeconds === null) {
+        this.setState("unsupported", "mail_idle_unsupported");
+        return;
+      }
       const reconnect = new Promise<void>((resolve) => {
         this.wake = resolve;
         this.reconnectTimer = setTimeout(resolve, 5_000);

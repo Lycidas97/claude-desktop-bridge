@@ -39,3 +39,13 @@ Keep each entry to the rule, one line of what broke, and the commits. No CI run 
 - Why: Electron 43 has no postinstall; its entry downloads the binary on first import, so a hand-built path fails with spawn ENOENT after a fresh `npm ci`.
 - Fixed/verified in: `952deb3` (`scripts/service-restart-qa.mjs`)
 - Seen 1× (2026-11-13)
+
+**[Recipe] Verify a managed Desktop `agent` change by cold-starting the same bound session and comparing `system/init.tools`.**
+- Why: On Desktop 5.11492.5 / Claude Code 2.1.325, the baseline with `permissions.allow` advertised 35 extra tools. Selecting an empty-body project agent via `.claude/settings.json` reduced that to 0, with all 8 mail/agenda tools present and the same Desktop and CLI session IDs. Keep `PreToolUse` for call enforcement (#418).
+- Fixed/verified in: `f9fff4a` (`apps/desktop/src/controller/assistant-workspace.ts`)
+- Seen 1× (2026-11-19)
+
+**[Pitfall] After switching computers in browser E2E, wait for a session unique to the destination's live catalog before counting sessions.**
+- Why: A generic title already matched the cached catalog, so `dark-incoming-file` counted 1 target before the live catalog showed both. Waiting for `审阅项目计划` made the original count assertion pass (`e3e771dd`, #424).
+- Fixed/verified in: `970aa81` (browser fix `7ef04fe6`, `scripts/browser-e2e/scenarios/incoming-file.mjs`)
+- Seen 1× (2026-11-19)

@@ -545,8 +545,10 @@ export class ClaudeDesktopBridge extends EventEmitter {
     applyLiveContextUsageState(state, live, state.turnModel ?? native?.model);
   }
 
-  private applyTranscriptContextMessages(sessionId: string, messages: readonly unknown[]): void {
-    this.contextStates.set(sessionId, buildTranscriptContextState(messages, this.contextStates.get(sessionId)));
+  private applyTranscriptContextMessages(sessionId: string, messages: readonly unknown[], priorLiveSample: symbol | undefined): void {
+    const current = this.contextStates.get(sessionId);
+    const preserveLiveUsage = current?.liveUsageSample !== undefined && current.liveUsageSample !== priorLiveSample;
+    this.contextStates.set(sessionId, buildTranscriptContextState(messages, current, preserveLiveUsage));
   }
 
   private projectSessions(): void {
@@ -985,11 +987,12 @@ export class ClaudeDesktopBridge extends EventEmitter {
           }
           this.messageProjection.set(sessionId, liveProjection);
         }
+        const priorLiveSample = this.contextStates.get(sessionId)?.liveUsageSample;
         const live = await this.readLiveContextUsage(id);
         if (live) {
           this.applyLiveContextUsage(sessionId, live);
         } else {
-          const pending = readContextMessages(messages => this.applyTranscriptContextMessages(sessionId, messages));
+          const pending = readContextMessages(messages => this.applyTranscriptContextMessages(sessionId, messages, priorLiveSample));
           if (pending) await pending;
         }
         if (hydrateModel) await this.hydrateContextModel(id, this.native.get(id)?.model, page);

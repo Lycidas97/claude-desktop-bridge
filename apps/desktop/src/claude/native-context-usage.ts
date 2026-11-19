@@ -8,6 +8,7 @@ export interface NativeContextState {
   maxTokensByModel: Map<string, number>;
   turnModel?: string;
   model?: string;
+  liveUsageSample?: symbol;
   estimated: boolean;
   hydrated: boolean;
   seenAssistantUuids: Set<string>;
@@ -201,12 +202,15 @@ export function applyLiveContextUsageState(
   state.totalTokens = live.totalTokens;
   updateContextModel(state, live.model);
   if (live.rawMaxTokens) state.maxTokensByModel.set(contextWindowModel(sessionModel, state.model), live.rawMaxTokens);
+  state.liveUsageSample = Symbol();
   state.estimated = false;
   state.hydrated = true;
   delete state.stream;
 }
 
-export function buildTranscriptContextState(messages: readonly unknown[], previous?: NativeContextState): NativeContextState {
+export function buildTranscriptContextState(
+  messages: readonly unknown[], previous?: NativeContextState, preserveLiveUsage = false,
+): NativeContextState {
   const scan = scanClaudeContextFromMessages(messages);
   const seenAssistantUuids = new Set<string>();
   const preCompactUuids = new Set<string>();
@@ -223,10 +227,17 @@ export function buildTranscriptContextState(messages: readonly unknown[], previo
       }
     }
   }
+  if (previous && preserveLiveUsage) {
+    for (const id of seenAssistantUuids) previous.seenAssistantUuids.add(id);
+    for (const id of preCompactUuids) previous.preCompactUuids.add(id);
+    hydrateObservedContextModel(previous, scan.estimate?.model);
+    return previous;
+  }
   const state: NativeContextState = {
     totalTokens: scan.estimate?.totalTokens ?? 0,
     maxTokensByModel: previous?.maxTokensByModel ?? new Map(),
     ...(previous?.turnModel !== undefined ? { turnModel: previous.turnModel } : {}),
+    ...(previous?.liveUsageSample !== undefined ? { liveUsageSample: previous.liveUsageSample } : {}),
     estimated: true,
     hydrated: true,
     seenAssistantUuids,

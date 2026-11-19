@@ -3789,6 +3789,70 @@ describe("Claude native relay", () => {
     } finally { await f.close(); }
   });
 
+  it.each([
+    { hold: "older page", compact: false },
+    { hold: "empty live usage", compact: false },
+    { hold: "older page", compact: true },
+  ])("keeps a newer live usage sample with a delayed $hold (compacted: $compact)", async ({ hold, compact }) => {
+    const f = await fixture();
+    try {
+      const model = "claude-sonnet-4-5";
+      f.native.sessions[0]!.model = "default";
+      f.native.sessions[0]!.turnRunning = true;
+      await f.bridge.refreshRuntime();
+      await f.message(planMessage("live-wrap", { recap: "Done" }, 20, "mcp__ccd_turn__wrap_up"));
+      f.native.page = { hasMore: true, messages: [{ type: "user", uuid: "latest", message: { content: "Latest request" } }] };
+      f.native.calls.length = 0;
+      const older = {
+        type: "assistant", uuid: "older", message: { model, content: "Earlier reply", usage: { input_tokens: 12_000, output_tokens: 400 } },
+      };
+      f.native.pages.set("latest", { hasMore: false, messages: [older, ...(compact ? [{
+        type: "system", subtype: "compact_boundary", uuid: "compact",
+        compactMetadata: { postTokens: 9_200, preservedSegment: { tailUuid: older.uuid } },
+      }] : [])] });
+      let markFirstReadPending!: () => void;
+      const firstReadPending = new Promise<void>(resolve => { markFirstReadPending = resolve; });
+      let releaseFirstRead!: () => void;
+      const firstReadReleased = new Promise<void>(resolve => { releaseFirstRead = resolve; });
+      const call = f.native.call.bind(f.native);
+      vi.spyOn(f.native, "call").mockImplementation(async (method, args = []) => {
+        const pause = hold === "older page"
+          ? method === "getTranscriptPage" && args[1] === "latest"
+          : method === "getContextUsage" && f.native.contextUsage === null;
+        const result = call(method, args);
+        if (pause) {
+          markFirstReadPending();
+          await firstReadReleased;
+        }
+        return result;
+      });
+      const controller = createControllerFixture({ broker: f.bridge, eventLog: f.eventLog });
+      const first = controller.dispatchLocal({ method: "session.open", params: { sessionId: "local-native" } });
+      await firstReadPending;
+      f.native.contextUsage = { totalTokens: 64_200, rawMaxTokens: 1_000_000 };
+      const second = await controller.dispatchLocal({ method: "session.open", params: { sessionId: "local-native" } });
+      releaseFirstRead();
+      const firstResult = await first;
+
+      const live = { totalTokens: 64_200, maxTokens: 1_000_000, estimated: false };
+      expect(second).toMatchObject({ ok: true, result: { session: { contextUsage: live } } });
+      expect(firstResult).toMatchObject({
+        ok: true,
+        result: { history: { items: [{ id: "latest" }], hasMore: true, nextCursor: "latest" } },
+      });
+      expect({ firstResult, projected: f.bridge.session("local-native")?.contextUsage }).toMatchObject({
+        firstResult: { ok: true, result: { session: { model, contextUsage: live } } }, projected: live,
+      });
+      expect(f.native.calls.filter(call => call.method === "getTranscriptPage").map(call => call.args.slice(1, 3))).toEqual(
+        hold === "older page" ? [["", 18], ["latest", 100], ["", 18], ["", 20]] : [["", 18], ["", 18], ["", 20], ["latest", 100]],
+      );
+      if (compact) {
+        await f.message(older);
+        expect(f.bridge.session("local-native")?.contextUsage).toMatchObject(live);
+      }
+    } finally { await f.close(); }
+  });
+
   it("keeps the live usage from the second concurrent open when both native replies arrive together", async () => {
     const f = await fixture();
     try {

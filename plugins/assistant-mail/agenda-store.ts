@@ -208,7 +208,7 @@ export class AgendaStore {
     const cursor = [closed, date, id].join("\0");
     const entries = rows.map(row => JSON.parse(row.value as string) as BridgeAgendaTodo).map(record => ({ record, key: key(record) }));
     for (const row of this.recurringObjects(2)) {
-      const { uid, todos } = parseAgendaObject(row.data, collectionZone(row.calendar_timezone, this.timeZone), { todos: true });
+      const { uid, todos } = parseAgendaObject(row.data, collectionZone(row.calendar_timezone, this.timeZone), { todos: { limit, closed: Number(closed), date } });
       for (const todo of todos) {
         if (query.status && todo.status !== query.status) continue;
         const record = { ...todo, ...this.importedIdentity(row, uid, todo.recurrenceId) };

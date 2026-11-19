@@ -63,25 +63,44 @@ function timing(component: ICAL.Component, fallback: AgendaZone, allDayZone?: st
 type Timing = ReturnType<typeof timing>;
 type Instance = { item: Timing; start: ICAL.Time | undefined; recurrenceId?: string | undefined; endAt?: string | undefined };
 
-function ruleStarts(rule: ICAL.Recur, start: ICAL.Time, floor: number) {
+function repeatStep(rule: ICAL.Recur, start: ICAL.Time, zone: AgendaZone): number | undefined {
   const unit = ({ SECONDLY: 1000, MINUTELY: 60_000, HOURLY: 3_600_000 } as Record<string, number>)[rule.freq];
-  if (!start.isDate && start.zone === utc && unit && !Object.keys(rule.parts).length && floor !== -Infinity) {
-    const origin = start.toUnixTime() * 1000;
-    const step = rule.interval * unit;
-    const until = rule.until?.toUnixTime();
+  if (!unit || start.isDate || Object.keys(rule.parts).length) return undefined;
+  if (zone === utc || zone === "UTC") return rule.interval * unit;
+  if (typeof zone !== "string") {
+    const periods = zone.component?.getAllSubcomponents();
+    const offset = zone.utcOffset(start);
+    // ical.js uses zero before the first observance. DTSTART must already use the fixed offset.
+    if (periods?.length && periods.every(period => ["tzoffsetfrom", "tzoffsetto"].every(property =>
+      (period.getFirstPropertyValue(property) as ICAL.UtcOffset | null)?.toSeconds() === offset))) {
+      return rule.interval * unit;
+    }
+  }
+  return undefined;
+}
+
+function ruleStarts(rule: ICAL.Recur, start: ICAL.Time, zone: AgendaZone, floor: number, step: number | undefined) {
+  if (step) {
+    const origin = instant(start, zone);
+    const offset = Date.parse(start.toString().replace(/Z?$/, "Z")) - origin;
+    const until = rule.until ? instant(rule.until, zone) : Infinity;
     let index = Math.max(0, Math.ceil((floor - origin) / step));
     return () => {
       const time = origin + index * step;
-      if ((rule.count !== null && index >= rule.count) || (until !== undefined && time > until * 1000)) return null;
+      if ((rule.count !== null && index >= rule.count) || time > until) return null;
       index++;
-      return ICAL.Time.fromJSDate(new Date(time), true);
+      const occurrence = ICAL.Time.fromJSDate(new Date(time + offset), true);
+      occurrence.zone = start.zone;
+      return occurrence;
     };
   }
   const iterator = rule.iterator(start);
   return () => iterator.next();
 }
 
-function expandSeries(items: Timing[], fallback: AgendaZone, window: AgendaWindow | undefined, expand: boolean): Instance[] {
+type TodoPage = { limit: number; closed: number; date: string };
+
+function expandSeries(items: Timing[], fallback: AgendaZone, window: AgendaWindow | undefined, expand: boolean, page?: TodoPage): Instance[] {
   const master = items.find(item => !item.component.hasProperty("recurrence-id"));
   const zone = master?.zone ?? fallback;
   const overrides = items.flatMap(item => {
@@ -120,7 +139,21 @@ function expandSeries(items: Timing[], fallback: AgendaZone, window: AgendaWindo
     const end = item.endAt();
     return item.start && end ? agendaInstant(end, item.zone) - instant(item.start, item.zone) : 0;
   }));
-  const lower = from - maxSpan - Math.max(0, ...ranges.map(range => range.shift * 1000)) - zoneMargin;
+  let lower = from - maxSpan - Math.max(0, ...ranges.map(range => range.shift * 1000)) - zoneMargin;
+  let candidateLimit = Infinity;
+  const steps = rules.map(rule => repeatStep(rule, start, zone));
+  if (page && rules.length === 1 && steps[0] && !extra.length && !overrides.length) {
+    const due = master.endAt();
+    if (due?.endsWith("Z")) {
+      const status = text(master.component, "status", 32)?.toUpperCase();
+      const closed = Number(status === "COMPLETED" || status === "CANCELLED");
+      if (closed < page.closed || (closed === page.closed && page.date === "~")) return [];
+      const after = Date.parse(page.date);
+      if (closed === page.closed && Number.isFinite(after)) lower = after - (Date.parse(due) - instant(start, zone));
+      // The store resolves the ID tie at the cursor and needs one extra result to detect the next page.
+      candidateLimit = page.limit + 2;
+    }
+  }
   const candidates = new Map<number, { time: ICAL.Time; endAt?: string | undefined }>();
   const add = (time: ICAL.Time, endAt?: string) => {
     const key = instant(time, zone);
@@ -133,12 +166,13 @@ function expandSeries(items: Timing[], fallback: AgendaZone, window: AgendaWindo
     if (date instanceof ICAL.Period) add(date.start, end ? timestamp(end, zone) : durationEnd(date.start, date.duration!, zone));
     else add(date);
   }
-  for (const rule of rules) {
-    const next = ruleStarts(rule, start, lower);
+  for (const [index, rule] of rules.entries()) {
+    const next = ruleStarts(rule, start, zone, lower, steps[index]);
     let count = 0;
     for (let occurrence = next(); occurrence && instant(occurrence, zone) < upper; occurrence = next()) {
       if (++count > expansionLimit) throw new Error("Calendar expansion exceeds supported occurrence count");
       add(occurrence);
+      if (candidates.size >= candidateLimit) break;
     }
   }
   for (const [key, date] of candidates) {
@@ -172,7 +206,7 @@ function todoFields({ item: { component, zone, endAt }, start, recurrenceId, end
 
 type RemoteEvent = AgendaEventInput & { attendees: string[]; busy: boolean; recurrenceId?: string | undefined };
 
-export function parseAgendaObject(data: string, fallbackZone: AgendaZone, options?: { window: AgendaWindow; allDayZone: string } | { todos: true }) {
+export function parseAgendaObject(data: string, fallbackZone: AgendaZone, options?: { window: AgendaWindow; allDayZone: string } | { todos: TodoPage }) {
   const calendar = new ICAL.Component(ICAL.parse(data));
   if (calendar.name !== "vcalendar") throw new Error("Invalid calendar object");
   const events = calendar.getAllSubcomponents("vevent");
@@ -208,7 +242,8 @@ export function parseAgendaObject(data: string, fallbackZone: AgendaZone, option
       });
     }
   }
-  return { uid, todos: window ? [] : expandSeries(todos.map(item => timing(item, fallbackZone)), fallbackZone, undefined, Boolean(options)).map(todoFields), events: eventRecords, recurring };
+  const todoPage = options && "todos" in options ? options.todos : undefined;
+  return { uid, todos: window ? [] : expandSeries(todos.map(item => timing(item, fallbackZone)), fallbackZone, undefined, Boolean(todoPage), todoPage).map(todoFields), events: eventRecords, recurring };
 }
 
 function isRecurring(component: ICAL.Component) {

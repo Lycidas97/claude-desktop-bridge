@@ -60,6 +60,29 @@ test("an old hourly series still expands in a current one-day window", () => {
   expect(store.freeSlots({ ...day, durationMinutes: 30 }).slots).toHaveLength(24);
 });
 
+test("an old hourly series in a fixed-offset VTIMEZONE keeps its wall time and busy interval", () => {
+  sync(object("fixed", ics(...customZone, ...item("VEVENT", "fixed", "DTSTART;TZID=Eastern Standard Time:20140101T091500",
+    "DURATION:PT30M", "RRULE:FREQ=HOURLY"))));
+  const day = { from: window.from, to: "2027-01-02T00:00:00.000Z" };
+  const events = store.listEvents(day).records;
+  expect(events).toHaveLength(24);
+  expect(events[0]).toMatchObject({ startAt: "2027-01-01T00:15:00.000Z", recurrenceId: "2026-12-31T19:15:00" });
+  expect(store.freeSlots({ from: "2027-01-01T00:15:00.000Z", to: "2027-01-01T00:45:00.000Z", durationMinutes: 30 }).slots).toEqual([]);
+});
+
+test("pages an old hourly VTODO from its original due date and can seek to a later cursor", () => {
+  vi.setSystemTime(new Date(window.from));
+  sync(object("hourly-task", ics(...item("VTODO", "hourly-task", "DTSTART:20140101T090000Z", "DUE:20140101T093000Z", "RRULE:FREQ=HOURLY"))));
+  const first = store.listTodos({ limit: 1 });
+  expect(first.records).toMatchObject([{ dueAt: "2014-01-01T09:30:00.000Z" }]);
+  expect(store.listTodos({ limit: 1, cursor: first.nextCursor }).records).toMatchObject([{ dueAt: "2014-01-01T10:30:00.000Z" }]);
+  const dueAt = "2027-01-01T00:30:00.000Z";
+  const later = store.listTodos({ limit: 1, cursor: `0|${dueAt}|${"0".repeat(64)}` });
+  expect(later.records).toMatchObject([{ dueAt, recurrenceId: "2027-01-01T00:00:00Z" }]);
+  expect(later.nextCursor).toBeDefined();
+  expect(store.listTodos({ limit: 1, cursor: later.nextCursor }).records).toMatchObject([{ dueAt: "2027-01-01T01:30:00.000Z" }]);
+});
+
 test("uses collection VTIMEZONE for floating DTSTART and DUE, with host fallback", () => {
   const records = [object("meeting", ics(...item("VEVENT", "meeting", "DTSTART:20270104T090000", "DURATION:PT1H"))),
     object("task", ics(...item("VTODO", "task", "DUE:20270104T090000")))];

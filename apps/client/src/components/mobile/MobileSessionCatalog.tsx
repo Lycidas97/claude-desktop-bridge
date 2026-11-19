@@ -28,6 +28,7 @@ import {
 import { EmptyState } from "../common/EmptyState.js";
 import { IconButton } from "../common/IconButton.js";
 import { ThemeMenu } from "../common/ThemeMenu.js";
+import { formatHostLastSeen } from "../pairing/host-last-seen.js";
 import { ProjectGroupHeader } from "../session/ProjectGroupHeader.js";
 import { SectionCreateDialog, type SectionCreateState } from "../session/SectionCreateDialog.js";
 import { SectionManageDialog, type SectionManageController } from "../session/SectionManageDialog.js";
@@ -45,20 +46,16 @@ import { ProjectOrderSheet } from "./ProjectOrderSheet.js";
 function hostQuickMeta(
   host: PairedHost,
   isCurrent: boolean,
-  desktopOnline: boolean,
+  isOnline: boolean,
   transportMetrics: BridgeTransportMetrics | undefined,
 ): string {
   if (host.needsRepair) return "需重配";
-  if (isCurrent) {
-    if (!desktopOnline) return "离线";
-    if (transportMetrics?.path === "direct") return "直连";
-    if (transportMetrics?.path === "lan-relay") return "局域网";
-    if (transportMetrics?.path === "public-relay") return "安全中继";
-    return "在线";
-  }
-  if (host.status === "offline") return "离线";
-  if (host.status === "running") return `${host.activeTurns} 运行中`;
-  if (host.status === "attention") return "待处理";
+  // Inactive hosts have cached catalogs, with no current connection to check their status.
+  if (!isCurrent) return formatHostLastSeen(host.lastSeenAt) ?? "未连接";
+  if (!isOnline) return "离线";
+  if (transportMetrics?.path === "direct") return "直连";
+  if (transportMetrics?.path === "lan-relay") return "局域网";
+  if (transportMetrics?.path === "public-relay") return "安全中继";
   return "在线";
 }
 
@@ -279,7 +276,7 @@ export function MobileSessionCatalog({
             <div className="drawer-host-options">
               {hosts.map((host) => {
                 const isCurrent = host.roomId === activeHostId;
-                const isOnline = isCurrent ? desktopOnline : host.status !== "offline" && !host.needsRepair;
+                const isOnline = isCurrent && online && !host.needsRepair;
                 return (
                   <button
                     type="button"
@@ -295,7 +292,7 @@ export function MobileSessionCatalog({
                     <i className={`m-status-dot${isOnline ? " is-online" : ""}`} aria-hidden="true" />
                     <span className="drawer-host-option-name">{host.desktopName}</span>
                     <span className="drawer-host-option-meta">
-                      {hostQuickMeta(host, isCurrent, desktopOnline, transportMetrics)}
+                      {hostQuickMeta(host, isCurrent, isOnline, transportMetrics)}
                     </span>
                   </button>
                 );

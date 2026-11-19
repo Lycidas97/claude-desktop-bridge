@@ -165,6 +165,20 @@ describe("mobile app parent navigation", () => {
     expect(component(MobileAppShell)!.props.tab).toBe("sessions");
     expect(component(MobileWorkspace)!.props.directoryRequest).not.toBe(initialDirReq);
   });
+  it("opens the previously pending session on another paired computer", async () => {
+    hooks.mobile.state.hosts.push({
+      roomId: "work-room", desktopName: "工作电脑", status: "attention", attentionSessionId: "pending-session",
+    });
+    tab("computers");
+    const list = HostBrowser(component(HostBrowser)!.props as Parameters<typeof HostBrowser>[0]);
+    const shortcut = elements(list).find(element => element.props.className === "host-attention-button");
+    expect(shortcut?.props.children[0]).toBe("查看上次待处理");
+    shortcut!.props.onClick();
+    await Promise.resolve();
+    draw();
+    expect(hooks.mobile.selectHost).toHaveBeenCalledWith("work-room");
+    expect(component(MobileWorkspace)?.props.focusRequest?.sessionId).toBe("pending-session");
+  });
   it("opens active computer connection details directly from workspace inspection callback", () => {
     component(MobileWorkspace)!.props.onInspectConnection(); draw();
     expect(component(MobileAppShell)!.props.tab).toBe("computers");

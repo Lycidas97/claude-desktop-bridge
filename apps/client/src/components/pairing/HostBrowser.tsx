@@ -7,35 +7,29 @@ import { ConfirmationDialog } from "../common/ConfirmationDialog.js";
 import { IconButton } from "../common/IconButton.js";
 import { Sheet, SheetAction } from "../common/Sheet.js";
 import { MobilePageHeader } from "../mobile/MobilePageHeader.js";
+import { formatHostLastSeen } from "./host-last-seen.js";
 
-function statusLabel(host: PairedHost): string {
+function statusLabel(host: PairedHost, isCurrent: boolean, isOnline: boolean): string {
   if (host.needsRepair) return "需重新扫码配对";
+  if (!isCurrent) return "未连接";
+  if (!isOnline) return "离线";
   if (host.status === "running") return `${host.activeTurns} 个任务运行中`;
   if (host.status === "attention") return "有待处理消息";
-  if (host.status === "offline") return "离线";
   return "在线";
 }
 
-function lastSeenLabel(host: PairedHost): string {
-  if (host.needsRepair) return "旧版配对已失效";
-  if (!host.lastSeenAt) return "已配对";
-  const elapsed = Math.max(0, Date.now() - host.lastSeenAt);
-  if (elapsed < 60_000) return "刚刚活跃";
-  if (elapsed < 3_600_000) return `${Math.floor(elapsed / 60_000)} 分钟前`;
-  if (elapsed < 86_400_000) return `${Math.floor(elapsed / 3_600_000)} 小时前`;
-  return new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(host.lastSeenAt);
-}
-
-function statusDotClass(host: PairedHost): string {
-  if (host.needsRepair || host.status === "attention") return "m-status-dot waiting";
-  if (host.status === "offline") return "m-status-dot is-offline";
-  return "m-status-dot is-online";
+function statusDotClass(host: PairedHost, isCurrent: boolean, isOnline: boolean): string {
+  if (host.needsRepair) return "m-status-dot waiting";
+  if (!isCurrent) return "m-status-dot";
+  if (!isOnline) return "m-status-dot is-offline";
+  return host.status === "attention" ? "m-status-dot waiting" : "m-status-dot is-online";
 }
 
 export function HostBrowser({
   hosts,
   error,
   activeHostId,
+  desktopOnline,
   onDetails,
   onSelect,
   onRemove,
@@ -46,6 +40,7 @@ export function HostBrowser({
   error?: string | undefined;
   themeControl?: ThemeControl;
   activeHostId?: string | undefined;
+  desktopOnline: boolean;
   onDetails?(hostId: string): void;
   onSelect(roomId: string, focusSessionId?: string): Promise<void>;
   onRemove(roomId: string): Promise<void>;
@@ -119,21 +114,23 @@ export function HostBrowser({
         <div className="host-rows">
           {hosts.map((host) => {
             const isCurrent = host.roomId === activeHostId;
+            const isOnline = isCurrent && desktopOnline && !host.needsRepair;
             return (
               <div className={`host-row-shell${isCurrent ? " is-current" : ""}`} key={host.roomId}>
                 <button
                   type="button"
                   className="host-row"
+                  aria-current={isCurrent ? "true" : undefined}
                   onClick={() => void openHost(host)}
                   disabled={Boolean(openingHostId) || removing}
                 >
-                  <i className={statusDotClass(host)} aria-hidden="true" />
+                  <i className={statusDotClass(host, isCurrent, isOnline)} aria-hidden="true" />
                   <span className="host-row-copy">
                     <strong>{host.desktopName}</strong>
                     <small>
                       {openingHostId === host.roomId
                         ? "正在连接…"
-                        : `${isCurrent ? "当前连接 · " : ""}${statusLabel(host)} · ${lastSeenLabel(host)}`}
+                        : `${isCurrent ? "当前电脑 · " : ""}${statusLabel(host, isCurrent, isOnline)} · ${host.needsRepair ? "旧版配对已失效" : formatHostLastSeen(host.lastSeenAt) ?? "已配对"}`}
                     </small>
                   </span>
                 </button>
@@ -152,7 +149,7 @@ export function HostBrowser({
                     disabled={Boolean(openingHostId) || removing}
                     onClick={() => void openHost(host, host.attentionSessionId)}
                   >
-                    查看待处理<ChevronRight size={15} aria-hidden="true" />
+                    {isOnline ? "查看待处理" : "查看上次待处理"}<ChevronRight size={15} aria-hidden="true" />
                   </button>
                 )}
               </div>

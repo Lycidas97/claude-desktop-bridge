@@ -532,6 +532,7 @@ function MobileApp({ themeControl }: { themeControl: ThemeControl }) {
         <HostBrowser
           hosts={mobile.state.hosts}
           activeHostId={mobile.state.activeHostId}
+          desktopOnline={mobile.state.connection === "connected" && mobile.state.desktopOnline}
           error={mobile.state.error}
           onSelect={openComputer}
           onDetails={(hostId) => {

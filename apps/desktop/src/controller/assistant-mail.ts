@@ -83,8 +83,8 @@ function sliceSurrogateSafeCodeUnits(text: string, maxUnits: number): string {
   return text.slice(0, safeEnd);
 }
 
-export function assistantMailPage(mail: AssistantMailService, options: Parameters<AssistantMailService["page"]>[0]): BridgeMailPage {
-  const page = mail.page(options);
+export function assistantMailPage(mail: AssistantMailService, options: Parameters<AssistantMailService["page"]>[0], includeHistory: boolean): BridgeMailPage {
+  const page = mail.page(options, includeHistory);
   return {
     cards: page.events.map(event => ({
       seq: event.seq, mailRefId: event.mailRefId, accountKey: event.accountKey, mailbox: event.mailbox,
@@ -288,8 +288,11 @@ export class AssistantMailCoordinator {
     publish: () => Promise<DesktopControlSnapshot>,
   ): Promise<unknown> {
     if (method === "plugin.assistant-mail.list") {
-      const { client: _client, ...pageParams } = params;
-      return { mailPage: assistantMailPage(this.mail, pageParams as Parameters<AssistantMailService["page"]>[0]) };
+      const { client: _client, includeHistory, ...pageParams } = params;
+      if (includeHistory !== undefined && typeof includeHistory !== "boolean") {
+        throw new BridgeRequestError("INVALID_PARAMS", "请选择是否包含历史邮件。");
+      }
+      return { mailPage: assistantMailPage(this.mail, pageParams, includeHistory === true) };
     }
     if (method === "plugin.assistant-mail.history") {
       const { client: _client, ...input } = params;

@@ -143,6 +143,7 @@ export class MailReceiver {
               }
               uidValidity = generation;
               lastUid = watermark;
+              this.historyBefore = 0;
               checkInitialHistory = true;
             }
             if (useIdle) this.setState("connected");
@@ -164,13 +165,15 @@ export class MailReceiver {
             const previous = this.historyBefore;
             const requested = this.historyLoading;
             let imported = 0;
+            let nextBefore = previous;
+            let failed = this.historyFailed;
             try {
               storageFailure = true;
               const { cursor, before, imported: previousImports } = this.store.historyWindow(accountKey, uidValidity, lastUid);
               storageFailure = false;
-              this.historyBefore = before;
+              nextBefore = before;
               if (cursor === null || requested) {
-                this.historyFailed = true;
+                failed = true;
                 const limit = cursor === null ? historyBatchSize - previousImports : historyBatchSize;
                 const older = before > 1 ? await client.search({ uid: `1:${before - 1}` }, { uid: true }) : [];
                 if (this.stopped || ended) break;
@@ -183,16 +186,21 @@ export class MailReceiver {
                     if (this.stopped || ended) break;
                   }
                   if (this.stopped || ended) break;
-                  this.historyBefore = index < older.length ? (older[index - 1] ?? before) : 0;
+                  nextBefore = index < older.length ? (older[index - 1] ?? before) : 0;
                   storageFailure = true;
-                  this.store.finishHistory(accountKey, uidValidity, this.historyBefore);
+                  this.store.finishHistory(accountKey, uidValidity, nextBefore);
                   storageFailure = false;
-                  this.historyFailed = false;
+                  failed = false;
                 }
               }
+            } catch (error) {
+              // A tagged NO on an open connection rejects this history batch, not live receipt.
+              if (storageFailure || ended || !client.usable || (error as { responseStatus?: string } | null)?.responseStatus !== "NO") throw error;
             } finally {
+              this.historyBefore = nextBefore;
               this.historyLoading = false;
-              if (requested || imported > 0 || this.historyBefore !== previous || this.historyFailed) this.events.changed(imported > 0);
+              this.historyFailed = failed;
+              if (requested || imported > 0 || nextBefore !== previous || failed) this.events.changed(imported > 0);
             }
           }
           if (useIdle) {

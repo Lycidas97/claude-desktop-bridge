@@ -230,7 +230,7 @@ export class AssistantMailService extends EventEmitter {
 
   binding(): AssistantBinding | undefined { return this.store.binding(); }
   setBinding(binding: AssistantBinding): void { this.store.setBinding(binding); this.emit("changed"); }
-  page(options?: Parameters<AssistantMailStore["page"]>[0]): ReturnType<AssistantMailStore["page"]> { return this.store.page(options); }
+  page(...options: Parameters<AssistantMailStore["page"]>): ReturnType<AssistantMailStore["page"]> { return this.store.page(...options); }
   read(mailRefId: string): ReturnType<AssistantMailStore["read"]> { return this.store.read(mailRefId); }
   event(mailRefId: string) { return this.store.event(mailRefId); }
   async readEvent(mailRefId: string) {

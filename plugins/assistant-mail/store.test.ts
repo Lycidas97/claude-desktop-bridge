@@ -55,6 +55,24 @@ it("deduplicates the full IMAP identity without replacing committed raw content"
   expect(await fs.readdir(join(store.directory, "raw-mail"))).toHaveLength(1);
 });
 
+it("accepts a rolled-back receiver's four-value watermark write for both an existing and a new account", () => {
+  store.openMailbox("test-account", "1", 5);
+  store.finishHistory("test-account", "1", 2);
+  const database = new DatabaseSync(join(store.directory, "assistant.sqlite"));
+  openDatabases.push(database);
+  const legacyOpen = database.prepare(`
+    INSERT INTO imap_watermarks VALUES (?, 'INBOX', ?, ?)
+    ON CONFLICT(account_key, mailbox) DO UPDATE SET uid_validity = excluded.uid_validity,
+      last_persisted_uid = excluded.last_persisted_uid
+  `);
+  legacyOpen.run("test-account", "2", 19);
+  legacyOpen.run("another-account", "1", 9);
+  expect(store.openMailbox("test-account", "2", undefined)).toBe(19);
+  expect(store.openMailbox("another-account", "1", undefined)).toBe(9);
+  expect(store.historyWindow("test-account", "2", 19)).toMatchObject({ cursor: null, before: 20 });
+  expect(store.historyWindow("another-account", "1", 9)).toMatchObject({ cursor: null, before: 10 });
+});
+
 it("rebaselines a new UIDVALIDITY generation and retains both identities", async () => {
   store.openMailbox("test-account", "1", 5);
   const oldEvent = await store.record(message());
@@ -168,7 +186,7 @@ it("creates the assistant business tables and private POSIX files including WAL/
   const database = new DatabaseSync(join(store.directory, "assistant.sqlite"));
   openDatabases.push(database);
   expect(database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all().map(row => row.name))
-    .toEqual(["assistant_binding", "assistant_managed_binding", "imap_watermarks", "mail_events"]);
+    .toEqual(["assistant_binding", "assistant_managed_binding", "imap_history", "imap_watermarks", "mail_events"]);
   if (process.platform === "win32") return;
   for (const path of [join(root, "private"), store.directory, join(store.directory, "raw-mail")]) {
     expect((await fs.stat(path)).mode & 0o777).toBe(0o700);

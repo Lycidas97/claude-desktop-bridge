@@ -154,6 +154,28 @@ it("backfills a configured mailbox with sparse UIDs, preserving both page and fo
   expect(restarted.page().events.map(event => event.uid)).toEqual([502, 501, 500, ...older]);
 });
 
+it("offers manual history only after the first automatic batch settles", async () => {
+  const inbox = new Inbox();
+  for (let uid = 1; uid <= 40; uid++) inbox.deliver(uid);
+  let release!: () => void;
+  const waiting = new Promise<void>(resolve => { release = resolve; });
+  const search = inbox.search.getMockImplementation()!;
+  inbox.search.mockImplementationOnce(async params => { await waiting; return search(params); });
+  const { service } = await createService([inbox]);
+  await service.enable(account);
+  try {
+    await vi.waitFor(() => expect(inbox.search).toHaveBeenCalledOnce());
+    expect(service.status().history.available).toBe(false);
+  } finally {
+    release();
+  }
+  await vi.waitFor(() => expect(service.status().history.available).toBe(true));
+  expect(service.page().events).toHaveLength(20);
+  service.requestOlder();
+  await vi.waitFor(() => expect(service.page().events).toHaveLength(40));
+  expect(inbox.search).toHaveBeenCalledTimes(2);
+});
+
 it("persists all new UIDs even when FETCH responses arrive out of order", async () => {
   const inbox = new Inbox();
   const { service } = await createService([inbox]);
@@ -418,6 +440,66 @@ it.each(["NO", "BYE"])("receives new mail after an IMAP server advertising IDLE 
     expect(commands).toContain("EXAMINE INBOX");
     expect(commands.some(command => command.includes("BODY.PEEK[]"))).toBe(true);
   } finally {
+    await service.close();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});
+
+it("keeps IDLE and receives new mail when IMAP rejects a historical body FETCH", async () => {
+  const commands: string[] = [];
+  let sendNewMail: (() => void) | undefined;
+  let delivered = false;
+  let closing = false;
+  const source = "Subject: live mail\r\n\r\nbody\r\n";
+  const server = createServer(socket => {
+    socket.on("error", (error: NodeJS.ErrnoException) => {
+      if (!closing || error.code !== "ECONNRESET") throw error;
+    });
+    let idleTag: string | undefined;
+    socket.write("* PREAUTH test mailbox\r\n");
+    createInterface({ input: socket }).on("line", line => {
+      if (line === "DONE") { socket.write(`${idleTag} OK idled\r\n`); return; }
+      const [tag, command, action, range] = line.split(" ");
+      commands.push(line.slice(tag!.length + 1));
+      const ok = `${tag} OK done\r\n`;
+      switch (command) {
+        case "CAPABILITY": socket.write(`* CAPABILITY IMAP4rev1 IDLE\r\n${ok}`); break;
+        case "LIST": socket.write(`* LIST () "/" INBOX\r\n${ok}`); break;
+        case "EXAMINE": socket.write(`* 1 EXISTS\r\n* OK [UIDVALIDITY 1] valid\r\n* OK [UIDNEXT 41] next\r\n${tag} OK [READ-ONLY] examined\r\n`); break;
+        case "UID":
+          if (action === "SEARCH") socket.write(`* SEARCH 40\r\n${ok}`);
+          else if (range === "40") socket.write(`${tag} NO historical body unavailable\r\n`);
+          else socket.write((!delivered ? "" : line.includes("BODY.PEEK[]")
+            ? `* 2 FETCH (UID 41 BODY[] {${Buffer.byteLength(source)}}\r\n${source})\r\n`
+            : "* 2 FETCH (UID 41)\r\n") + ok);
+          break;
+        case "IDLE":
+          idleTag = tag;
+          socket.write("+ idling\r\n");
+          sendNewMail = () => { delivered = true; socket.write("* 2 EXISTS\r\n"); };
+          break;
+        case "NOOP": socket.write(ok); break;
+        default: socket.write(`${tag} BAD unexpected command\r\n`);
+      }
+    });
+  }).listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const { port } = server.address() as { port: number };
+  const service = new AssistantMailService({ userDataPath: root,
+    createClient: options => new ImapFlow({ ...options, secure: false, doSTARTTLS: false }),
+    credentials: { supported: true, get: async () => "fixture", set: async () => {}, delete: async () => {} },
+  });
+  try {
+    await service.initialize();
+    await service.enable({ ...account, host: "127.0.0.1", port });
+    await vi.waitFor(() => expect(sendNewMail).toBeDefined());
+    expect(service.status()).toMatchObject({ state: "connected", history: { available: true, failed: true } });
+    sendNewMail!();
+    await vi.waitFor(() => expect(service.page().events.map(event => event.uid)).toEqual([41]));
+    expect(commands.filter(command => command === "EXAMINE INBOX")).toHaveLength(1);
+    expect(commands.some(command => command.startsWith("UID FETCH 40 ") && command.includes("BODY.PEEK[]"))).toBe(true);
+  } finally {
+    closing = true;
     await service.close();
     await new Promise<void>(resolve => server.close(() => resolve()));
   }

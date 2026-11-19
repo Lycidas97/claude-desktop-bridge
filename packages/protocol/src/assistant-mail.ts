@@ -100,6 +100,7 @@ export interface BridgeMailCard {
   };
 }
 
+/** `plugin.assistant-mail.list` includes historical cards only with `includeHistory: true` on a history-capable host. */
 export interface BridgeMailPage {
   cards: BridgeMailCard[];
   nextCursor?: string;

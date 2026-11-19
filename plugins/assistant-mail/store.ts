@@ -138,6 +138,12 @@ export class AssistantMailStore {
         last_persisted_uid INTEGER NOT NULL,
         PRIMARY KEY (account_key, mailbox)
       ) STRICT;
+      CREATE TABLE IF NOT EXISTS imap_history (
+        account_key TEXT NOT NULL,
+        uid_validity TEXT NOT NULL,
+        before_uid INTEGER NOT NULL,
+        PRIMARY KEY (account_key, uid_validity)
+      ) STRICT;
       CREATE TABLE IF NOT EXISTS mail_events (
         seq INTEGER PRIMARY KEY,
         mail_ref_id TEXT NOT NULL UNIQUE,
@@ -161,10 +167,6 @@ export class AssistantMailStore {
     }
     if (!columns.includes("mime_projection")) this.database.exec("ALTER TABLE mail_events ADD COLUMN mime_projection TEXT");
     if (!columns.includes("historical")) this.database.exec("ALTER TABLE mail_events ADD COLUMN historical INTEGER NOT NULL DEFAULT 0");
-    const watermarkColumns = this.database.prepare("PRAGMA table_info(imap_watermarks)").all();
-    if (!watermarkColumns.some(column => column.name === "history_before")) {
-      this.database.exec("ALTER TABLE imap_watermarks ADD COLUMN history_before INTEGER");
-    }
     this.database.exec(`CREATE INDEX IF NOT EXISTS mail_events_page_order ON mail_events (${mailOrder})`);
     extend?.(this.database);
   }
@@ -242,15 +244,15 @@ export class AssistantMailStore {
     this.db().prepare(`
       INSERT INTO imap_watermarks (account_key, mailbox, uid_validity, last_persisted_uid) VALUES (?, 'INBOX', ?, ?)
       ON CONFLICT(account_key, mailbox) DO UPDATE SET uid_validity = excluded.uid_validity,
-        last_persisted_uid = excluded.last_persisted_uid, history_before = NULL
+        last_persisted_uid = excluded.last_persisted_uid
     `).run(accountKey, uidValidity, uidNext - 1);
     return uidNext - 1;
   }
 
   historyWindow(accountKey: string, uidValidity: string, lastUid: number) {
-    const { history_before: cursor } = this.db().prepare(`
-      SELECT history_before FROM imap_watermarks WHERE account_key = ? AND mailbox = 'INBOX' AND uid_validity = ?
-    `).get(accountKey, uidValidity) as { history_before: number | null };
+    const history = this.db().prepare("SELECT before_uid FROM imap_history WHERE account_key = ? AND uid_validity = ?")
+      .get(accountKey, uidValidity) as { before_uid: number } | undefined;
+    const cursor = history?.before_uid ?? null;
     const { oldest, imported } = this.db().prepare(`
       SELECT MIN(uid) AS oldest, COALESCE(SUM(historical), 0) AS imported FROM mail_events
       WHERE account_key = ? AND mailbox = 'INBOX' AND uid_validity = ?
@@ -261,8 +263,9 @@ export class AssistantMailStore {
 
   finishHistory(accountKey: string, uidValidity: string, before: number): void {
     this.db().prepare(`
-      UPDATE imap_watermarks SET history_before = ? WHERE account_key = ? AND mailbox = 'INBOX' AND uid_validity = ?
-    `).run(before, accountKey, uidValidity);
+      INSERT INTO imap_history (account_key, uid_validity, before_uid) VALUES (?, ?, ?)
+      ON CONFLICT(account_key, uid_validity) DO UPDATE SET before_uid = excluded.before_uid
+    `).run(accountKey, uidValidity, before);
   }
 
   async record(message: MailIdentity & Pick<MailEvent, "subject" | "from" | "receivedAt"> & { source: Buffer; historical?: true }): Promise<MailEvent | undefined> {
@@ -296,11 +299,12 @@ export class AssistantMailStore {
     }
   }
 
-  page(input: unknown = {}): { events: MailEvent[]; nextCursor?: string } {
+  page(input: unknown = {}, includeHistory = true): { events: MailEvent[]; nextCursor?: string } {
     const { cursor, limit = 50, processingStatus } = MailPageParameters.parse(input);
+    const order = includeHistory ? mailOrder : "seq";
     const rows = this.db().prepare(`
-      SELECT * FROM mail_events WHERE (${mailOrder}) < ? AND (? IS NULL OR processing_status = ?)
-      ORDER BY (${mailOrder}) DESC LIMIT ?
+      SELECT * FROM mail_events WHERE (${order}) < ? AND (? IS NULL OR processing_status = ?)${includeHistory ? "" : " AND historical = 0"}
+      ORDER BY (${order}) DESC LIMIT ?
     `).all(cursor ? Number(cursor) : Number.MAX_SAFE_INTEGER,
       processingStatus ?? null, processingStatus ?? null, limit + 1) as EventRow[];
     const events = rows.slice(0, limit).map(row => {

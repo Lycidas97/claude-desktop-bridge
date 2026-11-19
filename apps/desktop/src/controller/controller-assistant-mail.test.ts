@@ -194,6 +194,22 @@ describe("assistant mail mobile RPC projections", () => {
     expect(run.broker.startTurn).not.toHaveBeenCalled();
   });
 
+  it("only includes history in mail pages when the client opts in", async () => {
+    const live = await record(3);
+    const history = await store.record({
+      accountKey: "synthetic-account", mailbox: "INBOX", uidValidity: "1", uid: 2, historical: true,
+      subject: "Older message", from: [], receivedAt: "2026-11-14T12:00:00Z", source: Buffer.from("Subject: older\r\n\r\nBody"),
+    });
+    const legacy = await run.request<{ mailPage: BridgeMailPage }>("plugin.assistant-mail.list", { limit: 1 });
+    expect(legacy.mailPage.cards.map(card => card.mailRefId)).toEqual([live.mailRefId]);
+    expect(legacy.mailPage.nextCursor).toBeUndefined();
+    const first = await run.request<{ mailPage: BridgeMailPage }>("plugin.assistant-mail.list", { limit: 1, includeHistory: true });
+    expect(first.mailPage.nextCursor).toBe(String(live.seq));
+    const older = await run.request<{ mailPage: BridgeMailPage }>("plugin.assistant-mail.list", { cursor: first.mailPage.nextCursor, includeHistory: true });
+    expect(older.mailPage.cards.map(card => card.mailRefId)).toEqual([history!.mailRefId]);
+    await expect(run.request("plugin.assistant-mail.list", { includeHistory: "true" })).rejects.toMatchObject({ code: "INVALID_PARAMS" });
+  });
+
   it("projects durable newest-first pages, analysis and previews without native delivery or raw storage fields", async () => {
     run.broker.capabilities.mockReturnValue([]);
     run.broker.runtimeStatus.mockReturnValue({ state: "unavailable", detail: "Offline", activeTurns: 0, maxParallelTurns: 1 });

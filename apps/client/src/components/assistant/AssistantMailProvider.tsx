@@ -1,5 +1,5 @@
 import type { BridgeAssistantMailSnapshot, BridgeHostSnapshot, BridgeMailCache, BridgeMailCard, BridgeMailDetail, BridgeMailPage, BridgeMethod, BridgeResponse } from "@bridge/protocol";
-import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { mergeMailCards, refreshMailPages } from "../../lib/assistant-mail.js";
 
 export type AssistantRequest = (method: BridgeMethod, params: Record<string, unknown>) => Promise<BridgeResponse | undefined>;
@@ -113,12 +113,16 @@ export function AssistantMailProvider({ hostId, snapshot, online, request, loadC
 
   useEffect(() => { setSelection(undefined); }, [assistant?.binding?.nativeSessionId]);
   const changeToken = assistant?.changeToken ?? "";
+  const supportsHistory = capabilities.includes("plugin.assistant-mail.history.v1");
+  const loadPage = useCallback(async (cursor?: string) => mailResult<{ mailPage: BridgeMailPage }>(await request(
+    "plugin.assistant-mail.list", { ...(cursor ? { cursor } : {}), ...(supportsHistory ? { includeHistory: true } : {}) },
+  )).mailPage, [request, supportsHistory]);
   useEffect(() => {
     if (!enabled || !online || !cacheReady) return;
     let active = true;
     setLoading(true);
     setError("");
-    void refreshMailPages(async cursor => mailResult<{ mailPage: BridgeMailPage }>(await request("plugin.assistant-mail.list", cursor ? { cursor } : {})).mailPage, cacheRef.current, changeToken)
+    void refreshMailPages(loadPage, cacheRef.current, changeToken)
       .then(next => {
         if (!active) return;
         initializeUnreadBaseline(next.cards[0]?.seq ?? 0);
@@ -127,9 +131,9 @@ export function AssistantMailProvider({ hostId, snapshot, online, request, loadC
       .catch(reason => { if (active) setError(reason instanceof Error ? reason.message : "邮件同步失败"); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [enabled, online, cacheReady, changeToken, refreshKey, request]);
+  }, [enabled, online, cacheReady, changeToken, refreshKey, loadPage]);
 
-  const canFetchHistory = capabilities.includes("plugin.assistant-mail.history.v1") && assistant?.history?.available === true;
+  const canFetchHistory = supportsHistory && assistant?.history?.available === true;
   const historyLoading = online && assistant?.history?.loading === true;
   const hasOlderMail = Boolean(cache.nextCursor || canFetchHistory);
   async function loadOlder(): Promise<void> {
@@ -141,7 +145,7 @@ export function AssistantMailProvider({ hostId, snapshot, online, request, loadC
         mailResult(await request("plugin.assistant-mail.history", {}));
         return;
       }
-      const { mailPage } = mailResult<{ mailPage: BridgeMailPage }>(await request("plugin.assistant-mail.list", { cursor: cache.nextCursor }));
+      const mailPage = await loadPage(cache.nextCursor);
       if (!mounted.current) return;
       setCache({ cards: mergeMailCards(cacheRef.current.cards, mailPage.cards), changeToken,
         ...(cacheRef.current.workspace ? { workspace: cacheRef.current.workspace } : {}),

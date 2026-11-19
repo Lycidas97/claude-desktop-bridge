@@ -14,6 +14,7 @@ import {
   Mail,
   MoreHorizontal,
   Plus,
+  RotateCw,
   Search,
   SquarePen,
 } from "lucide-react";
@@ -278,23 +279,29 @@ export function MobileSessionCatalog({
                 const isCurrent = host.roomId === activeHostId;
                 const isOnline = isCurrent && online && !host.needsRepair;
                 return (
-                  <button
-                    type="button"
-                    key={host.roomId}
-                    className={`drawer-host-option${isCurrent ? " active" : ""}`}
-                    aria-current={isCurrent ? "true" : undefined}
-                    onClick={() => {
-                      onToggleHostSwitcher?.();
-                      onClose?.();
-                      void onSelectHost?.(host.roomId);
-                    }}
-                  >
-                    <i className={`m-status-dot${isOnline ? " is-online" : ""}`} aria-hidden="true" />
-                    <span className="drawer-host-option-name">{host.desktopName}</span>
-                    <span className="drawer-host-option-meta">
-                      {hostQuickMeta(host, isCurrent, isOnline, transportMetrics)}
-                    </span>
-                  </button>
+                  <div key={host.roomId} className={`drawer-host-row${isCurrent ? " active" : ""}`}>
+                    <button
+                      type="button"
+                      className="drawer-host-option"
+                      aria-current={isCurrent ? "true" : undefined}
+                      onClick={() => {
+                        onToggleHostSwitcher?.();
+                        onClose?.();
+                        void onSelectHost?.(host.roomId);
+                      }}
+                    >
+                      <i className={`m-status-dot${isOnline ? " is-online" : ""}`} aria-hidden="true" />
+                      <span className="drawer-host-option-name">{host.desktopName}</span>
+                      <span className="drawer-host-option-meta">
+                        {hostQuickMeta(host, isCurrent, isOnline, transportMetrics)}
+                      </span>
+                    </button>
+                    {isCurrent && !isOnline && !host.needsRepair && (
+                      <IconButton label="重新连接" className="drawer-host-retry" onClick={() => void onRetry()}>
+                        <RotateCw size={16} aria-hidden="true" />
+                      </IconButton>
+                    )}
+                  </div>
                 );
               })}
             </div>

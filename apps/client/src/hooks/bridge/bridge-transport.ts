@@ -910,6 +910,9 @@ export async function startBridgeConnection(
       role: "mobile",
       reconnect: false,
       path: endpoint.kind,
+      heartbeatIntervalMs: 10_000,
+      heartbeatTimeoutMs: 25_000,
+      connectProbeTimeoutMs: 5_000,
     }),
   }));
   const relay = new TransportRouter(candidates);

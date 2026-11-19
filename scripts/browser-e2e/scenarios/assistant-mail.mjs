@@ -688,7 +688,7 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
     await managedDesktop.close();
   }
   steps.push("mobile and desktop settings explain unsupported gateway efforts and save and reopen a Native effort on the same managed session, preserving its draft, binding and dontAsk permission");
-  const settingsButton = page.getByRole("button", { name: "助理设置", exact: true });
+  const settingsButton = page.locator(".assistant-view-tabs").getByRole("button", { name: "助理设置", exact: true });
   if (await settingsButton.getAttribute("aria-pressed") !== "true") await settingsButton.click();
   const proactive = page.getByRole("switch", { name: "主动助理" });
   assert.equal(await proactive.isChecked(), false);
@@ -787,7 +787,6 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   steps.push("managed setup confirms the path and Native permissions, pins the project, and keeps previous managed sessions out of the manual binding picker");
 
   const desktopAttachmentMail = await host.nativeApproval.assistantMail.deliver(1, mailWithAttachments());
-  const settingsButton = page.locator(".assistant-view-tabs").getByRole("button", { name: "助理设置", exact: true });
   const mobileSettingsX = (await settingsButton.boundingBox()).x;
   await page.locator(".assistant-view-tabs").getByRole("button", { name: "议程", exact: true }).click();
   await page.getByRole("button", { name: "新建待办", exact: true }).waitFor();

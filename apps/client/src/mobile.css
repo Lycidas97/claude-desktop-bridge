@@ -834,6 +834,8 @@
 }
 
 .m-sheet:has(.m-sheet-footer) .m-sheet-body { padding-bottom: 16px; }
+.m-sheet.is-fullscreen { width: 100%; max-width: none; height: 100%; max-height: none; border-radius: 0; }
+.m-sheet-backdrop:has(.is-fullscreen) { padding: 0; }
 
 .m-sheet-footer {
   display: flex;

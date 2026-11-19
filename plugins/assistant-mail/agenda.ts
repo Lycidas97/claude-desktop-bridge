@@ -130,6 +130,12 @@ export class AssistantAgendaService extends EventEmitter {
     return task;
   }
 
+  async proposalChanged(sourceId: string): Promise<void> {
+    if (sourceId === "local") { this.changed(); return; }
+    await this.active.get(sourceId)?.task;
+    if (this.store.enabledSourceIds().includes(sourceId)) await this.refresh(sourceId);
+  }
+
   private seal(credential: string): Uint8Array {
     if (!this.credentials?.available()) throw new AgendaEditError("UNSUPPORTED", "此电脑没有可用的系统凭据库。");
     try { return this.credentials.encrypt(credential); }

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
-import { BridgeCrypto, BridgeSocket } from "../../packages/protocol/dist/index.js";
+import { ASSISTANT_PROPOSAL_CAPABILITY, BridgeCrypto, BridgeSocket } from "../../packages/protocol/dist/index.js";
 import { remotePreview, sectionCreatePreview, assistantMailPreview, nativePreview, sessionId, originalTitle, userText, replyText } from "./config.mjs";
 import { desktopFixtureRequest, syncNativeSections } from "./helpers.mjs";
 
@@ -340,6 +340,13 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
     host.nativeApproval = await startNativeApprovalHost({
       directory, sessionId, title: originalTitle, deviceId: pairing.deviceId, sections, assistantMail,
       initialMailHistory: options.initialMailHistory,
+      ...(options.proposals ? { onProposalsChanged(assistantProposals) {
+        snapshot.assistantProposals = assistantProposals;
+        const event = { eventId: randomUUID(), seq: ++snapshot.latestSeq, timestamp: Date.now(), origin: "system",
+          type: "assistant.proposal.changed", data: { assistantProposals } };
+        events.push(event);
+        void host.send({ kind: "event", event }).catch(error => errors.push(`proposal event: ${error.stack}`));
+      } } : {}),
       onAgendaChanged(assistantAgenda) {
         snapshot.assistantAgenda = assistantAgenda;
         const event = { eventId: randomUUID(), seq: ++snapshot.latestSeq, timestamp: Date.now(), origin: "system",
@@ -393,6 +400,10 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
       snapshot.assistantMail = host.nativeApproval.mailSnapshot();
       snapshot.host.capabilities.push("plugin.assistant-agenda.v1");
       snapshot.assistantAgenda = host.nativeApproval.assistantMail.agenda.snapshot();
+      if (options.proposals) {
+        snapshot.host.capabilities.push(ASSISTANT_PROPOSAL_CAPABILITY);
+        snapshot.assistantProposals = host.nativeApproval.assistantMail.proposals.snapshot();
+      }
       const initialMailCount = options.initialMailCount ?? 60;
       if (initialMailCount > 0) {
         host.mailOffline = true;
@@ -460,6 +471,12 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
           result = { events: resumed, latestSeq: snapshot.latestSeq, hasMore: false };
           break;
         }
+        case "assistant.proposal.list":
+        case "assistant.proposal.resolve":
+        case "assistant.proposal.revise":
+        case "assistant.proposal.commit":
+        case "assistant.proposal.dismiss":
+        case "assistant.proposal.replan":
         case "plugin.assistant-agenda.todo.list":
         case "plugin.assistant-agenda.event.list":
         case "plugin.assistant-agenda.todo.save":

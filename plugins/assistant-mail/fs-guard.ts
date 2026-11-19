@@ -1,13 +1,15 @@
 import { lstat, readdir, realpath, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
+import { PROPOSAL_TOOLS } from "../../packages/protocol/src/assistant-proposal.js";
 
 const fileTools = ["Read", "Write", "Edit", "MultiEdit", "Glob", "Grep"];
 export const ASSISTANT_HELPER = "assistant-helper";
 export const ASSISTANT_MCP = "assistant-mail";
 export const ASSISTANT_TOKEN_ENV = "BRIDGE_ASSISTANT_SESSION_TOKEN";
 export const AGENDA_TOOLS = ["todo_list", "calendar_list_events", "calendar_find_free_slots"].map(name => `mcp__${ASSISTANT_MCP}__${name}`);
+export const PROPOSAL_NATIVE_TOOLS = PROPOSAL_TOOLS.map(name => `mcp__${ASSISTANT_MCP}__${name.replace(".", "_")}`);
 export const ASSISTANT_TOOLS = [
-  ...AGENDA_TOOLS,
+  ...AGENDA_TOOLS, ...PROPOSAL_NATIVE_TOOLS,
   ...fileTools, "Agent", "ToolSearch", "TodoWrite",
   ...["list_events", "list_unfinished_triggers", "read_event", "read_attachment", "update_analysis", "set_processing_status"].map(name => `mcp__${ASSISTANT_MCP}__mail_${name}`),
 ];

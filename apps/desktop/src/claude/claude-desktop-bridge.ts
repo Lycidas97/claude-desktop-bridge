@@ -143,6 +143,7 @@ interface NativeInput {
   idempotencyKey: string;
   sessionId: string;
   text: string;
+  displayText?: string;
   attachments?: BridgeAttachment[];
   origin: BridgeOrigin;
   sourceDeviceId?: string;
@@ -1034,6 +1035,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
       for (const item of items) {
         const receipt = item.role === "user" ? this.historyReceipt(sessionId, item.id) : undefined;
         if (receipt) {
+          item.text = receipt.displayText ?? item.text;
           if (receipt.source === "assistant-trigger" && receipt.messageId === item.id &&
             (receipt.state === "submitted" || receipt.state === "queued")) {
             receipt.state = "session-received";
@@ -1328,11 +1330,13 @@ export class ClaudeDesktopBridge extends EventEmitter {
     const existing = this.options.conversationState.nativeDesktopReceipt(input.idempotencyKey);
     if (existing && !(existing.notDispatched && input.source === "assistant-trigger")) return existing;
     const id = this.desktopId(input.sessionId);
-    const receipt: NativeDesktopReceipt = existing ?? { idempotencyKey: input.idempotencyKey, commandId: randomUUID(), requestId: input.requestId, sessionId: input.sessionId, messageId: randomUUID(), queueMode: priority === "now" ? "steered" : "deferred", state: "dispatching", ...(input.source ? { source: input.source } : {}) };
+    const receipt: NativeDesktopReceipt = existing ?? { idempotencyKey: input.idempotencyKey, commandId: randomUUID(), requestId: input.requestId, sessionId: input.sessionId, messageId: randomUUID(),
+      queueMode: priority === "now" ? "steered" : "deferred", state: "dispatching",
+      ...(input.source ? { source: input.source } : {}), ...(input.displayText !== undefined ? { displayText: input.displayText } : {}) };
     delete receipt.notDispatched;
     this.options.conversationState.saveNativeDesktopReceipt(receipt);
     this.receipts.set(receipt.commandId, receipt);
-    await this.record({ sessionId: input.sessionId, turnId: receipt.messageId, origin: input.origin, type: "message.delivery", data: { ...receipt, delivery: "host-received", text: input.text } });
+    await this.record({ sessionId: input.sessionId, turnId: receipt.messageId, origin: input.origin, type: "message.delivery", data: { ...receipt, delivery: "host-received", text: input.displayText ?? input.text } });
     let result: Record<string, unknown>;
     try {
       result = record(await this.inspector.call("sendMessage", [id, input.text, input.attachments?.length ? input.attachments.map(image => ({ base64: image.data, mimeType: image.mimeType, filename: image.name })) : undefined,

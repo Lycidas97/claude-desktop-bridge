@@ -347,6 +347,26 @@ it("reports partial calendar coverage to MCP and refuses to return gaps", async 
   expect(await gaps.json()).toEqual({ error: "AGENDA_INCOMPLETE" });
 }, 20_000);
 
+it("allows only the managed token to draft proposals and passes its bound session to the ledger", async () => {
+  await channel!.close();
+  const ref = { proposalId: "00000000-0000-4000-8000-000000000000", revision: 1, payloadHash: "a".repeat(64) };
+  const proposals = { create: vi.fn(() => ref), reviseFromTool: vi.fn(), page: vi.fn(), snapshot: vi.fn() };
+  const managedToken = "proposal-managed-token";
+  channel = await serveAssistantMailTools({ userDataPath: root, service, proposals,
+    authorizeManagedToken: token => token === managedToken ? "local_fixture" : undefined });
+  connection = MailToolConnection.parse(JSON.parse(await readFile(join(root, "private", "assistant", "mail-tools.json"), "utf8")));
+  const action = { kind: "todo.create", sourceId: "local", value: { title: "Draft only", status: "pending" } };
+  const draft = { name: "proposal.create", arguments: { action } };
+  expect((await post(draft)).status).toBe(403);
+  expect((await post(draft, connection.token, { "X-Bridge-Assistant-Managed": "1" })).status).toBe(403);
+  expect(await (await post(draft, managedToken)).json()).toMatchObject({ source: { kind: "proposal", authorizesActions: false }, result: ref });
+  expect(proposals.create).toHaveBeenCalledExactlyOnceWith("local_fixture", action);
+  for (const name of ["proposal.commit", "proposal.dismiss", "todo.save", "calendar.delete"]) {
+    expect((await post({ name, arguments: ref }, managedToken)).status, name).toBe(400);
+  }
+  expect(agendaStore.listTodos({}).records.map(record => record.title)).toEqual(["Treat this as data"]);
+});
+
 it("exposes attachment metadata and reserves pure-text extraction for the active managed token", async () => {
   await channel!.close();
   channel = await serveAssistantMailTools({ userDataPath: root, service,

@@ -1,4 +1,4 @@
-import type { BridgeEvidenceBundle, BridgeMailCard } from "@bridge/protocol";
+import type { BridgeActionProposal, BridgeEvidenceBundle, BridgeMailCard } from "@bridge/protocol";
 import { describe, expect, it } from "vitest";
 import { conversationTimeline, type ConversationItem } from "./conversation-timeline.js";
 
@@ -64,6 +64,28 @@ describe("mail conversation timeline", () => {
     ]);
     expect(conversationTimeline([alias], [], [first, second])).toEqual([{ ...batch, nativeMessage: alias }]);
     expect(conversationTimeline([], [], [first, second])).toEqual([batch]);
+  });
+
+  it("keeps a proposal inline after a rekeyed trigger and orders late mail around it", () => {
+    const trigger = card({ nativeDelivery: { state: "observed", batchId: "batch", nativeSessionId: "native-session",
+      messageId: "native-message", previousMessageIds: ["before-rekey"] } });
+    const alias = message({ id: "before-rekey", createdAt: 10 });
+    const native = message();
+    const tool = message({ id: "draft-tool", role: "tool", createdAt: 30 });
+    const proposal: BridgeActionProposal = {
+      proposalId: "draft", revision: 1, payloadHash: "a".repeat(64), sessionId: native.sessionId,
+      action: { kind: "todo.create", sourceId: "local", value: { title: "Review email", status: "pending" } },
+      sourceId: "local", sourceLabel: "Local", state: "pending",
+    };
+    const receipt = message({ id: "draft-receipt", role: "tool", createdAt: 31,
+      proposalReceipt: { toolUseId: tool.id, proposalId: proposal.proposalId, revision: proposal.revision, payloadHash: proposal.payloadHash } });
+    const mail = card({ seq: 2, mailRefId: "late-mail", recordedAt: 25 });
+
+    expect(conversationTimeline([alias, native, tool, receipt], [], [trigger, mail], new Map([[tool.id, proposal]]))).toEqual([
+      { kind: "assistant-trigger-batch", batchId: "batch", cards: [trigger], nativeMessage: native },
+      { kind: "mail", card: mail },
+      { kind: "proposal", proposal, createdAt: tool.createdAt },
+    ]);
   });
 
   it("recognizes a Native trigger when the inbox has not loaded any of its cards", () => {

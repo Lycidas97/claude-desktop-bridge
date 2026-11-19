@@ -1,5 +1,6 @@
 import type { BridgeUpdaterSnapshot } from "./updater.js";
 import type { BridgeAgendaSnapshot } from "./assistant-agenda.js";
+import type { BridgeProposalSnapshot, ProposalRevisionRef } from "./assistant-proposal.js";
 import type { BridgeAssistantMailSnapshot } from "./assistant-mail.js";
 
 export const PROTOCOL_VERSION = 3 as const;
@@ -225,6 +226,7 @@ export type BridgeCapability =
   | "transcript.toolDetail.v1"
   | "plugin.magpie-quota.v1"
   | "plugin.assistant-agenda.v1"
+  | "assistant.proposal.v1"
   | "plugin.assistant-mail.v1"
   | "plugin.assistant-mail.manual-reference.v1"
   | "plugin.assistant-mail.workspace.v1"
@@ -980,6 +982,7 @@ export interface BridgeHistoryItem {
    */
   interactivePrompt?: BridgeInteractivePrompt;
   taskPlan?: BridgeTaskPlan;
+  proposalReceipt?: ProposalRevisionRef & { toolUseId: string };
 }
 
 export interface BridgeFileChangeSummary {
@@ -1245,6 +1248,7 @@ export interface BridgeHostSnapshot {
   updater?: BridgeUpdaterSnapshot;
   assistantMail?: BridgeAssistantMailSnapshot;
   assistantAgenda?: BridgeAgendaSnapshot;
+  assistantProposals?: BridgeProposalSnapshot;
   latestSeq: number;
 }
 
@@ -1393,6 +1397,12 @@ export type BridgeMethod =
   | "plugin.assistant-agenda.source.enable"
   | "plugin.assistant-agenda.source.refresh"
   | "plugin.assistant-agenda.source.remove"
+  | "assistant.proposal.list"
+  | "assistant.proposal.resolve"
+  | "assistant.proposal.revise"
+  | "assistant.proposal.commit"
+  | "assistant.proposal.dismiss"
+  | "assistant.proposal.replan"
   | "plugin.assistant-mail.list"
   | "plugin.assistant-mail.batch"
   | "plugin.assistant-mail.history"
@@ -1431,6 +1441,8 @@ export type BridgeEventType =
   | "host.presence"
   | "snapshot.updated"
   | "plugin.assistant-agenda.changed"
+  | "assistant.proposal.changed"
+  | "assistant.proposal.receipt"
   | "plugin.assistant-mail.changed"
   | "plugin.assistant-mail.tool-invoked"
   | "plugin.assistant-mail.compact-hook"

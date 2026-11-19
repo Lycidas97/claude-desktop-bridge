@@ -3,12 +3,13 @@ import type { SessionHistoryState } from "../../hooks/useMobileBridge.js";
 
 type StreamAnchor = { key: string; offset: number };
 
-export function useConversationScroll({ sessionId, sessionView, streamVisible, history, openedEvidenceIds, timelineStreamKeys, streamKeys, onLoadOlderHistory }: {
+export function useConversationScroll({ sessionId, sessionView, streamVisible, history, openedEvidenceIds, inlineProposalLayout, timelineStreamKeys, streamKeys, onLoadOlderHistory }: {
   sessionId: string;
   sessionView: "conversation" | "evidence";
   streamVisible: boolean;
   history: SessionHistoryState | undefined;
   openedEvidenceIds: ReadonlySet<string> | undefined;
+  inlineProposalLayout: string;
   timelineStreamKeys: string[];
   streamKeys: string[];
   onLoadOlderHistory(sessionId: string): Promise<void>;
@@ -23,6 +24,7 @@ export function useConversationScroll({ sessionId, sessionView, streamVisible, h
     firstKey?: string | undefined;
     firstHistoryKey?: string | undefined;
     openedEvidenceIds?: ReadonlySet<string> | undefined;
+    inlineProposalLayout?: string;
     historyCount: number;
     lastKey?: string | undefined;
     anchor?: StreamAnchor | undefined;
@@ -87,13 +89,15 @@ export function useConversationScroll({ sessionId, sessionView, streamVisible, h
       && firstHistoryKey !== previous.firstHistoryKey
       && historyCount > previous.historyCount
     );
-    const evidenceOpenedWhileReading = !shouldFollowBottom && openedEvidenceIds && openedEvidenceIds !== previous.openedEvidenceIds;
+    const cardChangedWhileReading = !shouldFollowBottom && (
+      (openedEvidenceIds && openedEvidenceIds !== previous.openedEvidenceIds) || inlineProposalLayout !== previous.inlineProposalLayout
+    );
     // A card can land between the clipped row and the first row the reader can see in full.
-    const savedAnchor = (evidenceOpenedWhileReading ? previous.fullyVisibleAnchor : undefined) ?? previous.anchor;
+    const savedAnchor = (cardChangedWhileReading ? previous.fullyVisibleAnchor : undefined) ?? previous.anchor;
     if (entering) {
       stream.scrollTop = stream.scrollHeight;
     } else if (savedAnchor && (
-      (previous.paused && !shouldFollowBottom) || firstKey !== previous.firstKey || historyPrepended || evidenceOpenedWhileReading
+      (previous.paused && !shouldFollowBottom) || firstKey !== previous.firstKey || historyPrepended || cardChangedWhileReading
     )) {
       const anchor = [...stream.querySelectorAll<HTMLElement>(":scope > [data-stream-key]")]
         .find((element) => element.dataset.streamKey === savedAnchor.key);
@@ -111,13 +115,14 @@ export function useConversationScroll({ sessionId, sessionView, streamVisible, h
       firstKey,
       firstHistoryKey,
       openedEvidenceIds,
+      inlineProposalLayout,
       historyCount,
       lastKey,
       paused: false,
       pinnedToBottom: entering || shouldFollowBottom,
     };
     rememberStreamPosition();
-  }, [sessionView, streamVisible, firstHistoryKey, historyCount, openedEvidenceIds, sessionId, streamKeys, timelineStreamKeys]);
+  }, [sessionView, streamVisible, firstHistoryKey, historyCount, openedEvidenceIds, inlineProposalLayout, sessionId, streamKeys, timelineStreamKeys]);
 
   function loadOlderNearTop(): void {
     const stream = streamRef.current;

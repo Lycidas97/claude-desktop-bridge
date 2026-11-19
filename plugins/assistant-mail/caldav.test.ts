@@ -86,9 +86,18 @@ describe("readCalDav", () => {
       headers: expect.objectContaining({ Depth: "0" }),
       body: '<d:propfind xmlns:d="DAV:" xmlns:cs="http://calendarserver.org/ns/" ' +
         'xmlns:c="urn:ietf:params:xml:ns:caldav"><d:prop><cs:getctag/><d:sync-token/>' +
-        '<c:calendar-timezone/></d:prop></d:propfind>',
+        '<c:calendar-timezone/><c:supported-calendar-component-set/><d:current-user-privilege-set/></d:prop></d:propfind>',
     }));
     expect(result).toEqual({ ctag: "same", syncToken: "urn:sync:1", calendarTimeZone, removed: [], changed: [] });
+  });
+
+  it("keeps readable collections synced when write capability metadata is forbidden", async () => {
+    const { fetch, options } = fixture(multi(row(path, propstat(token("urn:sync:1")) +
+      propstat("<current-user-privilege-set/><c:supported-calendar-component-set/>", "403 Forbidden"))));
+    await expect(readCalDav({ ...options, syncToken: "urn:sync:1" })).resolves.toEqual({
+      syncToken: "urn:sync:1", proposalCreateKinds: [], removed: [], changed: [],
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it("uses ctag alone when sync-token and calendar-timezone are unsupported", async () => {

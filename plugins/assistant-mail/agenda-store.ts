@@ -19,6 +19,7 @@ type SourceRow = {
   id: string; label: string; url: string | null; user: string | null; credential: Uint8Array | null;
   enabled: number; status: BridgeAgendaSource["status"]; error: AgendaErrorCode | null;
   ctag: string | null; token: string | null; calendar_timezone: string | null; refreshed_at: string | null;
+  proposal_create_kinds: string | null;
 };
 type RecordRow = { id: string; source_id: string; revision: number; value: string };
 type RemoteObject = { source_id: string; url: string; href: string; etag: string; data: string; calendar_timezone: string | null };
@@ -69,6 +70,16 @@ export class AgendaStore {
         COMMIT;
       `);
     }
+    if (!db.prepare("PRAGMA table_info(assistant_sources)").all().some(column => column.name === "proposal_create_kinds")) {
+      db.exec("ALTER TABLE assistant_sources ADD COLUMN proposal_create_kinds TEXT");
+    }
+  }
+
+  proposalSources(): { id: string; label: string; kinds: ("todo" | "calendar")[] }[] {
+    return this.db.prepare("SELECT id, label, proposal_create_kinds FROM assistant_sources WHERE enabled = 1 ORDER BY kind DESC, label, id").all().flatMap(row => {
+      const kinds = row.id === LOCAL_AGENDA_ID ? ["todo", "calendar"] : JSON.parse((row.proposal_create_kinds ?? "[]") as string);
+      return kinds.length ? [{ id: row.id as string, label: row.label as string, kinds }] : [];
+    });
   }
 
   sources(): BridgeAgendaSource[] {
@@ -121,6 +132,7 @@ export class AgendaStore {
 
   applySync(sourceId: string, delta: {
     ctag?: string; syncToken?: string; calendarTimeZone?: string;
+    proposalCreateKinds?: ("todo" | "calendar")[];
     removed: string[]; changed: Array<{ href: string; etag: string; data: string }>;
   }): void {
     const source = this.source(sourceId);
@@ -156,8 +168,8 @@ export class AgendaStore {
           }
         }
       }
-      this.db.prepare("UPDATE assistant_sources SET status = 'ready', error = NULL, ctag = ?, token = ?, calendar_timezone = ?, refreshed_at = ? WHERE id = ?")
-        .run(delta.ctag ?? null, delta.syncToken ?? null, timeZone, new Date().toISOString(), sourceId);
+      this.db.prepare("UPDATE assistant_sources SET status = 'ready', error = NULL, ctag = ?, token = ?, calendar_timezone = ?, refreshed_at = ?, proposal_create_kinds = ? WHERE id = ?")
+        .run(delta.ctag ?? null, delta.syncToken ?? null, timeZone, new Date().toISOString(), JSON.stringify(delta.proposalCreateKinds ?? ["todo", "calendar"]), sourceId);
       this.db.exec("COMMIT");
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }
   }
@@ -173,6 +185,23 @@ export class AgendaStore {
   completeTodo(input: { id: string; revision: number; completed: boolean }): BridgeAgendaTodo {
     const { id, sourceId, revision, collection, uid, origin, etag, recurrenceId, resourceHref, ...value } = JSON.parse(this.localRow("todos", input.id).value) as BridgeAgendaTodo;
     return this.saveTodo({ ...value, status: input.completed ? "completed" : "pending" }, input);
+  }
+
+  proposalRecord(kind: "todo" | "calendar", id: string): BridgeAgendaTodo | BridgeAgendaEvent {
+    const row = this.db.prepare(`SELECT value FROM ${kind === "todo" ? "todos" : "calendar_events"} WHERE id = ?`).get(id);
+    if (!row) throw new AgendaEditError("NOT_FOUND", "找不到可修改的单项记录（暂不支持重复实例）。");
+    return JSON.parse(row.value as string);
+  }
+
+  proposalObject(sourceId: string, href: string) {
+    return this.db.prepare("SELECT data, recurring FROM agenda_caldav_objects WHERE source_id = ? AND href = ?").get(sourceId, href) as
+      { data: string; recurring: number } | undefined;
+  }
+
+  deleteLocalEvent(id: string, revision: number): void {
+    if (!this.db.prepare("DELETE FROM calendar_events WHERE id = ? AND revision = ? AND source_id = 'local'").run(id, revision).changes) {
+      throw new AgendaEditError("CONFLICT", "记录已更新或不存在。");
+    }
   }
 
   private localRow(table: Entity, id: string): RecordRow {

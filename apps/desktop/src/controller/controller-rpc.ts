@@ -36,6 +36,8 @@ import type { DesktopUpdater } from "../updater/desktop-updater.js";
 import type { AssistantAgendaService } from "../../../../plugins/assistant-mail/agenda.js";
 import { ASSISTANT_TRIGGER_KEY_PREFIX } from "../../../../plugins/assistant-mail/trigger-store.js";
 import { handleAssistantAgenda } from "./assistant-agenda.js";
+import { handleAssistantProposal } from "./assistant-proposal.js";
+import type { ProposalExecutor } from "../../../../plugins/assistant-mail/proposal-executor.js";
 import type { AssistantMailCoordinator } from "./assistant-mail.js";
 import {
   closeArtifactTransfer, getEvidence, getEvidenceDetails, handleFileUpload, listEvidence,
@@ -149,6 +151,7 @@ export interface ControllerRpcHost {
   readonly updater?: DesktopUpdater;
   readonly assistantMailCoordinator?: AssistantMailCoordinator;
   readonly assistantAgenda?: AssistantAgendaService;
+  readonly proposals?: ProposalExecutor;
   snapshot(): Promise<DesktopControlSnapshot>;
   publish(): Promise<DesktopControlSnapshot>;
   claudeDesktopStatus?(force?: boolean): Promise<DesktopControlSnapshot["claudeDesktop"]>;
@@ -186,6 +189,21 @@ async function dispatchControllerRequestInner(
   const params = request.params;
   if (request.idempotencyKey.startsWith(ASSISTANT_TRIGGER_KEY_PREFIX)) {
     throw new BridgeRequestError("INVALID_PARAMS", "该请求标识由助理保留。");
+  }
+  if (request.method.startsWith("assistant.proposal.")) {
+    if (!host.proposals) throw new BridgeRequestError("UNSUPPORTED", "当前电脑不支持助理提案。");
+    const actor = origin === "mobile" ? sourceDeviceId : host.config?.hostDeviceId ?? "desktop";
+    if (!actor) throw new BridgeRequestError("PAIRING_REQUIRED", "请先完成设备配对。");
+    const { client: _client, ...proposalParams } = params;
+    return handleAssistantProposal(host.proposals, request.method, proposalParams, actor, async (sessionId, text, displayText) => {
+      const assistant = host.assistantMailCoordinator?.snapshot();
+      if (assistant?.workspace?.nativeSessionId !== sessionId || assistant.bindingState !== "ready") {
+        throw new BridgeRequestError("UNSUPPORTED", "此提案所属的托管会话不可用。");
+      }
+      const turn = await host.broker.startTurn({ requestId: request.requestId, idempotencyKey: request.idempotencyKey,
+        sessionId, text, displayText, origin, ...(sourceDeviceId ? { sourceDeviceId } : {}) });
+      return { commandId: turn.commandId, state: turn.state };
+    });
   }
   if (request.method.startsWith("plugin.assistant-agenda.")) {
     if (!host.assistantAgenda) throw new BridgeRequestError("UNSUPPORTED", "当前电脑不支持日程。");

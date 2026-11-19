@@ -35,6 +35,7 @@ import { MAGPIE_QUOTA_METHOD, type QuotaLoader, type QuotaSnapshot } from "../..
 import { MagpieQuotaProvider } from "../../../plugins/magpie-quota/client.js";
 import { AssistantMailProvider, useAssistantMail, viewedMailStorageKey, type AssistantRequest } from "./components/assistant/AssistantMailProvider.js";
 import { AssistantAgendaProvider } from "./components/assistant/AssistantAgendaProvider.js";
+import { AssistantProposalProvider } from "./components/assistant/AssistantProposalProvider.js";
 import { AssistantPage } from "./components/assistant/AssistantPage.js";
 import { MailReference } from "./components/assistant/MailReference.js";
 import { ConversationDraftsProvider, type ConversationDraftsHandle } from "./components/conversation/ConversationDraftsProvider.js";
@@ -350,6 +351,7 @@ function MobileApp({ themeControl }: { themeControl: ThemeControl }) {
       ) : (
     <AssistantMailProvider key={mobile.state.activeHostId ?? ""} hostId={mobile.state.activeHostId} snapshot={snapshot} online={mobile.state.connection === "connected" && mobile.state.desktopOnline} request={assistantRequest} loadCache={mobile.loadMailCache} saveCache={mobile.saveMailCache} onDiscuss={() => setTab("assistant")}>
     <AssistantAgendaProvider snapshot={snapshot} online={mobile.state.connection === "connected" && mobile.state.desktopOnline} request={assistantRequest}>
+    <AssistantProposalProvider snapshot={snapshot} online={mobile.state.connection === "connected" && mobile.state.desktopOnline} request={assistantRequest}>
     <MobileAppShell
       tab={tab}
       onTabChange={(next) => {
@@ -578,6 +580,7 @@ function MobileApp({ themeControl }: { themeControl: ThemeControl }) {
       <MobileClientUpdateDialog updater={clientUpdater} />
       <DiagnosticFloatingEntry />
     </MobileAppShell>
+    </AssistantProposalProvider>
     </AssistantAgendaProvider>
     </AssistantMailProvider>
       )}

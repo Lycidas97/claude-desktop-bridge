@@ -1,5 +1,6 @@
 import { isClaudeTranscriptControlMessage } from "@bridge/protocol";
 import type {
+  BridgeActionProposal,
   BridgeAttachment,
   BridgeDeliveryState,
   BridgeEvidenceBundle,
@@ -50,6 +51,7 @@ export type ConversationTimelineEntry =
   | { kind: "message"; item: ConversationItem }
   | { kind: "evidence"; evidence: BridgeEvidenceBundle }
   | { kind: "mail"; card: BridgeMailCard; nativeMessage?: ConversationItem }
+  | { kind: "proposal"; proposal: BridgeActionProposal; createdAt: number }
   | { kind: "assistant-trigger-batch"; batchId: string; cards: BridgeMailCard[]; nativeMessage?: ConversationItem };
 
 export function formatTime(value: number): string {
@@ -491,6 +493,13 @@ export function conversationItems(
         ...(typeof event.data.commandId === "string" ? { commandId: event.data.commandId } : {}),
       });
     }
+    if (event.type === "assistant.proposal.receipt" && event.origin === "claude-desktop") {
+      const proposalReceipt = event.data.proposalReceipt as BridgeHistoryItem["proposalReceipt"];
+      if (proposalReceipt) {
+        const id = `tool:proposal-receipt:${proposalReceipt.toolUseId}`;
+        items.set(id, { id, sessionId, role: "tool", text: "", origin: event.origin, createdAt: event.timestamp, proposalReceipt });
+      }
+    }
     if (event.type === "command.output" || event.type === "command.status") {
       const text = eventText(event);
       if (text) {
@@ -606,7 +615,7 @@ export function conversationItems(
         toolName,
         text,
         createdAt: existing?.createdAt ?? event.timestamp,
-        origin: "claude-host",
+        origin: event.origin,
         ...(toolUseId ? { toolUseId } : {}),
         ...(isError ? { isError: true } : {}),
         ...(subagent?.state === "unknown" ? {} : {
@@ -811,10 +820,26 @@ export function conversationItems(
   return sorted;
 }
 
+export function proposalAnchors(items: ConversationItem[]) {
+  const receipts = new Map(items.flatMap(item => item.proposalReceipt && item.origin === "claude-desktop"
+    ? [[item.proposalReceipt.toolUseId, item.proposalReceipt] as const] : []));
+  const byProposal = new Map<string, { ref: Omit<NonNullable<BridgeHistoryItem["proposalReceipt"]>, "toolUseId">; itemId: string }>();
+  for (const item of items) {
+    if (item.role !== "tool" || item.origin !== "claude-desktop" || !item.toolUseId ||
+      (item.toolName !== "mcp__assistant-mail__proposal_create" && item.toolName !== "mcp__assistant-mail__proposal_update_pending")) continue;
+    const receipt = receipts.get(item.toolUseId);
+    if (!receipt || (byProposal.get(receipt.proposalId)?.ref.revision ?? 0) > receipt.revision) continue;
+    const { toolUseId: _tool, ...ref } = receipt;
+    byProposal.set(ref.proposalId, { ref, itemId: item.id });
+  }
+  return [...byProposal.values()];
+}
+
 export function conversationTimeline(
   items: ConversationItem[],
   evidenceItems: BridgeEvidenceBundle[],
   mailCards: BridgeMailCard[] = [],
+  proposals?: ReadonlyMap<string, BridgeActionProposal>,
 ): ConversationTimelineEntry[] {
   const latestByTurn = new Map<string, BridgeEvidenceBundle>();
   for (const evidence of evidenceItems) {
@@ -892,14 +917,19 @@ export function conversationTimeline(
       timeline.push({ kind: "mail", card, nativeMessage: item });
     }
     // File changes are aggregated in 成果; rekey aliases share the batch's native position.
-    if (!batch && !card && !(item.role === "tool" && item.toolName === "File change")) timeline.push({ kind: "message", item });
+    const proposal = proposals?.get(item.id);
+    if (proposal) timeline.push({ kind: "proposal", proposal, createdAt: item.createdAt });
+    else if (!batch && !card && !item.proposalReceipt && !(item.role === "tool" && item.toolName === "File change")) {
+      timeline.push({ kind: "message", item });
+    }
     for (const evidence of (evidenceAfter.get(index) ?? []).sort((left, right) => left.startedAt - right.startedAt)) {
       timeline.push({ kind: "evidence", evidence });
     }
   });
   const position = (entry: ConversationTimelineEntry) => entry.kind === "message" ? entry.item.createdAt
     : entry.kind === "evidence" ? entry.evidence.startedAt : entry.kind === "mail" ? entry.card.recordedAt
-      : entry.nativeMessage?.createdAt ?? entry.cards[0]!.nativeDelivery.readyAt ?? entry.cards[0]!.recordedAt;
+      : entry.kind === "proposal" ? entry.createdAt
+        : entry.nativeMessage?.createdAt ?? entry.cards[0]!.nativeDelivery.readyAt ?? entry.cards[0]!.recordedAt;
   const unmatched: ConversationTimelineEntry[] = [
     ...standalone.filter(card => card.seq >= 0 && !projected.has(card.mailRefId))
       .sort((left, right) => left.seq - right.seq).map(card => ({ kind: "mail" as const, card })),

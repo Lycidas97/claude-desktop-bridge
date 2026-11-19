@@ -800,6 +800,24 @@ describe("Claude native relay", () => {
     });
   });
 
+  it("projects the user's replan feedback without the internal Native prompt in event and history", async () => {
+    const f = await fixture();
+    try {
+      const text = "Internal proposal instructions\n\nMove the review to Friday";
+      const displayText = "Move the review to Friday";
+      const receipt = await f.bridge.startTurn({ ...input, text, displayText });
+      expect(f.native.calls.find(call => call.method === "sendMessage")?.args[1]).toBe(text);
+      const message = { type: "user", uuid: receipt.messageId, message: { content: text } };
+      f.native.page.messages = [message];
+      await f.message(message);
+      expect((await f.bridge.history(input.sessionId)).items).toEqual([expect.objectContaining({ id: receipt.messageId, text: displayText })]);
+      const replay = f.eventLog.replay(0);
+      expect(replay).toContainEqual(expect.objectContaining({ type: "user.message.accepted", data: expect.objectContaining({ text: displayText }) }));
+      expect(JSON.stringify(replay)).not.toContain("Internal proposal instructions");
+      expect(f.state.nativeDesktopReceipt(input.idempotencyKey)?.displayText).toBe(displayText);
+    } finally { await f.close(); }
+  });
+
   it("keeps all five native image refs and exact text in history and accepted without persisting bytes", async () => {
     const f = await fixture();
     try {

@@ -64,6 +64,7 @@ export interface DesktopTransportHost {
 export interface DesktopMessageDeliveryHost {
   socket: BridgeTransport | undefined;
   readonly responseCache: Map<string, BridgeResponse>;
+  isPairedDevice(deviceId: string): boolean;
   rememberDevice(deviceId: string, metadata?: Record<string, unknown>): Promise<void>;
   sendToDevice(
     payload: BridgePayload,
@@ -309,7 +310,14 @@ export async function deliverTransportMessage(
     requestMethod !== "session.tool.detail" && !(requestMethod === "artifact.transfer.open" && message.payload.params.mailAttachment !== undefined);
   const delivered = diagnostics.begin(`rpc.${method}`);
   try {
-    await host.rememberDevice(message.header.fromDeviceId, message.payload.params);
+    const deviceId = message.header.fromDeviceId;
+    if (requestMethod.startsWith("assistant.proposal.") && !host.isPairedDevice(deviceId)) {
+      await host.sendToDevice({ kind: "response", requestId: message.payload.requestId, ok: false,
+        error: { code: "PAIRING_REQUIRED", message: "请先完成设备配对。", retryable: false } }, deviceId, undefined, true);
+      host.socket?.ack([encrypted.id]);
+      return;
+    }
+    await host.rememberDevice(deviceId, message.payload.params);
     const cached = cacheable ? host.responseCache.get(message.payload.requestId) : undefined;
     if (cached) {
       diagnostics.cacheHit();

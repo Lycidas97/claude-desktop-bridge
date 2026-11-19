@@ -101,6 +101,15 @@ try {
     assert.ok(mail.result.mailPage.cards.length <= 1);
     ipcProof["plugin.assistant-mail.list"] = mail.result.mailPage.cards.length;
   }
+  if (snapshot.host.capabilities.includes("assistant.proposal.v1")) {
+    assert.equal(typeof snapshot.assistantProposals.changeToken, "string");
+    assert.ok(Number.isInteger(snapshot.assistantProposals.pendingCount));
+    assert.equal(snapshot.assistantProposals.proposals, undefined);
+    const pending = await page.evaluate(() => window.bridgeDesktop.request({ method: "assistant.proposal.list", params: { limit: 1 } }));
+    assert.equal(pending.ok, true, pending.error?.message);
+    assert.ok(Array.isArray(pending.result.proposals) && pending.result.proposals.length <= 1);
+    ipcProof["assistant.proposal.list"] = pending.result.proposals.length;
+  }
   const updaterStatus = await page.evaluate(() => window.bridgeDesktop.request({ method: "system.update", params: { action: "status" } }));
   assert.equal(updaterStatus.ok, true, `system.update: ${updaterStatus.error?.message}`);
   assert.equal(updaterStatus.result.currentVersion, desktopPackage.version);

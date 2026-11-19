@@ -5,10 +5,11 @@ import { resolve } from "node:path";
 import { sessionId } from "../config.mjs";
 import { customSelectValue, desktopFixtureRequest, eventually, openMobileDrawer, openMobileSession, selectCustomOption } from "../helpers.mjs";
 
-async function openDesktopAssistant(page, host, baseUrl, requests) {
+export async function openDesktopAssistant(page, host, baseUrl, requests) {
   await page.exposeFunction("assistantDesktopRequest", async input => {
     const request = desktopFixtureRequest(input);
     requests.push(input);
+    if (input.method === "assistant.proposal.resolve") await host.proposalResolveGate;
     const result = await host.nativeApproval.controllerRequest(request, "desktop");
     return { kind: "response", requestId: request.requestId, ok: true, result };
   });

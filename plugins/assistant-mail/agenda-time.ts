@@ -10,6 +10,25 @@ export function collectionZone(data: string | null | undefined, fallback: string
   return new ICAL.Timezone(zone);
 }
 
+function zoneOffsets(timeZone: string) {
+  const formatter = new Intl.DateTimeFormat("en", { timeZone, timeZoneName: "longOffset" });
+  return (instant: number) => {
+    const name = formatter.formatToParts(instant).find(part => part.type === "timeZoneName")!.value;
+    const match = /GMT([+-])(\d{2}):(\d{2})(?::(\d{2}))?/u.exec(name);
+    return match ? (match[1] === "-" ? -1 : 1) * ((+match[2]! * 60 + +match[3]!) * 60 + Number(match[4] ?? 0)) * 1000 : 0;
+  };
+}
+
+/** A repeated local clock time cannot select one instant consistently across iCalendar clients. */
+export function isRepeatedWallTime(instant: number, timeZone: string): boolean {
+  const offsetAt = zoneOffsets(timeZone);
+  const offset = offsetAt(instant);
+  return [-86_400_000, 86_400_000].some(day => {
+    const alternateOffset = offsetAt(instant + day);
+    return alternateOffset !== offset && offsetAt(instant + offset - alternateOffset) === alternateOffset;
+  });
+}
+
 /** Interpret a date or floating wall time in its calendar zone. */
 export function agendaInstant(value: string, zone: AgendaZone): number {
   if (value.endsWith("Z")) return Date.parse(value);
@@ -20,12 +39,7 @@ export function agendaInstant(value: string, zone: AgendaZone): number {
     return time.toUnixTime() * 1000;
   }
   const utc = Date.parse(`${wall}Z`);
-  const formatter = new Intl.DateTimeFormat("en", { timeZone: zone, timeZoneName: "longOffset" });
-  const offsetAt = (instant: number) => {
-    const name = formatter.formatToParts(instant).find(part => part.type === "timeZoneName")!.value;
-    const match = /GMT([+-])(\d{2}):(\d{2})/.exec(name);
-    return match ? (match[1] === "-" ? -1 : 1) * (+match[2]! * 60 + +match[3]!) * 60_000 : 0;
-  };
+  const offsetAt = zoneOffsets(zone);
   return utc - offsetAt(utc - offsetAt(utc));
 }
 

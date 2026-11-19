@@ -43,6 +43,8 @@ import { AssistantAgendaService } from "../../../../plugins/assistant-mail/agend
 import { AgendaStore } from "../../../../plugins/assistant-mail/agenda-store.js";
 import { AssistantMailService, type MailAccountFailure } from "../../../../plugins/assistant-mail/desktop.js";
 import { serveAssistantMailTools } from "../../../../plugins/assistant-mail/local-channel.js";
+import { ProposalExecutor } from "../../../../plugins/assistant-mail/proposal-executor.js";
+import { ProposalStore } from "../../../../plugins/assistant-mail/proposal-store.js";
 
 declare const __BRIDGE_DEFAULT_RELAY__: string;
 declare const __BRIDGE_DEFAULT_PUBLIC_RELAY__: string;
@@ -155,20 +157,30 @@ export async function createServiceRuntime(options: {
     resources.defer("Assistant mail", () => assistantMail.close());
     options.onStage?.("打开邮件数据库");
     let agendaStore!: AgendaStore;
-    await assistantMail.initialize(database => { agendaStore = new AgendaStore(database); }, false);
-    const assistantAgenda = new AssistantAgendaService(agendaStore, {
+    let proposalStore!: ProposalStore;
+    await assistantMail.initialize(database => {
+      agendaStore = new AgendaStore(database);
+      proposalStore = new ProposalStore(database);
+    }, false);
+    const agendaCredentials = {
       available: () => safeStorage.isEncryptionAvailable() &&
         (process.platform !== "linux" || safeStorage.getSelectedStorageBackend() !== "basic_text"),
-      encrypt: value => safeStorage.encryptString(value),
-      decrypt: value => safeStorage.decryptString(Buffer.from(value)),
-    });
+      encrypt: (value: string) => safeStorage.encryptString(value),
+      decrypt: (value: Uint8Array) => safeStorage.decryptString(Buffer.from(value)),
+    };
+    const assistantAgenda = new AssistantAgendaService(agendaStore, agendaCredentials);
     assistantAgenda.on("error", () => process.stderr.write("Bridge assistant calendar sync failed.\n"));
     resources.defer("Assistant agenda", () => assistantAgenda.close());
+    const proposals = new ProposalExecutor(proposalStore, agendaStore, agendaCredentials, sourceId => {
+      void assistantAgenda.proposalChanged(sourceId).catch(error => assistantAgenda.emit("error", error));
+    });
+    proposals.on("error", () => process.stderr.write("Bridge assistant proposal recovery failed.\n"));
+    resources.defer("Assistant proposals", () => proposals.close());
     const workspace = new WorkspaceProvisioner({ userDataPath, appPath: app.getAppPath(), execPath: process.execPath });
     const managed = assistantMail.binding()?.managed;
     const assistantWorkspacePath = managed ? await workspace.restore(managed.token, managed.path) : workspace.path;
     const mailTools = await serveAssistantMailTools({
-      userDataPath, service: assistantMail, agenda: assistantAgenda,
+      userDataPath, service: assistantMail, agenda: assistantAgenda, proposals,
       authorizeManagedToken: token => {
         const binding = assistantMail.binding();
         return !workspace.repairFailed && binding?.managed?.token === token ? binding.nativeSessionId ?? undefined : undefined;
@@ -232,6 +244,7 @@ export async function createServiceRuntime(options: {
       assistantMail,
       workspace,
       assistantAgenda,
+      proposals,
     );
 
     // The service owns the Claude broker and controller.
@@ -240,6 +253,7 @@ export async function createServiceRuntime(options: {
     await controller.initialize();
     assistantMail.startReceivers();
     assistantAgenda.start();
+    proposals.start();
     if (process.platform === "win32" || process.platform === "darwin" || process.platform === "linux") {
       const updater = new DesktopUpdater({
         platform: process.platform,

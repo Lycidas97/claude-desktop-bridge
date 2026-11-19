@@ -13,6 +13,7 @@ import type { ThemeControl } from "../hooks/useTheme.js";
 import { claudeSnapshot } from "../lib/claude-snapshot.js";
 import { AssistantMailProvider } from "./assistant/AssistantMailProvider.js";
 import { AssistantAgendaProvider } from "./assistant/AssistantAgendaProvider.js";
+import { AssistantProposalProvider } from "./assistant/AssistantProposalProvider.js";
 import { AssistantPage } from "./assistant/AssistantPage.js";
 import { BrandMark } from "./common/BrandMark.js";
 import { DiagnosticFloatingEntry } from "./common/DiagnosticLogDialog.js";
@@ -108,6 +109,7 @@ export function DesktopDashboard({ themeControl }: { themeControl: ThemeControl 
           <MagpieQuotaProvider loader={loadMagpieQuota} enabled={snapshot.host.capabilities.includes("plugin.magpie-quota.v1")} sourceKey={quotaSourceKey}>
             <AssistantMailProvider key={snapshot.host.hostId} hostId={snapshot.host.hostId} snapshot={snapshot} online request={requestByMethod} onDiscuss={() => setTab("assistant")}>
               <AssistantAgendaProvider snapshot={snapshot} online request={requestByMethod}>
+              <AssistantProposalProvider snapshot={snapshot} online request={requestByMethod}>
               <main className="desktop-shell-v2">
                 <section className="desktop-content-v2">
                   {snapshot.claudeInspector?.state === "error" && (
@@ -182,6 +184,7 @@ export function DesktopDashboard({ themeControl }: { themeControl: ThemeControl 
                 </section>
                 <DiagnosticFloatingEntry desktopSnapshot={snapshot} />
               </main>
+              </AssistantProposalProvider>
               </AssistantAgendaProvider>
             </AssistantMailProvider>
           </MagpieQuotaProvider>

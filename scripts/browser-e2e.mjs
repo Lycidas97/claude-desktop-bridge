@@ -64,6 +64,7 @@ async function runScenario(theme, scenario, mockHostRuntime) {
   let context;
   let page;
   let host;
+  let uploadHost;
   let failure;
   try {
     host = await createMockHost(mockHostRuntime, !["delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "round4-boundaries", "round5-ux", "desktop-conversation", "assistant-mail", "incoming-file"].includes(scenario), scenario !== "delivery-approval-reconnect", errors, ["native-approvals", "native-prompts-pr", "native-messages", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "round4-boundaries", "round5-ux", "desktop-conversation", "assistant-mail", "incoming-file"].includes(scenario), ["native-queue-actions", "desktop-conversation"].includes(scenario), ["section-manage", "round4-boundaries", "round5-ux"].includes(scenario), ["assistant-mail", "round5-ux"].includes(scenario), scenario === "round5-ux" ? { desktopName: "LycidasdeMac-mini", initialMailCount: 0 } : {});
@@ -118,7 +119,7 @@ async function runScenario(theme, scenario, mockHostRuntime) {
       errors.push(`browser runtime: ${error.stack}`);
     });
     if (enableTrace) await context.tracing.start({ screenshots: true, snapshots: true, sources: true });
-    const uploadHost = scenario === "incoming-file"
+    uploadHost = scenario === "incoming-file"
       ? await createMockHost(mockHostRuntime, false, false, errors, true, false, false, false, { desktopName: "文件接收电脑" })
       : undefined;
     if (uploadHost) {
@@ -184,6 +185,7 @@ async function runScenario(theme, scenario, mockHostRuntime) {
       try { await context.close(); } catch (error) { errors.push(`context cleanup: ${error.stack}`); }
     }
     host?.close();
+    uploadHost?.close();
     await writeFile(resolve(directory, "browser-errors.json"), JSON.stringify({ errors, console: browserLog }, null, 2));
     // No pairing secrets, tokens, or encrypted envelopes are written to reports.
     await writeFile(resolve(directory, "host-rpc.json"), JSON.stringify({
@@ -195,10 +197,11 @@ async function runScenario(theme, scenario, mockHostRuntime) {
       nativeTrace: host?.nativeTrace,
       ...(host?.nativeQueue ? { nativeCalls: host.nativeApproval.calls, receipts: host.nativeApproval.receipts(), queueEvents: host.events } : {}),
     }, null, 2));
-    if (host?.nativeApproval) {
-      const idx = nativeHosts.indexOf(host.nativeApproval);
+    for (const fixture of [host?.nativeApproval, uploadHost?.nativeApproval]) {
+      if (!fixture) continue;
+      const idx = nativeHosts.indexOf(fixture);
       if (idx !== -1) nativeHosts.splice(idx, 1);
-      await host.nativeApproval.close();
+      await fixture.close();
     }
   }
   const result = {

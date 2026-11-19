@@ -38,7 +38,11 @@ export async function readIncomingFile({ id, name, mimeType }: ReadableIncomingF
   const parts: BlobPart[] = [];
   while (true) {
     const result = await incomingFile.readFileChunk({ id });
-    if ("done" in result) return new File(parts, name, { type: mimeType });
+    if ("done" in result) {
+      let basename = name.replace(/[<>:"/\\|?*\p{Cc}]/gu, "_").replace(/[. ]+$/u, "") || "导入文件";
+      if (/^(?:CON|PRN|AUX|NUL|(?:COM|LPT)[1-9¹²³]) *(?:\.|$)/iu.test(basename)) basename = `_${basename}`;
+      return new File(parts, basename, { type: mimeType });
+    }
     parts.push(Uint8Array.from(atob(result.data), (char) => char.charCodeAt(0)));
   }
 }

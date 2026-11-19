@@ -2,7 +2,7 @@ import type { BridgeHostSnapshot, BridgeSessionInfo } from "@bridge/protocol";
 import { LoaderCircle, MessageSquare, Monitor } from "lucide-react";
 import { Fragment, useEffect, useState, type ReactNode, type RefObject } from "react";
 import type { useMobileBridge } from "../../hooks/useMobileBridge.js";
-import { canSendSession } from "../../lib/conversation-timeline.js";
+import { canSendSession, relativeTime } from "../../lib/conversation-timeline.js";
 import { discardIncomingFile, observeIncomingFiles, readIncomingFile } from "../../lib/incoming-file.js";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
 import { groupProjectSessionFamilies, type SessionFamily } from "../../lib/project-groups.js";
@@ -115,7 +115,7 @@ export function IncomingFilePicker({ mobile, snapshot, dismissMediaPreview, onOp
                 <section key={projectId} aria-label={sessions[0]!.projectName}>
                   <h3 className="incoming-file-project">{sessions[0]!.projectName}</h3>
                   <div className="m-group">
-                    {renderFamilies(groupProjectSessionFamilies(sessions), (sessionId) => {
+                    {renderFamilies(groupProjectSessionFamilies(sessions), sessions, (sessionId) => {
                       void drafts.session(activeHost.roomId, sessionId, (sessionId, file, progress, signal) => (
                         mobile.uploadFile(sessionId, file, progress, signal, activeHost.roomId)
                       )).fileUploads.add([file]);
@@ -134,14 +134,20 @@ export function IncomingFilePicker({ mobile, snapshot, dismissMediaPreview, onOp
   );
 }
 
-function renderFamilies(families: SessionFamily<BridgeSessionInfo>[], onSelect: (sessionId: string) => void): ReactNode {
+function renderFamilies(
+  families: SessionFamily<BridgeSessionInfo>[], projectSessions: BridgeSessionInfo[], onSelect: (sessionId: string) => void,
+): ReactNode {
   return families.map(({ primary, forks }) => (
     <Fragment key={primary.sessionId}>
-      <SheetAction icon={<MessageSquare size={18} />} label={primary.title} onClick={() => onSelect(primary.sessionId)} />
+      <SheetAction icon={<MessageSquare size={18} />} label={primary.title}
+        detail={projectSessions.some((session) => session !== primary && session.title === primary.title)
+          ? [primary.currentSummary, primary.cwd.split(/[\\/]/u).filter(Boolean).at(-1), relativeTime(primary.lastActivityAt)].filter(Boolean).join(" · ")
+          : undefined}
+        onClick={() => onSelect(primary.sessionId)} />
       {forks.length > 0 && (
         <details className="incoming-file-forks">
           <summary aria-label={`${primary.title}的分支会话`}>分支会话</summary>
-          {renderFamilies(forks, onSelect)}
+          {renderFamilies(forks, projectSessions, onSelect)}
         </details>
       )}
     </Fragment>

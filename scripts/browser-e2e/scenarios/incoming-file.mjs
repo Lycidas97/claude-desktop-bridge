@@ -5,7 +5,8 @@ import { resolve } from "node:path";
 import { originalTitle, sessionId } from "../config.mjs";
 import { eventually } from "../helpers.mjs";
 
-export const incomingFileName = "从文件管理器打开.zip";
+export const incomingFileName = "实验?记录.txt";
+const uploadedFileName = "实验_记录.txt";
 const sample = Buffer.from([0, 255, 32, 197, 0, 128, 242]);
 
 export function installIncomingFileFixture({ name, chunks }) {
@@ -55,7 +56,9 @@ export async function verifyIncomingFile(page, startingHost, host, steps, direct
   const sheet = page.getByRole("dialog", { name: "上传到会话" });
   const target = sheet.getByRole("button", { name: new RegExp(originalTitle) });
   const root = host.snapshot.sessions.find(session => session.sessionId === sessionId);
+  root.currentSummary = "处理发票附件";
   host.snapshot.sessions.push(
+    { ...root, sessionId: "another-import-target", currentSummary: "审阅项目计划" },
     { ...root, sessionId: "archived-import-target", title: "已归档的导入目标", archivedAt: Date.now() },
     { ...root, sessionId: "sidechat-import-target", title: "侧聊导入目标", parentSessionId: sessionId, sidechat: true },
   );
@@ -68,8 +71,11 @@ export async function verifyIncomingFile(page, startingHost, host, steps, direct
   await sheet.getByText(incomingFileName, { exact: true }).waitFor();
   await sheet.getByRole("button", { name: /Browser E2E 隔离电脑/ }).click();
   await sheet.getByRole("button", { name: "文件接收电脑" }).click();
-  await target.waitFor();
-  assert.ok(!(await target.isDisabled()));
+  await target.first().waitFor();
+  const matchingTargets = await target.count();
+  const invoiceTarget = sheet.getByRole("button", { name: /处理发票附件/ });
+  const planTarget = sheet.getByRole("button", { name: /审阅项目计划/ });
+  assert.deepEqual([matchingTargets, await invoiceTarget.count(), await planTarget.count()], [2, 1, 1]);
   const archivedVisible = await sheet.getByRole("button", { name: "已归档的导入目标", exact: false }).isVisible();
   const sidechatVisible = await sheet.getByRole("button", { name: "侧聊导入目标", exact: false }).isVisible();
   for (const computer of [startingHost, host]) {
@@ -78,16 +84,16 @@ export async function verifyIncomingFile(page, startingHost, host, steps, direct
   await sheet.screenshot({ path: resolve(directory, "incoming-file-picker.png"), animations: "disabled" });
   await sheet.locator("summary").click();
   await sheet.getByRole("button", { name: "侧聊导入目标", exact: true }).waitFor();
-  await target.click();
+  await invoiceTarget.click();
   await page.getByRole("list", { name: "待发送文件" }).getByText("已上传，发送时附上路径", { exact: false }).waitFor();
   await eventually(() => host.requests.filter(request => request.method === "file.upload.cancel").length, 1, "Release the upload lease");
   const uploads = host.requests.filter(request => request.method.startsWith("file.upload."));
   assert.deepEqual(uploads.map(request => request.method), ["file.upload.open", "file.upload.write", "file.upload.commit", "file.upload.cancel"]);
   const { client: _client, ...uploadParams } = uploads[0].params;
   assert.deepEqual(uploadParams, {
-    sessionId, name: incomingFileName, size: sample.length, sha256: createHash("sha256").update(sample).digest("hex"),
+    sessionId, name: uploadedFileName, size: sample.length, sha256: createHash("sha256").update(sample).digest("hex"),
   });
-  assert.deepEqual(await readFile(resolve(host.nativeApproval.cwd, ".bridge-uploads", uploads[2].params.uploadId, incomingFileName)), sample);
+  assert.deepEqual(await readFile(resolve(host.nativeApproval.cwd, ".bridge-uploads", uploads[2].params.uploadId, uploadedFileName)), sample);
   assert.ok(!host.requests.some(request => request.method === "turn.start"));
 
   await page.locator(".conversation-image-preview img").click();
@@ -99,7 +105,7 @@ export async function verifyIncomingFile(page, startingHost, host, steps, direct
   assert.deepEqual({ archivedVisible, sidechatVisible, viewerStillOpen }, {
     archivedVisible: false, sidechatVisible: false, viewerStillOpen: false,
   });
-  await target.waitFor();
+  await target.first().waitFor();
   await sheet.getByRole("button", { name: "取消导入" }).click();
   await sheet.waitFor({ state: "hidden" });
 

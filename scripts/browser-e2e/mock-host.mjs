@@ -339,6 +339,13 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
     host.sectionsEnabled = sections;
     host.nativeApproval = await startNativeApprovalHost({
       directory, sessionId, title: originalTitle, deviceId: pairing.deviceId, sections, assistantMail,
+      onAgendaChanged(assistantAgenda) {
+        snapshot.assistantAgenda = assistantAgenda;
+        const event = { eventId: randomUUID(), seq: ++snapshot.latestSeq, timestamp: Date.now(), origin: "system",
+          type: "plugin.assistant-agenda.changed", data: { assistantAgenda } };
+        events.push(event);
+        if (!host.mailOffline) void host.send({ kind: "event", event }).catch(error => errors.push(`agenda event: ${error.stack}`));
+      },
       onMailChanged(assistantMail) {
         snapshot.assistantMail = assistantMail;
         const event = { eventId: randomUUID(), seq: ++snapshot.latestSeq, timestamp: Date.now(), origin: "system",
@@ -378,6 +385,8 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
     if (assistantMail) {
       snapshot.host.capabilities.push(...host.nativeApproval.mailCapabilities(), "workspace.upload.v1");
       snapshot.assistantMail = host.nativeApproval.mailSnapshot();
+      snapshot.host.capabilities.push("plugin.assistant-agenda.v1");
+      snapshot.assistantAgenda = host.nativeApproval.assistantMail.agenda.snapshot();
       const initialMailCount = options.initialMailCount ?? 60;
       if (initialMailCount > 0) {
         host.mailOffline = true;
@@ -445,6 +454,11 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
           result = { events: resumed, latestSeq: snapshot.latestSeq, hasMore: false };
           break;
         }
+        case "plugin.assistant-agenda.todo.list":
+        case "plugin.assistant-agenda.event.list":
+        case "plugin.assistant-agenda.todo.save":
+        case "plugin.assistant-agenda.event.save":
+        case "plugin.assistant-agenda.todo.complete":
         case "plugin.assistant-mail.list":
         case "plugin.assistant-mail.read":
         case "plugin.assistant-mail.bind":

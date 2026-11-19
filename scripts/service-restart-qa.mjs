@@ -46,6 +46,8 @@ const os=require('node:os');const fs=require('node:fs');
 if(process.argv.includes('--bridge-service')) {
   fs.writeFileSync(${JSON.stringify(join(root, 'service.pid'))},String(process.pid));
   if(process.platform==='darwin') {
+    // The detached service starts outside Playwright's Electron loader.
+    app.commandLine.appendSwitch('use-mock-keychain');
     const prototype=require('node:child_process').ChildProcess.prototype;
     const spawn=prototype.spawn;
     prototype.spawn=function(options) {

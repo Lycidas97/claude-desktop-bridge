@@ -2,6 +2,8 @@ import {
   evidenceSummary,
   summarizeEvidenceEvent,
   type BridgeArtifactPreview,
+  ASSISTANT_AGENDA_CAPABILITY,
+  type BridgeAgendaSnapshot,
   type BridgeAssistantMailSnapshot,
   type BridgeConversationRoute,
   type BridgeDeliveryState,
@@ -1153,6 +1155,9 @@ export function applyEventToSnapshot(
   if (event.type === "plugin.assistant-mail.changed" && current.host.capabilities.includes("plugin.assistant-mail.v1")) {
     return { ...current, assistantMail: event.data.assistantMail as BridgeAssistantMailSnapshot };
   }
+  if (event.type === "plugin.assistant-agenda.changed" && current.host.capabilities.includes(ASSISTANT_AGENDA_CAPABILITY)) {
+    return { ...current, assistantAgenda: event.data.assistantAgenda as BridgeAgendaSnapshot };
+  }
   if (!event.sessionId) return current;
   const hasPendingPermission = permissions.some((permission) => permission.sessionId === event.sessionId)
     || current.prompts?.some(prompt => prompt.sessionId === event.sessionId) === true;
@@ -1395,6 +1400,7 @@ export function applyEventsToSnapshot(
   let providers = current.providers ?? [];
   let prompts = current.prompts;
   let assistantMail = current.assistantMail;
+  let assistantAgenda = current.assistantAgenda;
   let providersDirty = false;
   let sessionsDirty = false;
   let latestSeq = current.latestSeq;
@@ -1420,6 +1426,10 @@ export function applyEventsToSnapshot(
       assistantMail = event.data.assistantMail as BridgeAssistantMailSnapshot;
       continue;
     }
+    if (event.type === "plugin.assistant-agenda.changed" && current.host.capabilities.includes(ASSISTANT_AGENDA_CAPABILITY)) {
+      assistantAgenda = event.data.assistantAgenda as BridgeAgendaSnapshot;
+      continue;
+    }
     if (!event.sessionId) continue;
     if (event.type === "session.deleted") {
       if (byId.delete(event.sessionId)) sessionsDirty = true;
@@ -1442,6 +1452,7 @@ export function applyEventsToSnapshot(
     ...(sessionsDirty ? { sessions: [...byId.values()] } : {}),
     ...(providersDirty ? { providers } : {}),
     ...(assistantMail ? { assistantMail } : {}),
+    ...(assistantAgenda ? { assistantAgenda } : {}),
     ...(prompts ? { prompts } : {}),
   };
   return {

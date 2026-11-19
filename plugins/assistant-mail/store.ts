@@ -101,7 +101,7 @@ export class AssistantMailStore {
     this.directory = join(userDataPath, "private", "assistant");
   }
 
-  async initialize(): Promise<void> {
+  async initialize(extend?: (database: DatabaseSync) => void): Promise<void> {
     for (const directory of [join(this.userDataPath, "private"), this.directory, join(this.directory, "raw-mail")]) {
       await mkdir(directory, { recursive: true, mode: 0o700 });
       await chmod(directory, 0o700);
@@ -158,6 +158,7 @@ export class AssistantMailStore {
       this.database.exec("ALTER TABLE mail_events ADD COLUMN analysis_json TEXT");
     }
     if (!columns.includes("mime_projection")) this.database.exec("ALTER TABLE mail_events ADD COLUMN mime_projection TEXT");
+    extend?.(this.database);
   }
 
   async backfillMimeProjections(signal: AbortSignal): Promise<boolean> {

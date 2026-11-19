@@ -11,6 +11,8 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
     "html-to-text": "^10.0.1",
+    "ical.js": "2.2.1",
+    "saxes": "6.0.0",
     "imapflow": "^2.11.0",
     "mailparser": "^3.14.3",
     "pdfjs-dist": "^6.4.299",

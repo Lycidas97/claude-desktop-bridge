@@ -62,7 +62,8 @@ async function verifyMailMarkRead(phone, host, baseUrl, capture) {
   await openMobileDrawer(phone);
   const { deliver } = host.nativeApproval.assistantMail;
   const viewed = await deliver(1);
-  const marked = await deliver(2);
+  const missed = await deliver(1);
+  const marked = await deliver(1);
   await publishDesktop();
   await eventually(mobileLabel, "助理，3 条未读", "Phone badges new arrivals above its baseline");
   await eventually(desktopCount, "3", "Desktop badges the same arrivals");
@@ -86,13 +87,21 @@ async function verifyMailMarkRead(phone, host, baseUrl, capture) {
   await card(desktop, marked).getByText("待处理", { exact: true }).waitFor();
   await capture(desktop, "desktop-mail-host-read");
 
-  await phone.reload({ waitUntil: "domcontentloaded" });
-  await openMobileDrawer(phone);
-  await eventually(mobileLabel, "助理，1 条未读", "Reconnecting preserves the combined unread count");
   await capture(phone, "mobile-mail-host-read");
   await mobileBadge.click();
   await phone.getByRole("button", { name: "收件", exact: true }).click();
   await card(phone, marked).getByText("待处理", { exact: true }).waitFor();
+  host.mailOffline = true;
+  host.socket.close();
+  await phone.getByText("电脑离线，显示已缓存邮件。", { exact: true }).waitFor();
+  const { result: offlineMark } = await host.nativeApproval.callAssistantTool("mail.mark_read", { mailRefIds: [missed.mailRefId] });
+  assert.deepEqual(offlineMark, { changedCount: 1 });
+  await phone.reload({ waitUntil: "domcontentloaded" });
+  await openMobileDrawer(phone);
+  await eventually(mobileLabel, "助理，1 条未读", "The offline phone restores the old cache without the second mark");
+  host.mailOffline = false;
+  host.socket.connect();
+  await eventually(mobileLabel, "助理", "Reconnecting fetches the missed host mark and clears the last unread badge");
   await desktop.close();
 }
 
@@ -102,7 +111,7 @@ export async function verifyAssistantProposals(page, host, steps, directory, vie
     viewports.push({ page: name, ...surface.viewportSize() });
   };
   await verifyMailMarkRead(page, host, baseUrl, capture);
-  steps.push("Managed mail.mark_read reduces both badges, combines with phone-only views after reconnect, and leaves both business-status labels pending");
+  steps.push("Managed mail.mark_read combines with phone-only views, reduces both badges without changing business status, and clears a stale cached badge on reconnect");
   const agenda = host.nativeApproval.assistantMail.agenda;
   const back = () => page.evaluate(async () => (await import("/src/lib/mobile-back-navigation.ts")).dispatchMobileBack());
   await openMobileDrawer(page);

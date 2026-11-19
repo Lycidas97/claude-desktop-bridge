@@ -192,6 +192,7 @@ it("updates the same durable event with fixed provenance, emits changes and leav
 it("marks single and batched saved mail via the managed gateway without changing IMAP or processing", async () => {
   await deliver(2);
   const [third, second] = service.page().events;
+  service.setProcessingStatus(second!.mailRefId, "processed");
   const before = service.page().events;
   await channel!.close();
   const managedToken = "managed-mark-read-fixture";

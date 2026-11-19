@@ -152,6 +152,23 @@ describe("session effort", () => {
     expect(props.onSave).toHaveBeenCalledExactlyOnceWith({ effort: "medium" });
   });
 
+  it.each([
+    { declared: ["low", "ultra"], notice: "当前模型不可用：低、超高" },
+    { declared: ["ultra"], notice: "原生会话不支持：超高" },
+  ])("explains the unavailable levels when a model offers no selectable effort: $notice", async ({ declared, notice }) => {
+    const loaded: BridgeSessionConfiguration = {
+      ...configuration,
+      availableModels: [{ value: "current-model", displayName: "Current", supportsEffort: false, declaredEffortLevels: declared }],
+    };
+    const draw = () => render(() => <SessionConfigurationDialog session={session}
+      onLoad={vi.fn().mockResolvedValue(loaded)} onSave={vi.fn()} onClose={vi.fn()} />);
+    draw(); await settle();
+    const tree = draw();
+    expect(textContent(tree)).toContain(notice);
+    expect(button(tree, "低")).toBeUndefined();
+    expect(button(tree, "超高")).toBeUndefined();
+  });
+
   it("starts unset and shows the effort Desktop returns after an explicit change", async () => {
     const loaded = { ...configuration, availableEffortLevels: ["low", "medium", "high"] };
     const props = {

@@ -146,7 +146,7 @@ export async function createServiceRuntime(options: {
     resources.defer("Evidence store", () => evidence.close());
     options.onStage?.("打开成果数据库");
     await evidence.initialize();
-    const assistantMail = new AssistantMailService({ userDataPath });
+    const assistantMail = new AssistantMailService({ userDataPath, attachmentCMapUrl: join(app.getAppPath(), "dist", "renderer", "pdfjs", "cmaps") + "/" });
     assistantMail.on("error", () => process.stderr.write("Bridge assistant mail storage failed; receiving paused.\n"));
     resources.defer("Assistant mail", () => assistantMail.close());
     options.onStage?.("打开邮件数据库");

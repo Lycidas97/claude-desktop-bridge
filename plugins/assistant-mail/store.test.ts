@@ -143,7 +143,7 @@ it("migrates an existing event and persists analysis/status on the same identity
   const event = (await store.record(message()))!;
   store.close();
   const legacy = new DatabaseSync(join(root, "private", "assistant", "assistant.sqlite"));
-  legacy.exec("ALTER TABLE mail_events DROP COLUMN analysis_json");
+  legacy.exec("ALTER TABLE mail_events DROP COLUMN analysis_json; ALTER TABLE mail_events DROP COLUMN mime_projection");
   legacy.close();
   store = new AssistantMailStore(root);
   await store.initialize();
@@ -177,4 +177,19 @@ it("creates the assistant business tables and private POSIX files including WAL/
   }
   const raw = await fs.readdir(join(store.directory, "raw-mail"));
   expect((await fs.stat(join(store.directory, "raw-mail", raw[0]!))).mode & 0o777).toBe(0o600);
+});
+
+it("keeps paginated previews and attachment metadata when the original is unavailable", async () => {
+  store.openMailbox("test-account", "1", 5);
+  const event = await store.record({ ...message(), source: Buffer.from('Content-Type: text/plain\r\nContent-Disposition: attachment; filename="notes.txt"\r\n\r\nPrivate text') });
+  await fs.rename(join(store.directory, "raw-mail"), join(store.directory, "detached-raw-mail"));
+  expect(store.page().events[0]).toMatchObject({ mailRefId: event?.mailRefId, attachmentCount: 1,
+    attachments: [{ attachmentId: "0", filename: "notes.txt", mimeType: "text/plain", size: 12 }] });
+});
+
+it("bounds the preview on Unicode code-point boundaries", async () => {
+  store.openMailbox("test-account", "1", 5);
+  const source = Buffer.from(`Content-Type: text/plain; charset=utf-8\r\n\r\n${"📬🧪".repeat(130)}`);
+  const event = await store.record({ ...message(), source });
+  expect(event?.preview).toBe("📬🧪".repeat(120));
 });

@@ -1,4 +1,4 @@
-import { FILE_PREVIEW_CONFIRM_BYTES, type BridgeArtifactTransferMetadata } from "@bridge/protocol";
+import { ARTIFACT_MAX_BYTES, FILE_PREVIEW_CONFIRM_BYTES, type BridgeArtifactTransferMetadata } from "@bridge/protocol";
 import { createContext, lazy, Suspense, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { formatBytes, mediaFileParams, type MediaRequest, type MediaTarget } from "../../lib/media-preview.js";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
@@ -56,7 +56,7 @@ export function MediaPreviewProvider({ request, supportsFileStat = false, childr
   useEffect(() => {
     if (!pending || pending.metadata || pending.error) return;
     // Older hosts interpret unknown purposes as content opens. Never probe them.
-    if (!supportsFileStat) {
+    if (!supportsFileStat && !pending.target.mailAttachment) {
       setPending({ ...pending, error: "此电脑尚不支持文件大小预检。请更新电脑端 Bridge，然后重新连接再预览。" });
       return;
     }
@@ -68,6 +68,7 @@ export function MediaPreviewProvider({ request, supportsFileStat = false, childr
       if (disposed) return;
       if (!response?.ok) throw new Error(response?.error?.message ?? "文件信息读取失败");
       const { metadata } = response.result as { metadata: BridgeArtifactTransferMetadata };
+      if (pending.target.mailAttachment && metadata.size > ARTIFACT_MAX_BYTES) throw new Error("邮件附件超过 20 MiB 传输上限。");
       if (metadata.size > FILE_PREVIEW_CONFIRM_BYTES) setPending({ ...pending, metadata });
       else { setPending(undefined); pending.open(); }
     }).catch((error: unknown) => {

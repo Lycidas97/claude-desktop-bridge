@@ -4,6 +4,7 @@ import type {
   BridgeArtifactManifest,
   BridgeArtifactTransferChunk,
   BridgeArtifactTransferInfo,
+  BridgeMailAttachmentRef,
   BridgeRequest,
   BridgeResponse,
 } from "@bridge/protocol";
@@ -14,7 +15,10 @@ type RequestArtifact = (
   options?: { wait?: boolean; timeoutMs?: number },
 ) => Promise<BridgeResponse | undefined>;
 
-const BridgeFiles = registerPlugin<{ openFile(options: { path: string; mimeType: string }): Promise<void> }>("BridgeFiles");
+const BridgeFiles = registerPlugin<{
+  openFile(options: { path: string; mimeType: string }): Promise<void>;
+  saveFile(options: { name: string; chunks: string[] }): Promise<void>;
+}>("BridgeFiles");
 
 let activeDownloadsCount = 0;
 let activeDownloadsCachedBytes = 0;
@@ -108,7 +112,9 @@ async function runArtifactTransfer(
   const transfer = opened.transfer;
   const chunks: Uint8Array[] = [];
   const native = Capacitor.getPlatform() === "android";
+  const saveOnly = "mailAttachment" in openParams;
   const filename = safeFilename(transfer.name);
+  const saveChunks = native && saveOnly ? [] as string[] : undefined;
   const nativePath = `bridge-evidence/${transfer.transferId}/${filename}`;
   let nativeFileCreated = false;
   let transferCompleted = false;
@@ -124,7 +130,8 @@ async function runArtifactTransfer(
       chunks.push(bytes);
       bufferedBytes += bytes.byteLength;
       activeDownloadsCachedBytes += bytes.byteLength;
-      if (native) {
+      if (saveChunks) saveChunks.push(chunk.data);
+      else if (native) {
         if (index === 0) {
           await Filesystem.writeFile({
             path: nativePath,
@@ -146,12 +153,13 @@ async function runArtifactTransfer(
     if (await sha256Hex(chunks) !== transfer.sha256) throw new Error("成果完整性校验失败");
     transferCompleted = true;
     if (native) {
-      await BridgeFiles.openFile({ path: nativePath, mimeType: transfer.mimeType });
+      if (saveChunks) await BridgeFiles.saveFile({ name: filename, chunks: saveChunks });
+      else await BridgeFiles.openFile({ path: nativePath, mimeType: transfer.mimeType });
       return;
     }
     const blob = new Blob(
       chunks.map((chunk) => Uint8Array.from(chunk).buffer),
-      { type: transfer.mimeType },
+      { type: saveOnly ? "application/octet-stream" : transfer.mimeType },
     );
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
@@ -192,4 +200,8 @@ export async function downloadBridgeSessionFile(
   resolveRelativeLink?: true,
 ): Promise<void> {
   await runArtifactTransfer({ sessionId, path: filePath, ...(resolveRelativeLink ? { resolveRelativeLink } : {}) }, request, onProgress);
+}
+
+export async function downloadMailAttachment(mailAttachment: BridgeMailAttachmentRef, request: RequestArtifact, onProgress: (progress: number) => void): Promise<void> {
+  await runArtifactTransfer({ mailAttachment }, request, onProgress);
 }

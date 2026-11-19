@@ -722,6 +722,10 @@ async function dispatchControllerRequestInner(
   if (request.method.startsWith("file.upload.")) {
     return handleFileUpload(host.uploads, () => host.allSessions(), request.method, params, sourceDeviceId);
   }
+  if ((request.method === "artifact.preview" || request.method === "artifact.transfer.open") && params.mailAttachment !== undefined) {
+    if (!host.assistantMailCoordinator) throw new BridgeRequestError("UNSUPPORTED", "当前电脑不支持邮件附件。");
+    return host.assistantMailCoordinator.handleAttachment(request.method, params, host.evidence, sourceDeviceId ?? origin);
+  }
   if (request.method === "artifact.preview") return previewArtifact(host.evidence, params);
   if (request.method === "artifact.transfer.open") {
     return openArtifactTransfer(host.evidence, host.broker, () => host.allSessions(), params, sourceDeviceId);

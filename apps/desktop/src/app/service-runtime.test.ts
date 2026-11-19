@@ -208,7 +208,7 @@ it("disables real Native menu automation for a custom inspector origin", async (
 it("owns one mail service and gives the Controller that exact instance", async () => {
   const { createServiceRuntime } = await import("./service-runtime.js");
   const runtime = await createServiceRuntime({ userDataPath: "/test/bridge" });
-  expect(resources.mailOptions).toHaveBeenCalledExactlyOnceWith({ userDataPath: "/test/bridge" });
+  expect(resources.mailOptions).toHaveBeenCalledExactlyOnceWith({ userDataPath: "/test/bridge", attachmentCMapUrl: join("/test/app", "dist", "renderer", "pdfjs", "cmaps") + "/" });
   expect(resources.assistantMail.initialize).toHaveBeenCalledOnce();
   expect(resources.controllerOptions.mock.calls[0]?.at(-2)).toBe(resources.assistantMail);
   expect(resources.serveMailTools).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ userDataPath: "/test/bridge", service: resources.assistantMail }));

@@ -722,6 +722,15 @@ export class EvidenceManager {
     return this.options.store.details(evidenceId, kind, cursor, limit);
   }
 
+  /** Use the renderer on bytes without looking up or persisting evidence. */
+  async previewUnstoredImage(artifactId: string, bytes: Buffer, mimeType: string): Promise<BridgeArtifactPreview> {
+    if (!this.options.previewRenderer) throw new Error("Image preview is unavailable");
+    const rendered = await this.options.previewRenderer.image(bytes, mimeType);
+    if (rendered.bytes.byteLength > 2 * 1024 * 1024) throw new Error("邮件图片预览超过大小上限。");
+    return { artifactId, mode: "image", mimeType: rendered.mimeType, encoding: "base64",
+      data: rendered.bytes.toString("base64"), truncated: false, generatedAt: Date.now() };
+  }
+
   async preview(artifactId: string): Promise<BridgeArtifactPreview> {
     const artifact = this.options.store.artifact(artifactId);
     if (!artifact) throw new Error("Artifact not found");

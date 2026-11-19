@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
+import { createReadStream } from "node:fs";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import type { BridgeMailAttachment } from "../../packages/protocol/src/assistant-mail.js";
+import { MailBodyParseError, parseMail } from "./mime.js";
 import { MailPageParameters } from "./tool-contract.js";
 
 export interface AssistantBinding {
@@ -27,7 +30,26 @@ export interface MailAnalysis {
   questions: string[];
 }
 
-export interface MailEvent extends MailIdentity {
+interface MailProjection {
+  preview: string;
+  previewError?: string;
+  attachments: BridgeMailAttachment[];
+  attachmentCount: number;
+}
+
+async function projectMail(source: Parameters<typeof parseMail>[0]): Promise<MailProjection> {
+  const previewError = "原文无法解析，预览不可用。";
+  try {
+    const { bodyText, bodyError, attachments, attachmentCount } = await parseMail(source);
+    return { preview: bodyError ? "" : Array.from(bodyText.slice(0, 480)).slice(0, 240).join(""),
+      ...(bodyError ? { previewError } : {}), attachments, attachmentCount };
+  } catch (error) {
+    if (!(error instanceof MailBodyParseError)) throw error;
+    return { preview: "", previewError, attachments: [], attachmentCount: 0 };
+  }
+}
+
+export interface MailEvent extends MailIdentity, MailProjection {
   seq: number;
   mailRefId: string;
   subject: string;
@@ -52,6 +74,7 @@ type EventRow = {
   processing_status: MailProcessingStatus;
   analysis_json: string | null;
   raw_file: string;
+  mime_projection: string;
 };
 
 function eventFromRow(row: EventRow): MailEvent {
@@ -62,6 +85,7 @@ function eventFromRow(row: EventRow): MailEvent {
     receivedAt: row.received_at, recordedAt: row.recorded_at,
     processingStatus: row.processing_status,
     analysis: row.analysis_json ? JSON.parse(row.analysis_json) as MailAnalysis : null,
+    ...JSON.parse(row.mime_projection) as MailProjection,
   };
 }
 
@@ -125,8 +149,22 @@ export class AssistantMailStore {
         UNIQUE (account_key, mailbox, uid_validity, uid)
       ) STRICT;
     `);
-    if (!this.database.prepare("PRAGMA table_info(mail_events)").all().some(column => column.name === "analysis_json")) {
+    const columns = this.database.prepare("PRAGMA table_info(mail_events)").all().map(column => column.name);
+    if (!columns.includes("analysis_json")) {
       this.database.exec("ALTER TABLE mail_events ADD COLUMN analysis_json TEXT");
+    }
+    if (!columns.includes("mime_projection")) this.database.exec("ALTER TABLE mail_events ADD COLUMN mime_projection TEXT");
+    const legacyPage = this.database.prepare("SELECT seq, raw_file FROM mail_events WHERE mime_projection IS NULL AND seq > ? ORDER BY seq LIMIT 100");
+    const saveProjection = this.database.prepare("UPDATE mail_events SET mime_projection = ? WHERE seq = ?");
+    let seq = 0;
+    while (true) {
+      const rows = legacyPage.all(seq) as Array<Pick<EventRow, "seq" | "raw_file">>;
+      if (rows.length === 0) break;
+      for (const row of rows) {
+        const projection = await projectMail(createReadStream(join(this.directory, "raw-mail", row.raw_file)));
+        saveProjection.run(JSON.stringify(projection), row.seq);
+        seq = row.seq;
+      }
     }
   }
 
@@ -191,14 +229,15 @@ export class AssistantMailStore {
     const rawFile = `${mailRefId}.eml`;
     // No database record can reference a file that is still being written.
     await writeFile(join(this.directory, "raw-mail", rawFile), message.source, { flag: "wx", mode: 0o600 });
+    const projection = await projectMail(message.source);
     const db = this.db();
     db.exec("BEGIN");
     try {
       const result = db.prepare(`
         INSERT INTO mail_events (mail_ref_id, account_key, mailbox, uid_validity, uid, subject, from_json,
-          received_at, recorded_at, raw_file) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          received_at, recorded_at, raw_file, mime_projection) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(mailRefId, message.accountKey, message.mailbox, message.uidValidity, message.uid, message.subject,
-        JSON.stringify(message.from), message.receivedAt, Date.now(), rawFile);
+        JSON.stringify(message.from), message.receivedAt, Date.now(), rawFile, JSON.stringify(projection));
       const watermark = db.prepare(`
         UPDATE imap_watermarks SET last_persisted_uid = MAX(last_persisted_uid, ?)
         WHERE account_key = ? AND mailbox = ? AND uid_validity = ?
@@ -219,7 +258,10 @@ export class AssistantMailStore {
       ORDER BY seq DESC LIMIT ?
     `).all(cursor ? Number(cursor) : Number.MAX_SAFE_INTEGER,
       processingStatus ?? null, processingStatus ?? null, limit + 1) as EventRow[];
-    const events = rows.slice(0, limit).map(eventFromRow);
+    const events = rows.slice(0, limit).map(row => {
+      const event = eventFromRow(row);
+      return { ...event, attachments: event.attachments.slice(0, 32) };
+    });
     return { events, ...(rows.length > limit ? { nextCursor: String(events.at(-1)!.seq) } : {}) };
   }
 
@@ -233,6 +275,16 @@ export class AssistantMailStore {
     const row = this.db().prepare("UPDATE mail_events SET processing_status = ? WHERE mail_ref_id = ? RETURNING *")
       .get(status, mailRefId) as EventRow | undefined;
     return row ? eventFromRow(row) : undefined;
+  }
+
+  event(mailRefId: string): MailEvent | undefined {
+    const row = this.db().prepare("SELECT * FROM mail_events WHERE mail_ref_id = ?").get(mailRefId) as EventRow | undefined;
+    return row && eventFromRow(row);
+  }
+
+  stream(mailRefId: string) {
+    const row = this.db().prepare("SELECT raw_file FROM mail_events WHERE mail_ref_id = ?").get(mailRefId) as Pick<EventRow, "raw_file"> | undefined;
+    return row && createReadStream(join(this.directory, "raw-mail", row.raw_file));
   }
 
   async read(mailRefId: string): Promise<{ event: MailEvent; source: Buffer } | undefined> {

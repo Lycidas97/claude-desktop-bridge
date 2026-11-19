@@ -1,3 +1,4 @@
+import { attachmentHtml, mailWithAttachments } from "../../fixtures/mail-attachments.mjs";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -15,6 +16,34 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true, `${name} fits the viewport`);
     viewports.push({ page: name, ...page.viewportSize() });
     await page.screenshot({ path: resolve(directory, `${name}.png`), fullPage: true });
+  }
+  async function verifyAttachments(card, captureName) {
+    const attachmentCard = card.getByRole("region", { name: "邮件附件" });
+    await attachmentCard.getByText("5 个附件", { exact: true }).waitFor();
+    await attachmentCard.getByRole("button", { name: "预览 notes.txt", exact: true }).click();
+    await page.getByRole("heading", { name: "下载大文件预览？", exact: true }).waitFor();
+    await page.getByRole("button", { name: "取消", exact: true }).click();
+    assert.equal(await page.getByRole("button", { name: "预览 data.bin", exact: true }).count(), 0);
+    await attachmentCard.getByRole("button", { name: "预览 schedule.html", exact: true }).click();
+    const viewer = page.getByRole("dialog", { name: "schedule.html", exact: true });
+    await viewer.getByLabel("schedule.html 全文").waitFor();
+    assert.equal(await viewer.getByLabel("schedule.html 全文").textContent(), attachmentHtml);
+    assert.equal(await viewer.locator("img, iframe, script, a").count(), 0);
+    await capture(captureName);
+    await viewer.getByRole("button", { name: "关闭查看器", exact: true }).click();
+    await attachmentCard.getByRole("button", { name: "预览 chart.png", exact: true }).click();
+    const image = page.getByRole("dialog", { name: "chart.png", exact: true });
+    await image.getByRole("img", { name: "chart.png" }).waitFor();
+    await image.getByRole("button", { name: "关闭查看器", exact: true }).click();
+    await attachmentCard.getByRole("button", { name: "预览 summary.pdf", exact: true }).click();
+    const pdf = page.getByRole("dialog", { name: "summary.pdf", exact: true });
+    await pdf.getByLabel("summary.pdf 第 1 页").waitFor();
+    await pdf.getByRole("button", { name: "关闭查看器", exact: true }).click();
+    const download = page.waitForEvent("download");
+    await attachmentCard.getByRole("button", { name: "下载 data.bin", exact: true }).click();
+    const saved = await download;
+    assert.equal(saved.suggestedFilename(), "data.bin");
+    assert.deepEqual(await readFile(await saved.path()), Buffer.from([1, 2, 0, 255]));
   }
   async function evictStartupSnapshot() {
     assert.equal(await page.evaluate(async roomId => {
@@ -46,6 +75,8 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   assert.equal(await original.locator("img, iframe, script").count(), 0);
   assert.equal(await page.evaluate(() => window.mailInjected), undefined);
   assert.match(await original.getByRole("link", { name: /actual\.example\.test.*\/path/u }).getAttribute("href"), /trusted.example@actual.example.test/u);
+  const withAttachments = cards().filter({ hasText: "5 个附件" });
+  await verifyAttachments(withAttachments, "mobile-mail-attachment");
   await capture("mobile-mail");
   steps.push("60 stored mail cards render without a turn request; untrusted content stays text and explicit links show the destination host");
 
@@ -361,6 +392,7 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await page.keyboard.press("Escape");
   steps.push("managed setup confirms the path and Native permissions, pins the project, and keeps previous managed sessions out of the manual binding picker");
 
+  const desktopAttachmentMail = await host.nativeApproval.assistantMail.deliver(1, mailWithAttachments());
   const desktopRequests = [];
   await page.exposeFunction("assistantDesktopRequest", async input => {
     const requestId = randomUUID();
@@ -437,8 +469,9 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   const headingBounds = await page.locator(".assistant-page .desktop-page-heading h1").boundingBox();
   const mailBounds = await cards().first().boundingBox();
   assert.ok(Math.abs(headingBounds.x - mailBounds.x) < 1, "Desktop title aligns with the mail content column");
+  await verifyAttachments(page.locator(`.assistant-mail-list [data-mail-id="${desktopAttachmentMail.mailRefId}"]`), "desktop-mail-attachment");
   await capture("desktop-mail");
-  await cards().nth(1).getByRole("button", { name: "讨论此邮件", exact: true }).click();
+  await page.locator(`.assistant-mail-list [data-mail-id="${otherMail.mailRefId}"]`).getByRole("button", { name: "讨论此邮件", exact: true }).click();
   await reference.getByText(otherMail.mailRefId, { exact: true }).waitFor();
   await page.locator(".assistant-conversation textarea").fill("桌面端核对引用");
   await page.getByRole("button", { name: "发送", exact: true }).click();

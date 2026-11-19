@@ -4,6 +4,7 @@ import type {
   BridgeArtifactTransferInfo,
   BridgeEvidenceBundle,
   BridgeNativeImageRef,
+  BridgeMailAttachmentRef,
   BridgeRequest,
   BridgeResponse,
 } from "@bridge/protocol";
@@ -18,6 +19,7 @@ export interface MediaTarget {
   name: string;
   kind: "image" | "pdf" | "text";
   artifactId?: string;
+  mailAttachment?: BridgeMailAttachmentRef;
   sessionId?: string;
   path?: string;
   resolveRelativeLink?: true;
@@ -25,7 +27,8 @@ export interface MediaTarget {
   nativeImage?: BridgeNativeImageRef;
 }
 
-export function mediaFileParams(target: Pick<MediaTarget, "artifactId" | "sessionId" | "path" | "resolveRelativeLink">) {
+export function mediaFileParams(target: Pick<MediaTarget, "artifactId" | "sessionId" | "path" | "resolveRelativeLink" | "mailAttachment">) {
+  if (target.mailAttachment) return { mailAttachment: target.mailAttachment };
   return target.artifactId ? { artifactId: target.artifactId } : {
     sessionId: target.sessionId,
     path: target.path?.trim().replace(/:\d+(?::\d+)?$/u, ""),

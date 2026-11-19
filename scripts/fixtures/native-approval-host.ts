@@ -370,7 +370,10 @@ export async function startNativeApprovalHost(options: {
   const evidence = new EvidenceManager({ eventLog, store: new EvidenceStore({
     databasePath: join(options.directory, "evidence.sqlite"), blobsPath: join(options.directory, "blobs"),
     masterSecret: Buffer.alloc(32, 5).toString("base64url"),
-  }) });
+  }), previewRenderer: {
+    image: async (bytes, mimeType) => ({ bytes, mimeType }),
+    html: async () => { throw new Error("Unexpected HTML render"); },
+  } });
   await evidence.initialize();
   const assistantMail = mailRoot ? await startAssistantMailFixture(mailRoot) : undefined;
   const assistantMailCoordinator = assistantMail && workspace

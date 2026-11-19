@@ -7,8 +7,10 @@ import { ImapFlow, type ImapFlowOptions } from "imapflow";
 import { KeychainMailCredentials, type MailCredentials } from "./credentials.js";
 import { MailReceiver, type MailState } from "./receiver.js";
 import { AssistantMailStore, type AssistantBinding, type MailAnalysis, type MailProcessingStatus } from "./store.js";
-import { mailBodyText } from "./mime.js";
-export { MailBodyParseError } from "./mime.js";
+import type { BridgeMailAttachmentRef } from "../../packages/protocol/src/assistant-mail.js";
+import { attachmentText, MAIL_TEXT_MAX_BYTES, supportsAttachmentText } from "./attachment-text.js";
+import { MailAttachmentError, mailBodyText, parseMail } from "./mime.js";
+export { MailAttachmentError, MailBodyParseError } from "./mime.js";
 
 export interface MailAccount {
   host: string;
@@ -34,6 +36,7 @@ function accountKey(account: MailAccount): string {
 /** One instance belongs to the background service. Clients borrow this business API, never its connections. */
 export class AssistantMailService extends EventEmitter {
   private readonly store: AssistantMailStore;
+  private readonly attachmentCMapUrl: string | undefined;
   private readonly credentials: MailCredentials;
   private readonly createClient: (options: ImapFlowOptions) => ImapFlow;
   private readonly accounts = new Map<string, { config: SavedAccount; receiver: MailReceiver }>();
@@ -44,10 +47,12 @@ export class AssistantMailService extends EventEmitter {
 
   constructor(options: {
     userDataPath: string;
+    attachmentCMapUrl?: string;
     credentials?: MailCredentials;
     createClient?: (options: ImapFlowOptions) => ImapFlow;
   }) {
     super();
+    this.attachmentCMapUrl = options.attachmentCMapUrl;
     this.store = new AssistantMailStore(options.userDataPath);
     this.credentials = options.credentials ?? new KeychainMailCredentials();
     this.createClient = options.createClient ?? ((config) => new ImapFlow(config));
@@ -196,9 +201,31 @@ export class AssistantMailService extends EventEmitter {
   setBinding(binding: AssistantBinding): void { this.store.setBinding(binding); this.emit("changed"); }
   page(options?: Parameters<AssistantMailStore["page"]>[0]): ReturnType<AssistantMailStore["page"]> { return this.store.page(options); }
   read(mailRefId: string): ReturnType<AssistantMailStore["read"]> { return this.store.read(mailRefId); }
+  event(mailRefId: string) { return this.store.event(mailRefId); }
   async readEvent(mailRefId: string) {
-    const mail = await this.store.read(mailRefId);
-    return mail ? { event: mail.event, bodyText: await mailBodyText(mail.source) } : undefined;
+    const event = this.store.event(mailRefId);
+    if (!event) return undefined;
+    return { event, bodyText: await mailBodyText(this.store.stream(mailRefId)!), attachments: event.attachments, attachmentCount: event.attachmentCount };
+  }
+  attachment({ mailRefId, attachmentId }: BridgeMailAttachmentRef) {
+    const attachment = this.store.event(mailRefId)?.attachments.find(part => part.attachmentId === attachmentId);
+    if (!attachment) throw new MailAttachmentError("MAIL_ATTACHMENT_NOT_FOUND", "邮件附件不存在。");
+    return attachment;
+  }
+  async attachmentBytes({ mailRefId, attachmentId }: BridgeMailAttachmentRef, maxBytes: number): Promise<Buffer> {
+    const { size } = this.attachment({ mailRefId, attachmentId });
+    if (size > maxBytes) throw new MailAttachmentError("MAIL_ATTACHMENT_TOO_LARGE", "邮件附件超过大小上限。");
+    const { bytes, tooLarge } = await parseMail(this.store.stream(mailRefId)!, { attachmentId, maxBytes });
+    if (tooLarge) throw new MailAttachmentError("MAIL_ATTACHMENT_TOO_LARGE", "邮件附件超过大小上限。");
+    if (!bytes || bytes.byteLength !== size) throw new MailAttachmentError("MAIL_ATTACHMENT_NOT_FOUND", "邮件附件不存在或已变化。");
+    return bytes;
+  }
+  async readAttachment(ref: BridgeMailAttachmentRef) {
+    const attachment = this.attachment(ref);
+    if (!supportsAttachmentText(attachment.mimeType)) {
+      throw new MailAttachmentError("MAIL_ATTACHMENT_UNSUPPORTED", "此附件格式不支持提取文本。");
+    }
+    return { attachment, text: await attachmentText(await this.attachmentBytes(ref, MAIL_TEXT_MAX_BYTES), attachment.mimeType, this.attachmentCMapUrl) };
   }
   updateAnalysis(mailRefId: string, analysis: MailAnalysis) {
     const event = this.store.updateAnalysis(mailRefId, analysis);

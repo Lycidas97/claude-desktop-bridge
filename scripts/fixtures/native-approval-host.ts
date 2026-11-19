@@ -301,10 +301,12 @@ export async function startNativeApprovalHost(options: {
       if (method === "setModel") {
         const index = nativeModelIds.findIndex(id => id.replace(/\[1m\]$/iu, "") === String(args[1]).replace(/\[1m\]$/iu, ""));
         if (index < 0) throw new Error("Native fixture rejects canonical model IDs");
-        native.model = args[1] as string;
+        const target = nativeSessions.find(candidate => candidate.sessionId === args[0]);
+        assert.ok(target, "setModel must target an existing native session");
+        target.model = args[1] as string;
         // Reproduce Desktop's modelIdForCli preferred-context normalization.
-        if (savedModels[index]!.label === "Gemini 4 Argon · Antigravity" && !/\[1m\]$/iu.test(native.model)) native.model += "[1m]";
-        options.onModelChanged?.(savedModels[index]!.model);
+        if (savedModels[index]!.label === "Gemini 4 Argon · Antigravity" && !/\[1m\]$/iu.test(target.model)) target.model += "[1m]";
+        if (target === native) options.onModelChanged?.(savedModels[index]!.model);
         return;
       }
       if (method === "setEffort") {

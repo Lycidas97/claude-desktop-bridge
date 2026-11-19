@@ -19,7 +19,7 @@ import { verifyRound4Boundaries, verifyRound5Ux } from "./browser-e2e/scenarios/
 import { verifyDesktopDiagnostics, verifyDesktopQuota, verifyDesktopConversation } from "./browser-e2e/scenarios/desktop.mjs";
 import { verifyMobileSafeArea } from "./browser-e2e/scenarios/mobile-safe-area.mjs";
 import { verifyAssistantMail, verifyAssistantMailHistory, verifyAssistantMailUnread } from "./browser-e2e/scenarios/assistant-mail.mjs";
-import { seedAssistantProposals, verifyAssistantProposals } from "./browser-e2e/scenarios/assistant-proposals.mjs";
+import { seedAssistantProposals, seedMailProposal, verifyAssistantProposals } from "./browser-e2e/scenarios/assistant-proposals.mjs";
 import { scanDesktopPairingQr } from "./browser-e2e/scenarios/pairing-qr.mjs";
 import { createPreviousPairedHost, verifyPairedHostStatus } from "./browser-e2e/scenarios/paired-host-status.mjs";
 import { incomingFileFixture, installIncomingFileFixture, verifyIncomingFile } from "./browser-e2e/scenarios/incoming-file.mjs";
@@ -439,7 +439,10 @@ try {
         : assistantMailPreview && process.env.BRIDGE_E2E_SCENARIOS === "assistant-mail-history"
         ? { initialMailCount: 0, initialMailHistory: 25 } : {});
     previewHost = host;
-    if (proposalPreview) await seedAssistantProposals(host);
+    if (proposalPreview) {
+      await seedAssistantProposals(host);
+      await seedMailProposal(host);
+    }
     if (projectGroupingPreview) Object.assign(host.snapshot, await host.nativeApproval.projectCatalog());
     if (projectGroupingPreview && process.argv.includes("--project-order-scroll-preview")) addScrollProjects(host, 30);
     if (sectionCreatePreview) await syncNativeSections(host);

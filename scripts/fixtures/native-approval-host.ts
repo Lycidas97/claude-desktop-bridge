@@ -21,7 +21,7 @@ import { AssistantMailCoordinator } from "../../apps/desktop/src/controller/assi
 import { WorkspaceProvisioner } from "../../apps/desktop/src/controller/assistant-workspace.js";
 import { ASSISTANT_WORKSPACE_POLICY } from "../../packages/protocol/src/assistant-mail.js";
 import { serveAssistantMailTools } from "../../plugins/assistant-mail/local-channel.js";
-import type { AgendaProposalAction } from "../../packages/protocol/src/assistant-proposal.js";
+import type { ProposalDraftAction } from "../../packages/protocol/src/assistant-proposal.js";
 
 interface NativeApprovalResult {
   requestId: string;
@@ -622,7 +622,7 @@ export async function startNativeApprovalHost(options: {
       await eventLog.flushDeltas(options.sessionId);
       return { events: eventLog.replay(after), history: await broker.history(options.sessionId), session: structuredClone(broker.session(options.sessionId)!) };
     },
-    async draftProposal(action: AgendaProposalAction) {
+    async draftProposal(action: ProposalDraftAction) {
       const response = await fetch(`http://127.0.0.1:${proposalPort}/tools`, {
         method: "POST", headers: { Authorization: `Bearer ${toolToken}`, "X-Bridge-Assistant-Managed": "1" },
         body: JSON.stringify({ name: "proposal.create", arguments: { action } }),

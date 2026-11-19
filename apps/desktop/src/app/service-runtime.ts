@@ -173,8 +173,8 @@ export async function createServiceRuntime(options: {
     resources.defer("Assistant agenda", () => assistantAgenda.close());
     const proposals = new ProposalExecutor(proposalStore, agendaStore, agendaCredentials, sourceId => {
       void assistantAgenda.proposalChanged(sourceId).catch(error => assistantAgenda.emit("error", error));
-    });
-    proposals.on("error", () => process.stderr.write("Bridge assistant proposal recovery failed.\n"));
+    }, undefined, assistantMail);
+    proposals.on("error", () => process.stderr.write("Bridge assistant proposal execution or recovery failed.\n"));
     resources.defer("Assistant proposals", () => proposals.close());
     const workspace = new WorkspaceProvisioner({ userDataPath, appPath: app.getAppPath(), execPath: process.execPath });
     const managed = assistantMail.binding()?.managed;

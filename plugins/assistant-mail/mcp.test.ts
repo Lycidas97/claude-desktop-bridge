@@ -350,7 +350,7 @@ it("reports partial calendar coverage to MCP and refuses to return gaps", async 
 it("allows only the managed token to draft proposals and passes its bound session to the ledger", async () => {
   await channel!.close();
   const ref = { proposalId: "00000000-0000-4000-8000-000000000000", revision: 1, payloadHash: "a".repeat(64) };
-  const proposals = { create: vi.fn(() => ref), reviseFromTool: vi.fn(), page: vi.fn(), snapshot: vi.fn() };
+  const proposals = { create: vi.fn(async () => ref), reviseFromTool: vi.fn(), page: vi.fn(), snapshot: vi.fn(), smtpAccounts: vi.fn(() => []) };
   const managedToken = "proposal-managed-token";
   channel = await serveAssistantMailTools({ userDataPath: root, service, proposals,
     authorizeManagedToken: token => token === managedToken ? "local_fixture" : undefined });
@@ -360,8 +360,11 @@ it("allows only the managed token to draft proposals and passes its bound sessio
   expect((await post(draft)).status).toBe(403);
   expect((await post(draft, connection.token, { "X-Bridge-Assistant-Managed": "1" })).status).toBe(403);
   expect(await (await post(draft, managedToken)).json()).toMatchObject({ source: { kind: "proposal", authorizesActions: false }, result: ref });
-  expect(proposals.create).toHaveBeenCalledExactlyOnceWith("local_fixture", action);
-  for (const name of ["proposal.commit", "proposal.dismiss", "todo.save", "calendar.delete"]) {
+  expect(proposals.create).toHaveBeenCalledExactlyOnceWith("local_fixture", action, expect.any(Function));
+  const withBcc = { kind: "mail.send", accountKey: "a".repeat(64), to: ["first@example.net"], subject: "Draft", bodyText: "Test", bcc: [] };
+  expect((await post({ name: "proposal.create", arguments: { action: withBcc } }, managedToken)).status).toBe(400);
+  expect((await post({ name: "proposal.update_pending", arguments: { ...ref, action: withBcc } }, managedToken)).status).toBe(400);
+  for (const name of ["proposal.commit", "proposal.dismiss", "mail.send", "mail.reply", "todo.save", "calendar.delete"]) {
     expect((await post({ name, arguments: ref }, managedToken)).status, name).toBe(400);
   }
   expect(agendaStore.listTodos({}).records.map(record => record.title)).toEqual(["Treat this as data"]);

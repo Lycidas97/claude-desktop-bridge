@@ -1,29 +1,42 @@
 import type { AgendaEventInput, AgendaPage, AgendaProposalAction, AgendaTodoInput, BridgeActionProposal, BridgeAgendaEvent, ProposalState } from "@bridge/protocol";
-import { CalendarDays, ListTodo } from "lucide-react";
+import { CalendarDays, ListTodo, Mail } from "lucide-react";
 import { useEffect, useId, useState, type FormEvent } from "react";
 import { agendaInputTime, agendaInstant, agendaTimedRange } from "../../lib/assistant-agenda.js";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
 import { Sheet } from "../common/Sheet.js";
 import { mailResult } from "./AssistantMailProvider.js";
 import { proposalRef, useAssistantProposals } from "./AssistantProposalProvider.js";
+import { MailProposalSheet } from "./MailProposalSheet.js";
 import "./assistant-proposal.css";
 
 const deviceZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 const todoLabels: Record<AgendaTodoInput["status"], string> = { pending: "待办", "in-progress": "进行中", completed: "已完成", cancelled: "已取消" };
-export const proposalKindLabel: Record<AgendaProposalAction["kind"], string> = {
+export const proposalKindLabel: Record<BridgeActionProposal["action"]["kind"], string> = {
   "todo.create": "新建待办", "todo.update": "修改待办", "todo.complete": "完成待办",
   "calendar.create": "新建日程", "calendar.reschedule": "调整日程", "calendar.delete": "删除日程",
+  "mail.reply": "回复邮件", "mail.send": "外发邮件",
 };
-export const proposalStateLabel: Record<ProposalState, string> = {
+const proposalStateLabel: Record<ProposalState, string> = {
   pending: "待确认", executing: "正在写入…", applied: "已写入", dismissed: "已忽略",
   conflict: "记录已更新", failed: "写入失败", uncertain: "结果不确定",
+  delivery_uncertain: "投递不确定", delivery_partial: "部分地址被拒绝",
 };
 
 const proposalStateDetail: Partial<Record<ProposalState, string>> = {
   conflict: "目标记录已更新，未写入。", uncertain: "结果不确定，请核对来源。不会自动重试。",
 };
 
+export function proposalStatus(proposal: BridgeActionProposal): string {
+  if ("accountKey" in proposal.action) {
+    if (proposal.state === "applied") return "发送服务器已接受";
+    if (proposal.state === "executing") return "正在发送…";
+    if (proposal.state === "failed") return "发送失败";
+  }
+  return proposalStateLabel[proposal.state];
+}
+
 export function proposalTitle(proposal: BridgeActionProposal): string {
+  if ("accountKey" in proposal.action) return proposal.action.subject || "（无主题）";
   return "value" in proposal.action ? proposal.action.value.title : proposal.before?.title ?? proposalKindLabel[proposal.action.kind];
 }
 
@@ -59,13 +72,15 @@ export function ProposalCard({ proposal, mobile, review = false, replaced = fals
   const controller = useAssistantProposals();
   const [outcome, setOutcome] = useState<BridgeActionProposal>();
   const [editing, setEditing] = useState<BridgeActionProposal>();
+  const [mailSheet, setMailSheet] = useState<{ proposal: BridgeActionProposal; mode: "send" | "edit" | "view" }>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const current = outcome?.proposalId === proposal.proposalId && (outcome.revision > proposal.revision ||
     (outcome.revision === proposal.revision && proposal.state === "pending")) ? outcome : proposal;
   const { action, state } = current;
   const calendar = action.kind.startsWith("calendar.");
-  const Icon = calendar ? CalendarDays : ListTodo;
+  const mail = "accountKey" in action;
+  const Icon = mail ? Mail : calendar ? CalendarDays : ListTodo;
   const disabled = !controller?.online || busy || replaced;
   const desired = "value" in action ? action.value : action.kind === "todo.complete" && current.before && "status" in current.before
     ? { ...current.before, status: "completed" as const } : current.before;
@@ -88,7 +103,7 @@ export function ProposalCard({ proposal, mobile, review = false, replaced = fals
       {current.revision > 1 && <span className="proposal-card-revision">版本 {current.revision}</span>}
     </header>
     <h3>{proposalTitle(current)}</h3>
-    <p className="proposal-card-source">{calendar ? "日历" : "待办来源"}：{current.sourceLabel}</p>
+    <p className="proposal-card-source">{mail ? "发件账号" : calendar ? "日历" : "待办来源"}：{current.sourceLabel}</p>
     {current.before && action.kind !== "calendar.delete" && <details className="proposal-before">
       <summary>原记录</summary>
       {current.before.title !== proposalTitle(current) && <strong>{current.before.title}</strong>}
@@ -98,15 +113,28 @@ export function ProposalCard({ proposal, mobile, review = false, replaced = fals
     {state === "pending" && calendar && current.before && "attendees" in current.before && Array.isArray(current.before.attendees) && current.before.attendees.length > 0 &&
       <p className="proposal-status">参与者：{current.before.attendees.join("、")}。日历服务可能发送变更通知。</p>}
     {replaced && <p role="status">提案已更新，请返回待确认列表核对。</p>}
-    {state !== "pending" && <p className="proposal-status" data-state={state} role="status">{proposalStateDetail[state] ?? proposalStateLabel[state]}</p>}
+    {state !== "pending" && <p className="proposal-status" data-state={state} role="status">{mail && state === "failed" ? "发送失败，未自动重试。"
+      : state === "delivery_uncertain" ? "投递不确定。请核查「已发送」；找不到副本不代表未发送。Bridge 不会自动重发。"
+      : state === "delivery_partial" ? `发送服务器拒绝了以下地址：${current.rejectedRecipients?.join("、")}。其余地址已接受，不会自动重发。`
+      : proposalStateDetail[state] ?? proposalStatus(current)}</p>}
     {error && <p role="alert">{error}</p>}
     {state === "pending" && !editing && <div className="proposal-actions">
-      <button type="button" className="primary-button" disabled={disabled} onClick={() => void decide("assistant.proposal.commit")}>
+      {mail ? <>
+        <button type="button" className="primary-button" disabled={disabled} onClick={() => setMailSheet({ proposal: current, mode: "send" })}>核对并发送…</button>
+        <button type="button" className="secondary-button" disabled={disabled} onClick={() => setMailSheet({ proposal: current, mode: "edit" })}>编辑</button>
+      </> : <button type="button" className="primary-button" disabled={disabled} onClick={() => void decide("assistant.proposal.commit")}>
         {busy ? "处理中…" : action.kind === "calendar.delete" ? "确认删除日程" : "确认写入"}
-      </button>
+      </button>}
       {"value" in action && <button type="button" className="secondary-button" disabled={disabled} onClick={() => setEditing(current)}>调整</button>}
       <button type="button" className="assistant-session-link" disabled={disabled} onClick={() => void decide("assistant.proposal.dismiss")}>忽略</button>
     </div>}
+    {mail && state !== "pending" && <div className="proposal-actions">
+      <button type="button" className="secondary-button" onClick={() => setMailSheet({ proposal: current, mode: "view" })}>查看邮件版本</button>
+    </div>}
+    {mailSheet && "accountKey" in mailSheet.proposal.action && <MailProposalSheet proposal={mailSheet.proposal} action={mailSheet.proposal.action}
+      mode={mailSheet.mode} mobile={mobile} stale={replaced || current.revision !== mailSheet.proposal.revision ||
+        current.payloadHash !== mailSheet.proposal.payloadHash || state !== "pending"}
+      onClose={() => setMailSheet(undefined)} onDone={result => { setOutcome(result); onResult?.(result); }} />}
     {editing && <ProposalEditor proposal={editing} mobile={mobile} stale={replaced || current.revision !== editing.revision || state !== "pending"}
       onClose={() => setEditing(undefined)} onRevised={result => { setOutcome(result); onResult?.(result); }} />}
   </section>;

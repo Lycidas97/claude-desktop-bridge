@@ -18,6 +18,16 @@ export function isMailPollInterval(value: unknown): value is MailPollInterval {
   return value === null || MAIL_POLL_INTERVALS.some(seconds => value === seconds);
 }
 
+export const ASSISTANT_SMTP_CAPABILITY = "plugin.assistant-mail.smtp.v1";
+
+export interface BridgeSmtpChannel {
+  host: string;
+  port: number;
+  security: "tls" | "starttls";
+  user: string;
+  from: string;
+}
+
 export interface BridgeMailAccount {
   accountKey: string;
   host: string;
@@ -28,6 +38,7 @@ export interface BridgeMailAccount {
   pollIntervalSeconds?: MailPollInterval;
   receivingMode?: "polling";
   errorCode?: string;
+  smtp?: BridgeSmtpChannel;
 }
 
 export const ASSISTANT_WORKSPACE_POLICY = "stage1-fenced-workspace";

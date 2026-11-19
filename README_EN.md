@@ -14,10 +14,14 @@
 </p>
 
 <p align="center">
-  <img src="site/assets/product-mobile.png" width="300" alt="A Claude Desktop session in the Bridge mobile app" />
+  <img src="site/assets/product-mobile.png" width="260" alt="A session in the Bridge mobile app: task plan, tool calls and reply" />
+  &nbsp;
+  <img src="site/assets/product-mobile-approval.png" width="260" alt="Answering a Claude command approval in the Bridge mobile app" />
 </p>
 
-Bridge brings local Claude Desktop Code sessions, including Claude-3p, to your phone. Tasks keep running on your computer; the phone lets you follow progress, continue the conversation and handle decisions that need you.
+Bridge brings local Claude Desktop Code sessions to your phone. Tasks keep running on your computer; the phone lets you follow progress, continue the conversation and handle decisions that need you.
+
+Bridge is built for **Claude-3p**, Claude Desktop used through a third-party gateway. Claude's official Remote Control does not support gateway mode; Bridge fills that gap.
 
 - **Continue conversations**: send text, images or files in native sessions and follow tool calls, plans and subagent progress.
 - **Queue and steer**: queue the next instruction while a task runs, or steer it immediately when Desktop supports it.
@@ -27,6 +31,9 @@ Bridge brings local Claude Desktop Code sessions, including Claude-3p, to your p
 - **QR pairing**: one-time codes, valid for ten minutes.
 
 Day-to-day use and validation focus on **macOS + Android**. Bridge depends on Desktop's local `LocalSessions` interface, so available operations depend on the installed Desktop version and account/workspace policies; ordinary web chat history is outside this integration. Besides the native Android client, the generic mobile Web client remains available; the native iOS app is retired.
+
+> [!CAUTION]
+> **Weigh the risk of an account ban before using an official account.** Bridge also works with Claude Desktop signed in to an official Claude account, but it operates Desktop through the local debugging interface, which Anthropic does not support. Bridge only calls Desktop's own session features on your computer, so a ban is unlikely in principle, but the risk cannot be ruled out.
 
 ## Download and install
 

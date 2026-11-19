@@ -5,14 +5,16 @@ import { Sheet } from "../common/Sheet.js";
 import { mailResult } from "./AssistantMailProvider.js";
 import { proposalRef, useAssistantProposals } from "./AssistantProposalProvider.js";
 
-export function MailProposalSheet({ proposal, action, editing, stale, mobile, onClose, onDone }: {
-  proposal: BridgeActionProposal; action: MailProposalAction; editing: boolean; stale: boolean; mobile: boolean;
+export function MailProposalSheet({ proposal, action, mode, stale, mobile, onClose, onDone }: {
+  proposal: BridgeActionProposal; action: MailProposalAction; mode: "send" | "edit" | "view"; stale: boolean; mobile: boolean;
   onClose(): void; onDone(result: BridgeActionProposal): void;
 }) {
   const controller = useAssistantProposals()!;
   const formId = useId();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const editing = mode === "edit";
+  const readOnly = mode === "view";
   const disabled = busy || stale || !controller.online;
   useEffect(() => {
     if (mobile) return registerMobileBackHandler(() => { if (!busy) onClose(); return true; }, 150);
@@ -47,14 +49,14 @@ export function MailProposalSheet({ proposal, action, editing, stale, mobile, on
     }
   }
 
-  return <Sheet title={editing ? "编辑邮件提案" : "核对并发送"} manageFocus busy={busy} onClose={onClose} footer={<>
+  return <Sheet title={readOnly ? "邮件提案记录" : editing ? "编辑邮件提案" : "核对并发送"} manageFocus busy={busy} onClose={onClose} footer={readOnly ? undefined : <>
     <button type="button" className="secondary-button" disabled={busy} onClick={onClose}>取消</button>
     <button type="submit" className="primary-button" form={formId} disabled={disabled}>
       {busy ? (editing ? "正在保存…" : "正在发送…") : editing ? "保存新版本" : "确认立即发出"}
     </button>
   </>}>
-    <form id={formId} className={`mail-proposal-sheet${editing ? " agenda-form" : ""}`} onSubmit={event => void submit(event)}>
-      {!busy && stale && <p role="status">提案已更新或处理。关闭后重新核对。</p>}
+    <form id={formId} className={`mail-proposal-sheet${editing ? " agenda-form" : ""}`} onSubmit={readOnly ? undefined : event => void submit(event)}>
+      {!readOnly && !busy && stale && <p role="status">提案已更新或处理。关闭后重新核对。</p>}
       <dl className="proposal-fields">
         <dt>发件账号</dt><dd>{proposal.sourceLabel}</dd>
         <dt>发件人</dt><dd>{action.from}</dd>
@@ -83,7 +85,7 @@ export function MailProposalSheet({ proposal, action, editing, stale, mobile, on
         <p>{action.bodyText}</p>
       </section>}
       {error && <p role="alert">{error}</p>}
-      {!editing && !error && !stale && <p className="proposal-card-source">发出后无法撤回。</p>}
+      {mode === "send" && !error && !stale && <p className="proposal-card-source">发出后无法撤回。</p>}
     </form>
   </Sheet>;
 }

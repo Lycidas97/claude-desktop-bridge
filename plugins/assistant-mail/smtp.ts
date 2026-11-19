@@ -30,14 +30,16 @@ export async function submitSmtp(channel: BridgeSmtpChannel, password: string, m
     return { state: rejected.length ? "delivery_partial" : "applied", accepted, rejected };
   } catch (error) {
     if (!(error instanceof Error) || !("code" in error)) throw error;
-    const { code, responseCode } = error as NodemailerError;
+    const { code, command, responseCode } = error as NodemailerError;
+    const response = responseCode !== undefined ? { responseCode } : {};
+    const rejected = responseCode !== undefined && responseCode >= 400 && responseCode < 600;
     if (code === "EAUTH" || code === "ENOAUTH" || code === "EDNS" || code === "EENVELOPE" || code === "ETLS" ||
-      (code === "EMESSAGE" && responseCode !== undefined && responseCode >= 400 && responseCode < 600)) {
-      return { state: "failed", ...(responseCode !== undefined ? { responseCode } : {}) };
+      (rejected && (code === "EMESSAGE" || (code === "EPROTOCOL" && command === "CONN")))) {
+      return { state: "failed", ...response };
     }
-    // A socket error does not identify whether the server already accepted DATA.
-    if (code === "ESOCKET" || code === "ETIMEDOUT" || code === "ECONNECTION" || code === "EPROTOCOL") {
-      return { state: "delivery_uncertain" };
+    // A socket failure or non-final DATA reply cannot prove whether the server accepted the message.
+    if (code === "ESOCKET" || code === "ETIMEDOUT" || code === "ECONNECTION" || code === "EPROTOCOL" || code === "EMESSAGE") {
+      return { state: "delivery_uncertain", ...response };
     }
     throw error;
   } finally {

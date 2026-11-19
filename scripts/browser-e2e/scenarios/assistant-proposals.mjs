@@ -223,12 +223,20 @@ export async function verifyAssistantProposals(page, host, steps, directory, vie
   const smtpResult = Promise.withResolvers();
   smtp.resultGate = smtpResult.promise;
   try {
+    await page.clock.install();
     await sheet.getByRole("button", { name: "确认立即发出" }).click();
     await detail.locator('[data-state="executing"]').waitFor({ state: "attached" });
-    assert.equal(await sheet.getByRole("button", { name: "正在发送…" }).isEnabled(), false);
-    assert.equal(await sheet.getByText("提案已更新或处理。关闭后重新核对。").count(), 0, "own send must not be shown as a stale draft");
+    await page.clock.fastForward(20_001);
+    assert.equal(await sheet.getByText("电脑响应超时", { exact: true }).count(), 0, "SMTP wait must not time out the approval RPC");
+    await sheet.waitFor({ state: "hidden" });
+    await detail.getByText("正在发送…", { exact: true }).waitFor();
   } finally { smtpResult.resolve(); }
   await detail.getByText("发送服务器已接受").waitFor();
+  await detail.getByRole("button", { name: "查看邮件版本" }).click();
+  const approvalRecord = page.getByRole("dialog", { name: "邮件提案记录" });
+  await verifyMailSheet(approvalRecord, finalSubject, finalTo, finalBody);
+  assert.equal(await approvalRecord.getByRole("button", { name: "确认立即发出" }).count(), 0);
+  await approvalRecord.getByRole("button", { name: "关闭" }).click();
   const mailCommit = host.requests.find(request => request.method === "assistant.proposal.commit" && request.params.proposalId === mail.proposalId);
   assert.equal(mailCommit.params.revision, 2);
   assert.equal(mailCommit.params.confirmMail, true);

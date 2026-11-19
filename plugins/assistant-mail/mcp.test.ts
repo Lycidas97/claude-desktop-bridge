@@ -360,7 +360,7 @@ it("allows only the managed token to draft proposals and passes its bound sessio
   expect((await post(draft)).status).toBe(403);
   expect((await post(draft, connection.token, { "X-Bridge-Assistant-Managed": "1" })).status).toBe(403);
   expect(await (await post(draft, managedToken)).json()).toMatchObject({ source: { kind: "proposal", authorizesActions: false }, result: ref });
-  expect(proposals.create).toHaveBeenCalledExactlyOnceWith("local_fixture", action);
+  expect(proposals.create).toHaveBeenCalledExactlyOnceWith("local_fixture", action, expect.any(Function));
   const withBcc = { kind: "mail.send", accountKey: "a".repeat(64), to: ["first@example.net"], subject: "Draft", bodyText: "Test", bcc: [] };
   expect((await post({ name: "proposal.create", arguments: { action: withBcc } }, managedToken)).status).toBe(400);
   expect((await post({ name: "proposal.update_pending", arguments: { ...ref, action: withBcc } }, managedToken)).status).toBe(400);

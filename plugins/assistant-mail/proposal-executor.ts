@@ -32,16 +32,18 @@ export class ProposalExecutor extends EventEmitter {
     return { changeToken: this.changeToken, ...this.store.pendingCounts(), sources: this.agenda.proposalSources() };
   }
 
-  async create(sessionId: string, action: ProposalDraftAction): Promise<ProposalRevisionRef> {
+  async create(sessionId: string, action: ProposalDraftAction, assertAuthorized?: () => void): Promise<ProposalRevisionRef> {
     const id = randomUUID();
     const payload = "accountKey" in action ? await freezeMailDraft(this.mailService(), action) : this.freezeAgenda(action, id);
+    assertAuthorized?.();
     const proposal = this.store.insert(sessionId, id, 1, payload);
     this.changed(true);
     return refOf(proposal);
   }
 
-  async revise(ref: ProposalRevisionRef, action: ProposalDraftAction, sessionId?: string): Promise<BridgeActionProposal> {
+  async revise(ref: ProposalRevisionRef, action: ProposalDraftAction, sessionId?: string, assertAuthorized?: () => void): Promise<BridgeActionProposal> {
     const mailPayload = "accountKey" in action ? await freezeMailDraft(this.mailService(), action) : undefined;
+    assertAuthorized?.();
     const proposal = this.store.transaction(() => {
       const current = this.store.requirePending(ref, sessionId);
       if (action.kind !== current.action.kind) throw new AgendaEditError("INVALID_PARAMS", "不能更改提案的动作类型。");
@@ -56,8 +58,8 @@ export class ProposalExecutor extends EventEmitter {
     return publicProposal(proposal);
   }
 
-  async reviseFromTool(sessionId: string, ref: ProposalRevisionRef, action: ProposalDraftAction): Promise<ProposalRevisionRef> {
-    return refOf(await this.revise(ref, action, sessionId));
+  async reviseFromTool(sessionId: string, ref: ProposalRevisionRef, action: ProposalDraftAction, assertAuthorized: () => void): Promise<ProposalRevisionRef> {
+    return refOf(await this.revise(ref, action, sessionId, assertAuthorized));
   }
 
   smtpAccounts() {
@@ -95,7 +97,11 @@ export class ProposalExecutor extends EventEmitter {
       return { proposal, localResult: proposal.intent.backend === "local" ? this.applyLocal(proposal, proposal.intent.baseRevision) : undefined };
     });
     this.changed();
-    if (claimed.smtp) return this.track(this.applySmtp(claimed.proposal, claimed.smtp, claimed.messageId));
+    if (claimed.smtp) {
+      // The approval acknowledgment must not wait for the SMTP server's final response.
+      void this.track(this.applySmtp(claimed.proposal, claimed.smtp, claimed.messageId)).catch(error => this.emit("error", error));
+      return publicProposal({ ...claimed.proposal, state: "executing" });
+    }
     if (claimed.localResult) {
       if (claimed.localResult.state === "applied") this.notifyAgenda(LOCAL_AGENDA_ID);
       return claimed.localResult;

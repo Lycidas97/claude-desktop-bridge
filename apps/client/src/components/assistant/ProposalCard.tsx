@@ -72,7 +72,7 @@ export function ProposalCard({ proposal, mobile, review = false, replaced = fals
   const controller = useAssistantProposals();
   const [outcome, setOutcome] = useState<BridgeActionProposal>();
   const [editing, setEditing] = useState<BridgeActionProposal>();
-  const [mailSheet, setMailSheet] = useState<{ proposal: BridgeActionProposal; editing: boolean }>();
+  const [mailSheet, setMailSheet] = useState<{ proposal: BridgeActionProposal; mode: "send" | "edit" | "view" }>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const current = outcome?.proposalId === proposal.proposalId && (outcome.revision > proposal.revision ||
@@ -120,16 +120,20 @@ export function ProposalCard({ proposal, mobile, review = false, replaced = fals
     {error && <p role="alert">{error}</p>}
     {state === "pending" && !editing && <div className="proposal-actions">
       {mail ? <>
-        <button type="button" className="primary-button" disabled={disabled} onClick={() => setMailSheet({ proposal: current, editing: false })}>核对并发送…</button>
-        <button type="button" className="secondary-button" disabled={disabled} onClick={() => setMailSheet({ proposal: current, editing: true })}>编辑</button>
+        <button type="button" className="primary-button" disabled={disabled} onClick={() => setMailSheet({ proposal: current, mode: "send" })}>核对并发送…</button>
+        <button type="button" className="secondary-button" disabled={disabled} onClick={() => setMailSheet({ proposal: current, mode: "edit" })}>编辑</button>
       </> : <button type="button" className="primary-button" disabled={disabled} onClick={() => void decide("assistant.proposal.commit")}>
         {busy ? "处理中…" : action.kind === "calendar.delete" ? "确认删除日程" : "确认写入"}
       </button>}
       {"value" in action && <button type="button" className="secondary-button" disabled={disabled} onClick={() => setEditing(current)}>调整</button>}
       <button type="button" className="assistant-session-link" disabled={disabled} onClick={() => void decide("assistant.proposal.dismiss")}>忽略</button>
     </div>}
+    {mail && state !== "pending" && <div className="proposal-actions">
+      <button type="button" className="secondary-button" onClick={() => setMailSheet({ proposal: current, mode: "view" })}>查看邮件版本</button>
+    </div>}
     {mailSheet && "accountKey" in mailSheet.proposal.action && <MailProposalSheet proposal={mailSheet.proposal} action={mailSheet.proposal.action}
-      editing={mailSheet.editing} mobile={mobile} stale={replaced || current.payloadHash !== mailSheet.proposal.payloadHash || state !== "pending"}
+      mode={mailSheet.mode} mobile={mobile} stale={replaced || current.revision !== mailSheet.proposal.revision ||
+        current.payloadHash !== mailSheet.proposal.payloadHash || state !== "pending"}
       onClose={() => setMailSheet(undefined)} onDone={result => { setOutcome(result); onResult?.(result); }} />}
     {editing && <ProposalEditor proposal={editing} mobile={mobile} stale={replaced || current.revision !== editing.revision || state !== "pending"}
       onClose={() => setEditing(undefined)} onRevised={result => { setOutcome(result); onResult?.(result); }} />}

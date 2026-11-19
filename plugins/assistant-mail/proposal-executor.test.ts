@@ -179,7 +179,7 @@ it("checks that a CalDAV deletion with a lost reply left the reviewed resource a
 it("does not let an old Native receipt expose a model revision or its manual descendant", async () => {
   const action = { kind: "todo.create", sourceId: "local", value: { title: "Initial", status: "pending" } } as const;
   const first = await service.create("bound-session", action);
-  const detached = await service.reviseFromTool("bound-session", first, { ...action, value: { ...action.value, title: "Unanchored" } });
+  const detached = await service.reviseFromTool("bound-session", first, { ...action, value: { ...action.value, title: "Unanchored" } }, () => {});
   expect(service.resolve("bound-session", [first])).toEqual([]);
   const edited = await service.revise(detached, { ...action, value: { ...action.value, title: "Manually edited" } });
   expect(service.resolve("bound-session", [first])).toEqual([]);

@@ -13,18 +13,20 @@ const message = {
 const messageId = "<attempt@example.com>";
 
 it.each([
-  ["250 accepted", false, "applied"],
-  ["250 accepted", true, "delivery_partial"],
-  ["550 rejected", false, "failed"],
-  [null, false, "delivery_uncertain"],
-] as const)("records SMTP result %s (partial: %s) without resending", async (response, partial, state) => {
+  ["220 capture ESMTP", "250 accepted", false, "applied", undefined],
+  ["220 capture ESMTP", "250 accepted", true, "delivery_partial", undefined],
+  ["220 capture ESMTP", "550 rejected", false, "failed", 550],
+  ["220 capture ESMTP", "354 not a final reply", false, "delivery_uncertain", 354],
+  ["220 capture ESMTP", null, false, "delivery_uncertain", undefined],
+  ["554 service unavailable", null, false, "failed", 554],
+] as const)("records SMTP greeting %s and final reply %s (partial: %s)", async (greeting, response, partial, state, responseCode) => {
   const recipients: string[] = [];
   const messages: string[] = [];
   const server = createServer(socket => {
     let buffered = "";
     let data: string[] | undefined;
     socket.setEncoding("utf8");
-    socket.write("220 capture ESMTP\r\n");
+    socket.write(`${greeting}\r\n`);
     socket.on("data", chunk => {
       buffered += chunk;
       let offset: number;
@@ -61,7 +63,12 @@ it.each([
       return createTransport({ ...options, requireTLS: false });
     });
     expect(result).toMatchObject(state === "delivery_partial" ? { state, accepted: message.to, rejected: message.cc }
-      : state === "failed" ? { state, responseCode: 550 } : { state });
+      : { state, ...(responseCode !== undefined ? { responseCode } : {}) });
+    if (responseCode === 554) {
+      expect(recipients).toEqual([]);
+      expect(messages).toEqual([]);
+      return;
+    }
     expect(recipients).toEqual([...message.to, ...message.cc]);
     expect(messages).toHaveLength(1);
     const captured = await simpleParser(messages[0]!);

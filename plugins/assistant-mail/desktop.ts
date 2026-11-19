@@ -6,6 +6,7 @@ import { EventEmitter } from "node:events";
 import { renameSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { Readable } from "node:stream";
 import { ImapFlow, type ImapFlowOptions } from "imapflow";
 import { KeychainMailCredentials, type MailCredentials } from "./credentials.js";
 import { MailReceiver, type MailState } from "./receiver.js";
@@ -175,20 +176,37 @@ export class AssistantMailService extends EventEmitter {
       if (!this.credentials.supported) throw new Error("mail_credentials_unsupported");
       const { config } = this.requireAccount(accountKey);
       const previous = config.smtp;
-      const { smtp: _smtp, ...receiving } = config;
-      let next: SavedAccount = receiving;
+      let next: SavedSmtpChannel | undefined;
       if (input) {
         const { credential, ...fields } = input;
-        const version = previous && previous.host === fields.host && previous.port === fields.port && previous.security === fields.security &&
-          previous.user === fields.user && previous.from === fields.from ? previous.version : randomUUID();
-        await this.savePassword(`smtp-${version}`, credential);
-        next = { ...receiving, smtp: { ...fields, version } };
+        if (previous && previous.host === fields.host && previous.port === fields.port && previous.security === fields.security &&
+          previous.user === fields.user && previous.from === fields.from) {
+          await this.savePassword(`smtp-${previous.version}`, credential);
+          return;
+        }
+        next = { ...fields, version: randomUUID() };
+        await this.savePassword(`smtp-${next.version}`, credential);
+      } else if (!previous) return;
+      const persist = (smtp: SavedSmtpChannel | undefined) => {
+        const { smtp: _smtp, ...receiving } = config;
+        this.saveAccounts(Array.from(this.accounts, ([key, entry]) => key === accountKey
+          ? { ...receiving, ...(smtp ? { smtp } : {}) } : entry.config));
+        if (smtp) config.smtp = smtp;
+        else delete config.smtp;
+      };
+      try { persist(next); }
+      catch (error) {
+        if (next) await this.credentials.delete(`smtp-${next.version}`);
+        throw error;
       }
-      this.saveAccounts(Array.from(this.accounts, ([key, entry]) => key === accountKey ? next : entry.config));
-      if (next.smtp) config.smtp = next.smtp;
-      else delete config.smtp;
+      try {
+        if (previous) await this.credentials.delete(`smtp-${previous.version}`);
+      } catch {
+        persist(previous);
+        if (next) await this.credentials.delete(`smtp-${next.version}`);
+        throw new Error("mail_credentials_unavailable");
+      }
       this.emit("changed");
-      if (previous && previous.version !== next.smtp?.version) await this.credentials.delete(`smtp-${previous.version}`);
     });
   }
 
@@ -204,7 +222,7 @@ export class AssistantMailService extends EventEmitter {
     });
   }
 
-  replySource(accountKey: string, mailRefId: string) {
+  replySource(accountKey: string, mailRefId: string): { subject: string; source: Readable } {
     const event = this.store.event(mailRefId);
     if (!event || event.accountKey !== accountKey) throw new AgendaEditError("NOT_FOUND", "此账号下找不到原邮件。");
     return { subject: event.subject, source: this.store.stream(mailRefId)! };
@@ -245,13 +263,20 @@ export class AssistantMailService extends EventEmitter {
     return this.mutateAccount(accountKey, async () => {
       const account = this.requireAccount(accountKey);
       if (!this.credentials.supported) throw new Error("mail_credentials_unsupported");
+      const smtpKey = account.config.smtp && `smtp-${account.config.smtp.version}`;
+      const smtpPassword = smtpKey ? await this.credentials.get(smtpKey) : undefined;
       this.saveAccounts(Array.from(this.accounts.values()).filter(entry => entry !== account).map(entry => entry.config));
       this.accounts.delete(accountKey);
       this.removingAccounts.set(accountKey, account.receiver);
+      let deletedSmtp = false;
       try {
-        if (account.config.smtp) await this.credentials.delete(`smtp-${account.config.smtp.version}`);
+        if (smtpKey) {
+          await this.credentials.delete(smtpKey);
+          deletedSmtp = true;
+        }
         await this.credentials.delete(accountKey);
       } catch {
+        if (deletedSmtp && smtpPassword) await this.savePassword(smtpKey!, smtpPassword);
         this.saveAccounts([...Array.from(this.accounts.values(), entry => entry.config), account.config]);
         this.accounts.set(accountKey, account);
         this.emit("changed");

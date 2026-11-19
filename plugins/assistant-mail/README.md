@@ -34,7 +34,7 @@ In **助理设置 → 邮箱账号 → 配置 SMTP**, choose an SMTP server, TLS
 
 `proposal.create` and `proposal.update_pending` can draft `mail.reply` or `mail.send`; `proposal.list` shows eligible account keys. Reply drafts must reference an email in that account. If the model omits `To`, Bridge uses the original `From`, not its `Reply-To`. The send drawer lists the exact final To/Cc and marks differences in the original reply address. Bcc is not supported. Neither the MCP gateway nor an older client can confirm a send.
 
-Bridge saves the exact approval and `send_attempts` row before connecting to SMTP. A successful result means the SMTP server accepted the message, not that the recipient received it. A partial result shows rejected addresses. An interrupted attempt or a lost delivery result is not retried. Check **已发送** yourself; a missing copy is not evidence that the message was not sent.
+Bridge saves the exact approval and `send_attempts` row before connecting to SMTP. The client acknowledges that the approval was recorded without waiting for SMTP. The proposal then shows the saved delivery result; open its version in the history to review To/Cc and the final text. SMTP acceptance does not mean the recipient received it. A partial result shows rejected addresses. An interrupted attempt or a lost delivery result is not retried. Check **已发送** yourself; a missing copy is not evidence that the message was not sent.
 
 ## MCP tools and local authority
 

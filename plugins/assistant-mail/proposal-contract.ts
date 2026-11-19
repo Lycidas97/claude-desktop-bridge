@@ -6,7 +6,7 @@ const sourceId = z.string().regex(/^(?:local|[a-f0-9]{64})$/u).default("local");
 const limit = z.number().int().min(1).max(50).default(30);
 const cursor = z.string().regex(/^[1-9]\d*$/u).refine(value => Number.isSafeInteger(Number(value))).optional();
 
-export const mailbox = z.email().max(254).transform(address => {
+export const mailbox = z.email({ pattern: z.regexes.html5Email }).max(254).transform(address => {
   const at = address.lastIndexOf("@");
   return address.slice(0, at + 1) + address.slice(at + 1).toLowerCase();
 });

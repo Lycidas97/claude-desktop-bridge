@@ -1,5 +1,6 @@
 import type { Readable } from "node:stream";
-import { MailParser, type Headers, type HeaderValue } from "mailparser";
+import { domainToASCII } from "node:url";
+import { MailParser, type EmailAddress, type Headers, type HeaderValue } from "mailparser";
 import type { MailProposalAction, MailProposalDraft } from "../../packages/protocol/src/assistant-proposal.js";
 import { AgendaEditError } from "./agenda-store.js";
 import type { AssistantMailService } from "./desktop.js";
@@ -7,12 +8,16 @@ import { mailbox } from "./proposal-contract.js";
 import type { ProposalPayload } from "./proposal-store.js";
 
 function headerAddresses(header: HeaderValue | undefined): string[] {
+  const flatten = (values: EmailAddress[]): string[] => values.flatMap(({ address, group }) => {
+    if (group) return flatten(group);
+    if (!address) return [];
+    const at = address.lastIndexOf("@");
+    const parsed = mailbox.safeParse(address.slice(0, at + 1) + domainToASCII(address.slice(at + 1)));
+    return parsed.success ? [parsed.data] : [];
+  });
   const values = Array.isArray(header) ? header : [header];
   return Array.from(new Set(values.flatMap(value => value && typeof value === "object" && "value" in value && Array.isArray(value.value)
-    ? value.value.flatMap(({ address }) => {
-      const parsed = mailbox.safeParse(address);
-      return parsed.success ? [parsed.data] : [];
-    }) : []))).slice(0, 20);
+    ? flatten(value.value) : []))).slice(0, 20);
 }
 
 function readHeaders(source: Readable): Promise<Headers> {

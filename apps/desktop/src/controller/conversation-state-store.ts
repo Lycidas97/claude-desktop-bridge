@@ -14,6 +14,8 @@ export interface NativeDesktopReceipt {
   requestId: string;
   sessionId: string;
   messageId: string;
+  source?: "assistant-trigger";
+  previousMessageIds?: string[];
   queueSettled?: true;
   queueMode?: "deferred" | "steered";
   state: "dispatching" | "submitted" | "session-received" | "queued" | "running" | "completed" | "cancelled" | "uncertain" | "failed";

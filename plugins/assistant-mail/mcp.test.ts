@@ -1,4 +1,5 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { EventEmitter, once } from "node:events";
 import * as http from "node:http";
 import { createConnection } from "node:net";
@@ -88,6 +89,46 @@ function post(body: unknown, token = connection.token, extraHeaders = {}) {
     method: "POST", headers: { Authorization: `Bearer ${token}`, ...extraHeaders }, body: JSON.stringify(body),
   });
 }
+
+it("accepts compact hooks only from the current managed CLI session and never forwards summary or focus text", async () => {
+  await channel!.close();
+  const sessionId = randomUUID();
+  const observed = vi.fn((_native, hook) => hook.event === "PostCompact" ? undefined : "Pending batch: host-issued-ref");
+  channel = await serveAssistantMailTools({ userDataPath: root, service,
+    authorizeManagedToken: token => token === "managed-fixture" ? "local-managed" : undefined,
+    compact: { cliSessionId: async () => sessionId, observed },
+  });
+  const directory = join(root, "private", "assistant");
+  const { port, token } = MailToolConnection.parse(JSON.parse(await readFile(join(directory, "mail-tools.json"), "utf8")));
+  const url = `http://127.0.0.1:${port}/hooks/compact`;
+  const postHook = (body: unknown, auth: string) => fetch(url, { method: "POST", headers: { Authorization: `Bearer ${auth}` }, body: JSON.stringify(body) });
+  const hook = { event: "PreCompact", cliSessionId: sessionId, trigger: "manual" };
+  expect((await postHook(hook, token)).status).toBe(403);
+  expect((await postHook({ ...hook, cliSessionId: randomUUID() }, "managed-fixture")).status).toBe(403);
+  expect((await postHook({ ...hook, compact_summary: "External email" }, "managed-fixture")).status).toBe(400);
+  expect(observed).not.toHaveBeenCalled();
+
+  const workspace = await mkdtemp(join(directory, "compact-workspace-"));
+  await writeFile(join(workspace, ".mcp.json"), JSON.stringify({ mcpServers: { "assistant-mail": { env: { [ASSISTANT_TOKEN_ENV]: "managed-fixture" } } } }));
+  const entry = join(root, "compact.cjs");
+  await build({ stdin: { contents: 'import { runAssistantCompactHook } from "./compact-hook.ts"; void runAssistantCompactHook(process.argv[2]);',
+    resolveDir: fileURLToPath(new URL(".", import.meta.url)) }, outfile: entry, bundle: true, platform: "node", target: "node22" });
+  for (const [name, field] of [["PreCompact", { trigger: "manual", custom_instructions: "user focus" }],
+    ["PreCompact", { trigger: "auto" }], ["SessionStart", { source: "compact" }], ["PostCompact", { trigger: "auto", compact_summary: "private summary" }]] as const) {
+    const child = spawn(process.execPath, [entry, workspace]);
+    const closed = once(child, "close");
+    let text = "";
+    child.stdout.setEncoding("utf8").on("data", chunk => { text += chunk; });
+    child.stdin.end(JSON.stringify({ hook_event_name: name, session_id: sessionId, ...field }));
+    expect((await closed)[0]).toBe(0);
+    expect(text).toBe(name === "PostCompact" ? "" : "Pending batch: host-issued-ref");
+  }
+  expect(observed.mock.calls).toEqual([
+    ["local-managed", hook], ["local-managed", { ...hook, trigger: "auto" }],
+    ["local-managed", { event: "SessionStart", cliSessionId: sessionId, source: "compact" }],
+    ["local-managed", { event: "PostCompact", cliSessionId: sessionId, trigger: "auto" }],
+  ]);
+});
 
 it("rejects missing/wrong credentials, browser origins and every non-mail management operation", async () => {
   const request = { name: "mail.list_events", arguments: {} };

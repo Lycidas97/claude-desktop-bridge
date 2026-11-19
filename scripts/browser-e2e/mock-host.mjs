@@ -355,6 +355,11 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
         if (host.mailOffline || !host.nativeApproval) return;
         void host.send({ kind: "event", event }).catch(error => errors.push(`mail event: ${error.stack}`));
       },
+      onTriggerMessage(nativeEvent) {
+        const event = { ...nativeEvent, seq: ++snapshot.latestSeq };
+        events.push(event);
+        void host.send({ kind: "event", event }).catch(error => errors.push(`assistant trigger: ${error.stack}`));
+      },
       onRequested(request) {
         snapshot.permissions.push(request);
         session.turnState = "waiting";
@@ -465,6 +470,7 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
         case "plugin.assistant-mail.read":
         case "plugin.assistant-mail.bind":
         case "plugin.assistant-mail.workspace.initialize":
+        case "plugin.assistant-mail.automatic-delivery.set":
         case "plugin.assistant-mail.account.add":
         case "plugin.assistant-mail.account.update-credential":
         case "plugin.assistant-mail.account.set-enabled":

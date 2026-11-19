@@ -473,7 +473,7 @@ describe("assistant mail snapshot publication", () => {
     expect(run.queuePublish).toHaveBeenCalledOnce();
     expect(run.eventLog.append).toHaveBeenCalledExactlyOnceWith({
       origin: "system", type: "plugin.assistant-mail.changed",
-      data: { assistantMail: { ...before.assistantMail, changeToken: expect.any(String) } },
+      data: { assistantMail: { ...before.assistantMail, changeToken: expect.any(String) }, wakePhone: true },
     });
     const after = await run.publish();
     expect(after.assistantMail).toEqual({ ...before.assistantMail, changeToken: expect.any(String) });

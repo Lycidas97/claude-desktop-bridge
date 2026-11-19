@@ -646,6 +646,30 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
     await managedDesktop.close();
   }
   steps.push("mobile and desktop settings explain unsupported gateway efforts and save and reopen a Native effort on the same managed session, preserving its draft, binding and dontAsk permission");
+  const settingsButton = page.getByRole("button", { name: "助理设置", exact: true });
+  if (await settingsButton.getAttribute("aria-pressed") !== "true") await settingsButton.click();
+  const proactive = page.getByRole("switch", { name: "主动助理" });
+  assert.equal(await proactive.isChecked(), false);
+  await proactive.click();
+  await eventually(() => host.snapshot.assistantMail.automaticDelivery, true, "Explicit opt-in stays on the managed binding");
+  await proactive.and(page.locator(":checked")).waitFor();
+  await host.nativeApproval.assistantMail.deliver(2);
+  await page.locator(".assistant-view-tabs").getByRole("button", { name: "对话", exact: true }).click();
+  const batch = page.getByRole("region", { name: "助理唤醒" });
+  await batch.getByText("原生已观测", { exact: true }).waitFor();
+  assert.equal(await batch.locator("article[data-mail-id]").count(), 2);
+  assert.deepEqual(await batch.getByText("待处理", { exact: true }).allTextContents(), ["待处理", "待处理"]);
+  assert.equal(await page.locator(".conversation-item.user").filter({ hasText: "助理事件批次" }).count(), 0);
+  const sends = host.nativeApproval.calls.filter(call => call.method === "sendMessage" && call.args[0] === managedSessionId);
+  assert.equal(sends.length, 1);
+  assert.match(sends[0].args[1], /^助理事件批次 [a-f0-9-]+\nmail\.received [a-f0-9-]+\nmail\.received [a-f0-9-]+\n/u);
+  await capture("mobile-assistant-trigger-batch");
+  await settingsButton.click();
+  await proactive.click();
+  await eventually(() => host.snapshot.assistantMail.automaticDelivery, false, "Explicit opt-out stops new wakes");
+  await proactive.and(page.locator(":not(:checked)")).waitFor();
+  await page.locator(".assistant-view-tabs").getByRole("button", { name: "对话", exact: true }).click();
+  steps.push("managed opt-in batches two new emails into one native send and shows both independent processing statuses");
   const managedMail = host.snapshot.assistantMail;
   const unexpectedTools = [
     "mcp__terminal__run_in_terminal", "mcp__Claude_Browser__preview_start", "mcp__scheduled-tasks__list_scheduled_tasks",
@@ -859,8 +883,9 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   }), true, "Hover highlights the dismiss icon without painting over the reference border");
   await capture("desktop-mail-reference");
   await composer.fill("桌面端核对引用");
+  const desktopSendCount = host.nativeApproval.calls.filter(call => call.method === "sendMessage").length;
   await page.getByRole("button", { name: "发送", exact: true }).click();
-  await eventually(() => host.nativeApproval.calls.filter(call => call.method === "sendMessage").length, 4, "Desktop sends through the same native execution path");
+  await eventually(() => host.nativeApproval.calls.filter(call => call.method === "sendMessage").length, desktopSendCount + 1, "Desktop sends through the same native execution path");
   assert.ok(JSON.stringify(host.nativeApproval.calls.findLast(call => call.method === "sendMessage").args[1]).includes(otherMail.mailRefId));
   await page.getByRole("button", { name: "助理设置", exact: true }).click();
   await page.getByRole("button", { name: "更换会话", exact: true }).waitFor();

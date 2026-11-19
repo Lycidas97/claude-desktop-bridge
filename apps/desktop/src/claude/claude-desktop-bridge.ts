@@ -146,6 +146,7 @@ interface NativeInput {
   attachments?: BridgeAttachment[];
   origin: BridgeOrigin;
   sourceDeviceId?: string;
+  source?: "assistant-trigger";
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -638,6 +639,12 @@ export class ClaudeDesktopBridge extends EventEmitter {
 
   listSessions(): BridgeSessionInfo[] { return [...this.sessions.values()].sort((a, b) => b.lastActivityAt - a.lastActivityAt); }
   session(sessionId: string): BridgeSessionInfo | undefined { return this.sessions.get(sessionId); }
+  async nativeAssistantSession(sessionId: string): Promise<{ cwd: string; cliSessionId?: string } | undefined> {
+    if (!this.inspector.ready || !this.inspector.supports("getSession")) return undefined;
+    const native = record(await this.inspector.call("getSession", [sessionId]));
+    if (native.sessionId !== sessionId || typeof native.cwd !== "string" || native.isArchived || native.permissionMode !== "dontAsk") return undefined;
+    return { cwd: native.cwd, ...(typeof native.cliSessionId === "string" ? { cliSessionId: native.cliSessionId } : {}) };
+  }
   executionCwd(sessionId: string): string | undefined {
     const session = this.native.get(sessionId);
     return session?.harnessCwd ?? session?.cwd;
@@ -1294,7 +1301,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
     const existing = this.options.conversationState.nativeDesktopReceipt(input.idempotencyKey);
     if (existing) return existing;
     const id = this.desktopId(input.sessionId);
-    const receipt: NativeDesktopReceipt = { idempotencyKey: input.idempotencyKey, commandId: randomUUID(), requestId: input.requestId, sessionId: input.sessionId, messageId: randomUUID(), queueMode: priority === "now" ? "steered" : "deferred", state: "dispatching" };
+    const receipt: NativeDesktopReceipt = { idempotencyKey: input.idempotencyKey, commandId: randomUUID(), requestId: input.requestId, sessionId: input.sessionId, messageId: randomUUID(), queueMode: priority === "now" ? "steered" : "deferred", state: "dispatching", ...(input.source ? { source: input.source } : {}) };
     this.options.conversationState.saveNativeDesktopReceipt(receipt);
     this.receipts.set(receipt.commandId, receipt);
     await this.record({ sessionId: input.sessionId, turnId: receipt.messageId, origin: input.origin, type: "message.delivery", data: { ...receipt, delivery: "host-received", text: input.text } });
@@ -1708,6 +1715,9 @@ export class ClaudeDesktopBridge extends EventEmitter {
         if (typeof rekey.from !== "string" || typeof rekey.to !== "string") continue;
         const receipt = [...this.receipts.values()].find(candidate => candidate.sessionId === sessionId && candidate.messageId === rekey.from);
         if (!receipt) continue;
+        if (receipt.source === "assistant-trigger" && rekey.from !== rekey.to) {
+          receipt.previousMessageIds = [...new Set([...(receipt.previousMessageIds ?? []), rekey.from])];
+        }
         receipt.messageId = rekey.to;
         this.options.conversationState.saveNativeDesktopReceipt(receipt);
         deliveries.push({ sessionId, itemId: receipt.messageId, turnId: receipt.messageId, origin: "claude-desktop", type: "message.delivery", data: { ...receipt, previousMessageId: rekey.from, delivery: receipt.state } });

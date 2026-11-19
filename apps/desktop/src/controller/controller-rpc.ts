@@ -34,6 +34,7 @@ import type { ConversationStateStore } from "./conversation-state-store.js";
 import type { SessionEventLog } from "./session-event-log.js";
 import type { DesktopUpdater } from "../updater/desktop-updater.js";
 import type { AssistantAgendaService } from "../../../../plugins/assistant-mail/agenda.js";
+import { ASSISTANT_TRIGGER_KEY_PREFIX } from "../../../../plugins/assistant-mail/trigger-store.js";
 import { handleAssistantAgenda } from "./assistant-agenda.js";
 import type { AssistantMailCoordinator } from "./assistant-mail.js";
 import {
@@ -554,6 +555,9 @@ async function dispatchControllerRequestInner(
     return { commandId: turn.commandId, state: turn.state };
   }
   if (request.method === "turn.start" || request.method === "turn.steer") {
+    if (request.idempotencyKey.startsWith(ASSISTANT_TRIGGER_KEY_PREFIX)) {
+      throw new BridgeRequestError("INVALID_PARAMS", "该请求标识由助理保留。");
+    }
     const sessionId = stringParam(params, "sessionId")!;
     let text = stringParam(params, "text", false) ?? "";
     const attachments = attachmentsParam(params);

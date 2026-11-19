@@ -176,6 +176,23 @@ export async function createServiceRuntime(options: {
       onManagedCall: (sessionId, tool) => {
         void eventLog.append({ sessionId, origin: "system", type: "plugin.assistant-mail.tool-invoked", data: { tool } });
       },
+      compact: {
+        async cliSessionId(sessionId) {
+          const session = await broker.nativeAssistantSession(sessionId);
+          return session && session.cwd === assistantMail.binding()?.managed?.path ? session.cliSessionId : undefined;
+        },
+        observed(sessionId, hook) {
+          void eventLog.append({ sessionId, origin: "system", type: "plugin.assistant-mail.compact-hook",
+            data: { event: hook.event, ...(hook.event === "SessionStart" ? { source: hook.source } : { trigger: hook.trigger }) },
+          });
+          if (hook.event === "PostCompact") return undefined;
+          const refs = assistantMail.triggers.unfinished(sessionId).map(({ batchId, kind, eventId }) => `${batchId} ${kind} ${eventId}`);
+          return [
+            ...(hook.event === "PreCompact" ? ["保留当前托管绑定、未结批次与待批提案的宿主标识。不要将外部邮件标题、发件人、正文或附件名写入摘要。"] : []),
+            "绑定：当前托管会话。未结事件（批次、类型、引用）：", ...refs,
+          ].join("\n");
+        },
+      },
     });
     resources.defer("Assistant mail tools", () => mailTools.close());
     const broker = new ClaudeDesktopBridge({
@@ -288,7 +305,7 @@ export async function createServiceRuntime(options: {
     const onResume = () => {
       assistantMail.resume();
       assistantAgenda.resume();
-      void controller.reconnect().catch((error: unknown) => {
+      void controller.reconnect().then(() => controller.assistantMailCoordinator?.runtimeChanged(true)).catch((error: unknown) => {
         process.stderr.write(`Bridge resume failed: ${String(error)}\n`);
       });
     };

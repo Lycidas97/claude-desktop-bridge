@@ -136,11 +136,12 @@ export class DesktopController extends EventEmitter {
           allSessions: () => this.allSessions(),
           allProjects: () => this.allProjects(),
           canStartTurn: () => this.broker.capabilities().includes("turn.start"),
-          onChanged: (snapshot) => {
+          receipts: this.conversationState,
+          onChanged: (snapshot, wakePhone) => {
             void this.eventLog.append({
               origin: "system",
               type: "plugin.assistant-mail.changed",
-              data: { assistantMail: snapshot },
+              data: { assistantMail: snapshot, ...(wakePhone ? { wakePhone: true } : {}) },
             });
             this.queuePublish();
           },
@@ -181,6 +182,7 @@ export class DesktopController extends EventEmitter {
     this.eventLog.on("event", (record: BridgeEvent) => {
       const event = summarizeEvidenceEvent(record);
       this.emit("event", event);
+      this.assistantMailCoordinator?.observeDelivery(event);
       if (
         event.type === "session.desktop-registration" ||
         (event.origin === "claude-desktop" && event.type === "evidence.updated")
@@ -189,7 +191,8 @@ export class DesktopController extends EventEmitter {
         return;
       }
       const persistOffline = event.type === "permission.requested" || event.type === "question.requested" ||
-        event.type === "turn.completed" || event.type === "turn.failed";
+        event.type === "turn.completed" || event.type === "turn.failed" ||
+        (event.type === "plugin.assistant-mail.changed" && event.data.wakePhone === true);
       void this.broadcast({ kind: "event", event }, !persistOffline);
       if (event.type !== "runtime.updated" || event.itemId !== "session:subagent-activity") this.queuePublish();
     });
@@ -200,10 +203,12 @@ export class DesktopController extends EventEmitter {
     });
     this.broker.on("changed", () => {
       this.assistantMailCoordinator?.pauseIfArchived();
+      this.assistantMailCoordinator?.runtimeChanged();
       this.queuePublish();
     });
     await this.broker.initialize();
     await this.connect();
+    this.assistantMailCoordinator?.startTriggers();
     if (!this.config.devices.some((device) => (
       !device.revokedAt && (Boolean(device.pairedAt) || device.expiresAt > Date.now())
     ))) {

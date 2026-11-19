@@ -305,9 +305,8 @@ npm run ci:run -- exec -w @bridge/desktop -- vitest run src/claude/claude-deskto
 | Section | 本阶段未采用分组，不验证保持行为；后续采用时再验证，也不作为权限边界 |
 | 自动写记忆、实际服务端模型版本、生产超时分类 | 未验证；本轮不能据一次未写文件、路由别名或测试 transport 推断这些能力 |
 
-这些缺口使门禁保持关闭。后续 PR 应引用本节并更新目标环境、实际配置、原消息 UUID、
-成功/拒绝结果和未运行项，满足[安全启用条件](SECURITY.md#外部邮件自动投递门禁)
-后才能启用自动处理；不为补证据添加自动重发、恢复循环或第二条执行队列。
+这些缺口使当时的门禁保持关闭。用户后来[撤销旧实机启用门禁](https://github.com/Lycidas97/claude-desktop-bridge/issues/222#issuecomment-7011727311)；
+上述结果仍按原验证范围记录，不能用夹具结果覆盖未验收项。不为补证据添加自动重发或第二条执行队列。
 
 ### 阶段 1 托管工作区实机复核
 
@@ -454,6 +453,12 @@ Desktop，未操作托管会话或邮箱。
 不再把它作为阶段 1 门禁项。独立探针初版曾通过同证书 `codesign --verify --strict`；
 加入结果记录后，专用签名钥匙串解锁返回 51，未完成重签。未改钥匙串设置、启动探针、
 请求 TCC、读取条目或实测 `EKEventStoreChanged`。
+
+## 助理事件唤醒
+
+桌面 dispatcher 测试用 SQLite 和隔离 LocalSessions fixture 覆盖空闲／忙碌投递、缺少即时 `queued`、用原幂等键恢复收据、按 rekey 后 UUID 对账、换绑暂停和 `dontAsk` 回读。插件测试覆盖同事务提交、历史及开启前邮件不投递，以及三个压缩 hook 通过本机网关认证。浏览器 `assistant-mail` 场景验证开启、两封新邮件形成一条时间线批次、独立处理状态与关闭。
+
+这些检查使用隔离数据。真实邮箱自动触发、物理手机唤醒、安装态无参 `/compact`、自动压缩和 hook 故障的影响需实机取证。此前手动带 focus 的探针见上节。
 
 ## Cleanup boundary
 

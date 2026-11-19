@@ -56,7 +56,7 @@ import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
 import { desktopRuntimeId, desktopRuntimeName } from "../../lib/runtime-labels.js";
 import { sessionQueueLabel } from "../../lib/session-activity.js";
 import { useStreamEntrance } from "../../lib/stream-entrance.js";
-import { MailCard } from "../assistant/MailCard.js";
+import { DELIVERY_LABELS, MailCard } from "../assistant/MailCard.js";
 import { ConfirmationDialog } from "../common/ConfirmationDialog.js";
 import { IconButton } from "../common/IconButton.js";
 import { SelectMenu } from "../common/SelectMenu.js";
@@ -485,9 +485,8 @@ export function ConversationView({
   const timelineStreamKeys = useMemo(() => timeline.map((entry) => (
     entry.kind === "evidence"
       ? `evidence:${entry.evidence.id}`
-      : entry.kind === "mail"
-        ? `mail:${entry.card.mailRefId}`
-        : entry.item.id
+      : entry.kind === "mail" ? `mail:${entry.card.mailRefId}`
+        : entry.kind === "assistant-trigger-batch" ? `assistant-trigger:${entry.batchId}` : entry.item.id
   )), [timeline]);
   const streamEntering = useStreamEntrance(session.sessionId, timelineStreamKeys);
 
@@ -547,6 +546,7 @@ export function ConversationView({
       if (
         event.sessionId !== session.sessionId
         || event.type !== "message.delivery"
+        || event.data.source === "assistant-trigger"
         || typeof event.data.commandId !== "string"
       ) continue;
       const previous = latest.get(event.data.commandId);
@@ -850,6 +850,16 @@ export function ConversationView({
               {...(node.nativeMessage ? { nativeMessage: node.nativeMessage } : {})}
             />
           );
+        }
+        if (node.kind === "assistant-trigger-batch") {
+          const key = `assistant-trigger:${node.batchId}`;
+          return <section className="assistant-trigger-batch" key={key} data-stream-key={key} aria-label="助理唤醒">
+            <header><strong>助理唤醒</strong><span>{DELIVERY_LABELS[node.cards[0]!.nativeDelivery.state]}</span></header>
+            {node.cards.map(card => <MailCard key={card.mailRefId} card={card} showBatchDelivery={false} />)}
+            {node.nativeMessage && <details className="assistant-mail-native"><summary>关联原生消息</summary>
+              <code>{node.nativeMessage.id}</code><pre>{node.nativeMessage.text}</pre>
+            </details>}
+          </section>;
         }
         if (node.kind === "evidence") {
           return (

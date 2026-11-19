@@ -50,6 +50,22 @@ describe("mail conversation timeline", () => {
     ]);
   });
 
+  it("replaces old and current native UUIDs with one batch without merging each mail's business state", () => {
+    const nativeDelivery = { state: "observed" as const, batchId: "batch", nativeSessionId: "native-session",
+      messageId: "native-message", previousMessageIds: ["before-rekey"] };
+    const first = card({ nativeDelivery });
+    const second = card({ nativeDelivery, seq: 2, mailRefId: "second", processingStatus: "processed" });
+    const alias = message({ id: "before-rekey", createdAt: 1 });
+    const other = message({ sessionId: "other-session", createdAt: 10 });
+    const native = message();
+    const batch = { kind: "assistant-trigger-batch", batchId: "batch", cards: [first, second] };
+    expect(conversationTimeline([alias, other, native], [], [second, first])).toEqual([
+      { kind: "message", item: other }, { ...batch, nativeMessage: native },
+    ]);
+    expect(conversationTimeline([alias], [], [first, second])).toEqual([{ ...batch, nativeMessage: alias }]);
+    expect(conversationTimeline([], [], [first, second])).toEqual([batch]);
+  });
+
   it("shows recorded, unsubmitted mail without a native message, analysis, or ACK", () => {
     const mail = card();
 

@@ -150,13 +150,13 @@ test("packaged QA reads mail only when declared and keeps automatic delivery clo
   const withoutMail = await runQa(nativeSnapshot());
   assert.equal(withoutMail.requests.includes("plugin.assistant-mail.list"), false);
   const snapshot = nativeSnapshot();
-  snapshot.host.capabilities.push("plugin.assistant-agenda.v1", "plugin.assistant-mail.v1", "plugin.assistant-mail.account.v1", "plugin.assistant-mail.polling.v1", "plugin.assistant-mail.workspace.v1", "plugin.assistant-mail.attachments.v1", "plugin.assistant-mail.history.v1");
+  snapshot.host.capabilities.push("plugin.assistant-agenda.v1", "plugin.assistant-mail.v1", "plugin.assistant-mail.account.v1", "plugin.assistant-mail.polling.v1", "plugin.assistant-mail.workspace.v1", "plugin.assistant-mail.attachments.v1", "plugin.assistant-mail.history.v1", "plugin.assistant-mail.triggers.v1");
   snapshot.assistantAgenda = { changeToken: "fixture", credentialsSupported: true, sources: [{ id: "local", label: "本地", writable: true, enabled: true, configurable: false, status: "ready" }] };
   snapshot.assistantMail = { bindingState: "unbound", receiverState: "disabled", accounts: [], credentialsSupported: false, changeToken: "fixture", automaticDelivery: false };
   const result = await runQa(snapshot, { "plugin.assistant-mail.list": { ok: true, result: { mailPage: { cards: [] } } } });
   assert.ok(result.requests.includes("plugin.assistant-mail.list"));
   assert.equal(result.requests.some(method => method.startsWith("plugin.assistant-mail.account.") ||
-    ["plugin.assistant-mail.bind", "plugin.assistant-mail.workspace.initialize", "turn.start"].includes(method)), false);
+    ["plugin.assistant-mail.bind", "plugin.assistant-mail.workspace.initialize", "plugin.assistant-mail.automatic-delivery.set", "turn.start"].includes(method)), false);
   snapshot.assistantMail.automaticDelivery = true;
   await assert.rejects(runQa(snapshot), /true !== false/u);
 });

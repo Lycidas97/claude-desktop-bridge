@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
-  BridgeAssistantMailSnapshot, BridgeEffort, BridgePendingPrompt, BridgePermissionInfo, BridgePermissionResolution, BridgePullRequest, BridgeRequest, BridgeSDKPermissionMode,
+  BridgeAssistantMailSnapshot, BridgeEffort, BridgeEvent, BridgePendingPrompt, BridgePermissionInfo, BridgePermissionResolution, BridgePullRequest, BridgeRequest, BridgeSDKPermissionMode,
 } from "../../packages/protocol/src/index.js";
 import { ClaudeDesktopBridge } from "../../apps/desktop/src/claude/claude-desktop-bridge.js";
 import { InspectorDisconnectedError } from "../../apps/desktop/src/claude/claude-desktop-inspector.js";
@@ -48,6 +48,7 @@ export async function startNativeApprovalHost(options: {
   assistantMail?: boolean;
   initialMailHistory?: number;
   onMailChanged?(snapshot: BridgeAssistantMailSnapshot): void;
+  onTriggerMessage?(event: BridgeEvent): void;
   onAgendaChanged?(snapshot: import("../../packages/protocol/src/index.js").BridgeAgendaSnapshot): void;
 }) {
   const commandCwd = join(options.directory, "command-project");
@@ -247,6 +248,10 @@ export async function startNativeApprovalHost(options: {
           messages.push({ type: "user", uuid: args[7], timestamp: Date.now(), message: { content: args[1] } });
           return reportQueued ? { delivered: true, queued: true } : { delivered: true };
         }
+        if (textArg.startsWith("助理事件批次 ")) {
+          inspector.emit("event", { type: "message", sessionId: target.sessionId,
+            message: { type: "user", uuid: args[7], timestamp: Date.now(), message: { content: args[1] } } });
+        }
         return { delivered: true };
       }
       if (["promoteQueuedMessage", "sendSteeredNow", "cancelQueuedMessage"].includes(method)) {
@@ -390,10 +395,17 @@ export async function startNativeApprovalHost(options: {
         allProjects: () => broker.listProjects(),
         canStartTurn: () => broker.capabilities().includes("turn.start"),
         onChanged: snapshot => options.onMailChanged?.(snapshot),
-        broker,
+        broker, receipts: state,
       }, workspace)
     : undefined;
   assistantMailCoordinator?.start();
+  assistantMailCoordinator?.startTriggers();
+  eventLog.on("event", event => {
+    assistantMailCoordinator?.observeDelivery(event);
+    if (event.type === "user.message.accepted" && state.listNativeDesktopReceipts().some(receipt => receipt.source === "assistant-trigger" && receipt.commandId === event.data.commandId)) {
+      options.onTriggerMessage?.(event);
+    }
+  });
   const mailSnapshot = () => assistantMailCoordinator?.snapshot();
   const controller = createControllerFixture({
     broker, evidence, eventLog, assistantMailCoordinator, assistantAgenda: assistantMail?.agenda,

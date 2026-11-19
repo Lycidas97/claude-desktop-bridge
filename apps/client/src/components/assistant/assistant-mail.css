@@ -82,6 +82,11 @@
 .assistant-binding-form select { width: 100%; min-width: 0; max-width: 100%; padding: 10px 12px; color: var(--text); background: var(--surface); border: 1px solid var(--line-strong); border-radius: var(--r-input); font: inherit; }
 .assistant-binding-form > div { display: flex; flex-wrap: wrap; gap: 8px; }
 .assistant-delivery-disabled { display: block; margin-top: 12px; color: var(--muted); font-size: calc(12px * var(--font-scale)); }
+.assistant-delivery-setting > label, .assistant-context-usage { display: flex; justify-content: space-between; align-items: center; gap: 12px; min-height: 36px; font-size: calc(13px * var(--font-scale)); }
+.assistant-delivery-setting { margin-top: 8px; }
+.assistant-delivery-setting input { width: 18px; height: 18px; margin: 4px; }
+.assistant-context-usage { margin: 0 0 12px; color: var(--muted); }
+.assistant-context-usage dd { margin: 0; font-variant-numeric: tabular-nums; }
 .assistant-binding details { margin-top: 12px; font-size: calc(13px * var(--font-scale)); }
 .assistant-mail-list { display: grid; gap: 0; border-top: 1px solid var(--line); }
 .assistant-mail-card { min-width: 0; max-width: 100%; padding: 16px; border: 1px solid var(--card-border); border-radius: var(--r-card); background: var(--card-fill); box-shadow: var(--card-hi); color: var(--text); overflow-wrap: anywhere; }
@@ -105,6 +110,12 @@
 .assistant-mail-links a { display: flex; align-items: baseline; gap: 8px; color: var(--accent-ink); }
 .assistant-mail-links a > :first-child { max-width: 60%; }
 .assistant-mail-link-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.assistant-trigger-batch { min-width: 0; margin: 16px 0; border-block: 1px solid var(--line); }
+.assistant-trigger-batch > header { display: flex; justify-content: space-between; gap: 12px; padding: 10px 0; font-size: calc(13px * var(--font-scale)); }
+.assistant-trigger-batch > header span { color: var(--muted); }
+.assistant-trigger-batch > .assistant-mail-card { padding: 12px 0; border: 0; border-top: 1px solid var(--line); border-radius: 0; box-shadow: none; background: transparent; }
+.assistant-trigger-batch > details { padding: 8px 0; font-size: calc(12px * var(--font-scale)); color: var(--muted); overflow-wrap: anywhere; }
+.assistant-trigger-batch > details pre { white-space: pre-wrap; }
 .conversation-stream .assistant-mail-preview, .desktop-conversation-stream .assistant-mail-preview { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; white-space: normal; }
 .assistant-mail-empty { text-align: center; padding: 48px 8px; color: var(--muted); }
 .assistant-mail-older { display: block; margin: 20px auto 0; }

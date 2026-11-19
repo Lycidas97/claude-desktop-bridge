@@ -60,6 +60,7 @@ export interface BridgeMailAttachment {
   attachmentId: string;
   filename: string;
   mimeType: string;
+  charset?: string;
   size: number;
 }
 

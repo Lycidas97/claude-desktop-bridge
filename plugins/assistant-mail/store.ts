@@ -37,15 +37,19 @@ interface MailProjection {
   attachmentCount: number;
 }
 
+const unavailablePreview = "原文无法解析，预览不可用。";
+
+function mailProjection({ bodyText, bodyError, attachments, attachmentCount }: Awaited<ReturnType<typeof parseMail>>): MailProjection {
+  return { preview: bodyError ? "" : Array.from(bodyText.slice(0, 480)).slice(0, 240).join(""),
+    ...(bodyError ? { previewError: unavailablePreview } : {}), attachments, attachmentCount };
+}
+
 async function projectMail(source: Parameters<typeof parseMail>[0]): Promise<MailProjection> {
-  const previewError = "原文无法解析，预览不可用。";
   try {
-    const { bodyText, bodyError, attachments, attachmentCount } = await parseMail(source);
-    return { preview: bodyError ? "" : Array.from(bodyText.slice(0, 480)).slice(0, 240).join(""),
-      ...(bodyError ? { previewError } : {}), attachments, attachmentCount };
+    return mailProjection(await parseMail(source));
   } catch (error) {
     if (!(error instanceof MailBodyParseError)) throw error;
-    return { preview: "", previewError, attachments: [], attachmentCount: 0 };
+    return { preview: "", previewError: unavailablePreview, attachments: [], attachmentCount: 0 };
   }
 }
 
@@ -74,7 +78,7 @@ type EventRow = {
   processing_status: MailProcessingStatus;
   analysis_json: string | null;
   raw_file: string;
-  mime_projection: string;
+  mime_projection: string | null;
 };
 
 function eventFromRow(row: EventRow): MailEvent {
@@ -85,7 +89,7 @@ function eventFromRow(row: EventRow): MailEvent {
     receivedAt: row.received_at, recordedAt: row.recorded_at,
     processingStatus: row.processing_status,
     analysis: row.analysis_json ? JSON.parse(row.analysis_json) as MailAnalysis : null,
-    ...JSON.parse(row.mime_projection) as MailProjection,
+    ...(row.mime_projection ? JSON.parse(row.mime_projection) as MailProjection : { preview: "", attachments: [], attachmentCount: 0 }),
   };
 }
 
@@ -154,18 +158,29 @@ export class AssistantMailStore {
       this.database.exec("ALTER TABLE mail_events ADD COLUMN analysis_json TEXT");
     }
     if (!columns.includes("mime_projection")) this.database.exec("ALTER TABLE mail_events ADD COLUMN mime_projection TEXT");
-    const legacyPage = this.database.prepare("SELECT seq, raw_file FROM mail_events WHERE mime_projection IS NULL AND seq > ? ORDER BY seq LIMIT 100");
-    const saveProjection = this.database.prepare("UPDATE mail_events SET mime_projection = ? WHERE seq = ?");
+  }
+
+  async backfillMimeProjections(signal: AbortSignal): Promise<boolean> {
+    const db = this.db();
+    const legacyPage = db.prepare("SELECT seq, raw_file FROM mail_events WHERE mime_projection IS NULL AND seq > ? ORDER BY seq LIMIT 100");
+    const saveProjection = db.prepare("UPDATE mail_events SET mime_projection = ? WHERE seq = ? AND mime_projection IS NULL");
     let seq = 0;
-    while (true) {
+    while (!signal.aborted) {
       const rows = legacyPage.all(seq) as Array<Pick<EventRow, "seq" | "raw_file">>;
       if (rows.length === 0) break;
       for (const row of rows) {
-        const projection = await projectMail(createReadStream(join(this.directory, "raw-mail", row.raw_file)));
+        const projection = await projectMail(createReadStream(join(this.directory, "raw-mail", row.raw_file), { signal }));
+        if (signal.aborted) return false;
         saveProjection.run(JSON.stringify(projection), row.seq);
         seq = row.seq;
       }
     }
+    return seq !== 0 && !signal.aborted;
+  }
+
+  completeMimeProjection(mailRefId: string, parsed: Awaited<ReturnType<typeof parseMail>>): void {
+    this.db().prepare("UPDATE mail_events SET mime_projection = ? WHERE mail_ref_id = ? AND mime_projection IS NULL")
+      .run(JSON.stringify(mailProjection(parsed)), mailRefId);
   }
 
   private db(): DatabaseSync {

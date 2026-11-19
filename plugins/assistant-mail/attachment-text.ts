@@ -10,13 +10,13 @@ export function supportsAttachmentText(mimeType: string): boolean {
   return ["text/plain", "text/markdown", "text/csv", "application/json", "application/pdf"].includes(mimeType);
 }
 
-export async function attachmentText(bytes: Buffer, mimeType: string, cMapUrl?: string): Promise<string> {
+export async function attachmentText(bytes: Buffer, mimeType: string, cMapUrl?: string, charset = "utf-8"): Promise<string> {
   if (mimeType !== "application/pdf") {
     let text: string;
-    try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
+    try { text = new TextDecoder(charset, { fatal: true }).decode(bytes); }
     catch (error) {
-      if (!(error instanceof TypeError)) throw error;
-      throw new MailAttachmentError("MAIL_ATTACHMENT_UNSUPPORTED", "附件不是 UTF-8 文本。");
+      if (!(error instanceof TypeError || error instanceof RangeError)) throw error;
+      throw new MailAttachmentError("MAIL_ATTACHMENT_UNSUPPORTED", "附件的文本编码不受支持或内容不符合该编码。");
     }
     return Array.from(cleanMailText(text).slice(0, MAX_TEXT_CHARS * 2)).slice(0, MAX_TEXT_CHARS).join("");
   }

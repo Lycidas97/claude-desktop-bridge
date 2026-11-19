@@ -24,7 +24,7 @@ function MailAttachmentRow({ attachment, mailRefId, enabled }: { attachment: Bri
   return <li>
     <div className="assistant-attachment-row">
       {kind ? <button type="button" className="assistant-attachment-name" title={filename} disabled={!enabled || oversized}
-        aria-label={`预览 ${filename}`} onClick={() => openPreview({ name: filename, kind, mailAttachment })}>{filename}</button>
+        aria-label={`预览 ${filename}`} onClick={() => openPreview({ name: filename, kind, mailAttachment, ...(attachment.charset ? { charset: attachment.charset } : {}) })}>{filename}</button>
         : <span className="assistant-attachment-name" title={filename}>{filename}</span>}
       <span className="assistant-attachment-size" title={mimeType}>{formatBytes(size)}</span>
       <button type="button" className="assistant-attachment-download" aria-label={`下载 ${filename}`} title="下载"

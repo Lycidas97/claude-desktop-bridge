@@ -59,7 +59,7 @@ export function parseMail(source: Buffer | Readable, target?: { attachmentId: st
     parser.on("data", (part: AttachmentStream | MessageText) => {
       if (part.type === "attachment") {
         const attachmentId = part.partId ?? "0";
-        const real = part.contentDisposition === "attachment" || !(part.related || part.contentDisposition === "inline" && part.cid);
+        const real = part.contentDisposition === "attachment" || !part.related && (part.contentDisposition !== "inline" || !part.cid || Boolean(part.filename));
         const collect = real && target?.attachmentId === attachmentId;
         const chunks: Buffer[] = [];
         let size = 0;
@@ -75,9 +75,12 @@ export function parseMail(source: Buffer | Readable, target?: { attachmentId: st
             if (result.attachments.length < MAX_ATTACHMENTS) {
               const header = part.headers.get("content-type");
               const declaredType = header && typeof header === "object" && "value" in header ? String(header.value).toLowerCase() : "";
+              const charset = header && typeof header === "object" && "params" in header
+                ? (header.params as Record<string, string>).charset?.trim().toLowerCase() : undefined;
               result.attachments.push({ attachmentId, filename: attachmentName(part.filename, attachmentId),
                 mimeType: /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/u.test(declaredType) && declaredType.length <= 80
-                  ? declaredType : "application/octet-stream", size: part.size! });
+                  ? declaredType : "application/octet-stream", size: part.size!,
+                ...(charset && /^[a-z0-9._:-]{1,40}$/u.test(charset) ? { charset } : {}) });
             }
             if (collect) {
               if (size > target.maxBytes) result.tooLarge = true;

@@ -75,3 +75,16 @@ it("indexes named files by stable MIME part and excludes decorative inline image
   expect((await parseMail(source, { attachmentId: "3", maxBytes: 3 })).bytes).toEqual(Buffer.from([0, 1, 2]));
   expect(await parseMail(source, { attachmentId: "3", maxBytes: 2 })).toMatchObject({ tooLarge: true });
 });
+
+it("retains a named inline PDF with a Content-ID in multipart/mixed alongside an embedded logo", async () => {
+  const source = Buffer.from([
+    'Content-Type: multipart/mixed; boundary="mixed"', "", "--mixed",
+    'Content-Type: multipart/related; boundary="related"', "", "--related",
+    "Content-Type: text/html", "", '<p>Body</p><img src="cid:logo">', "--related",
+    "Content-Type: image/png", "Content-Disposition: inline; filename=logo.png", "Content-ID: <logo>", "", "logo", "--related--",
+    "--mixed", "Content-Type: application/pdf", "Content-Disposition: inline; filename=report.pdf", "Content-ID: <report>", "", "%PDF-1.4",
+    "--mixed--", "",
+  ].join("\r\n"));
+  const parsed = await parseMail(source);
+  expect(parsed.attachments).toEqual([{ attachmentId: "2", filename: "report.pdf", mimeType: "application/pdf", size: 8 }]);
+});

@@ -9,7 +9,7 @@ import { MailReceiver, type MailState } from "./receiver.js";
 import { AssistantMailStore, type AssistantBinding, type MailAnalysis, type MailProcessingStatus } from "./store.js";
 import type { BridgeMailAttachmentRef } from "../../packages/protocol/src/assistant-mail.js";
 import { attachmentText, MAIL_TEXT_MAX_BYTES, supportsAttachmentText } from "./attachment-text.js";
-import { MailAttachmentError, mailBodyText, parseMail } from "./mime.js";
+import { MailAttachmentError, parseMail } from "./mime.js";
 export { MailAttachmentError, MailBodyParseError } from "./mime.js";
 
 export interface MailAccount {
@@ -44,6 +44,8 @@ export class AssistantMailService extends EventEmitter {
   private readonly accountMutations = new Map<string, Promise<void>>();
   private accountConfigError?: "mail_account_config_unavailable";
   private closed = false;
+  private readonly mimeBackfillAbort = new AbortController();
+  private mimeBackfill?: Promise<void>;
 
   constructor(options: {
     userDataPath: string;
@@ -60,6 +62,9 @@ export class AssistantMailService extends EventEmitter {
 
   async initialize(): Promise<void> {
     await this.store.initialize();
+    this.mimeBackfill = this.store.backfillMimeProjections(this.mimeBackfillAbort.signal)
+      .then(updated => { if (updated) this.emit("changed", true); })
+      .catch(error => { this.emit("error", error); });
     let configs: SavedAccount[];
     try {
       let saved: string | undefined;
@@ -205,7 +210,10 @@ export class AssistantMailService extends EventEmitter {
   async readEvent(mailRefId: string) {
     const event = this.store.event(mailRefId);
     if (!event) return undefined;
-    return { event, bodyText: await mailBodyText(this.store.stream(mailRefId)!), attachments: event.attachments, attachmentCount: event.attachmentCount };
+    const parsed = await parseMail(this.store.stream(mailRefId)!);
+    this.store.completeMimeProjection(mailRefId, parsed);
+    if (parsed.bodyError) throw parsed.bodyError;
+    return { event, bodyText: parsed.bodyText, attachments: parsed.attachments, attachmentCount: parsed.attachmentCount };
   }
   attachment({ mailRefId, attachmentId }: BridgeMailAttachmentRef) {
     const attachment = this.store.event(mailRefId)?.attachments.find(part => part.attachmentId === attachmentId);
@@ -225,7 +233,7 @@ export class AssistantMailService extends EventEmitter {
     if (!supportsAttachmentText(attachment.mimeType)) {
       throw new MailAttachmentError("MAIL_ATTACHMENT_UNSUPPORTED", "此附件格式不支持提取文本。");
     }
-    return { attachment, text: await attachmentText(await this.attachmentBytes(ref, MAIL_TEXT_MAX_BYTES), attachment.mimeType, this.attachmentCMapUrl) };
+    return { attachment, text: await attachmentText(await this.attachmentBytes(ref, MAIL_TEXT_MAX_BYTES), attachment.mimeType, this.attachmentCMapUrl, attachment.charset) };
   }
   updateAnalysis(mailRefId: string, analysis: MailAnalysis) {
     const event = this.store.updateAnalysis(mailRefId, analysis);
@@ -295,7 +303,9 @@ export class AssistantMailService extends EventEmitter {
   }
 
   async close(): Promise<void> {
+    this.mimeBackfillAbort.abort();
     try {
+      await this.mimeBackfill;
       await Promise.all([...Array.from(this.accounts.values(), ({ receiver }) => receiver), ...this.removingAccounts.values()].map(receiver => receiver.stop()));
     } finally {
       this.store.close();

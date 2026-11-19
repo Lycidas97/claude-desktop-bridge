@@ -21,27 +21,50 @@ import org.json.JSONException;
 
 @CapacitorPlugin(name = "BridgeFiles")
 public class BridgeFilesPlugin extends Plugin {
+    private String pendingSaveId;
+    private JSArray pendingSaveChunks;
+
     @PluginMethod
     public void saveFile(PluginCall call) {
         String name = call.getString("name");
-        if (name == null || name.trim().isEmpty() || name.contains("/") || name.contains("\\") || call.getArray("chunks") == null) {
+        JSArray chunks = call.getArray("chunks");
+        if (name == null || name.trim().isEmpty() || name.contains("/") || name.contains("\\") || chunks == null) {
             call.reject("附件保存参数无效");
             return;
         }
-        try {
-            Intent save = new Intent(Intent.ACTION_CREATE_DOCUMENT)
-                .addCategory(Intent.CATEGORY_OPENABLE)
-                .setType("application/octet-stream")
-                .putExtra(Intent.EXTRA_TITLE, name);
-            startActivityForResult(call, save, "saveResult");
-        } catch (ActivityNotFoundException error) {
-            call.reject("无法选择附件保存位置", error);
-        }
+        // Capacitor serializes the saved call to the Activity state Bundle.
+        call.getData().remove("chunks");
+        getBridge().executeOnMainThread(() -> {
+            if (pendingSaveId != null) {
+                call.reject("请先完成当前附件的保存");
+                return;
+            }
+            pendingSaveId = call.getCallbackId();
+            pendingSaveChunks = chunks;
+            try {
+                Intent save = new Intent(Intent.ACTION_CREATE_DOCUMENT)
+                    .addCategory(Intent.CATEGORY_OPENABLE)
+                    .setType("application/octet-stream")
+                    .putExtra(Intent.EXTRA_TITLE, name);
+                startActivityForResult(call, save, "saveResult");
+            } catch (ActivityNotFoundException error) {
+                pendingSaveId = null;
+                pendingSaveChunks = null;
+                call.reject("无法选择附件保存位置", error);
+            }
+        });
     }
 
     @ActivityCallback
     private void saveResult(PluginCall call, ActivityResult result) {
         if (call == null) return;
+        if (!call.getCallbackId().equals(pendingSaveId)) {
+            call.reject("附件保存已中断，请重新下载");
+            return;
+        }
+        JSArray chunks = pendingSaveChunks;
+        pendingSaveId = null;
+        pendingSaveChunks = null;
         if (result.getResultCode() != Activity.RESULT_OK) {
             call.resolve();
             return;
@@ -51,17 +74,18 @@ public class BridgeFilesPlugin extends Plugin {
             call.reject("未选择附件保存位置");
             return;
         }
-        JSArray chunks = call.getArray("chunks");
-        try (OutputStream output = getContext().getContentResolver().openOutputStream(destination, "w")) {
-            if (output == null) throw new IOException("保存位置不可写入");
-            for (int index = 0; index < chunks.length(); index++) {
-                output.write(Base64.decode(chunks.getString(index), Base64.DEFAULT));
+        getBridge().execute(() -> {
+            try (OutputStream output = getContext().getContentResolver().openOutputStream(destination, "w")) {
+                if (output == null) throw new IOException("保存位置不可写入");
+                for (int index = 0; index < chunks.length(); index++) {
+                    output.write(Base64.decode(chunks.getString(index), Base64.DEFAULT));
+                }
+            } catch (IOException | JSONException | IllegalArgumentException | SecurityException error) {
+                call.reject("无法保存附件", error);
+                return;
             }
-        } catch (IOException | JSONException | IllegalArgumentException | SecurityException error) {
-            call.reject("无法保存附件", error);
-            return;
-        }
-        call.resolve();
+            call.resolve();
+        });
     }
 
     @PluginMethod

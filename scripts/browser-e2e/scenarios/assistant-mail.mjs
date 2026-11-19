@@ -1,4 +1,4 @@
-import { attachmentHtml, mailWithAttachments } from "../../fixtures/mail-attachments.mjs";
+import { attachmentCsv, attachmentHtml, mailWithAttachments } from "../../fixtures/mail-attachments.mjs";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -19,7 +19,7 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   }
   async function verifyAttachments(card, captureName) {
     const attachmentCard = card.getByRole("region", { name: "邮件附件" });
-    await attachmentCard.getByText("5 个附件", { exact: true }).waitFor();
+    await attachmentCard.getByText("6 个附件", { exact: true }).waitFor();
     await card.getByText("原文", { exact: true }).click();
     await card.getByText("Fixture mail with attachments.", { exact: true }).last().waitFor();
     assert.equal(await card.locator("details[open] .assistant-attachments").count(), 0);
@@ -44,11 +44,19 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
     const pdf = page.getByRole("dialog", { name: "summary.pdf", exact: true });
     await pdf.getByLabel("summary.pdf 第 1 页").waitFor();
     await pdf.getByRole("button", { name: "关闭查看器", exact: true }).click();
-    const download = page.waitForEvent("download");
-    await attachmentCard.getByRole("button", { name: "下载 data.bin", exact: true }).click();
-    const saved = await download;
-    assert.equal(saved.suggestedFilename(), "data.bin");
-    assert.deepEqual(await readFile(await saved.path()), Buffer.from([1, 2, 0, 255]));
+    await attachmentCard.getByRole("button", { name: "预览 report.csv", exact: true }).click();
+    const csv = page.getByRole("dialog", { name: "report.csv", exact: true });
+    const csvText = csv.getByLabel("report.csv 全文");
+    await csvText.waitFor();
+    assert.equal(await csvText.textContent(), "café,€");
+    await csv.getByRole("button", { name: "关闭查看器", exact: true }).click();
+    for (const [filename, bytes] of [["data.bin", Buffer.from([1, 2, 0, 255])], ["report.csv", attachmentCsv]]) {
+      const download = page.waitForEvent("download");
+      await attachmentCard.getByRole("button", { name: `下载 ${filename}`, exact: true }).click();
+      const saved = await download;
+      assert.equal(saved.suggestedFilename(), filename);
+      assert.deepEqual(await readFile(await saved.path()), bytes);
+    }
   }
   async function evictStartupSnapshot() {
     assert.equal(await page.evaluate(async roomId => {
@@ -80,7 +88,7 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   assert.equal(await original.locator("img, iframe, script").count(), 0);
   assert.equal(await page.evaluate(() => window.mailInjected), undefined);
   assert.match(await original.getByRole("link", { name: /actual\.example\.test.*\/path/u }).getAttribute("href"), /trusted.example@actual.example.test/u);
-  const withAttachments = cards().filter({ hasText: "5 个附件" });
+  const withAttachments = cards().filter({ hasText: "6 个附件" });
   await verifyAttachments(withAttachments, "mobile-mail-attachment");
   await capture("mobile-mail");
   steps.push("60 stored mail cards render without a turn request; untrusted content stays text and explicit links show the destination host");

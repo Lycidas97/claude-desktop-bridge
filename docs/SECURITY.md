@@ -162,7 +162,7 @@ Bridge 在收件时将有界的附件清单与正文摘要写入助理 SQLite。
 
 邮件附件使用每设备最多四路的内存租约、20 MiB 单附件上限、十分钟临时密文交付和下载 SHA-256 校验。超过 1 MiB 的预览需要确认。普通图片经宿主缩放，PDF 经客户端画布显示，HTML 与 Markdown 附件只显示原始文本。无法预览的文件可以显式下载。Android 只写入用户选定的保存位置。
 
-`mail.read_event` 返回不含字节的附件清单。当前托管会话可按需调用 `mail.read_attachment`，读取 1 MiB 以内的 UTF-8 纯文本、Markdown、CSV、JSON 或可提取文本的 PDF。工具只返回有界纯文本，并标记 `untrusted_external` 和 `authorizesActions: false`。附件解码过程不向助理工作区写入文件，也不执行脚本、宏或自动投递。
+`mail.read_event` 返回不含字节的附件清单。当前托管会话可按需调用 `mail.read_attachment`，读取 1 MiB 以内的纯文本、Markdown、CSV、JSON 或可提取文本的 PDF。文本按声明的受支持编码解码。工具只返回有界纯文本，并标记 `untrusted_external` 和 `authorizesActions: false`。附件解码过程不向助理工作区写入文件，也不执行脚本、宏或自动投递。
 
 ## 生产要求
 

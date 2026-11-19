@@ -1,4 +1,5 @@
 export const attachmentHtml = '<p>Lab schedule</p><img src="https://tracker.invalid/attachment">';
+export const attachmentCsv = Buffer.from([0x63, 0x61, 0x66, 0xe9, 0x2c, 0x80]);
 
 export function attachmentPdf() {
   const text = 'BT /F1 18 Tf 40 140 Td (Bridge attachment fixture) Tj ET';
@@ -21,6 +22,7 @@ export function attachmentPdf() {
 export function mailWithAttachments() {
   const parts = [
     ['schedule.html', 'text/html', Buffer.from(attachmentHtml)],
+    ['report.csv', 'text/csv; charset=windows-1252', attachmentCsv],
     ['summary.pdf', 'application/pdf', attachmentPdf()],
     ['chart.png', 'image/png', Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+fmioAAAAASUVORK5CYII=', 'base64')],
     ['data.bin', 'application/octet-stream', Buffer.from([1, 2, 0, 255])],

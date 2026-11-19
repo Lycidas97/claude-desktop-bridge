@@ -350,6 +350,96 @@ it("receives the same UID independently and manages one account without interrup
   await vi.waitFor(() => expect(service.page().events).toContainEqual(expect.objectContaining({ accountKey: secondKey, uid: 6 })));
 });
 
+it.each(["write", "rename"])("keeps credentials untouched when adding an account cannot %s the config", async failure => {
+  const { service, createClient, credentials } = await createService();
+  const path = join(root, "private", "assistant", "accounts.json");
+  await mkdir(failure === "rename" ? path : `${path}.tmp`);
+  await expect(service.enable(account)).rejects.toThrow(/^mail_storage_failed$/);
+  expect(service.status().accounts).toEqual([]);
+  expect(createClient).not.toHaveBeenCalled();
+  expect(credentials.set).not.toHaveBeenCalled();
+  expect(secrets.size).toBe(0);
+});
+
+it("rolls back a new account if Keychain rejects its credential and preserves peer changes", async () => {
+  const { service, credentials } = await createService();
+  const peer = { ...account, user: "peer@example.test" };
+  await service.enable(peer);
+  const [configured] = service.status().accounts;
+  const path = join(root, "private", "assistant", "accounts.json");
+  let savedDuringSet: unknown;
+  credentials.set.mockImplementationOnce(async () => {
+    await service.setAccountEnabled(configured!.accountKey, false);
+    savedDuringSet = JSON.parse(await readFile(path, "utf8"));
+    throw new Error("Keychain rejected the credential");
+  });
+  await expect(service.enable(account)).rejects.toThrow(/^mail_credentials_unavailable$/);
+  expect(savedDuringSet).toEqual([
+    { host: peer.host, port: 993, user: peer.user, enabled: false },
+    { host: account.host, port: 993, user: account.user, enabled: true },
+  ]);
+  expect(service.status().accounts).toMatchObject([{ accountKey: configured!.accountKey, enabled: false }]);
+  expect(secrets.size).toBe(1);
+  expect(JSON.parse(await readFile(path, "utf8"))).toEqual([{ host: peer.host, port: 993, user: peer.user, enabled: false }]);
+});
+
+it("keeps a failed add manageable when updating the account file also fails during rollback", async () => {
+  const { service, createClient, credentials } = await createService();
+  const path = join(root, "private", "assistant", "accounts.json");
+  const changed = vi.fn();
+  service.on("changed", changed);
+  credentials.set.mockImplementationOnce(async () => {
+    await mkdir(`${path}.tmp`);
+    throw new Error("Keychain rejected the credential");
+  });
+  await expect(service.enable(account)).rejects.toThrow(/^mail_storage_failed$/);
+  expect(changed).toHaveBeenCalledOnce();
+  const [configured] = service.status().accounts;
+  expect(configured).toMatchObject({ user: account.user, enabled: true });
+  expect(createClient).not.toHaveBeenCalled();
+  expect(secrets.size).toBe(0);
+  await rename(`${path}.tmp`, `${path}.blocked`);
+  await service.removeAccount(configured!.accountKey);
+  expect(service.status().accounts).toEqual([]);
+  expect(JSON.parse(await readFile(path, "utf8"))).toEqual([]);
+});
+
+it("removes the credential after an overlapping update while an unrelated account can change", async () => {
+  const inbox = new Inbox();
+  const peer = new Inbox();
+  const { service, credentials } = await createService([inbox, peer, new Inbox()]);
+  await service.enable(account);
+  await service.enable({ ...account, user: "peer@example.test" });
+  await vi.waitFor(() => expect(inbox.idle).toHaveBeenCalledOnce());
+  const [first, second] = service.status().accounts;
+  let notifyWriteStarted!: () => void;
+  let finishWrite!: () => void;
+  const writeStarted = new Promise<void>(resolve => { notifyWriteStarted = resolve; });
+  const writeReleased = new Promise<void>(resolve => { finishWrite = resolve; });
+  credentials.set.mockImplementationOnce(async (key, value) => {
+    notifyWriteStarted();
+    await writeReleased;
+    secrets.set(key, value);
+  });
+  const update = service.replacePassword(first!.accountKey, "fixture replacement");
+  await writeStarted;
+  const removal = service.removeAccount(first!.accountKey);
+  try {
+    await service.setAccountEnabled(second!.accountKey, false);
+    // Let a removal that incorrectly overtakes the pending write complete.
+    await new Promise<void>(resolve => setImmediate(resolve));
+  } finally {
+    finishWrite();
+    await Promise.all([update, removal]);
+  }
+  expect(secrets.has(first!.accountKey)).toBe(false);
+  expect(secrets.has(second!.accountKey)).toBe(true);
+  expect(service.status().accounts).toMatchObject([{ accountKey: second!.accountKey, enabled: false }]);
+  expect(JSON.parse(await readFile(join(root, "private", "assistant", "accounts.json"), "utf8"))).toEqual([
+    { host: second!.host, port: second!.port, user: second!.user, enabled: false },
+  ]);
+});
+
 it.each(["write", "rename"])("keeps the running account and credential when removal cannot %s the config", async failure => {
   const inbox = new Inbox();
   const { service, credentials } = await createService([inbox]);

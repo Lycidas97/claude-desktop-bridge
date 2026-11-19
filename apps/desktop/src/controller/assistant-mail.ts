@@ -47,12 +47,13 @@ export function assistantMailSnapshot(
     sectionId: stored.sectionId, previousSessionIds: stored.previousSessionIds,
   };
   const session = sessions.find(candidate => candidate.sessionId === binding?.nativeSessionId);
-  const { state, accounts, credentialsSupported } = mail.status();
+  const { state, accounts, accountConfigError, credentialsSupported } = mail.status();
   return {
     ...(binding ? { binding } : {}),
     bindingState: !binding?.nativeSessionId ? binding?.previousSessionIds.length ? "needs-rebind" : "unbound"
       : session?.archivedAt ? "needs-rebind" : !available ? "unavailable" : !session ? "missing" : "ready",
     receiverState: state, accounts, credentialsSupported,
+    ...(accountConfigError ? { accountConfigError } : {}),
     automaticDelivery: false,
     changeToken,
   };

@@ -38,6 +38,8 @@ export class AssistantMailService extends EventEmitter {
   private readonly createClient: (options: ImapFlowOptions) => ImapFlow;
   private readonly accounts = new Map<string, { config: SavedAccount; receiver: MailReceiver }>();
   private readonly removingAccounts = new Map<string, MailReceiver>();
+  private readonly accountMutations = new Map<string, Promise<void>>();
+  private accountConfigError?: "mail_account_config_unavailable";
   private closed = false;
 
   constructor(options: {
@@ -53,20 +55,26 @@ export class AssistantMailService extends EventEmitter {
 
   async initialize(): Promise<void> {
     await this.store.initialize();
-    let saved: string | undefined;
-    for (const name of ["accounts.json", "account.json"]) {
-      saved = await readFile(join(this.store.directory, name), "utf8").catch((error: NodeJS.ErrnoException) => {
-        if (error.code !== "ENOENT") throw error;
-        return undefined;
+    let configs: SavedAccount[];
+    try {
+      let saved: string | undefined;
+      for (const name of ["accounts.json", "account.json"]) {
+        saved = await readFile(join(this.store.directory, name), "utf8").catch((error: NodeJS.ErrnoException) => {
+          if (error.code !== "ENOENT") throw error;
+          return undefined;
+        });
+        if (saved !== undefined) break;
+      }
+      if (saved === undefined) return;
+      const value = JSON.parse(saved) as SavedAccount | SavedAccount[];
+      configs = (Array.isArray(value) ? value : [value]).map(config => {
+        if (typeof config?.enabled !== "boolean") throw new Error("Invalid saved IMAP account");
+        return { ...parseAccount(config), enabled: config.enabled };
       });
-      if (saved !== undefined) break;
+    } catch {
+      this.accountConfigError = "mail_account_config_unavailable";
+      return;
     }
-    if (saved === undefined) return;
-    const value = JSON.parse(saved) as SavedAccount | SavedAccount[];
-    const configs = (Array.isArray(value) ? value : [value]).map(config => {
-      if (typeof config?.enabled !== "boolean") throw new Error("Invalid saved IMAP account");
-      return { ...parseAccount(config), enabled: config.enabled };
-    });
     for (const config of configs) this.addAccount(accountKey(config), config);
     for (const { config, receiver } of this.accounts.values()) if (config.enabled) receiver.start();
   }
@@ -74,6 +82,7 @@ export class AssistantMailService extends EventEmitter {
   status(): {
     state: MailState; credentialsSupported: boolean; accounts: MailAccountStatus[];
     account?: SavedAccount; accountKey?: string; errorCode?: string;
+    accountConfigError?: "mail_account_config_unavailable";
   } {
     const accounts = Array.from(this.accounts, ([key, { config, receiver }]): MailAccountStatus => ({
       ...config, accountKey: key,
@@ -82,7 +91,9 @@ export class AssistantMailService extends EventEmitter {
     }));
     const current = accounts.find(account => account.state === "connected") ?? accounts.find(account => account.enabled) ?? accounts[0];
     return {
-      state: current?.state ?? (this.closed ? "closed" : "disabled"), credentialsSupported: this.credentials.supported, accounts,
+      state: this.closed ? "closed" : this.accountConfigError ? "error" : current?.state ?? "disabled",
+      credentialsSupported: this.credentials.supported, accounts,
+      ...(this.accountConfigError ? { accountConfigError: this.accountConfigError } : {}),
       ...(current ? { account: { ...this.accounts.get(current.accountKey)!.config }, accountKey: current.accountKey } : {}),
       ...(current?.errorCode ? { errorCode: current.errorCode } : {}),
     };
@@ -96,26 +107,44 @@ export class AssistantMailService extends EventEmitter {
     if (!this.credentials.supported) throw new Error("mail_credentials_unsupported");
     const config = { ...parseAccount({ host: input.host, port: input.port ?? 993, user: input.user }), enabled: true };
     const key = accountKey(config);
-    if (this.removingAccounts.has(key)) throw new Error("mail_account_removing");
-    await this.savePassword(key, input.password);
-    const existing = this.accounts.get(key);
-    if (existing?.config.enabled) {
-      await this.restartReceiver(key);
-    } else if (existing) {
-      await this.setAccountEnabled(key, true);
-    } else {
+    await this.mutateAccount(key, async () => {
+      const existing = this.accounts.get(key);
+      if (existing) {
+        await this.savePassword(key, input.password);
+        if (existing.config.enabled) await this.restartReceiver(key);
+        else await this.updateEnabled(key, true);
+        return;
+      }
       this.saveAccounts([...Array.from(this.accounts.values(), account => account.config), config]);
-      this.addAccount(key, config).receiver.start();
-    }
+      const account = this.addAccount(key, config);
+      try {
+        await this.savePassword(key, input.password);
+      } catch (error) {
+        try {
+          this.saveAccounts(Array.from(this.accounts.values()).filter(entry => entry !== account).map(entry => entry.config));
+          this.accounts.delete(key);
+        } finally {
+          this.emit("changed");
+        }
+        throw error;
+      }
+      account.receiver.start();
+    });
   }
 
-  async replacePassword(accountKey: string, password: string): Promise<void> {
-    this.requireAccount(accountKey);
-    await this.savePassword(accountKey, password);
-    await this.restartReceiver(accountKey);
+  replacePassword(accountKey: string, password: string): Promise<void> {
+    return this.mutateAccount(accountKey, async () => {
+      this.requireAccount(accountKey);
+      await this.savePassword(accountKey, password);
+      await this.restartReceiver(accountKey);
+    });
   }
 
-  async setAccountEnabled(accountKey: string, enabled: boolean): Promise<void> {
+  setAccountEnabled(accountKey: string, enabled: boolean): Promise<void> {
+    return this.mutateAccount(accountKey, () => this.updateEnabled(accountKey, enabled));
+  }
+
+  private async updateEnabled(accountKey: string, enabled: boolean): Promise<void> {
     const account = this.requireAccount(accountKey);
     if (enabled && !this.credentials.supported) throw new Error("mail_credentials_unsupported");
     if (account.config.enabled === enabled) return;
@@ -130,27 +159,29 @@ export class AssistantMailService extends EventEmitter {
     }
   }
 
-  async removeAccount(accountKey: string): Promise<void> {
-    const account = this.requireAccount(accountKey);
-    if (!this.credentials.supported) throw new Error("mail_credentials_unsupported");
-    this.saveAccounts(Array.from(this.accounts.values()).filter(entry => entry !== account).map(entry => entry.config));
-    this.accounts.delete(accountKey);
-    this.removingAccounts.set(accountKey, account.receiver);
-    try {
-      await this.credentials.delete(accountKey);
-    } catch {
-      this.saveAccounts([...Array.from(this.accounts.values(), entry => entry.config), account.config]);
-      this.accounts.set(accountKey, account);
-      this.emit("changed");
-      throw new Error("mail_credentials_unavailable");
-    } finally {
-      this.removingAccounts.delete(accountKey);
-      if (!this.accounts.has(accountKey)) {
-        const stopping = account.receiver.stop();
+  removeAccount(accountKey: string): Promise<void> {
+    return this.mutateAccount(accountKey, async () => {
+      const account = this.requireAccount(accountKey);
+      if (!this.credentials.supported) throw new Error("mail_credentials_unsupported");
+      this.saveAccounts(Array.from(this.accounts.values()).filter(entry => entry !== account).map(entry => entry.config));
+      this.accounts.delete(accountKey);
+      this.removingAccounts.set(accountKey, account.receiver);
+      try {
+        await this.credentials.delete(accountKey);
+      } catch {
+        this.saveAccounts([...Array.from(this.accounts.values(), entry => entry.config), account.config]);
+        this.accounts.set(accountKey, account);
         this.emit("changed");
-        await stopping;
+        throw new Error("mail_credentials_unavailable");
+      } finally {
+        this.removingAccounts.delete(accountKey);
+        if (!this.accounts.has(accountKey)) {
+          const stopping = account.receiver.stop();
+          this.emit("changed");
+          await stopping;
+        }
       }
-    }
+    });
   }
 
   async disable(): Promise<void> {
@@ -178,6 +209,19 @@ export class AssistantMailService extends EventEmitter {
     const event = this.store.setProcessingStatus(mailRefId, status);
     if (event) this.emit("changed", true);
     return event;
+  }
+
+  private async mutateAccount(key: string, mutate: () => Promise<void>): Promise<void> {
+    if (this.accountConfigError) throw new Error(this.accountConfigError);
+    const previous = this.accountMutations.get(key);
+    // A failed operation still releases its turn so the next request can run.
+    const pending = (previous?.catch(() => {}) ?? Promise.resolve()).then(mutate);
+    this.accountMutations.set(key, pending);
+    try {
+      await pending;
+    } finally {
+      if (this.accountMutations.get(key) === pending) this.accountMutations.delete(key);
+    }
   }
 
   private requireAccount(accountKey: string) {

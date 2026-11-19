@@ -36,6 +36,7 @@ export interface BridgeAssistantMailSnapshot {
   bindingState: "unbound" | "ready" | "unavailable" | "missing" | "needs-rebind";
   receiverState: BridgeMailReceiverState;
   accounts?: BridgeMailAccount[];
+  accountConfigError?: "mail_account_config_unavailable";
   credentialsSupported?: boolean;
   workspace?: BridgeAssistantWorkspace;
   changeToken: string;

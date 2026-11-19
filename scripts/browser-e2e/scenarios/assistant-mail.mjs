@@ -270,6 +270,15 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   const extraAccount = accounts.locator(".assistant-account-row").filter({ hasText: extraUser });
   await page.getByRole("button", { name: "助理设置", exact: true }).click();
   await accounts.getByText("assistant@example.test", { exact: true }).waitFor();
+  await host.send({ kind: "snapshot", snapshot: { ...host.snapshot, assistantMail: {
+    ...host.snapshot.assistantMail, accounts: [], receiverState: "error", accountConfigError: "mail_account_config_unavailable",
+  } } });
+  await accounts.getByRole("alert").getByText("无法读取邮箱配置。修复本机配置后重启 Bridge。", { exact: true }).waitFor();
+  assert.equal(await accounts.getByRole("button", { name: "添加邮箱", exact: true }).isDisabled(), true);
+  assert.equal(await accounts.getByText("尚未添加邮箱。", { exact: true }).count(), 0);
+  await capture("mail-config-unavailable");
+  await host.send({ kind: "snapshot", snapshot: host.snapshot });
+  steps.push("unreadable account settings show a repair notice and disable account mutations until the host reports healthy settings");
   await accounts.getByRole("button", { name: "添加邮箱", exact: true }).click();
   await accounts.getByLabel("邮箱地址", { exact: true }).fill(extraUser);
   await accounts.getByLabel("IMAP 服务器", { exact: true }).fill("imap.second.example.test");

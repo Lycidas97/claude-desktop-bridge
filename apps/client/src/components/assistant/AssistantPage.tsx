@@ -135,6 +135,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
     {notices}
     {displayedView === "settings" && capabilities.includes("plugin.assistant-mail.account.v1") && <MailAccounts
       accounts={mail.assistant?.accounts ?? []}
+      configUnavailable={mail.assistant?.accountConfigError === "mail_account_config_unavailable"}
       credentialsSupported={mail.assistant?.credentialsSupported === true}
       online={mail.online}
       request={mail.request}
@@ -185,8 +186,9 @@ const RECEIVER_ERRORS = new Map([
   ["mail_idle_unsupported", { label: "不支持持续收件", state: "unsupported" }],
 ]);
 
-function MailAccounts({ accounts, credentialsSupported, online, request }: {
+function MailAccounts({ accounts, configUnavailable, credentialsSupported, online, request }: {
   accounts: BridgeMailAccount[];
+  configUnavailable: boolean;
   credentialsSupported: boolean;
   online: boolean;
   request: AssistantRequest;
@@ -195,7 +197,7 @@ function MailAccounts({ accounts, credentialsSupported, online, request }: {
   const [action, setAction] = useState<{ kind: "add" } | { kind: "edit" | "remove"; accountKey: string }>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const disabled = !online || !credentialsSupported || busy;
+  const disabled = !online || configUnavailable || !credentialsSupported || busy;
   const editedAccount = action?.kind === "edit" ? accounts.find(account => account.accountKey === action.accountKey) : undefined;
   const removedAccount = action?.kind === "remove" ? accounts.find(account => account.accountKey === action.accountKey) : undefined;
 
@@ -233,8 +235,9 @@ function MailAccounts({ accounts, credentialsSupported, online, request }: {
       <h2 id={headingId}>邮箱账号</h2>
       <button type="button" className="assistant-session-link" disabled={disabled || action?.kind === "add"} onClick={() => { setError(""); setAction({ kind: "add" }); }}>添加邮箱</button>
     </div>
-    {!credentialsSupported && <p role="status">当前电脑不支持存储邮箱凭据。</p>}
-    {credentialsSupported && !accounts.length && !action && <p>尚未添加邮箱。</p>}
+    {configUnavailable ? <p role="alert">无法读取邮箱配置。修复本机配置后重启 Bridge。</p>
+      : !credentialsSupported ? <p role="status">当前电脑不支持存储邮箱凭据。</p>
+      : !accounts.length && !action && <p>尚未添加邮箱。</p>}
     {accounts.map(account => {
       const state = account.enabled ? account.state : "disabled";
       const failure = account.enabled && account.errorCode ? RECEIVER_ERRORS.get(account.errorCode) : undefined;

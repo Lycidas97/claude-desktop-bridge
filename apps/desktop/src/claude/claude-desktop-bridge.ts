@@ -15,7 +15,7 @@ import {
 import { diag, diagnostics } from "../app/diag.js";
 import { ClaudeDesktopInspector, InspectorDisconnectedError, NativeCallError, type NativeSectionCatalog } from "./claude-desktop-inspector.js";
 import type { ConversationStateStore, NativeDesktopReceipt } from "../controller/conversation-state-store.js";
-import { readClaudeTranscriptBackgroundTasks, readClaudeTranscriptSubagents, scanClaudeContextFromMessages, visibleMessage } from "../transcript/claude-history.js";
+import { readClaudeTranscriptBackgroundTasks, readClaudeTranscriptSubagents, visibleMessage } from "../transcript/claude-history.js";
 import { extractToolCallDetailFromMessages, readSubagentToolCallDetail, summarizeNativeToolInput } from "../transcript/transcript-tool-detail.js";
 import { claudeRuntimePaths } from "../app/platform.js";
 import type { SessionEventLog, BridgeEventDraft } from "../controller/session-event-log.js";
@@ -547,11 +547,8 @@ export class ClaudeDesktopBridge extends EventEmitter {
 
   private applyTranscriptContextMessages(sessionId: string, messages: readonly unknown[], priorLiveSample: symbol | undefined): void {
     const current = this.contextStates.get(sessionId);
-    if (current?.liveUsageSample !== undefined && current.liveUsageSample !== priorLiveSample) {
-      if (!current.model) hydrateObservedContextModel(current, scanClaudeContextFromMessages(messages).estimate?.model);
-      return;
-    }
-    this.contextStates.set(sessionId, buildTranscriptContextState(messages, current));
+    const preserveLiveUsage = current?.liveUsageSample !== undefined && current.liveUsageSample !== priorLiveSample;
+    this.contextStates.set(sessionId, buildTranscriptContextState(messages, current, preserveLiveUsage));
   }
 
   private projectSessions(): void {
@@ -990,11 +987,11 @@ export class ClaudeDesktopBridge extends EventEmitter {
           }
           this.messageProjection.set(sessionId, liveProjection);
         }
+        const priorLiveSample = this.contextStates.get(sessionId)?.liveUsageSample;
         const live = await this.readLiveContextUsage(id);
         if (live) {
           this.applyLiveContextUsage(sessionId, live);
         } else {
-          const priorLiveSample = this.contextStates.get(sessionId)?.liveUsageSample;
           const pending = readContextMessages(messages => this.applyTranscriptContextMessages(sessionId, messages, priorLiveSample));
           if (pending) await pending;
         }

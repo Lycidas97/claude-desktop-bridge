@@ -208,7 +208,9 @@ export function applyLiveContextUsageState(
   delete state.stream;
 }
 
-export function buildTranscriptContextState(messages: readonly unknown[], previous?: NativeContextState): NativeContextState {
+export function buildTranscriptContextState(
+  messages: readonly unknown[], previous?: NativeContextState, preserveLiveUsage = false,
+): NativeContextState {
   const scan = scanClaudeContextFromMessages(messages);
   const seenAssistantUuids = new Set<string>();
   const preCompactUuids = new Set<string>();
@@ -224,6 +226,12 @@ export function buildTranscriptContextState(messages: readonly unknown[], previo
         if (typeof preserved[key] === "string" && preserved[key]) preCompactUuids.add(preserved[key]);
       }
     }
+  }
+  if (previous && preserveLiveUsage) {
+    for (const id of seenAssistantUuids) previous.seenAssistantUuids.add(id);
+    for (const id of preCompactUuids) previous.preCompactUuids.add(id);
+    hydrateObservedContextModel(previous, scan.estimate?.model);
+    return previous;
   }
   const state: NativeContextState = {
     totalTokens: scan.estimate?.totalTokens ?? 0,

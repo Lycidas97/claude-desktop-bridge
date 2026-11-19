@@ -8,6 +8,11 @@ import { useAssistantAgenda } from "./AssistantAgendaProvider.js";
 import "./assistant-agenda.css";
 
 const deviceZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+const timeZones = new Set([deviceZone, "UTC", ...Intl.supportedValuesOf("timeZone")]);
+const priorityLabels = { 1: "高", 5: "中", 9: "低" };
+const priorityGroup = (priority: number | undefined): keyof typeof priorityLabels | "" =>
+  !priority ? "" : priority < 5 ? 1 : priority === 5 ? 5 : 9;
+const shiftDate = (date: string, days: number) => new Date(Date.parse(`${date}T00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
 const todoStatuses: Record<AgendaTodoInput["status"], string> = {
   pending: "待处理", "in-progress": "进行中", completed: "已完成", cancelled: "已取消",
 };
@@ -49,7 +54,7 @@ export function AgendaView({ tab, onTabChange }: { tab: "todos" | "calendar"; on
 
   function row(record: BridgeAgendaTodo | BridgeAgendaEvent, detail: ReactNode, toggle?: ReactNode, edit?: Editor) {
     const source = sources.get(record.sourceId);
-    return <li className="agenda-record" key={record.id}>
+    return <li className={`agenda-record${"status" in record && (record.status === "completed" || record.status === "cancelled") ? " is-closed" : ""}`} key={record.id}>
       {toggle}
       <div className="agenda-record-copy">
         <strong>{record.title}</strong>
@@ -82,16 +87,18 @@ export function AgendaView({ tab, onTabChange }: { tab: "todos" | "calendar"; on
     {!page.records.length && !page.error && agenda.online && <p className="assistant-mail-empty" role="status">{page.loading ? "正在同步议程…" : calendar ? "本月暂无日程" : "暂无待办"}</p>}
     {page.records.length > 0 && <ul className="agenda-records" aria-label={calendar ? "日程列表" : "待办列表"}>
       {calendar ? agenda.events.records.map(event => row(event, <>
-        <small>{displayTime(event.startAt, event.timeZone)} 至 {displayTime(event.endAt, event.timeZone)}{event.allDay ? "（全天，结束日期不含当天）" : ` (${event.timeZone})`}</small>
+        <small>{event.allDay ? `${event.startAt}${event.endAt === shiftDate(event.startAt, 1) ? "" : ` 至 ${shiftDate(event.endAt, -1)}`} 全天`
+          : `${displayTime(event.startAt, event.timeZone)} 至 ${displayTime(event.endAt, event.timeZone)}${event.timeZone === deviceZone ? "" : ` (${event.timeZone})`}`}</small>
         {event.location && <small>{event.location}</small>}
         {!!event.attendees?.length && <small>{event.attendees.join("、")}</small>}
       </>, undefined, { type: "event", record: event })) : agenda.todos.records.map(todo => {
         const source = sources.get(todo.sourceId);
+        const priority = priorityGroup(todo.priority);
         return row(todo, <div className="agenda-todo-meta">
           {todo.status !== "pending" && todo.status !== "completed" && <small>{todoStatuses[todo.status]}</small>}
           {todo.dueAt && <small>截止 {displayTime(todo.dueAt)}</small>}
           {todo.remindAt && <small>提醒 {displayTime(todo.remindAt)}</small>}
-          {!!todo.priority && <small>优先级 {todo.priority}</small>}
+          {priority && <small>优先级 {priorityLabels[priority]}</small>}
         </div>, <label className="agenda-check">
           <input type="checkbox" aria-label={`完成 ${todo.title}`} checked={todo.status === "completed"} disabled={!agenda.online || !source?.enabled || !source.writable || Boolean(completing) || page.loading}
             onChange={event => void complete(todo, event.target.checked)} />
@@ -118,7 +125,7 @@ function AgendaEditor({ editor, month, onClose }: { editor: Editor; month: Date;
     const day = now.getFullYear() === month.getFullYear() && now.getMonth() === month.getMonth() ? now : month;
     return `${agendaInputTime(day.toISOString(), timeZone).slice(0, 10)}T09:00`;
   });
-  const [end, setEnd] = useState(() => event ? agendaInputTime(event.endAt, timeZone) : `${start.slice(0, 10)}T10:00`);
+  const [end, setEnd] = useState(() => event ? event.allDay ? shiftDate(event.endAt, -1) : agendaInputTime(event.endAt, timeZone) : `${start.slice(0, 10)}T10:00`);
   const title = editor.type === "todo" ? (todo ? "编辑待办" : "新建待办") : (event ? "编辑日程" : "新建日程");
   const record = editor.record;
 
@@ -136,19 +143,17 @@ function AgendaEditor({ editor, month, onClose }: { editor: Editor; month: Date;
       if (editor.type === "todo") {
         const value: AgendaTodoInput = { ...fields, status: String(form.get("status")) as AgendaTodoInput["status"], mailRefId: todo?.mailRefId };
         const priority = String(form.get("priority"));
-        if (priority) value.priority = Number(priority);
+        if (priority) value.priority = Number(priority) === priorityGroup(todo?.priority) ? todo?.priority : Number(priority);
         for (const key of ["dueAt", "remindAt"] as const) {
           const date = String(form.get(key) ?? "");
           if (date) value[key] = agendaInstant(date, deviceZone, todo?.[key]);
         }
         await agenda.mutate("plugin.assistant-agenda.todo.save", { existing, value });
       } else {
-        const zone = timeZone.trim();
-        try { new Intl.DateTimeFormat("en", { timeZone: zone }); }
-        catch (reason) { if (reason instanceof RangeError) throw new Error("请输入有效的时区，例如 Asia/Shanghai。"); throw reason; }
+        const zone = timeZone;
         const startAt = allDay ? start : agendaInstant(start, zone, event?.allDay === false ? event.startAt : undefined);
-        const endAt = allDay ? end : agendaInstant(end, zone, event?.allDay === false ? event.endAt : undefined);
-        if (startAt >= endAt) throw new Error("结束时间必须晚于开始时间。");
+        const endAt = allDay ? shiftDate(end, 1) : agendaInstant(end, zone, event?.allDay === false ? event.endAt : undefined);
+        if (startAt >= endAt) throw new Error(allDay ? "结束日期不能早于开始日期。" : "结束时间必须晚于开始时间。");
         const location = String(form.get("location")).trim();
         const value: AgendaEventInput = { ...fields, startAt, endAt, timeZone: zone, allDay, ...(location ? { location } : {}) };
         await agenda.mutate("plugin.assistant-agenda.event.save", { existing, value });
@@ -175,7 +180,10 @@ function AgendaEditor({ editor, month, onClose }: { editor: Editor; month: Date;
             <label>状态<select name="status" defaultValue={todo?.status ?? "pending"}>
               {Object.entries(todoStatuses).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
             </select></label>
-            <label>优先级<input name="priority" type="number" min={0} max={9} defaultValue={todo?.priority} /></label>
+            <label>优先级<select name="priority" defaultValue={priorityGroup(todo?.priority)}>
+              <option value="">无</option>
+              {([1, 5, 9] as const).map(value => <option key={value} value={value}>{priorityLabels[value]}</option>)}
+            </select></label>
           </div>
           <AgendaTodoDate name="dueAt" label="截止" value={todo?.dueAt} />
           <AgendaTodoDate name="remindAt" label="提醒" value={todo?.remindAt} />
@@ -184,15 +192,18 @@ function AgendaEditor({ editor, month, onClose }: { editor: Editor; month: Date;
             const checked = event.target.checked;
             const startDate = start.slice(0, 10);
             const endDate = end.slice(0, 10);
-            setStart(checked ? startDate : `${startDate}T09:00`);
-            setEnd(checked && startDate === endDate ? new Date(Date.parse(`${endDate}T00:00Z`) + 86_400_000).toISOString().slice(0, 10) : checked ? endDate : `${endDate}T10:00`);
+            setStart(checked || !startDate ? startDate : `${startDate}T09:00`);
+            setEnd(checked || !endDate ? endDate : `${endDate}T10:00`);
             setAllDay(checked);
           }} />全天</label>
           <div className="agenda-form-pair">
             <label>{allDay ? "开始日期" : "开始时间"}<input type={allDay ? "date" : "datetime-local"} required value={start} onChange={event => setStart(event.target.value)} /></label>
-            <label>{allDay ? "结束日期（不含当天）" : "结束时间"}<input type={allDay ? "date" : "datetime-local"} required value={end} onChange={event => setEnd(event.target.value)} /></label>
+            <label>{allDay ? "结束日期" : "结束时间"}<input type={allDay ? "date" : "datetime-local"} required value={end} onChange={event => setEnd(event.target.value)} /></label>
           </div>
-          <label>时区<input name="timeZone" required maxLength={128} value={timeZone} onChange={event => setTimeZone(event.target.value)} /></label>
+          <label>时区<select value={timeZone} onChange={event => setTimeZone(event.target.value)}>
+            {!timeZones.has(timeZone) && <option value={timeZone}>{timeZone}</option>}
+            {[...timeZones].map(zone => <option key={zone} value={zone}>{zone}</option>)}
+          </select></label>
           <label>地点<input name="location" maxLength={1000} defaultValue={event?.location} /></label>
         </>}
         <label>备注<textarea name="notes" maxLength={8000} rows={3} defaultValue={record?.notes} /></label>

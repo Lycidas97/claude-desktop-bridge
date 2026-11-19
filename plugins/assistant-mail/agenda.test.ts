@@ -40,6 +40,7 @@ test("local records survive assistant restart, support paging, and reject stale 
   try {
     const task = store.saveTodo({ title: "First", status: "pending", dueAt: "2027-01-02" });
     store.saveTodo({ title: "Later", status: "pending" });
+    store.saveTodo({ title: "Cancelled", status: "cancelled", dueAt: "2027-01-01" });
     store.completeTodo({ id: task.id, revision: task.revision, completed: true });
     expect(() => store.saveTodo({ title: "Stale", status: "pending" }, task)).toThrow(expect.objectContaining({ code: "CONFLICT" }));
     store.saveEvent({ title: "All day", startAt: "2027-01-02", endAt: "2027-01-03", allDay: true, timeZone: "UTC" });
@@ -48,8 +49,11 @@ test("local records survive assistant restart, support paging, and reject stale 
   closers.push(() => restarted.close());
   await restarted.initialize(database => { store = new AgendaStore(database, "UTC"); });
   const page = store.listTodos({ limit: 1 });
-  expect(page.records).toMatchObject([{ title: "First", status: "completed", revision: 2, sourceId: "local" }]);
-  expect(store.listTodos({ cursor: page.nextCursor }).records).toMatchObject([{ title: "Later" }]);
+  expect(page.records).toMatchObject([{ title: "Later", status: "pending" }]);
+  expect(store.listTodos({ cursor: page.nextCursor }).records).toMatchObject([
+    { title: "Cancelled", status: "cancelled" },
+    { title: "First", status: "completed", revision: 2, sourceId: "local" },
+  ]);
   expect(store.listEvents({ from: "2027-01-02T00:00:00.000Z", to: "2027-01-03T00:00:00.000Z" }).records)
     .toMatchObject([{ title: "All day", startAt: "2027-01-02", allDay: true }]);
 });

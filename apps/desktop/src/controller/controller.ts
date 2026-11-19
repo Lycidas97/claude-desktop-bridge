@@ -820,12 +820,12 @@ export class DesktopController extends EventEmitter {
     cacheDeviceResponse(this.responseCache, response);
   }
 
-  /** Coalesce passive snapshots through completion; permissions still publish immediately. */
   private readonly onAgendaChanged = (assistantAgenda: BridgeAgendaSnapshot) => {
     void this.eventLog.append({ origin: "system", type: "plugin.assistant-agenda.changed", data: { assistantAgenda } });
     this.queuePublish();
   };
 
+  /** Coalesce passive snapshots through completion; permissions still publish immediately. */
   private queuePublish(): void {
     void this.publishPermissions();
     this.publishPending = true;

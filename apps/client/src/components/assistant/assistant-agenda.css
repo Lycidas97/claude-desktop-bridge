@@ -7,6 +7,7 @@
 .agenda-record { display: flex; min-width: 0; gap: 10px; align-items: start; padding: 10px 0; border-bottom: 1px solid var(--line); }
 .agenda-record-copy { flex: 1; min-width: 0; display: grid; gap: 4px; align-self: center; overflow-wrap: anywhere; line-height: 1.5; }
 .agenda-record-copy strong { font-size: calc(15px * var(--font-scale)); font-weight: 600; }
+.agenda-record.is-closed .agenda-record-copy { color: var(--muted); }
 .agenda-record-copy small { color: var(--muted); font-size: calc(12px * var(--font-scale)); }
 .agenda-todo-meta { display: flex; flex-wrap: wrap; gap: 2px 12px; }
 .agenda-todo-meta:empty { display: none; }

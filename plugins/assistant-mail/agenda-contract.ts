@@ -27,7 +27,7 @@ const page = {
 const window = { from: instant, to: instant };
 const validWindow = ({ from, to }: { from: string; to: string }) =>
   from < to && Date.parse(to) - Date.parse(from) <= 366 * 86_400_000;
-export const todoList = z.strictObject({ ...page, status: todoStatus.optional() });
+export const todoList = z.strictObject({ ...page, cursor: z.string().regex(/^[01]\|(?:~|[0-9TZ:.-]{10,28})\|[a-f0-9-]{36,64}$/).optional(), status: todoStatus.optional() });
 export const eventList = z.strictObject({ ...page, ...window }).refine(validWindow, "Choose a window of up to 366 days");
 export const freeSlotQuery = z.strictObject({ ...window, durationMinutes: z.number().int().min(1).max(1440) }).refine(validWindow, "Choose a window of up to 366 days");
 const existing = z.strictObject({ id, revision });

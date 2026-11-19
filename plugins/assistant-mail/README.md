@@ -67,7 +67,7 @@ Project configuration limits where this integration is enabled; it is not an OS 
 
 ## Assistant agenda
 
-Open **助理 → 议程** to add, complete or edit local tasks and create or edit local calendar events. The desktop and phone read the same saved records. A date-only event uses an exclusive end date, so an all-day event on one date ends on the next date.
+Open **助理 → 议程** to add, complete or edit local tasks and create or edit local calendar events. The desktop and phone read the same saved records. All-day event dates in the editor include the end date. The stored end date follows the exclusive iCalendar convention.
 
 In **助理设置 → 日历来源**, enter the full HTTPS **collection URL** for a CalDAV calendar or task list, the account name and a credential. Add each collection separately. Bridge imports `VEVENT` and `VTODO` as read-only records. A paused collection keeps its last saved copy. Removing the source drops its local mirror. Credentials are encrypted with the host OS credential backend through Electron. The insecure Linux `basic_text` backend cannot configure CalDAV.
 

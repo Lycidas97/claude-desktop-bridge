@@ -7,6 +7,7 @@ import type {
 import { agendaInstant, parseAgendaObject } from "./agenda-ical.js";
 
 export const LOCAL_AGENDA_ID = "local";
+const todoOrder = "(status IN ('completed', 'cancelled')), COALESCE(due_at, '~'), id";
 export type AgendaErrorCode = NonNullable<BridgeAgendaSource["errorCode"]>;
 export class AgendaCalendarDataError extends Error {}
 export class AgendaEditError extends Error {
@@ -47,7 +48,7 @@ export class AgendaStore {
         status TEXT GENERATED ALWAYS AS (json_extract(value, '$.status')) STORED,
         due_at TEXT GENERATED ALWAYS AS (json_extract(value, '$.dueAt')) STORED
       ) STRICT;
-      CREATE INDEX IF NOT EXISTS todo_order ON todos (COALESCE(due_at, '~'), id);
+      CREATE INDEX IF NOT EXISTS todo_status_order ON todos (${todoOrder});
       CREATE INDEX IF NOT EXISTS todo_source_href ON todos (source_id, href);
       CREATE TABLE IF NOT EXISTS calendar_events (
         id TEXT PRIMARY KEY, source_id TEXT NOT NULL REFERENCES assistant_sources(id) ON DELETE CASCADE,
@@ -172,10 +173,11 @@ export class AgendaStore {
 
   listTodos(query: AgendaPageQuery & { status?: AgendaTodoInput["status"] | undefined }): AgendaPage<BridgeAgendaTodo> {
     const limit = query.limit ?? 50;
-    const [date = "", id = ""] = query.cursor?.split("|") ?? [];
-    const rows = this.db.prepare(`SELECT value FROM todos WHERE (? IS NULL OR status = ?) AND (COALESCE(due_at, '~'), id) > (?, ?)
-      ORDER BY COALESCE(due_at, '~'), id LIMIT ?`).all(query.status ?? null, query.status ?? null, date, id, limit + 1);
-    return makePage(rows.map(row => JSON.parse(row.value as string) as BridgeAgendaTodo), limit, record => `${record.dueAt ?? "~"}|${record.id}`);
+    const [closed = "0", date = "", id = ""] = query.cursor?.split("|") ?? [];
+    const rows = this.db.prepare(`SELECT value FROM todos WHERE (? IS NULL OR status = ?) AND (${todoOrder}) > (?, ?, ?)
+      ORDER BY ${todoOrder} LIMIT ?`).all(query.status ?? null, query.status ?? null, Number(closed), date, id, limit + 1);
+    return makePage(rows.map(row => JSON.parse(row.value as string) as BridgeAgendaTodo), limit,
+      record => `${Number(record.status === "completed" || record.status === "cancelled")}|${record.dueAt ?? "~"}|${record.id}`);
   }
 
   listEvents(query: AgendaPageQuery & AgendaWindow): AgendaPage<BridgeAgendaEvent> {

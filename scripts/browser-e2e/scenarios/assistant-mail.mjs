@@ -441,6 +441,17 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await page.getByLabel("标题", { exact: true }).fill("桌面创建的日程");
   await page.getByRole("button", { name: "保存", exact: true }).click();
   await page.getByText("桌面创建的日程", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "新建日程", exact: true }).click();
+  await page.getByLabel("标题", { exact: true }).fill("单日全天日程");
+  await page.getByLabel("全天", { exact: true }).check();
+  const startDate = await page.getByLabel("开始日期", { exact: true }).inputValue();
+  const endDate = page.getByLabel(/^结束日期/u);
+  await endDate.fill(startDate);
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await page.getByText("单日全天日程", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "编辑 单日全天日程", exact: true }).click();
+  assert.equal(await endDate.inputValue(), startDate, "Reopening a one-day event shows the same date at both ends");
+  await page.getByRole("button", { name: "取消", exact: true }).click();
   steps.push("local task creation through phone E2EE, completion, Desktop edit, and Desktop event creation share durable agenda storage");
 
   await page.locator(".assistant-view-tabs").getByRole("button", { name: "收件", exact: true }).click();

@@ -227,6 +227,7 @@ export type BridgeCapability =
   | "plugin.assistant-mail.manual-reference.v1"
   | "plugin.assistant-mail.workspace.v1"
   | "plugin.assistant-mail.account.v1"
+  | "plugin.assistant-mail.attachments.v1"
   | "system.update.v1";
 
 /**

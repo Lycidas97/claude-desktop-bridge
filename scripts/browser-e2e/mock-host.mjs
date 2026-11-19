@@ -1,3 +1,4 @@
+import { mailWithAttachments } from "../fixtures/mail-attachments.mjs";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
@@ -380,7 +381,8 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
       const initialMailCount = options.initialMailCount ?? 60;
       if (initialMailCount > 0) {
         host.mailOffline = true;
-        await host.nativeApproval.assistantMail.deliver(initialMailCount);
+        if (initialMailCount > 1) await host.nativeApproval.assistantMail.deliver(initialMailCount - 1);
+        await host.nativeApproval.assistantMail.deliver(1, mailWithAttachments());
         host.mailOffline = false;
       }
     }
@@ -641,7 +643,11 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
             error = { code: "TOOL_DETAIL_FAILED", message: failure.message };
           }
           break;
+        case "artifact.preview":
+          result = await host.nativeApproval.controllerRequest(request);
+          break;
         case "artifact.transfer.open": {
+          if (request.params.mailAttachment) { result = await host.nativeApproval.controllerRequest(request); break; }
           assert.equal(request.params.sessionId, sessionId);
           const image = request.params.nativeImage;
           if (!image) { result = await host.nativeApproval.files(request); break; }

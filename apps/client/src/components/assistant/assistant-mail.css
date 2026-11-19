@@ -213,3 +213,16 @@
 .assistant-page-mobile .assistant-account-actions { grid-column: 1 / -1; }
 .assistant-page-mobile .assistant-account-form input { min-height: 44px; font-size: max(16px, calc(13px * var(--font-scale))); }
 .assistant-page-mobile .assistant-accounts-heading button, .assistant-page-mobile .assistant-account-actions button { min-width: 44px; }
+
+.assistant-attachments { margin: 12px 0; }
+.assistant-attachments > h4 { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: calc(12px * var(--font-scale)); }
+.assistant-attachments > ul { list-style: none; padding: 0; }
+.assistant-attachments li { border-top: 1px solid var(--line); }
+.assistant-attachment-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 8px; }
+.assistant-attachment-name { min-width: 0; text-align: start; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(13px * var(--font-scale)); }
+button.assistant-attachment-name, .assistant-attachment-download { min-height: 44px; padding: 0; border: 0; background: transparent; color: var(--accent-ink); }
+.assistant-attachment-download { display: grid; width: 44px; place-items: center; }
+.assistant-attachments button:disabled { color: var(--muted); }
+.assistant-attachments button:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: -2px; }
+.assistant-attachment-size, .assistant-attachments small { color: var(--muted); font-size: calc(11px * var(--font-scale)); font-variant-numeric: tabular-nums; }
+.assistant-attachments [role="alert"] { color: var(--danger-ink); }

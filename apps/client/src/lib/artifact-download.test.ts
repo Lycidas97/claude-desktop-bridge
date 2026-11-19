@@ -1,10 +1,11 @@
 import type { BridgeArtifactTransferInfo, BridgeRequest, BridgeResponse } from "@bridge/protocol";
 import { afterEach, expect, it, vi } from "vitest";
-import { downloadBridgeSessionFile } from "./artifact-download.js";
+import { downloadBridgeSessionFile, downloadMailAttachment } from "./artifact-download.js";
 
 const native = vi.hoisted(() => ({
   platform: "android",
   openFile: vi.fn(),
+  saveFile: vi.fn(),
   share: vi.fn(),
   writeFile: vi.fn(),
 }));
@@ -13,7 +14,7 @@ vi.mock("@capacitor/core", () => ({
     getPlatform: () => native.platform,
     isNativePlatform: () => native.platform === "android",
   },
-  registerPlugin: (name: string) => name === "BridgeFiles" ? { openFile: native.openFile } : undefined,
+  registerPlugin: (name: string) => name === "BridgeFiles" ? { openFile: native.openFile, saveFile: native.saveFile } : undefined,
 }));
 vi.mock("@capacitor/share", () => ({ Share: { share: native.share } }));
 vi.mock("@capacitor/filesystem", () => ({
@@ -92,4 +93,16 @@ it("downloads a browser file using a blob URL and preserves its extension", asyn
   expect(anchor).toMatchObject({ download: `${"x".repeat(155)}.docx`, href: "blob:report" });
   expect(anchor.click).toHaveBeenCalledOnce();
   expect(native.openFile).not.toHaveBeenCalled();
+});
+
+it("sends verified mail bytes to the Android save picker without staging or opening a file", async () => {
+  native.platform = "android";
+  const mailAttachment = { mailRefId: "mail", attachmentId: "2" };
+  const request = downloadRequest("schedule.html", "text/html");
+  await downloadMailAttachment(mailAttachment, request, vi.fn());
+  expect(request).toHaveBeenNthCalledWith(1, "artifact.transfer.open", { mailAttachment }, expect.anything());
+  expect(native.saveFile).toHaveBeenCalledExactlyOnceWith({ name: "schedule.html", chunks: ["YWJj"] });
+  expect(native.writeFile).not.toHaveBeenCalled();
+  expect(native.openFile).not.toHaveBeenCalled();
+  expect(request).toHaveBeenLastCalledWith("artifact.transfer.close", { transferId: "lease" }, expect.anything());
 });

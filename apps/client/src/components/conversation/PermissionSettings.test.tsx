@@ -144,7 +144,7 @@ describe("session effort", () => {
     const draw = () => render(() => <SessionConfigurationDialog {...props} />);
     draw(); await settle();
     const tree = draw();
-    expect(textContent(tree)).toContain("当前模型不可用：关闭、超高");
+    expect(textContent(tree)).toContain("原生会话不支持：关闭、超高");
     expect(button(tree, "关闭")).toBeUndefined();
     expect(button(tree, "超高")).toBeUndefined();
     button(tree, "中").props.onClick();

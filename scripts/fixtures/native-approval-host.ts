@@ -365,7 +365,10 @@ export async function startNativeApprovalHost(options: {
     ...(workspace ? { assistantWorkspacePath: workspace.path } : {}),
     home: commandHome, environment: { ANTHROPIC_BASE_URL: "https://fixture.invalid", ANTHROPIC_AUTH_TOKEN: "synthetic" },
     fetchImpl: async (input) => new URL(String(input)).pathname === "/v1/models"
-      ? Response.json({ data: [{ id: "synthetic-model", supported_reasoning_levels: ["none", "low", "high", "ultra"] }] })
+      ? Response.json({ data: [
+          { id: "synthetic-model", supported_reasoning_levels: ["none", "low", "high", "max"] },
+          { id: "synthetic-model-large[1m]", supported_reasoning_levels: ["low", "high", "max", "ultra"] },
+        ] })
       : new Response(null, { status: 404 }),
     scanCatalog: async () => ({ projects: [], sessions: [], observedAt: Date.now() }),
   });

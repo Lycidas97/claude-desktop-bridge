@@ -37,7 +37,7 @@ export function modelEffortOptions(model: BridgeModelInfo | undefined, fallback:
     : declared ? model.supportedEffortLevels ?? []
     : model?.supportedEffortLevels?.length ? model.supportedEffortLevels : fallback;
   const unavailable = declared?.filter(level => !levels.some(option => option === level)).map(effortLabel).join("、");
-  return { levels, unavailable: unavailable ? `当前模型不可用：${unavailable}` : undefined };
+  return { levels, unavailable: unavailable ? `原生会话不支持：${unavailable}` : undefined };
 }
 
 export const PERMISSION_MODE_OPTIONS: ReadonlyArray<{ value: BridgeSDKPermissionMode; label: string }> = [

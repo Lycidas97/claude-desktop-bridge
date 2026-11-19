@@ -115,10 +115,11 @@ it("dispatches phone transfers and uploads for the paired owner with the existin
   const uploads = {
     open: vi.fn().mockResolvedValue(upload), write: vi.fn().mockReturnValue(1), commit: vi.fn().mockResolvedValue(file),
   };
+  const handleAttachment = vi.fn().mockResolvedValue({ transfer });
   const sendToDevice = vi.fn().mockResolvedValue("response");
   const ack = vi.fn();
   const controller = createControllerFixture({
-    evidence, uploads, sendToDevice, socket: { ack },
+    evidence, uploads, sendToDevice, socket: { ack }, assistantMailCoordinator: { handleAttachment, assertSessionRequest: vi.fn() },
     allSessions: () => [{ sessionId: "session-1", cwd: "/project" }],
   });
   const uploadParams = { sessionId: "session-1", name: "note.txt", size: 1, sha256: createHash("sha256").update("a").digest("hex") };
@@ -140,6 +141,12 @@ it("dispatches phone transfers and uploads for the paired owner with the existin
     expect(controller.responseCache.has(method)).toBe(cached);
     expect(ack).toHaveBeenLastCalledWith([envelope.id]);
   }
+  const mailParams = { mailAttachment: { mailRefId: "mail", attachmentId: "1" } };
+  const mailOpen = await phone.encrypt({ kind: "request", requestId: "mail-open", idempotencyKey: "mail-open", method: "artifact.transfer.open", params: mailParams }, "mobile", "desktop");
+  await controller.receiveMessage(await desktopCrypto.decrypt(mailOpen), mailOpen);
+  expect(handleAttachment).toHaveBeenCalledExactlyOnceWith("artifact.transfer.open", mailParams, evidence, pairing.deviceId);
+  expect(sendToDevice).toHaveBeenLastCalledWith({ kind: "response", requestId: "mail-open", ok: true, result: { transfer } }, pairing.deviceId, ARTIFACT_TRANSFER_TTL_MS, true, true);
+  expect(controller.responseCache.has("mail-open")).toBe(false);
   expect(evidence.openTransfer).toHaveBeenCalledExactlyOnceWith("artifact-1", pairing.deviceId, true);
   expect(evidence.readTransfer).toHaveBeenCalledExactlyOnceWith(transfer.transferId, 0, pairing.deviceId);
   expect(evidence.closeTransfer).toHaveBeenCalledExactlyOnceWith(transfer.transferId, pairing.deviceId);

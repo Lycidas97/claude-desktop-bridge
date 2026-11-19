@@ -150,7 +150,7 @@ test("packaged QA reads mail only when declared and keeps automatic delivery clo
   const withoutMail = await runQa(nativeSnapshot());
   assert.equal(withoutMail.requests.includes("plugin.assistant-mail.list"), false);
   const snapshot = nativeSnapshot();
-  snapshot.host.capabilities.push("plugin.assistant-mail.v1", "plugin.assistant-mail.account.v1", "plugin.assistant-mail.workspace.v1");
+  snapshot.host.capabilities.push("plugin.assistant-mail.v1", "plugin.assistant-mail.account.v1", "plugin.assistant-mail.workspace.v1", "plugin.assistant-mail.attachments.v1");
   snapshot.assistantMail = { bindingState: "unbound", receiverState: "disabled", accounts: [], credentialsSupported: false, changeToken: "fixture", automaticDelivery: false };
   const result = await runQa(snapshot, { "plugin.assistant-mail.list": { ok: true, result: { mailPage: { cards: [] } } } });
   assert.ok(result.requests.includes("plugin.assistant-mail.list"));

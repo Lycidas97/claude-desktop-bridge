@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { mailBodyText } from "./mime.js";
+import { mailBodyText, parseMail } from "./mime.js";
 
 it.each([
   ["Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n5L2g5aW9", "你好"],
@@ -54,4 +54,37 @@ it("selects plain text from alternatives, excludes attachment contents and strip
   const text = await mailBodyText(Buffer.from(source));
   expect(text).toContain("grant permission");
   expect(text).not.toMatch(/OTHER_ALTERNATIVE|ATTACHMENT_SECRET|\x1b|\0/);
+});
+
+it("indexes named files by stable MIME part and excludes decorative inline images", async () => {
+  const source = Buffer.from([
+    'Content-Type: multipart/mixed; boundary="outer"', "", "--outer",
+    'Content-Type: multipart/related; boundary="inner"', "", "--inner",
+    "Content-Type: text/html", "", '<p>Body</p><img src="cid:logo">', "--inner",
+    "Content-Type: image/png", "Content-Disposition: inline; filename=logo.png", "Content-ID: <logo>", "", "decorative", "--inner--",
+    "--outer", "Content-Type: text/plain", 'Content-Disposition: inline; filename="../notes.txt"', "", "file text",
+    "--outer", "Content-Type: application/octet-stream", 'Content-Disposition: attachment; filename="notes.txt"', "Content-Transfer-Encoding: base64", "", "AAEC", "--outer--", "",
+  ].join("\r\n"));
+  const parsed = await parseMail(source);
+  expect(parsed.bodyText).not.toContain("file text");
+  expect(parsed).not.toHaveProperty("bytes");
+  expect(parsed.attachments).toEqual([
+    { attachmentId: "2", filename: "notes.txt", mimeType: "text/plain", size: 9 },
+    { attachmentId: "3", filename: "notes.txt", mimeType: "application/octet-stream", size: 3 },
+  ]);
+  expect((await parseMail(source, { attachmentId: "3", maxBytes: 3 })).bytes).toEqual(Buffer.from([0, 1, 2]));
+  expect(await parseMail(source, { attachmentId: "3", maxBytes: 2 })).toMatchObject({ tooLarge: true });
+});
+
+it("retains a named inline PDF with a Content-ID in multipart/mixed alongside an embedded logo", async () => {
+  const source = Buffer.from([
+    'Content-Type: multipart/mixed; boundary="mixed"', "", "--mixed",
+    'Content-Type: multipart/related; boundary="related"', "", "--related",
+    "Content-Type: text/html", "", '<p>Body</p><img src="cid:logo">', "--related",
+    "Content-Type: image/png", "Content-Disposition: inline; filename=logo.png", "Content-ID: <logo>", "", "logo", "--related--",
+    "--mixed", "Content-Type: application/pdf", "Content-Disposition: inline; filename=report.pdf", "Content-ID: <report>", "", "%PDF-1.4",
+    "--mixed--", "",
+  ].join("\r\n"));
+  const parsed = await parseMail(source);
+  expect(parsed.attachments).toEqual([{ attachmentId: "2", filename: "report.pdf", mimeType: "application/pdf", size: 8 }]);
 });

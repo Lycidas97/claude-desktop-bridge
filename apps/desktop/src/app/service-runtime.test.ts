@@ -208,7 +208,7 @@ it("disables real Native menu automation for a custom inspector origin", async (
 it("owns one mail service and gives the Controller that exact instance", async () => {
   const { createServiceRuntime } = await import("./service-runtime.js");
   const runtime = await createServiceRuntime({ userDataPath: "/test/bridge" });
-  expect(resources.mailOptions).toHaveBeenCalledExactlyOnceWith({ userDataPath: "/test/bridge" });
+  expect(resources.mailOptions).toHaveBeenCalledExactlyOnceWith({ userDataPath: "/test/bridge", attachmentCMapUrl: join("/test/app", "dist", "renderer", "pdfjs", "cmaps") + "/" });
   expect(resources.assistantMail.initialize).toHaveBeenCalledOnce();
   expect(resources.controllerOptions.mock.calls[0]?.at(-2)).toBe(resources.assistantMail);
   expect(resources.serveMailTools).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ userDataPath: "/test/bridge", service: resources.assistantMail }));
@@ -244,6 +244,37 @@ it("assembles the native facade", async () => {
     eventLog: resources.eventLog, conversationState: resources.state, evidence: resources.evidence,
   }));
   await runtime.close();
+});
+
+it("starts the controller while historical mail is indexing and signals when metadata is ready", async () => {
+  const { mkdtemp } = await import("node:fs/promises");
+  const { AssistantMailStore } = await import("../../../../plugins/assistant-mail/store.js");
+  const { AssistantMailService } = await vi.importActual<typeof import("../../../../plugins/assistant-mail/desktop.js")>("../../../../plugins/assistant-mail/desktop.js");
+  const root = await mkdtemp(join(process.env.BRIDGE_TEST_TEMP_ROOT!, "assistant-backfill-"));
+  let finishBackfill!: (updated: boolean) => void;
+  const backfill = vi.spyOn(AssistantMailStore.prototype, "backfillMimeProjections")
+    .mockReturnValueOnce(new Promise<boolean>(resolve => { finishBackfill = resolve; }));
+  const mail = new AssistantMailService({ userDataPath: root });
+  const changed = vi.fn();
+  mail.on("changed", changed);
+  resources.assistantMail.initialize.mockImplementationOnce(() => mail.initialize());
+  try {
+    const { createServiceRuntime } = await import("./service-runtime.js");
+    const runtime = await createServiceRuntime({ userDataPath: root });
+    try {
+      expect(backfill).toHaveBeenCalledOnce();
+      expect(resources.controller.initialize).toHaveBeenCalledOnce();
+      expect(changed).not.toHaveBeenCalledWith(true);
+      finishBackfill(true);
+      await vi.waitFor(() => expect(changed).toHaveBeenCalledWith(true));
+    } finally {
+      await runtime.close();
+    }
+  } finally {
+    finishBackfill(false);
+    await mail.close();
+    backfill.mockRestore();
+  }
 });
 
 it.each(["invalid JSON", "directory in place of the account file"])("starts the controller with %s in mail configuration", async damage => {

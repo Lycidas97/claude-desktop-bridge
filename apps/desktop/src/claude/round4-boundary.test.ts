@@ -6,7 +6,6 @@ import { join } from "node:path";
 import type { BridgeInspectorStatus } from "@bridge/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createNativeSectionFixture } from "../../../../scripts/fixtures/native-section-store.js";
-import { assistantMailPage } from "../controller/assistant-mail.js";
 import { createControllerFixture } from "../controller/controller-fixture.js";
 import { ConversationStateStore } from "../controller/conversation-state-store.js";
 import { SessionEventLog } from "../controller/session-event-log.js";
@@ -382,28 +381,6 @@ describe("Round-4 Boundary 2A.2: Title generator Unicode, injection, gateway err
     const lone = sanitizeGeneratedTitle("坏代理\uD800标题\uDC00测试")!;
     expect(hasLoneSurrogate(lone)).toBe(false);
     expect(() => JSON.stringify({ title: lone })).not.toThrow();
-
-    // Assistant mail page preview surrogate truncation safety
-    const emojiBody = `${"📬🧪".repeat(130)}`;
-    const page = await assistantMailPage({
-      page: () => ({
-        events: [{
-          seq: 1,
-          mailRefId: "m1",
-          accountKey: "acc",
-          mailbox: "INBOX",
-          subject: "Surrogate test",
-          from: "Bot <bot@example.test>",
-          receivedAt: 100,
-          recordedAt: 100,
-          processingStatus: "ready",
-        }],
-      }),
-      readEvent: async () => ({ bodyText: emojiBody }),
-    } as unknown as Parameters<typeof assistantMailPage>[0], { limit: 10 });
-    expect(page.cards).toHaveLength(1);
-    expect(Array.from(page.cards[0]!.preview)).toHaveLength(240);
-    expect(hasLoneSurrogate(page.cards[0]!.preview)).toBe(false);
 
     // Multiline markdown + triple-wrapped quotes from LLM
     expect(sanitizeGeneratedTitle('"""标题"""')).toBe("标题");

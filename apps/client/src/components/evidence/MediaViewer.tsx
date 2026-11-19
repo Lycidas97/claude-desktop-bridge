@@ -15,7 +15,7 @@ export default function MediaViewer({ target, request, onClose }: { target: Medi
   const [imageUrl, setImageUrl] = useState(target.dataUrl);
   const [text, setText] = useState<string>();
   const [showSource, setShowSource] = useState(false);
-  const markdown = target.kind === "text" && textPreviewLanguage(target.name) === "markdown";
+  const markdown = target.kind === "text" && !target.mailAttachment && textPreviewLanguage(target.name) === "markdown";
   const [pdf, setPdf] = useState<PDFDocumentProxy>();
   const [pdfProgress, setPdfProgress] = useState<{ loaded: number; total: number }>();
   const [pageNumber, setPageNumber] = useState(1);
@@ -50,8 +50,8 @@ export default function MediaViewer({ target, request, onClose }: { target: Medi
     setPdfProgress(undefined);
     async function load() {
       if (target.dataUrl) return;
-      if (target.kind === "image" && target.artifactId && !/\.svg$/iu.test(target.name)) {
-        const response = await requestRef.current("artifact.preview", { artifactId: target.artifactId }, { wait: true, timeoutMs: 60_000 });
+      if (target.kind === "image" && (target.mailAttachment || target.artifactId && !/\.svg$/iu.test(target.name))) {
+        const response = await requestRef.current("artifact.preview", target.mailAttachment ? { mailAttachment: target.mailAttachment } : { artifactId: target.artifactId }, { wait: true, timeoutMs: 60_000 });
         if (!response?.ok) throw new Error(response?.error?.message ?? "图片预览失败");
         const { preview } = response.result as { preview: BridgeArtifactPreview };
         if (!disposed) { setImageUrl(`data:${preview.mimeType};base64,${preview.data}`); setBusy(false); }
@@ -63,7 +63,7 @@ export default function MediaViewer({ target, request, onClose }: { target: Medi
       if (disposed) { await transfer.close(); transfer = undefined; return; }
       const source = transfer;
       if (target.kind === "text") {
-        const content = await readTextPreview(source);
+        const content = await readTextPreview(source, target.charset);
         if (!disposed) { setText(content); setBusy(false); }
         return;
       }
@@ -158,7 +158,7 @@ export default function MediaViewer({ target, request, onClose }: { target: Medi
           {target.kind === "text" && (markdown ? <div className="text-preview-tabs" role="tablist" aria-label="Markdown 显示方式">
             <button id="text-preview-rendered-tab" type="button" role="tab" aria-selected={!showSource} aria-controls="text-preview-content" tabIndex={showSource ? -1 : 0} onClick={() => setShowSource(false)} onKeyDown={(event) => { if (event.key === "ArrowRight" || event.key === "End") { setShowSource(true); document.getElementById("text-preview-source-tab")?.focus(); event.preventDefault(); } }}>预览</button>
             <button id="text-preview-source-tab" type="button" role="tab" aria-selected={showSource} aria-controls="text-preview-content" tabIndex={showSource ? 0 : -1} onClick={() => setShowSource(true)} onKeyDown={(event) => { if (event.key === "ArrowLeft" || event.key === "Home") { setShowSource(false); document.getElementById("text-preview-rendered-tab")?.focus(); event.preventDefault(); } }}>源码</button>
-          </div> : <span className="text-preview-format">{textPreviewLanguage(target.name) ?? "纯文本"}</span>)}
+          </div> : <span className="text-preview-format">{target.mailAttachment ? "纯文本" : textPreviewLanguage(target.name) ?? "纯文本"}</span>)}
           {target.kind === "text" && !busy && !error && text !== undefined && <MessageCopyButton text={text} label="复制文件内容" />}
           {target.kind === "pdf" && <div className="media-page-controls">
             <IconButton label="上一页" disabled={!pdf || pageNumber === 1 || busy} onClick={() => changePage(pageNumber - 1)}><ChevronLeft size={19} /></IconButton>
@@ -184,10 +184,10 @@ export default function MediaViewer({ target, request, onClose }: { target: Medi
           </div>}
           {error && <div className="media-viewer-status" role="alert"><AlertTriangle size={22} /><span>{error}</span><button className="secondary-button" onClick={() => { setPdf(undefined); setAttempt((value) => value + 1); }}>重新加载</button></div>}
           {target.kind === "text" ? (!busy && !error && text !== undefined && <div id="text-preview-content" role={markdown ? "tabpanel" : undefined} aria-labelledby={markdown ? (showSource ? "text-preview-source-tab" : "text-preview-rendered-tab") : undefined} tabIndex={0}>
-            <TextPreview text={text} name={target.name} source={showSource} />
+            {target.mailAttachment ? <pre className="text-preview-source text-preview-mail" aria-label={`${target.name} 全文`}><code>{text}</code></pre> : <TextPreview text={text} name={target.name} source={showSource} />}
           </div>) : target.kind === "pdf" ? <canvas ref={canvasRef} aria-label={`${target.name} 第 ${pageNumber} 页`} style={{ visibility: busy || error ? "hidden" : "visible" }} /> : imageUrl && <img src={imageUrl} alt={target.name} style={{ width: zoom === 1 ? "auto" : `${zoom * 100}%`, maxWidth: zoom === 1 ? "100%" : "none", maxHeight: zoom === 1 ? "100%" : "none" }} onError={() => { setError("图片无法显示，请重新加载"); setBusy(false); }} />}
         </div>
-        <footer>{target.kind === "text" ? (text === "" && !busy && !error ? "空文件 · UTF-8" : "全文预览 · UTF-8") : target.kind === "pdf" ? "按需读取页面内容" : "滚动查看图片 · 使用上方按钮缩放"}</footer>
+        <footer>{target.kind === "text" ? `${text === "" && !busy && !error ? "空文件" : "全文预览"} · ${target.charset?.toUpperCase() ?? "UTF-8"}` : target.kind === "pdf" ? "按需读取页面内容" : "滚动查看图片 · 使用上方按钮缩放"}</footer>
       </div>
     </dialog>
   );

@@ -44,6 +44,26 @@ export interface BridgeAssistantMailSnapshot {
   automaticDelivery: false;
 }
 
+export function mailAttachmentPreviewKind(mimeType: string): "image" | "pdf" | "text" | undefined {
+  if (mimeType === "image/png" || mimeType === "image/jpeg") return "image";
+  if (mimeType === "application/pdf") return "pdf";
+  if (["text/plain", "text/markdown", "text/csv", "application/json", "text/html", "application/xhtml+xml"].includes(mimeType)) return "text";
+  return undefined;
+}
+
+export interface BridgeMailAttachmentRef {
+  mailRefId: string;
+  attachmentId: string;
+}
+
+export interface BridgeMailAttachment {
+  attachmentId: string;
+  filename: string;
+  mimeType: string;
+  charset?: string;
+  size: number;
+}
+
 export interface BridgeMailCard {
   seq: number;
   mailRefId: string;
@@ -55,6 +75,8 @@ export interface BridgeMailCard {
   recordedAt: number;
   preview: string;
   previewError?: string;
+  attachments?: BridgeMailAttachment[];
+  attachmentCount?: number;
   processingStatus: "pending" | "processing" | "processed";
   analysis?: { summary?: string; suggestions?: string[]; questions?: string[] };
   /** Correlation supplied by the host, never inferred from mail or transcript text. */
@@ -75,6 +97,8 @@ export interface BridgeMailDetail {
   mailRefId: string;
   bodyText: string;
   truncated: boolean;
+  attachments?: BridgeMailAttachment[];
+  attachmentCount?: number;
 }
 
 /** Bounded, per-host encrypted client cache, independent of the ordinary message ring. */

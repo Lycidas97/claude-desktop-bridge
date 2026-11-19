@@ -7,7 +7,7 @@ export const ASSISTANT_MCP = "assistant-mail";
 export const ASSISTANT_TOKEN_ENV = "BRIDGE_ASSISTANT_SESSION_TOKEN";
 export const ASSISTANT_TOOLS = [
   ...fileTools, "Agent", "ToolSearch", "TodoWrite",
-  ...["list_events", "read_event", "update_analysis", "set_processing_status"].map(name => `mcp__${ASSISTANT_MCP}__mail_${name}`),
+  ...["list_events", "read_event", "read_attachment", "update_analysis", "set_processing_status"].map(name => `mcp__${ASSISTANT_MCP}__mail_${name}`),
 ];
 
 export function isAssistantTool(name: string): boolean {

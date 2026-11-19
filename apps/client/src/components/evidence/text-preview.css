@@ -6,6 +6,7 @@
 .media-viewer-viewport.text { background: var(--bg); }
 .text-preview-markdown { max-width: 880px; margin: 0 auto; padding: 8px; }
 .text-preview-source { width: max-content; min-width: 100%; margin: 0; color: var(--text); font-family: var(--font-mono); font-size: calc(12px * var(--font-scale)); line-height: 1.7; white-space: pre; tab-size: 4; }
+.text-preview-mail { width: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 .text-preview-source code { font: inherit; }
 .text-preview-source .hljs-comment, .text-preview-source .hljs-quote { color: var(--muted); font-style: italic; }
 .text-preview-source .hljs-keyword, .text-preview-source .hljs-selector-tag, .text-preview-source .hljs-doctag, .text-preview-source .hljs-meta { color: var(--accent-ink); }

@@ -821,16 +821,16 @@ export function conversationItems(
 export function proposalAnchors(items: ConversationItem[]) {
   const receipts = new Map(items.flatMap(item => item.proposalReceipt && item.origin === "claude-desktop"
     ? [[item.proposalReceipt.toolUseId, item.proposalReceipt] as const] : []));
-  const seen = new Set<string>();
-  return items.flatMap(item => {
+  const byProposal = new Map<string, { ref: Omit<NonNullable<BridgeHistoryItem["proposalReceipt"]>, "toolUseId">; itemId: string }>();
+  for (const item of items) {
     if (item.role !== "tool" || item.origin !== "claude-desktop" || !item.toolUseId ||
-      (item.toolName !== "mcp__assistant-mail__proposal_create" && item.toolName !== "mcp__assistant-mail__proposal_update_pending")) return [];
+      (item.toolName !== "mcp__assistant-mail__proposal_create" && item.toolName !== "mcp__assistant-mail__proposal_update_pending")) continue;
     const receipt = receipts.get(item.toolUseId);
-    if (!receipt || seen.has(receipt.proposalId)) return [];
-    seen.add(receipt.proposalId);
+    if (!receipt || (byProposal.get(receipt.proposalId)?.ref.revision ?? 0) > receipt.revision) continue;
     const { toolUseId: _tool, ...ref } = receipt;
-    return [{ ref, itemId: item.id }];
-  });
+    byProposal.set(ref.proposalId, { ref, itemId: item.id });
+  }
+  return [...byProposal.values()];
 }
 
 export function conversationTimeline(

@@ -38,7 +38,7 @@ export function useInlineProposals(sessionId: string, anchors: ReturnType<typeof
         const proposal = byId.get(ref.proposalId);
         return proposal ? [[itemId, proposal]] : [];
       })) });
-    }, () => { if (current) setLoaded(undefined); });
+    }, () => { /* Keep the last resolved cards if a refresh fails. */ });
     return () => { current = false; };
   }, [anchorKey, online, refreshKey, request, sessionId]);
   return request && anchorKey !== "[]" && loaded?.sessionId === sessionId ? loaded.cards : undefined;

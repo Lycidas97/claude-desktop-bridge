@@ -683,6 +683,7 @@ export function ConversationView({
     streamVisible: !isAssistant || (visible && !transcriptHidden),
     history,
     openedEvidenceIds,
+    inlineProposalLayout: JSON.stringify([...(inlineProposals ?? [])].map(([itemId, { revision, state }]) => [itemId, revision, state])),
     timelineStreamKeys,
     streamKeys,
     onLoadOlderHistory,

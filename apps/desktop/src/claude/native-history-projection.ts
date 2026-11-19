@@ -240,7 +240,7 @@ export function nativeItemEventDraft(
           : "tool.started"
         : "assistant.completed",
     data: {
-      text: item.text,
+      text: receipt?.displayText ?? item.text,
       ...(item.attachments ? { attachments: item.attachments } : {}),
       ...(receipt ? { commandId: receipt.commandId, requestId: receipt.requestId, messageId: receipt.messageId, delivery: receipt.state === "dispatching" ? "host-received" : receipt.state } : {}),
       ...(receipt?.queueSettled ? { queueSettled: true } : {}),

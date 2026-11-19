@@ -1,6 +1,7 @@
-import { MAIL_POLL_INTERVALS, type BridgeDirectoryListing, type BridgeHostSnapshot, type BridgeMailAccount, type BridgeMethod, type BridgeSessionInfo } from "@bridge/protocol";
+import { MAIL_POLL_INTERVALS, type BridgeActionProposal, type BridgeDirectoryListing, type BridgeHostSnapshot, type BridgeMailAccount, type BridgeMethod, type BridgeSessionInfo } from "@bridge/protocol";
 import { Check, ChevronRight, ListChecks, LoaderCircle, RefreshCw, Settings } from "lucide-react";
 import { useEffect, useId, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
 import { formatSessionModelLabel } from "../../lib/conversation-timeline.js";
 import { IconButton } from "../common/IconButton.js";
 import { SelectMenu } from "../common/SelectMenu.js";
@@ -33,6 +34,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
   const modelSettingsDescription = useId();
   const [view, setView] = useState<"conversation" | "mail" | "agenda" | "settings" | "proposals">("conversation");
   const [proposalReturn, setProposalReturn] = useState<Exclude<typeof view, "proposals">>("conversation");
+  const [selectedProposal, setSelectedProposal] = useState<BridgeActionProposal>();
   const [agendaTab, setAgendaTab] = useState<"todos" | "calendar">("todos");
   const [configuring, setConfiguring] = useState(false);
   const [selectedId, setSelectedId] = useState("");
@@ -50,7 +52,16 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
     )),
     [mail?.request],
   );
-  useEffect(() => { if (active) setView("conversation"); }, [active]);
+  function backFromProposals() {
+    if (selectedProposal) setSelectedProposal(undefined);
+    else setView(proposalReturn);
+  }
+  useEffect(() => { if (active) { setView("conversation"); setSelectedProposal(undefined); } }, [active]);
+  useEffect(() => {
+    if (active && mobile && view === "proposals" && proposals) {
+      return registerMobileBackHandler(() => { backFromProposals(); return true; }, 110);
+    }
+  }, [active, mobile, view, Boolean(proposals), selectedProposal, proposalReturn]);
   if (!active) return null;
   if (!mail && !agenda) return null;
   const binding = mail?.assistant?.binding;
@@ -67,7 +78,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
     || (view === "proposals" && !proposals) ? fallbackView : view;
   const pendingCount = proposals?.summary.pendingCount ?? 0;
   function openProposals() {
-    if (displayedView !== "proposals") setProposalReturn(displayedView);
+    if (displayedView !== "proposals") { setProposalReturn(displayedView); setSelectedProposal(undefined); }
     setView("proposals");
   }
 
@@ -171,7 +182,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
     {!snapshot && binding?.nativeSessionId && <p>绑定会话：{binding.nativeSessionId}</p>}
     {displayedView === "mail" && mail.online && mail.assistant?.history?.failed && <p role="alert">更早邮件读取失败。</p>}
   </>;
-  const stage = (openConfiguration?: () => void) => displayedView === "proposals" ? <div className="assistant-page-content"><ProposalPanel mobile={mobile} /></div> : <div className="assistant-page-content">
+  const stage = (openConfiguration?: () => void) => displayedView === "proposals" ? <div className="assistant-page-content"><ProposalPanel mobile={mobile} selected={selectedProposal} onSelect={setSelectedProposal} /></div> : <div className="assistant-page-content">
     {bindingControls}
     {displayedView === "settings" && session && (
       <button type="button" className="assistant-model-settings" aria-label="模型与思考强度" aria-describedby={modelSettingsDescription} aria-haspopup="dialog"
@@ -204,7 +215,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
     </>}
   </div>;
   return <section className={`assistant-page ${mobile ? "assistant-page-mobile" : "desktop-page"}${session ? " has-conversation" : ""}`}>
-    {mobile && (displayedView === "proposals" ? <MobilePageHeader title="待确认提案" onBack={() => setView(proposalReturn)} />
+    {mobile && (displayedView === "proposals" ? <MobilePageHeader title={selectedProposal ? "提案详情" : "待确认提案"} onBack={backFromProposals} />
       : <MobilePageHeader title="助理" {...(headerLeading ? { leading: headerLeading } : {})} actions={viewTabs} />)}
     {!mobile && <div className="assistant-desktop-header-band">
       {headerLeading && <div className="assistant-desktop-leading">{headerLeading}</div>}

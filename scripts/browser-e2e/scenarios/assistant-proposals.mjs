@@ -30,6 +30,7 @@ export async function verifyAssistantProposals(page, host, steps, directory, vie
     viewports.push({ page: name, ...surface.viewportSize() });
   };
   const agenda = host.nativeApproval.assistantMail.agenda;
+  const back = () => page.evaluate(async () => (await import("/src/lib/mobile-back-navigation.ts")).dispatchMobileBack());
   await openMobileDrawer(page);
   await page.locator(".drawer-assistant-capsule").click();
   await page.locator(".assistant-conversation textarea").fill("请在周一安排项目评审");
@@ -55,6 +56,16 @@ export async function verifyAssistantProposals(page, host, steps, directory, vie
   const bounds = await editor.boundingBox();
   assert.ok(bounds && bounds.width >= 373 && bounds.height >= 810, `Expected a full-screen mobile editor, got ${JSON.stringify(bounds)}`);
   await capture(page, "mobile-proposal-replan");
+  assert.equal(await back(), true);
+  await editor.waitFor({ state: "hidden" });
+  await detail.waitFor();
+  assert.equal(await back(), true);
+  await rows.waitFor();
+  assert.equal(await back(), true);
+  await inlineCard.waitFor();
+  await page.locator(".assistant-proposal-dock .permission-dock").click();
+  await rows.getByRole("button", { name: /项目评审/u }).click();
+  await detail.getByRole("button", { name: "调整", exact: true }).click();
   await editor.getByLabel("调期意见").fill("避开周一的例会");
   await editor.getByRole("button", { name: "让助理重排", exact: true }).click();
   await editor.waitFor({ state: "hidden" });
@@ -81,14 +92,38 @@ export async function verifyAssistantProposals(page, host, steps, directory, vie
   await assert.rejects(host.nativeApproval.controllerRequest({ ...commit, requestId: "fixture-duplicate" }, "desktop"), { code: "CONFLICT" });
   steps.push("Native tool receipts associate one draft inline; only paired confirmation of the edited revision writes the calendar once");
 
+  for (let index = 0; index < 32; index++) {
+    await host.nativeApproval.message({ type: "assistant", uuid: `proposal-scroll-${index}`, timestamp: Date.now() + index,
+      message: { content: [{ type: "text", text: `项目评审记录 ${index}` }] } });
+  }
   const desktop = await page.context().newPage();
+  desktop.setDefaultTimeout(15_000);
   const desktopRequests = [];
+  let releaseResolve;
+  host.proposalResolveGate = new Promise(resolveGate => { releaseResolve = resolveGate; });
   await openDesktopAssistant(desktop, host, baseUrl, desktopRequests);
-  await desktop.locator(`.conversation-stream [data-proposal-id="${inline.proposalId}"]`).getByText("已写入", { exact: true }).waitFor();
+  const anchor = desktop.locator('.conversation-stream > [data-stream-key="proposal-scroll-12"]');
+  await anchor.waitFor({ state: "attached" });
+  const offset = await anchor.evaluate(element => {
+    const stream = element.parentElement;
+    stream.scrollTop += element.getBoundingClientRect().top - stream.getBoundingClientRect().top - 12;
+    stream.dispatchEvent(new Event("scroll"));
+    return element.getBoundingClientRect().top - stream.getBoundingClientRect().top;
+  });
+  assert.ok(Math.abs(offset - 12) <= 1);
+  releaseResolve();
+  host.proposalResolveGate = undefined;
+  await desktop.locator(`.conversation-stream [data-stream-key="proposal:${inline.proposalId}"]`).getByText("已写入", { exact: true }).waitFor({ state: "attached" });
+  const after = await anchor.evaluate(element => element.getBoundingClientRect().top - element.parentElement.getBoundingClientRect().top);
+  assert.ok(Math.abs(after - offset) <= 4, `Late proposal shifted the visible anchor from ${offset} to ${after}`);
+  steps.push("A delayed proposal card above the current reading position preserves the visible anchor");
+  await desktop.locator(".conversation-stream").getByText("避开周一的例会", { exact: true }).waitFor();
+  assert.ok(!(await desktop.locator(".conversation-stream").innerText()).includes(inline.payloadHash));
+  assert.ok(!(await desktop.locator(".conversation-stream").innerText()).includes(inline.proposalId));
   await capture(desktop, "desktop-proposal-inline");
   await desktop.getByRole("button", { name: "待确认提案", exact: true }).click();
   await desktop.locator(".proposal-list").getByRole("button", { name: new RegExp(detachedTitle, "u") }).click();
-  await detail.getByRole("button", { name: "返回列表", exact: true }).click();
+  await page.locator(".assistant-page-mobile").getByRole("button", { name: "返回", exact: true }).click();
   await rows.getByRole("button", { name: new RegExp(detachedTitle, "u") }).click();
   await detail.getByRole("button", { name: "调整", exact: true }).click();
   const todoEditor = page.getByRole("dialog", { name: "调整待办提案" });

@@ -2,6 +2,7 @@ import type { AgendaEventInput, AgendaPage, AgendaProposalAction, AgendaTodoInpu
 import { CalendarDays, ListTodo } from "lucide-react";
 import { useEffect, useId, useState, type FormEvent } from "react";
 import { agendaInputTime, agendaInstant, agendaTimedRange } from "../../lib/assistant-agenda.js";
+import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
 import { Sheet } from "../common/Sheet.js";
 import { mailResult } from "./AssistantMailProvider.js";
 import { proposalRef, useAssistantProposals } from "./AssistantProposalProvider.js";
@@ -15,7 +16,11 @@ export const proposalKindLabel: Record<AgendaProposalAction["kind"], string> = {
 };
 export const proposalStateLabel: Record<ProposalState, string> = {
   pending: "待确认", executing: "正在写入…", applied: "已写入", dismissed: "已忽略",
-  conflict: "目标记录已更新，未写入。", failed: "写入失败。", uncertain: "结果不确定，请核对来源。不会自动重试。",
+  conflict: "记录已更新", failed: "写入失败", uncertain: "结果不确定",
+};
+
+const proposalStateDetail: Partial<Record<ProposalState, string>> = {
+  conflict: "目标记录已更新，未写入。", uncertain: "结果不确定，请核对来源。不会自动重试。",
 };
 
 export function proposalTitle(proposal: BridgeActionProposal): string {
@@ -76,11 +81,11 @@ export function ProposalCard({ proposal, mobile, review = false, replaced = fals
     finally { setBusy(false); controller!.refresh(); }
   }
 
-  return <section className={`proposal-card${review ? " is-review" : ""}`} aria-label={`提案：${proposalTitle(current)}`} data-proposal-id={current.proposalId}>
+  return <section className={`proposal-card${review ? " is-review" : ""}`} aria-label={`提案：${proposalTitle(current)}`} data-proposal-id={current.proposalId} data-stream-key={review ? undefined : `proposal:${current.proposalId}`}>
     <header className="proposal-card-header">
       <Icon size={17} aria-hidden="true" />
       <span>{proposalKindLabel[action.kind]}</span>
-      <span className="proposal-card-revision">版本 {current.revision}</span>
+      {current.revision > 1 && <span className="proposal-card-revision">版本 {current.revision}</span>}
     </header>
     <h3>{proposalTitle(current)}</h3>
     <p className="proposal-card-source">{calendar ? "日历" : "待办来源"}：{current.sourceLabel}</p>
@@ -93,7 +98,7 @@ export function ProposalCard({ proposal, mobile, review = false, replaced = fals
     {state === "pending" && calendar && current.before && "attendees" in current.before && Array.isArray(current.before.attendees) && current.before.attendees.length > 0 &&
       <p className="proposal-status">参与者：{current.before.attendees.join("、")}。日历服务可能发送变更通知。</p>}
     {replaced && <p role="status">提案已更新，请返回待确认列表核对。</p>}
-    {state !== "pending" && <p className="proposal-status" data-state={state} role="status">{proposalStateLabel[state]}</p>}
+    {state !== "pending" && <p className="proposal-status" data-state={state} role="status">{proposalStateDetail[state] ?? proposalStateLabel[state]}</p>}
     {error && <p role="alert">{error}</p>}
     {state === "pending" && !editing && <div className="proposal-actions">
       <button type="button" className="primary-button" disabled={disabled} onClick={() => void decide("assistant.proposal.commit")}>
@@ -177,6 +182,10 @@ function ProposalEditor({ proposal, mobile, stale, onClose, onRevised }: {
     } catch (reason) { setError(reason instanceof Error ? reason.message : "无法更新提案。"); controller.refresh(); }
     finally { setBusy(false); }
   }
+
+  useEffect(() => {
+    if (mobile) return registerMobileBackHandler(() => { if (!busy) onClose(); return true; }, 150);
+  }, [mobile, busy, onClose]);
 
   const footer = <div className="proposal-actions">
     <button type="button" className="secondary-button" disabled={busy} onClick={onClose}>取消</button>

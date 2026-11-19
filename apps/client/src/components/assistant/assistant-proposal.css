@@ -8,6 +8,7 @@
   color: var(--text);
   overflow-wrap: anywhere;
 }
+.conversation-stream > .proposal-card { margin: 16px 0; }
 .proposal-card.is-review { padding: 12px 0 20px; border: 0; border-top: 1px solid var(--line); border-radius: 0; background: transparent; }
 .proposal-card-header { display: flex; align-items: center; gap: 7px; color: var(--accent-ink); font-size: calc(13px * var(--font-scale)); font-weight: 600; }
 .proposal-card-revision { margin-inline-start: auto; color: var(--muted); font-weight: 400; }

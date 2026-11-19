@@ -5,11 +5,12 @@ import { mailResult } from "./AssistantMailProvider.js";
 import { proposalRef, useAssistantProposals } from "./AssistantProposalProvider.js";
 import { ProposalCard, proposalKindLabel, proposalStateLabel, proposalTitle } from "./ProposalCard.js";
 
-export function ProposalPanel({ mobile }: { mobile: boolean }) {
+export function ProposalPanel({ mobile, selected, onSelect }: {
+  mobile: boolean; selected: BridgeActionProposal | undefined; onSelect(proposal: BridgeActionProposal | undefined): void;
+}) {
   const { request, online, refreshKey } = useAssistantProposals()!;
   const [history, setHistory] = useState(false);
   const [pages, setPages] = useState<BridgeProposalPage>();
-  const [selected, setSelected] = useState<BridgeActionProposal>();
   const [live, setLive] = useState<BridgeActionProposal>();
   const [more, setMore] = useState(false);
   const [error, setError] = useState("");
@@ -44,10 +45,10 @@ export function ProposalPanel({ mobile }: { mobile: boolean }) {
   if (selected) {
     const latest = live?.proposalId === selected.proposalId ? live : undefined;
     return <section className="proposal-panel" aria-label="提案详情">
-      <button type="button" className="assistant-session-link proposal-back" onClick={() => { setLive(undefined); setSelected(undefined); }}><ArrowLeft size={16} /> 返回列表</button>
+      {!mobile && <button type="button" className="assistant-session-link proposal-back" onClick={() => onSelect(undefined)}><ArrowLeft size={16} /> 返回列表</button>}
       {error && <p role="alert">{error}</p>}
       <ProposalCard key={selected.proposalId} proposal={latest?.revision === selected.revision ? latest : selected} mobile={mobile} review
-        replaced={Boolean(latest && latest.revision > selected.revision)} onResult={proposal => { setSelected(proposal); setLive(proposal); }} />
+        replaced={Boolean(latest && latest.revision > selected.revision)} onResult={proposal => { onSelect(proposal); setLive(proposal); }} />
     </section>;
   }
 
@@ -62,7 +63,7 @@ export function ProposalPanel({ mobile }: { mobile: boolean }) {
     {pages?.proposals.length === 0 && <p role="status">{history ? "暂无处理记录" : "暂无待确认提案"}</p>}
     {pages && pages.proposals.length > 0 && <ul className="proposal-list">
       {pages.proposals.map(proposal => <li key={proposal.proposalId}>
-        <button type="button" onClick={() => setSelected(proposal)}>
+        <button type="button" onClick={() => onSelect(proposal)}>
           <span><strong>{proposalTitle(proposal)}</strong><small>{proposalKindLabel[proposal.action.kind]} · {proposal.sourceLabel}
             {history && ` · ${proposalStateLabel[proposal.state]}`}</small></span>
           <ChevronRight size={16} aria-hidden="true" />

@@ -10,7 +10,7 @@ export async function handleAssistantProposal(
   method: BridgeRequest["method"],
   params: Record<string, unknown>,
   actor: string,
-  replan: (sessionId: string, text: string) => Promise<unknown>,
+  replan: (sessionId: string, text: string, displayText: string) => Promise<unknown>,
 ) {
   function parse<T extends z.ZodType>(schema: T): z.output<T> {
     const input = schema.safeParse(params);
@@ -36,7 +36,7 @@ export async function handleAssistantProposal(
         return await replan(sessionId, [
           `请重查相关议程和空档，按以下意见调整提案。只用 proposal.update_pending 修订此版本，不要提交执行：${JSON.stringify(ref)}`,
           feedback,
-        ].join("\n\n"));
+        ].join("\n\n"), feedback);
       }
       default: throw new BridgeRequestError("UNSUPPORTED", "不支持此提案操作。");
     }

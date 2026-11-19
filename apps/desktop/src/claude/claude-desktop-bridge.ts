@@ -143,6 +143,7 @@ interface NativeInput {
   idempotencyKey: string;
   sessionId: string;
   text: string;
+  displayText?: string;
   attachments?: BridgeAttachment[];
   origin: BridgeOrigin;
   sourceDeviceId?: string;
@@ -1017,6 +1018,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
       for (const item of items) {
         const receipt = item.role === "user" ? [...this.receipts.values()].find(receipt => receipt.sessionId === sessionId && receipt.messageId === item.id) : undefined;
         if (receipt) {
+          item.text = receipt.displayText ?? item.text;
           item.delivery = receipt.state === "dispatching" ? "host-received" : receipt.state;
           item.commandId = receipt.commandId;
           item.requestId = receipt.requestId;
@@ -1294,10 +1296,11 @@ export class ClaudeDesktopBridge extends EventEmitter {
     const existing = this.options.conversationState.nativeDesktopReceipt(input.idempotencyKey);
     if (existing) return existing;
     const id = this.desktopId(input.sessionId);
-    const receipt: NativeDesktopReceipt = { idempotencyKey: input.idempotencyKey, commandId: randomUUID(), requestId: input.requestId, sessionId: input.sessionId, messageId: randomUUID(), queueMode: priority === "now" ? "steered" : "deferred", state: "dispatching" };
+    const receipt: NativeDesktopReceipt = { idempotencyKey: input.idempotencyKey, commandId: randomUUID(), requestId: input.requestId, sessionId: input.sessionId, messageId: randomUUID(),
+      ...(input.displayText !== undefined ? { displayText: input.displayText } : {}), queueMode: priority === "now" ? "steered" : "deferred", state: "dispatching" };
     this.options.conversationState.saveNativeDesktopReceipt(receipt);
     this.receipts.set(receipt.commandId, receipt);
-    await this.record({ sessionId: input.sessionId, turnId: receipt.messageId, origin: input.origin, type: "message.delivery", data: { ...receipt, delivery: "host-received", text: input.text } });
+    await this.record({ sessionId: input.sessionId, turnId: receipt.messageId, origin: input.origin, type: "message.delivery", data: { ...receipt, delivery: "host-received", text: input.displayText ?? input.text } });
     let result: Record<string, unknown>;
     try {
       result = record(await this.inspector.call("sendMessage", [id, input.text, input.attachments?.length ? input.attachments.map(image => ({ base64: image.data, mimeType: image.mimeType, filename: image.name })) : undefined,

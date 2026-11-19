@@ -10,6 +10,7 @@ export async function openDesktopAssistant(page, host, baseUrl, requests) {
   await page.exposeFunction("assistantDesktopRequest", async input => {
     const requestId = randomUUID();
     requests.push(input);
+    if (input.method === "assistant.proposal.resolve") await host.proposalResolveGate;
     const result = await host.nativeApproval.controllerRequest({ kind: "request", requestId, ...input }, "desktop");
     return { kind: "response", requestId, ok: true, result };
   });

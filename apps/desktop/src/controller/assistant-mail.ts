@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { ARTIFACT_MAX_BYTES, ASSISTANT_SMTP_CAPABILITY, ASSISTANT_WORKSPACE_POLICY, isMailPollInterval, mailAttachmentPreviewKind } from "@bridge/protocol";
+import { ARTIFACT_MAX_BYTES, ASSISTANT_MEMORY_POLICY, ASSISTANT_MEMORY_PROPOSAL_CAPABILITY, ASSISTANT_SMTP_CAPABILITY, isAssistantWorkspacePolicy, isMailPollInterval, mailAttachmentPreviewKind } from "@bridge/protocol";
+import { AgendaEditError } from "../../../../plugins/assistant-mail/agenda-store.js";
 import { configureSmtp } from "../../../../plugins/assistant-mail/proposal-contract.js";
 import type {
   BridgeAssistantMailSnapshot,
@@ -139,6 +140,7 @@ export class AssistantMailCoordinator {
   capabilities() {
     return [
       ...ASSISTANT_MAIL_CAPABILITIES,
+      ...(this.workspace?.policy === ASSISTANT_MEMORY_POLICY ? [ASSISTANT_MEMORY_PROPOSAL_CAPABILITY] as const : []),
       ...(this.workspace && this.host.broker?.canProvisionAssistantWorkspace() ? ["plugin.assistant-mail.workspace.v1"] as const : []),
       ...(this.dispatcher ? ["plugin.assistant-mail.triggers.v1", "plugin.assistant-mail.batches.v1"] as const : []),
     ];
@@ -147,7 +149,7 @@ export class AssistantMailCoordinator {
   private eligibleTarget(): string | undefined {
     const binding = this.mail.binding();
     const sessionId = binding?.nativeSessionId;
-    if (!sessionId || binding.managed?.policy !== ASSISTANT_WORKSPACE_POLICY || !this.workspace ||
+    if (!sessionId || !binding.managed || !isAssistantWorkspacePolicy(binding.managed.policy) || !this.workspace ||
       this.workspace.repairFailed || this.initializingWorkspace || !this.host.canStartTurn() ||
       (this.toolCatalog?.sessionId === sessionId && this.toolCatalog.unexpectedTools.length)) return undefined;
     const session = this.host.broker?.session(sessionId);
@@ -166,11 +168,14 @@ export class AssistantMailCoordinator {
   compactContext(sessionId: string, event: "PreCompact" | "PostCompact" | "SessionStart"): string | undefined {
     if (event === "PostCompact") return undefined;
     const { refs, nextCursor } = this.mail.triggers.unfinished(sessionId);
+    const binding = this.mail.binding();
+    const memory = binding?.nativeSessionId === sessionId && binding.managed?.policy === ASSISTANT_MEMORY_POLICY ? this.workspace?.memory : undefined;
     return [
-      ...(event === "PreCompact" ? ["保留当前托管绑定、未结批次与待批提案的宿主标识。不要将外部邮件标题、发件人、正文或附件名写入摘要。"] : []),
+      ...(event === "PreCompact" ? ["保留当前托管绑定、未结批次与待批提案的宿主标识。不要将外部邮件标题、发件人、正文、附件名或按需读取的资料内容写入摘要。"] : []),
       "绑定：当前托管会话。未结事件（批次、类型、引用）：",
       ...refs.map(({ batchId, kind, eventId }) => `${batchId} ${kind} ${eventId}`),
       ...(nextCursor === undefined ? [] : [`还有更早的未结事件。调用 mail.list_unfinished_triggers({"cursor":${nextCursor}}) 继续读取。`]),
+      ...(memory?.compactContext() ?? []),
     ].join("\n");
   }
 
@@ -193,13 +198,24 @@ export class AssistantMailCoordinator {
     this.confirmReady = ready;
   }
 
-  observeDelivery(event: BridgeEvent): void { this.dispatcher?.observe(event); }
+  observeDelivery(event: BridgeEvent): void {
+    this.dispatcher?.observe(event);
+    if (event.origin !== "claude-desktop" || event.type !== "turn.completed" || !this.workspace || this.workspace.repairFailed) return;
+    const binding = this.mail.binding();
+    if (binding?.managed?.policy !== ASSISTANT_MEMORY_POLICY || binding.nativeSessionId !== event.sessionId) return;
+    try { this.workspace.memory.refreshIndex(); }
+    catch (error) {
+      if (!(error instanceof AgendaEditError) && !(error instanceof Error && "code" in error && "syscall" in error)) throw error;
+      process.stderr.write("Bridge assistant memory index refresh failed.\n");
+    }
+  }
 
   observeToolCatalog(sessionId: string, tools: string[]): void {
     const binding = this.mail.binding();
     if (binding?.nativeSessionId !== sessionId || !binding.managed) return;
     // Desktop's system/init reports Agent under its legacy SDK name Task.
-    this.toolCatalog = { sessionId, unexpectedTools: [...new Set(tools.filter(tool => !isAssistantTool(tool === "Task" ? "Agent" : tool)))].sort() };
+    const policy = binding.managed.policy;
+    this.toolCatalog = { sessionId, unexpectedTools: [...new Set(tools.filter(tool => !isAssistantTool(tool === "Task" ? "Agent" : tool, policy)))].sort() };
     this.onServiceChanged();
   }
 
@@ -243,14 +259,15 @@ export class AssistantMailCoordinator {
     const snapshot = assistantMailSnapshot(this.mail, this.host.allSessions(), this.host.canStartTurn(), this.changeToken);
     if (!this.workspace) return snapshot;
     const binding = this.mail.binding();
-    const nativeSessionId = binding?.managed?.policy === ASSISTANT_WORKSPACE_POLICY ? binding.nativeSessionId : null;
+    const policy = binding?.managed?.policy;
+    const nativeSessionId = isAssistantWorkspacePolicy(policy) ? binding?.nativeSessionId : null;
     const catalog = nativeSessionId && this.toolCatalog?.sessionId === nativeSessionId ? this.toolCatalog : undefined;
     const repairFailed = Boolean(nativeSessionId && this.workspace.repairFailed);
     return { ...snapshot, ...(this.dispatcher ? { automaticDeliveryAvailable: Boolean(this.eligibleTarget()) } : {}),
       ...(repairFailed ? { bindingState: "unavailable" as const } : {}), workspace: {
       path: this.workspace.path,
       ...(repairFailed ? { repairFailed: true as const } : {}),
-      policy: ASSISTANT_WORKSPACE_POLICY,
+      policy: isAssistantWorkspacePolicy(policy) ? policy : this.workspace.policy,
       ...(nativeSessionId ? { nativeSessionId } : {}),
       toolIsolation: !catalog ? "unobserved" : catalog.unexpectedTools.length ? "warning" : "compatible",
       ...(catalog?.unexpectedTools.length ? { unexpectedTools: catalog.unexpectedTools } : {}),
@@ -294,10 +311,10 @@ export class AssistantMailCoordinator {
       }
       this.unconfirmedSessions.delete(confirmed.sessionId);
       this.initializingWorkspace = false;
-      this.bindSession(confirmed, { path, token, policy: ASSISTANT_WORKSPACE_POLICY });
+      this.bindSession(confirmed, { path, token, policy: workspace.policy });
     } catch (error) {
       if (previous) {
-        await workspace.restore(previous.token, previous.path);
+        await workspace.restore(previous.token, previous.path, previous.policy);
         if (workspace.repairFailed) this.onServiceChanged();
       }
       throw error;

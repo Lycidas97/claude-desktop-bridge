@@ -227,6 +227,7 @@ export type BridgeCapability =
   | "plugin.magpie-quota.v1"
   | "plugin.assistant-agenda.v1"
   | "assistant.proposal.v1"
+  | "assistant.proposal.memory.v1"
   | "plugin.assistant-mail.v1"
   | "plugin.assistant-mail.manual-reference.v1"
   | "plugin.assistant-mail.workspace.v1"

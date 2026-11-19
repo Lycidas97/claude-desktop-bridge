@@ -80,7 +80,8 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
   const fallbackView = session ? "conversation" : mail ? "mail" : "agenda";
   const displayedView = (view === "conversation" && !session) || (view === "mail" && !mail) || (view === "agenda" && !agenda)
     || (view === "proposals" && !proposals) ? fallbackView : view;
-  const pendingCount = (proposals?.summary.pendingCount ?? 0) + (proposals?.summary.pendingMailCount ?? 0);
+  const pendingCount = (proposals?.summary.pendingCount ?? 0) + (proposals?.summary.pendingMailCount ?? 0) +
+    (proposals?.supportsMemory ? proposals.summary.pendingMemoryCount ?? 0 : 0);
   function openProposals() {
     if (displayedView !== "proposals") { setProposalReturn(displayedView); setSelectedProposal(undefined); }
     setView("proposals");

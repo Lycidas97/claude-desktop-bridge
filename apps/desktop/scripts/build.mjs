@@ -76,7 +76,7 @@ await Promise.all([
 await Promise.all([
   buildMailMcp(resolve(dist, "assistant-mcp.cjs")),
   ...[
-    ["assistant-fs-guard", 'import { runAssistantFsGuard } from "./fs-guard.ts"; void runAssistantFsGuard(process.argv[2]);'],
+    ["assistant-fs-guard", 'import { runAssistantFsGuard } from "./fs-guard.ts"; void runAssistantFsGuard(process.argv[2], process.argv[3]);'],
     ["assistant-compact-hook", 'import { runAssistantCompactHook } from "./compact-hook.ts"; void runAssistantCompactHook(process.argv[2]).catch(() => { process.stderr.write("Bridge assistant compaction hook unavailable.\\n"); process.exitCode = 1; });'],
   ].map(([entry, contents]) => build({
     stdin: { contents, resolveDir: resolve(root, "../../plugins/assistant-mail") },

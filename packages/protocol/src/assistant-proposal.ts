@@ -1,6 +1,7 @@
 import type { AgendaEventInput, AgendaTodoInput } from "./assistant-agenda.js";
 
 export const ASSISTANT_PROPOSAL_CAPABILITY = "assistant.proposal.v1";
+export const ASSISTANT_MEMORY_PROPOSAL_CAPABILITY = "assistant.proposal.memory.v1";
 
 export type AgendaProposalAction =
   | { kind: "todo.create"; sourceId: string; value: AgendaTodoInput }
@@ -9,6 +10,15 @@ export type AgendaProposalAction =
   | { kind: "calendar.create"; sourceId: string; value: AgendaEventInput }
   | { kind: "calendar.reschedule"; recordId: string; value: AgendaEventInput }
   | { kind: "calendar.delete"; recordId: string };
+
+export type MemoryRuleProposalAction = {
+  kind: "memory.rule_upsert";
+  category: string;
+  ruleId: string;
+  operation: "add" | "update" | "delete";
+  text?: string | undefined;
+  reason: string;
+};
 
 type MailDraftFields = { accountKey: string; cc?: string[] | undefined; replyTo?: string | undefined; bodyText: string };
 export type MailProposalDraft = MailDraftFields & (
@@ -30,7 +40,7 @@ export type MailProposalAction = {
       foreignReplyTo: boolean; inReplyTo?: string; references?: string[] }
 );
 
-export type ProposalDraftAction = AgendaProposalAction | MailProposalDraft;
+export type ProposalDraftAction = AgendaProposalAction | MailProposalDraft | MemoryRuleProposalAction;
 
 export interface ProposalRevisionRef {
   proposalId: string;
@@ -42,10 +52,11 @@ export type ProposalState = "pending" | "executing" | "applied" | "dismissed" | 
 
 export interface BridgeActionProposal extends ProposalRevisionRef {
   sessionId: string;
-  action: AgendaProposalAction | MailProposalAction;
+  action: AgendaProposalAction | MailProposalAction | MemoryRuleProposalAction;
   sourceId: string;
   sourceLabel: string;
   before?: AgendaTodoInput | AgendaEventInput;
+  profile?: { before: string | null; baseProfileSha256: string };
   state: ProposalState;
   rejectedRecipients?: string[];
 }
@@ -54,6 +65,7 @@ export interface BridgeProposalSnapshot {
   changeToken: string;
   pendingCount: number;
   pendingMailCount?: number;
+  pendingMemoryCount?: number;
   sources: { id: string; label: string; kinds: ("todo" | "calendar")[] }[];
 }
 

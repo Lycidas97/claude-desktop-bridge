@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import { ASSISTANT_WORKSPACE_POLICY, type AssistantTriggerKind } from "../../packages/protocol/src/assistant-mail.js";
+import { ASSISTANT_MEMORY_POLICY, ASSISTANT_WORKSPACE_POLICY, type AssistantTriggerKind } from "../../packages/protocol/src/assistant-mail.js";
 
 export interface TriggerEventRef {
   kind: AssistantTriggerKind;
@@ -43,9 +43,9 @@ export class AssistantTriggerStore {
   record(event: TriggerEventRef, sourceKey: string, recordedAt: number): void {
     const binding = this.db.prepare(`
       SELECT native_session_id AS sessionId FROM assistant_binding JOIN assistant_managed_binding USING (singleton)
-      WHERE native_session_id IS NOT NULL AND json_extract(managed_json, '$.policy') = ?
+      WHERE native_session_id IS NOT NULL AND json_extract(managed_json, '$.policy') IN (?, ?)
         AND json_extract(managed_json, '$.automaticDelivery') = 1
-    `).get(ASSISTANT_WORKSPACE_POLICY) as { sessionId: string } | undefined;
+    `).get(ASSISTANT_WORKSPACE_POLICY, ASSISTANT_MEMORY_POLICY) as { sessionId: string } | undefined;
     if (!binding || this.db.prepare("SELECT 1 FROM trigger_deliveries WHERE kind = ? AND source_key = ?").get(event.kind, sourceKey)) return;
     const open = this.db.prepare(`
       SELECT batch_id AS batchId FROM trigger_batches WHERE native_session_id = ? AND command_id IS NULL

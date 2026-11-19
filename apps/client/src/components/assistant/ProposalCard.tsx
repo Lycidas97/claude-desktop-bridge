@@ -1,5 +1,5 @@
 import type { AgendaEventInput, AgendaPage, AgendaProposalAction, AgendaTodoInput, BridgeActionProposal, BridgeAgendaEvent, ProposalState } from "@bridge/protocol";
-import { CalendarDays, ListTodo, Mail } from "lucide-react";
+import { CalendarDays, FilePenLine, ListTodo, Mail } from "lucide-react";
 import { useEffect, useId, useState, type FormEvent } from "react";
 import { agendaInputTime, agendaInstant, agendaTimedRange } from "../../lib/assistant-agenda.js";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
@@ -15,6 +15,7 @@ export const proposalKindLabel: Record<BridgeActionProposal["action"]["kind"], s
   "todo.create": "新建待办", "todo.update": "修改待办", "todo.complete": "完成待办",
   "calendar.create": "新建日程", "calendar.reschedule": "调整日程", "calendar.delete": "删除日程",
   "mail.reply": "回复邮件", "mail.send": "外发邮件",
+  "memory.rule_upsert": "助理规则",
 };
 const proposalStateLabel: Record<ProposalState, string> = {
   pending: "待确认", executing: "正在写入…", applied: "已写入", dismissed: "已忽略",
@@ -36,8 +37,10 @@ export function proposalStatus(proposal: BridgeActionProposal): string {
 }
 
 export function proposalTitle(proposal: BridgeActionProposal): string {
-  if ("accountKey" in proposal.action) return proposal.action.subject || "（无主题）";
-  return "value" in proposal.action ? proposal.action.value.title : proposal.before?.title ?? proposalKindLabel[proposal.action.kind];
+  const { action } = proposal;
+  if (action.kind === "memory.rule_upsert") return `${action.category} / ${action.ruleId}`;
+  if ("accountKey" in action) return action.subject || "（无主题）";
+  return "value" in action ? action.value.title : proposal.before?.title ?? proposalKindLabel[action.kind];
 }
 
 function shiftDate(value: string, days: number): string {
@@ -79,8 +82,9 @@ export function ProposalCard({ proposal, mobile, review = false, replaced = fals
     (outcome.revision === proposal.revision && proposal.state === "pending")) ? outcome : proposal;
   const { action, state } = current;
   const calendar = action.kind.startsWith("calendar.");
+  const memory = action.kind === "memory.rule_upsert";
   const mail = "accountKey" in action;
-  const Icon = mail ? Mail : calendar ? CalendarDays : ListTodo;
+  const Icon = mail ? Mail : memory ? FilePenLine : calendar ? CalendarDays : ListTodo;
   const disabled = !controller?.online || busy || replaced;
   const desired = "value" in action ? action.value : action.kind === "todo.complete" && current.before && "status" in current.before
     ? { ...current.before, status: "completed" as const } : current.before;
@@ -89,7 +93,8 @@ export function ProposalCard({ proposal, mobile, review = false, replaced = fals
     setBusy(true);
     setError("");
     try {
-      const { proposal: result } = mailResult<{ proposal: BridgeActionProposal }>(await controller!.request(method, { ...proposalRef(current) }));
+      const review = memory ? method === "assistant.proposal.commit" ? { confirmMemory: true } : { includeMemory: true } : {};
+      const { proposal: result } = mailResult<{ proposal: BridgeActionProposal }>(await controller!.request(method, { ...proposalRef(current), ...review }));
       setOutcome(result);
       onResult?.(result);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "无法处理提案。"); }
@@ -103,13 +108,19 @@ export function ProposalCard({ proposal, mobile, review = false, replaced = fals
       {current.revision > 1 && <span className="proposal-card-revision">版本 {current.revision}</span>}
     </header>
     <h3>{proposalTitle(current)}</h3>
-    <p className="proposal-card-source">{mail ? "发件账号" : calendar ? "日历" : "待办来源"}：{current.sourceLabel}</p>
-    {current.before && action.kind !== "calendar.delete" && <details className="proposal-before">
-      <summary>原记录</summary>
-      {current.before.title !== proposalTitle(current) && <strong>{current.before.title}</strong>}
-      <AgendaFields value={current.before} />
-    </details>}
-    {desired && <AgendaFields value={desired} />}
+    {memory ? <dl className="proposal-fields">
+      <dt>变更前</dt><dd>{current.profile?.before ?? "无"}</dd>
+      <dt>变更后</dt><dd>{action.text ?? "删除此规则"}</dd>
+      <dt>理由</dt><dd>{action.reason}</dd>
+    </dl> : <>
+      <p className="proposal-card-source">{mail ? "发件账号" : calendar ? "日历" : "待办来源"}：{current.sourceLabel}</p>
+      {current.before && action.kind !== "calendar.delete" && <details className="proposal-before">
+        <summary>原记录</summary>
+        {current.before.title !== proposalTitle(current) && <strong>{current.before.title}</strong>}
+        <AgendaFields value={current.before} />
+      </details>}
+      {desired && <AgendaFields value={desired} />}
+    </>}
     {state === "pending" && calendar && current.before && "attendees" in current.before && Array.isArray(current.before.attendees) && current.before.attendees.length > 0 &&
       <p className="proposal-status">参与者：{current.before.attendees.join("、")}。日历服务可能发送变更通知。</p>}
     {replaced && <p role="status">提案已更新，请返回待确认列表核对。</p>}
@@ -123,7 +134,7 @@ export function ProposalCard({ proposal, mobile, review = false, replaced = fals
         <button type="button" className="primary-button" disabled={disabled} onClick={() => setMailSheet({ proposal: current, mode: "send" })}>核对并发送…</button>
         <button type="button" className="secondary-button" disabled={disabled} onClick={() => setMailSheet({ proposal: current, mode: "edit" })}>编辑</button>
       </> : <button type="button" className="primary-button" disabled={disabled} onClick={() => void decide("assistant.proposal.commit")}>
-        {busy ? "处理中…" : action.kind === "calendar.delete" ? "确认删除日程" : "确认写入"}
+        {busy ? "处理中…" : action.kind === "calendar.delete" ? "确认删除日程" : memory ? (action.operation === "delete" ? "确认删除规则" : "确认保存规则") : "确认写入"}
       </button>}
       {"value" in action && <button type="button" className="secondary-button" disabled={disabled} onClick={() => setEditing(current)}>调整</button>}
       <button type="button" className="assistant-session-link" disabled={disabled} onClick={() => void decide("assistant.proposal.dismiss")}>忽略</button>

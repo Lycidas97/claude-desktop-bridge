@@ -10,14 +10,22 @@ import { MAIL_SOURCE, MailToolRequest } from "./tool-contract.js";
 type MailTools = Pick<AssistantMailService, "page" | "readEvent" | "updateAnalysis" | "setProcessingStatus">;
 
 /** The only listener given to mail tools; no management controller or broker is reachable here. */
-export async function serveAssistantMailTools(options: { userDataPath: string; service: MailTools }) {
+export async function serveAssistantMailTools(options: {
+  userDataPath: string;
+  service: MailTools;
+  authorizeManagedToken?: (token: string) => string | undefined;
+  onManagedCall?: (sessionId: string, tool: string) => void;
+}) {
   const token = randomBytes(32).toString("hex");
   const reply = (response: ServerResponse, status: number, body: unknown) => {
     response.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
     response.end(JSON.stringify(body));
   };
   const server = createServer((request, response) => {
-    if (request.headers.origin !== undefined || request.headers.authorization !== `Bearer ${token}`) {
+    const bearer = request.headers.authorization?.match(/^Bearer (\S+)$/)?.[1];
+    const manual = bearer === token && request.headers["x-bridge-assistant-managed"] === undefined;
+    if (request.headers.origin !== undefined || !bearer ||
+      (!manual && (bearer === token || !options.authorizeManagedToken?.(bearer)))) {
       reply(response, 403, { error: "MAIL_FORBIDDEN" });
       return;
     }
@@ -34,7 +42,11 @@ export async function serveAssistantMailTools(options: { userDataPath: string; s
         if (size > 3 * 1024 * 1024) { reply(response, 413, { error: "MAIL_REQUEST_TOO_LARGE" }); return; }
         chunks.push(Buffer.from(chunk));
       }
+      // Binding may have changed while the request body was arriving.
+      const sessionId = manual ? undefined : options.authorizeManagedToken?.(bearer);
+      if (!manual && !sessionId) { reply(response, 403, { error: "MAIL_FORBIDDEN" }); return; }
       const input = MailToolRequest.parse(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+      if (sessionId) options.onManagedCall?.(sessionId, input.name);
       let result: unknown;
       switch (input.name) {
         case "mail.list_events": result = options.service.page(input.arguments); break;

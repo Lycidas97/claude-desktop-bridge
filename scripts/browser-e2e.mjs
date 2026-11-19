@@ -173,7 +173,10 @@ async function runScenario(theme, scenario, mockHostRuntime) {
     await writeFile(resolve(directory, "browser-errors.json"), JSON.stringify({ errors, console: browserLog }, null, 2));
     // No pairing secrets, tokens, or encrypted envelopes are written to reports.
     await writeFile(resolve(directory, "host-rpc.json"), JSON.stringify({
-      requests: host?.requests.map(({ method, requestId, idempotencyKey, params }) => ({ method, requestId, idempotencyKey, params })),
+      requests: host?.requests.map(({ method, requestId, idempotencyKey, params }) => ({
+        method, requestId, idempotencyKey,
+        params: params?.credential === undefined ? params : { ...params, credential: "[redacted]" },
+      })),
       resumeBatches: host?.resumeBatches,
       nativeTrace: host?.nativeTrace,
       ...(host?.nativeQueue ? { nativeCalls: host.nativeApproval.calls, receipts: host.nativeApproval.receipts(), queueEvents: host.events } : {}),

@@ -1612,38 +1612,41 @@ describe("unified desktop and assistant conversation composition", () => {
     expect(composerInput().props.value).toBe("从会话页输入的草稿");
     expect(elements(fullTree).filter((element) => element.type === ConversationMessageItem).map((element) => element.props.item.id)).toEqual(["msg-shared-1"]);
 
-    // Survives 助理 subview switches: 对话 -> 邮件 -> 助理设置 -> 对话
+    // Survives 助理 subview switches: 对话 -> 收件 -> 助理设置 -> 对话
     const assistantTabs = () => elements(fullTree).find((element) => element.props.className === "assistant-view-tabs")!;
-    elements(assistantTabs()).find((element) => element.type === "button" && element.props.children === "邮件")!.props.onClick();
+    elements(assistantTabs()).find((element) => element.type === "button" && element.props.children === "收件")!.props.onClick();
     fullTree = fullDashboard.draw();
-    expect(elements(fullTree).some((element) => element.type === ConversationView)).toBe(false);
-    apiRequest.mockClear();
-    pushEvent({
-      eventId: "shared-compact", seq: 1, timestamp: 11, sessionId: "A", origin: "claude-host", type: "session.compacted", data: {},
-    });
+    expect(elements(fullTree).filter((element) => element.type === ConversationView)).toHaveLength(1);
+    expect(elements(fullTree).find((element) => element.type === ConversationView)?.props.alternateStage).toBeDefined();
+    expect(composerInput().props.value).toBe("从会话页输入的草稿");
     const sharedEvidence = { id: "shared-bundle", sessionId: "A", startedAt: 12, summary: "Shared evidence", tools: [], artifacts: [] };
-    pushEvent({
-      eventId: "shared-evidence", seq: 2, timestamp: 12, sessionId: "A", origin: "claude-host", type: "evidence.ready",
-      data: { evidence: sharedEvidence },
-    });
-    fullTree = fullDashboard.draw();
-    expect(apiRequest.mock.calls.some(([request]) => request.method === "session.open")).toBe(false);
-
-    elements(assistantTabs()).find((element) => element.type === IconButton && element.props.label === "助理设置")!.props.onClick();
-    fullTree = fullDashboard.draw();
+    apiRequest.mockClear();
     apiRequest.mockImplementation(async ({ method, params }) => ({
       kind: "response", requestId: "test", ok: true,
       result: method === "session.open" ? { history: { items: history, hasMore: false } }
         : method === "evidence.list" ? { evidence: { items: params.sessionId === "A" ? [sharedEvidence] : [], hasMore: false } } : {},
     }));
+    pushEvent({
+      eventId: "shared-compact", seq: 1, timestamp: 11, sessionId: "A", origin: "claude-host", type: "session.compacted", data: {},
+    });
+    pushEvent({
+      eventId: "shared-evidence", seq: 2, timestamp: 12, sessionId: "A", origin: "claude-host", type: "evidence.ready",
+      data: { evidence: sharedEvidence },
+    });
+    fullTree = fullDashboard.draw();
+    expect(apiRequest.mock.calls.filter(([request]) => request.method === "session.open")).toHaveLength(1);
+
+    elements(assistantTabs()).find((element) => element.type === IconButton && element.props.label === "助理设置")!.props.onClick();
+    fullTree = fullDashboard.draw();
+    expect(elements(fullTree).find((element) => element.type === ConversationView)?.props.hideComposer).toBe(true);
     elements(assistantTabs()).find((element) => element.type === "button" && element.props.children === "对话")!.props.onClick();
     fullTree = fullDashboard.draw();
     const conversationEvidence = () => elements(fullTree).find((element) => element.type === ConversationView)?.props.evidence;
-    expect(conversationEvidence()).toMatchObject({ status: "loading", items: [{ id: "shared-bundle" }] });
     await settle();
     fullTree = fullDashboard.draw();
     expect(conversationEvidence()).toMatchObject({ status: "ready", items: [{ id: "shared-bundle" }] });
     expect(composerInput().props.value).toBe("从会话页输入的草稿");
+    expect(apiRequest.mock.calls.filter(([request]) => request.method === "session.open")).toHaveLength(1);
 
     composerInput().props.onChange("助理页修改后的草稿");
     let finishDownload!: () => void;

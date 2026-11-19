@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { sessionId } from "../config.mjs";
 import { eventually, openMobileDrawer, openMobileSession, selectCustomOption } from "../helpers.mjs";
@@ -33,7 +34,7 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await page.getByRole("button", { name: "更早邮件", exact: true }).click();
   await eventually(() => cards().count(), 60, "Older mail pages remain visible");
   const oldest = host.nativeApproval.assistantMail.service.page({ cursor: "2" }).events[0];
-  const original = page.locator(`[data-mail-id="${oldest.mailRefId}"]`).first();
+  const original = page.locator(`.assistant-mail-list [data-mail-id="${oldest.mailRefId}"]`);
   await original.getByText("原文", { exact: true }).click();
   await original.getByRole("link", { name: /actual\.example\.test.*\/path/u }).waitFor();
   await original.getByRole("link", { name: /actual\.example\.test.*\/unsubscribe/u }).waitFor();
@@ -96,17 +97,40 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   assert.equal(await page.getByText("这是一个空会话", { exact: true }).count(), 0);
   assert.equal(await page.locator('.conversation-stream .assistant-mail-preview').first().evaluate(element => getComputedStyle(element).webkitLineClamp), "3");
   assert.equal(await page.getByRole("button", { name: "返回", exact: true }).filter({ visible: true }).count(), 1, "Embedded native view keeps one root back navigation control");
-  assert.ok(await page.locator(".assistant-conversation .m-header").evaluate(header => (
-    header.querySelector(".m-header-copy").getBoundingClientRect().left - header.getBoundingClientRect().left
-      >= parseFloat(getComputedStyle(header).getPropertyValue("--m-gutter"))
-  )), "Embedded header without a navigation button retains the mobile gutter");
+  assert.equal(await page.locator(".assistant-page .m-header").count(), 1, "Mobile assistant has one header");
+  assert.equal(await page.locator(".assistant-page").getByRole("button", { name: /^成果/u }).count(), 0, "Assistant conversation has no evidence view toggle");
   await capture("mobile-mail-timeline");
   assert.equal(host.requests.some(request => request.method === "turn.start"), false);
   await page.locator(".assistant-conversation textarea").fill("手机跨页共享草稿");
-  await page.locator(".assistant-view-tabs").getByRole("button", { name: "邮件", exact: true }).click();
-  await page.locator(".assistant-view-tabs").getByRole("button", { name: "助理设置", exact: true }).click();
-  await page.locator(".assistant-view-tabs").getByRole("button", { name: "对话", exact: true }).click();
-  assert.equal(await page.locator(".assistant-conversation textarea").inputValue(), "手机跨页共享草稿", "Mobile assistant draft survives 对话/邮件/设置 subview switches");
+  const uploadName = "assistant-upload.txt";
+  const uploadBytes = Buffer.from("Assistant upload survives switching views.\n");
+  const commitAck = Promise.withResolvers();
+  host.uploadCommitGate = commitAck.promise;
+  const assistantFiles = page.locator(".assistant-conversation").getByRole("list", { name: "待发送文件" });
+  try {
+    await page.locator(".assistant-conversation").getByLabel("选择要上传的文件", { exact: true }).setInputFiles({
+      name: uploadName, mimeType: "text/plain", buffer: uploadBytes,
+    });
+    await eventually(() => host.requests.filter(request => request.method === "file.upload.commit").length, 1, "Upload reached the held commit acknowledgement");
+    await assistantFiles.getByRole("status").getByText(/正在保存/u).waitFor();
+    await page.locator(".assistant-view-tabs").getByRole("button", { name: "收件", exact: true }).click();
+    assert.equal(await page.locator(".assistant-page textarea:visible").count(), 1, "The inbox shares the same composer");
+    await page.locator(".assistant-view-tabs").getByRole("button", { name: "助理设置", exact: true }).click();
+    assert.equal(await page.locator(".assistant-page textarea:visible").count(), 0, "Settings hides the composer");
+    await page.locator(".assistant-view-tabs").getByRole("button", { name: "对话", exact: true }).click();
+    await assistantFiles.getByRole("status").getByText(/正在保存/u).waitFor();
+    assert.equal(await page.locator(".assistant-page textarea:visible").count(), 1);
+    assert.equal(await page.locator(".assistant-conversation textarea").inputValue(), "手机跨页共享草稿", "Mobile assistant draft survives 对话/收件/设置 subview switches");
+  } finally {
+    commitAck.resolve();
+  }
+  await assistantFiles.getByRole("status").getByText(/已上传/u).waitFor();
+  const { uploadId } = host.requests.find(request => request.method === "file.upload.commit").params;
+  assert.deepEqual(await readFile(resolve(host.nativeApproval.cwd, ".bridge-uploads", uploadId, uploadName)), uploadBytes);
+  assert.deepEqual(host.requests.filter(request => request.method.startsWith("file.upload.")).map(request => request.method),
+    ["file.upload.open", "file.upload.write", "file.upload.commit", "file.upload.cancel"]);
+  await assistantFiles.getByRole("button", { name: `移除 ${uploadName}`, exact: true }).click();
+  steps.push("one real workspace upload stays pending across 收件 and settings, then appears once in the restored composer and is saved byte-for-byte");
   await openMobileSession(page, sessionId);
   const mobileSessionComposer = page.locator(".mobile-tab-page:not([hidden]) textarea");
   await mobileSessionComposer.waitFor();
@@ -116,7 +140,7 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   assert.equal(await page.locator(".assistant-conversation textarea").inputValue(), "手机会话同步草稿", "Draft edited in mobile 会话 reflects back in 助理");
   await page.locator(".assistant-conversation textarea").fill("");
 
-  await page.getByRole("button", { name: "邮件", exact: true }).click();
+  await page.getByRole("button", { name: "收件", exact: true }).click();
   await original.getByRole("button", { name: "讨论此邮件", exact: true }).click();
   const reference = page.getByRole("complementary", { name: "当前邮件引用" });
   await reference.getByText(oldest.mailRefId, { exact: true }).waitFor();
@@ -137,7 +161,7 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await capture("mobile-mail-reference");
 
   const otherMail = host.nativeApproval.assistantMail.service.page({ limit: 2 }).events[1];
-  await page.getByRole("button", { name: "邮件", exact: true }).click();
+  await page.getByRole("button", { name: "收件", exact: true }).click();
   await page.locator(`.assistant-mail-list [data-mail-id="${otherMail.mailRefId}"]`).getByRole("button", { name: "讨论此邮件", exact: true }).click();
   await reference.getByText(otherMail.mailRefId, { exact: true }).waitFor();
   await composer.fill("再看这一封");
@@ -156,7 +180,7 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   assert.equal(host.nativeApproval.assistantMail.service.page({ cursor: "2" }).events[0].processingStatus, "processed");
   steps.push("assistant opens its bound native conversation; visible selection, switching and clearing control the canonical mail ID in actual native sendMessage; commands cannot bypass the reference and no mail body is inserted");
 
-  await page.getByRole("button", { name: "邮件", exact: true }).click();
+  await page.getByRole("button", { name: "收件", exact: true }).click();
   await page.locator(`.assistant-mail-list [data-mail-id="${otherMail.mailRefId}"]`).getByRole("button", { name: "讨论此邮件", exact: true }).click();
   const manualCapabilities = [...host.snapshot.host.capabilities];
   host.snapshot.host.capabilities = manualCapabilities.filter(value => value !== "plugin.assistant-mail.manual-reference.v1");
@@ -180,8 +204,11 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   assert.equal(await reference.count(), 0);
   steps.push("offline reload without any cached snapshot restores mail; paused binding retains records and explicit rebind opens the same native conversation without resurrecting an old reference");
 
-  await page.getByRole("button", { name: "邮件", exact: true }).click();
+  await page.getByRole("button", { name: "收件", exact: true }).click();
   await page.locator(`.assistant-mail-list [data-mail-id="${otherMail.mailRefId}"]`).getByRole("button", { name: "讨论此邮件", exact: true }).click();
+  // Cover ordinary creation through the older host's fallback before exercising managed provisioning.
+  host.snapshot.host.capabilities = manualCapabilities.filter(value => value !== "plugin.assistant-mail.workspace.v1");
+  await host.send({ kind: "snapshot", snapshot: host.snapshot });
   await page.getByRole("button", { name: "助理设置", exact: true }).click();
   await page.getByRole("button", { name: "更换会话", exact: true }).click();
   await page.getByRole("button", { name: "新建会话", exact: true }).click();
@@ -196,8 +223,9 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await createDialog.getByRole("button", { name: "创建会话", exact: true }).click();
   await createDialog.waitFor({ state: "hidden" });
   assert.ok(host.requests.filter(request => request.method === "directory.list").length < 12, "Directory browsing stays bounded while bridge request state rerenders the assistant page");
-  await page.locator(".assistant-conversation").getByRole("heading", { name: "新建助理会话", exact: true }).waitFor();
+  await page.locator(".assistant-view-tabs").getByRole("button", { name: "对话", exact: true, pressed: true }).waitFor();
   const createdSessionId = host.snapshot.assistantMail.binding.nativeSessionId;
+  assert.equal(host.snapshot.sessions.find(session => session.sessionId === createdSessionId)?.title, "新建助理会话");
   assert.notEqual(createdSessionId, sessionId);
   assert.equal(host.snapshot.assistantMail.binding.assistantId, assistantId);
   assert.ok(host.snapshot.assistantMail.binding.previousSessionIds.includes(sessionId));
@@ -235,12 +263,81 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await capture("mobile-mail-bound");
   steps.push("new native session creation binds explicitly and clears selection; rebinding persists encrypted metadata despite list failure; snapshot eviction/offline restart restores the bound workspace without fabricating a sendable native session");
 
-  await page.exposeFunction("assistantDesktopRequest", async input => ({ kind: "response", requestId: randomUUID(), ok: true,
-    result: await host.nativeApproval.controllerRequest({ kind: "request", requestId: randomUUID(), ...input }) }));
-  await page.addInitScript(snapshot => {
+  host.snapshot.host.capabilities = manualCapabilities;
+  await host.send({ kind: "snapshot", snapshot: host.snapshot });
+  const accounts = page.getByRole("region", { name: "邮箱账号", exact: true });
+  const extraUser = "second@example.test";
+  const extraAccount = accounts.locator(".assistant-account-row").filter({ hasText: extraUser });
+  await page.getByRole("button", { name: "助理设置", exact: true }).click();
+  await accounts.getByText("assistant@example.test", { exact: true }).waitFor();
+  await accounts.getByRole("button", { name: "添加邮箱", exact: true }).click();
+  await accounts.getByLabel("邮箱地址", { exact: true }).fill(extraUser);
+  await accounts.getByLabel("IMAP 服务器", { exact: true }).fill("imap.second.example.test");
+  await accounts.getByLabel("密码", { exact: true }).fill("fixture-credential-add");
+  await accounts.getByRole("button", { name: "添加账号", exact: true }).click();
+  await extraAccount.getByText("imap.second.example.test:993", { exact: true }).waitFor();
+  await extraAccount.getByText("已连接", { exact: true }).waitFor();
+  const { accountKey } = host.snapshot.assistantMail.accounts.find(account => account.user === extraUser);
+  assert.equal(JSON.stringify(host.snapshot).includes("fixture-credential-add"), false);
+  await accounts.getByRole("button", { name: `停用：${extraUser}`, exact: true }).click();
+  await extraAccount.getByText("已停用", { exact: true }).waitFor();
+  const { accountKey: disabledAccountKey, enabled } = host.requests.findLast(request => request.method === "plugin.assistant-mail.account.set-enabled").params;
+  assert.deepEqual({ accountKey: disabledAccountKey, enabled }, { accountKey, enabled: false });
+  await capture("mobile-mail-accounts");
+  steps.push("mobile account settings add and disable a second synthetic inbox while keeping the credential out of snapshots");
+
+  const workspacePath = host.snapshot.assistantMail.workspace.path;
+  const startCount = host.nativeApproval.calls.filter(call => call.method === "start").length;
+  await page.getByRole("button", { name: "初始化托管助理", exact: true }).click();
+  await page.getByText(workspacePath, { exact: true }).waitFor();
+  assert.equal(host.nativeApproval.calls.filter(call => call.method === "start").length, startCount, "Opening confirmation does not start a Native session");
+  await page.getByRole("button", { name: "确认初始化", exact: true }).click();
+  await page.locator(".assistant-view-tabs").getByRole("button", { name: "对话", exact: true, pressed: true }).waitFor();
+  const { nativeSessionId: managedSessionId } = host.snapshot.assistantMail.workspace;
+  assert.ok(managedSessionId && managedSessionId !== sessionId);
+  assert.equal(host.snapshot.assistantMail.workspace.policy, "stage1-fenced-workspace");
+  assert.equal(host.snapshot.assistantMail.workspace.toolIsolation, "unobserved");
+  assert.equal(host.snapshot.assistantMail.automaticDelivery, false);
+  assert.equal(host.requests.filter(request => request.method === "turn.start").length, 3, "Initializing a workspace submits no turn");
+  const managedSession = host.snapshot.sessions.find(session => session.sessionId === managedSessionId);
+  assert.equal(managedSession.cwd, workspacePath);
+  assert.equal(managedSession.nativePermissionMode, "dontAsk");
+  assert.equal(host.snapshot.projects.find(project => project.projectId === managedSession.projectId).managedAssistant, true);
+  await openMobileDrawer(page);
+  await page.locator(".mobile-home-catalog .project-groups > .project-group:not(.archived-group)").last()
+    .locator(".project-group-header").getByText("助理", { exact: true }).waitFor();
+  await openAssistant();
+  await page.getByRole("button", { name: "助理设置", exact: true }).click();
+  await page.getByRole("button", { name: "更换会话", exact: true }).click();
+  await selectCustomOption(page, page.getByLabel("助理会话", { exact: true }), sessionId);
+  await page.getByRole("button", { name: "绑定会话", exact: true }).click();
+  await eventually(() => host.snapshot.assistantMail.binding.nativeSessionId, sessionId, "Restore the manual binding for desktop reference checks");
+  steps.push("managed workspace confirms its private path, agrees with Native session and permission readback, and pins the assistant project without starting a turn");
+
+  const desktopRequests = [];
+  await page.exposeFunction("assistantDesktopRequest", async input => {
+    const requestId = randomUUID();
+    desktopRequests.push(input);
+    const result = await host.nativeApproval.controllerRequest({ kind: "request", requestId, ...input }, "desktop");
+    return { kind: "response", requestId, ok: true, result };
+  });
+  await page.addInitScript(initialSnapshot => {
+    let snapshot = initialSnapshot;
+    let onSnapshot;
+    window.assistantDesktopSnapshot = (patch) => {
+      snapshot = { ...snapshot, ...patch };
+      onSnapshot?.(structuredClone(snapshot));
+    };
     window.bridgeDesktop = {
-      getSnapshot: async () => structuredClone(snapshot), onSnapshot: () => () => {}, onEvent: () => () => {},
-      request: input => window.assistantDesktopRequest(input),
+      getSnapshot: async () => structuredClone(snapshot), onSnapshot: listener => {
+        onSnapshot = listener;
+        return () => { onSnapshot = undefined; };
+      }, onEvent: () => () => {},
+      request: async input => {
+        const response = await window.assistantDesktopRequest(input);
+        if (response.result.assistantMail) window.assistantDesktopSnapshot({ assistantMail: response.result.assistantMail });
+        return response;
+      },
     };
   }, { ...host.snapshot, connection: "connected", launchAtLogin: false, diagnosticsEnabled: false, managedDesktopEnabled: false,
     host: { ...host.snapshot.host, capabilities: host.snapshot.host.capabilities.filter(value => value !== "plugin.magpie-quota.v1") },
@@ -250,15 +347,13 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await page.getByRole("button", { name: "助理", exact: true }).click();
   await page.locator(".assistant-conversation textarea").waitFor();
   assert.equal(await page.locator(".assistant-page").getByRole("button", { name: "对话", exact: true }).count(), 1, "Only the assistant-level tab is labeled 对话");
-  const sessionViews = page.getByRole("navigation", { name: "会话视图" });
-  await sessionViews.getByRole("button", { name: /^成果/ }).click();
-  await page.locator(".assistant-conversation .evidence-panel, .assistant-conversation .evidence-empty").waitFor();
-  await sessionViews.getByRole("button", { name: "消息", exact: true }).click();
+  assert.equal(await page.locator(".assistant-page .desktop-page-heading, .assistant-page .m-header").count(), 1, "Desktop assistant has one header");
+  assert.equal(await page.locator(".assistant-page").getByRole("navigation", { name: "会话视图" }).count(), 0, "Assistant conversation has no separate evidence view");
   assert.equal(await page.locator(".assistant-conversation .desktop-session-sidebar").count(), 0);
   assert.equal(await page.locator(".assistant-conversation .desktop-session-layout, .assistant-conversation .is-fixed-session").count(), 0, "Desktop AssistantPage mounts DesktopSessionConversation directly without DesktopSessions layout");
   await page.locator(".assistant-conversation .desktop-conversation-stream [data-mail-id]").first().waitFor();
   await page.locator(".assistant-conversation textarea").fill("桌面跨页共享草稿");
-  await page.locator(".assistant-view-tabs").getByRole("button", { name: "邮件", exact: true }).click();
+  await page.locator(".assistant-view-tabs").getByRole("button", { name: "收件", exact: true }).click();
   await page.locator(".assistant-view-tabs").getByRole("button", { name: "助理设置", exact: true }).click();
   await page.locator(".assistant-view-tabs").getByRole("button", { name: "对话", exact: true }).click();
   assert.equal(await page.locator(".assistant-conversation textarea").inputValue(), "桌面跨页共享草稿", "Desktop assistant draft survives 对话/邮件/设置 subview switches");
@@ -272,23 +367,13 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await page.locator(".assistant-conversation textarea").fill("");
   await capture("desktop-conversation");
 
-  // Verify macOS hiddenInset drag region and collapsed-sidebar layout on Desktop AssistantPage across 对话 and 邮件 views
   await page.evaluate(() => { document.documentElement.dataset.macDesktop = "true"; });
-  const dragStylesExpanded = await page.evaluate(() => ({
-    topBand: getComputedStyle(document.querySelector(".assistant-desktop-header-band")).webkitAppRegion,
-    embeddedSubheader: getComputedStyle(document.querySelector(".assistant-conversation .m-header.is-embedded")).webkitAppRegion,
-  }));
-  assert.equal(dragStylesExpanded.topBand, "drag", "Top AssistantPage header band owns macOS window drag");
-  assert.equal(dragStylesExpanded.embeddedSubheader, "none", "Mid-page bound conversation header is not marked draggable");
+  assert.equal(await page.locator(".assistant-desktop-header-band").evaluate(element => getComputedStyle(element).webkitAppRegion), "drag", "The only assistant header owns macOS window drag");
 
   await page.getByRole("button", { name: "收起侧栏", exact: true }).click();
   await page.setViewportSize({ width: 860, height: 620 });
-  const collapsedConvPadding = await page.locator(".assistant-conversation .m-header.is-embedded").evaluate(
-    el => getComputedStyle(el).paddingLeft,
-  );
-  assert.notEqual(collapsedConvPadding, "84px", "Mid-page bound conversation header does not inherit 84px traffic-light indent");
 
-  await page.getByRole("button", { name: "邮件", exact: true }).click();
+  await page.getByRole("button", { name: "收件", exact: true }).click();
   await eventually(() => cards().count(), 50, "Desktop uses the same mail page and RPC");
   const expandBtnBounds = await page.getByRole("button", { name: "展开侧栏", exact: true }).boundingBox();
   const collapsedHeadingBounds = await page.locator(".assistant-page .desktop-page-heading h1").boundingBox();
@@ -316,4 +401,36 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await page.getByRole("button", { name: "助理设置", exact: true }).click();
   await page.getByRole("button", { name: "更换会话", exact: true }).waitFor();
   steps.push("real DesktopDashboard defaults to the controlled bound conversation, omits the ordinary directory, shares mail selection and submits the selected reference through Controller to native sendMessage");
+
+  await extraAccount.getByText("已停用", { exact: true }).waitFor();
+  await accounts.getByRole("button", { name: `更新密码：${extraUser}`, exact: true }).click();
+  const credential = accounts.getByLabel("密码", { exact: true });
+  assert.equal(await credential.inputValue(), "", "Stored credentials are never prefilled");
+  await credential.fill("fixture-credential-replacement");
+  await accounts.getByRole("button", { name: "保存密码", exact: true }).click();
+  await credential.waitFor({ state: "hidden" });
+  assert.equal(desktopRequests.findLast(request => request.method === "plugin.assistant-mail.account.update-credential").params.accountKey, accountKey);
+  assert.equal(JSON.stringify(host.snapshot).includes("fixture-credential-replacement"), false);
+  await accounts.getByRole("button", { name: `启用：${extraUser}`, exact: true }).click();
+  await accounts.getByRole("button", { name: `停用：${extraUser}`, exact: true }).waitFor();
+  await eventually(() => host.snapshot.assistantMail.accounts.find(account => account.accountKey === accountKey)?.state,
+    "connected", "The re-enabled synthetic receiver reconnects after its RPC acknowledgement");
+  await page.evaluate(assistantMail => window.assistantDesktopSnapshot({ assistantMail }), host.snapshot.assistantMail);
+  await extraAccount.getByText("已连接", { exact: true }).waitFor();
+  await accounts.getByRole("button", { name: `移除：${extraUser}`, exact: true }).click();
+  assert.ok(host.snapshot.assistantMail.accounts.some(account => account.accountKey === accountKey));
+  await accounts.getByRole("button", { name: "确认移除", exact: true }).click();
+  await extraAccount.waitFor({ state: "detached" });
+  assert.equal(host.snapshot.assistantMail.accounts.some(account => account.accountKey === accountKey), false);
+
+  const accountRequestCount = desktopRequests.filter(request => request.method.startsWith("plugin.assistant-mail.account.")).length;
+  await page.evaluate(assistantMail => window.assistantDesktopSnapshot({ assistantMail }), {
+    ...host.snapshot.assistantMail, credentialsSupported: false,
+  });
+  await accounts.getByText("当前电脑不支持存储邮箱凭据。", { exact: true }).waitFor();
+  assert.equal(await accounts.getByRole("button", { name: "添加邮箱", exact: true }).isDisabled(), true);
+  assert.equal(await accounts.getByRole("button", { name: "停用：assistant@example.test", exact: true }).isDisabled(), true);
+  assert.equal(desktopRequests.filter(request => request.method.startsWith("plugin.assistant-mail.account.")).length, accountRequestCount);
+  await capture("desktop-mail-accounts-unsupported");
+  steps.push("desktop settings update, re-enable and confirm removal of the same account; the unsupported-credentials snapshot disables writes");
 }

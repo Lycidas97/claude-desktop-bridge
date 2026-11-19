@@ -3,9 +3,10 @@ import type { SessionHistoryState } from "../../hooks/useMobileBridge.js";
 
 type StreamAnchor = { key: string; offset: number };
 
-export function useConversationScroll({ sessionId, sessionView, history, openedEvidenceIds, timelineStreamKeys, streamKeys, onLoadOlderHistory }: {
+export function useConversationScroll({ sessionId, sessionView, streamVisible, history, openedEvidenceIds, timelineStreamKeys, streamKeys, onLoadOlderHistory }: {
   sessionId: string;
   sessionView: "conversation" | "evidence";
+  streamVisible: boolean;
   history: SessionHistoryState | undefined;
   openedEvidenceIds: ReadonlySet<string> | undefined;
   timelineStreamKeys: string[];
@@ -27,6 +28,7 @@ export function useConversationScroll({ sessionId, sessionView, history, openedE
     anchor?: StreamAnchor | undefined;
     fullyVisibleAnchor?: StreamAnchor | undefined;
     scrollTop?: number | undefined;
+    paused?: boolean;
     pinnedToBottom: boolean;
   }>({ historyCount: 0, pinnedToBottom: true });
 
@@ -59,15 +61,22 @@ export function useConversationScroll({ sessionId, sessionView, history, openedE
   }
 
   useLayoutEffect(() => {
+    const previous = streamScrollState.current;
+    if (!streamVisible) {
+      previous.paused = true;
+      return;
+    }
     const stream = streamRef.current;
     if (!stream) {
       streamScrollState.current = { historyCount: 0, pinnedToBottom: true };
       return;
     }
-    const previous = streamScrollState.current;
     const entering = previous.sessionId !== sessionId || !previous.lastKey;
+    if (previous.paused && !entering && !previous.pinnedToBottom && previous.scrollTop !== undefined) {
+      stream.scrollTop = previous.scrollTop;
+    }
     const scrolledUpSynchronously = (
-      previous.scrollTop !== undefined
+      !previous.paused && previous.scrollTop !== undefined
       && stream.scrollTop < previous.scrollTop - 4
       && stream.scrollHeight - stream.scrollTop - stream.clientHeight > 4
     );
@@ -83,7 +92,9 @@ export function useConversationScroll({ sessionId, sessionView, history, openedE
     const savedAnchor = (evidenceOpenedWhileReading ? previous.fullyVisibleAnchor : undefined) ?? previous.anchor;
     if (entering) {
       stream.scrollTop = stream.scrollHeight;
-    } else if ((firstKey !== previous.firstKey || historyPrepended || evidenceOpenedWhileReading) && savedAnchor) {
+    } else if (savedAnchor && (
+      (previous.paused && !shouldFollowBottom) || firstKey !== previous.firstKey || historyPrepended || evidenceOpenedWhileReading
+    )) {
       const anchor = [...stream.querySelectorAll<HTMLElement>(":scope > [data-stream-key]")]
         .find((element) => element.dataset.streamKey === savedAnchor.key);
       if (anchor) {
@@ -102,24 +113,26 @@ export function useConversationScroll({ sessionId, sessionView, history, openedE
       openedEvidenceIds,
       historyCount,
       lastKey,
+      paused: false,
       pinnedToBottom: entering || shouldFollowBottom,
     };
     rememberStreamPosition();
-  }, [sessionView, firstHistoryKey, historyCount, openedEvidenceIds, sessionId, streamKeys, timelineStreamKeys]);
+  }, [sessionView, streamVisible, firstHistoryKey, historyCount, openedEvidenceIds, sessionId, streamKeys, timelineStreamKeys]);
 
   function loadOlderNearTop(): void {
     const stream = streamRef.current;
-    if (!stream || !history?.hasMore || !history.nextCursor || history.status !== "ready" || history.error) return;
+    if (!streamVisible || !stream || !history?.hasMore || !history.nextCursor || history.status !== "ready" || history.error) return;
     if (stream.scrollTop < 200) void onLoadOlderHistory(sessionId);
   }
 
   useEffect(() => {
     if (sessionView === "conversation") loadOlderNearTop();
-  }, [sessionView, firstHistoryKey, history?.nextCursor, sessionId, firstKey]);
+  }, [sessionView, streamVisible, firstHistoryKey, history?.nextCursor, sessionId, firstKey]);
 
   return {
     streamRef,
     onScroll() {
+      if (!streamVisible) return;
       rememberStreamPosition(true);
       loadOlderNearTop();
     },

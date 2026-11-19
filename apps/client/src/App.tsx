@@ -37,7 +37,7 @@ import { AssistantPage } from "./components/assistant/AssistantPage.js";
 import { MailReference } from "./components/assistant/MailReference.js";
 import { ConversationDraftsProvider, type ConversationDraftsHandle } from "./components/conversation/ConversationDraftsProvider.js";
 import { EvidencePanel } from "./components/evidence/EvidencePanel.js";
-import { ConversationView } from "./components/conversation/ConversationView.js";
+import { ConversationView, type ConversationViewProps } from "./components/conversation/ConversationView.js";
 import { desktopRuntimeId } from "./lib/runtime-labels.js";
 
 function MobileAssistantConversation({
@@ -47,7 +47,9 @@ function MobileAssistantConversation({
   visible,
   mobile,
   onNavigateToSession,
-}: {
+  alternateStage,
+  hideComposer,
+}: Pick<ConversationViewProps, "alternateStage" | "hideComposer"> & {
   activeHostId: string;
   session: BridgeSessionInfo;
   snapshot: BridgeHostSnapshot | undefined;
@@ -63,10 +65,11 @@ function MobileAssistantConversation({
     )) ?? []
   ), [assistantMail?.cache.cards, session.sessionId, snapshot?.assistantMail?.binding?.nativeSessionId]);
   const [refreshing, setRefreshing] = useState(false);
+  const transcriptVisible = visible && alternateStage == null;
   useEffect(() => {
-    if (!visible) return;
+    if (!transcriptVisible) return;
     return setActiveViewedSession({ hostId: activeHostId, sessionId: session.sessionId });
-  }, [activeHostId, session.sessionId, visible]);
+  }, [activeHostId, session.sessionId, transcriptVisible]);
   async function handleRefresh(targetSessionId?: string): Promise<boolean> {
     if (refreshing) return false;
     setRefreshing(true);
@@ -81,6 +84,9 @@ function MobileAssistantConversation({
   return (
     <ConversationView
       variant="mobile"
+      surface="assistant"
+      alternateStage={alternateStage}
+      hideComposer={hideComposer}
       hostId={activeHostId}
       session={session}
       sessions={sessions}
@@ -88,7 +94,6 @@ function MobileAssistantConversation({
       connection={mobile.state.connection}
       desktopOnline={mobile.state.desktopOnline}
       visible={visible}
-      navigation={false}
       onSelectSession={(nextSessionId) => {
         if (nextSessionId !== session.sessionId) onNavigateToSession(nextSessionId);
       }}
@@ -133,8 +138,6 @@ function MobileAssistantConversation({
       onResolveUncertain={mobile.resolveUncertainDelivery}
       onResolvePermission={mobile.resolvePermission}
       onResolvePrompt={mobile.resolvePrompt}
-      onReadPrAutoFix={mobile.readPrAutoFix}
-      onSetPrAutoFix={mobile.setPrAutoFix}
       {...(snapshot?.host.capabilities.includes("claude.native-relay.v1") ? { onLoadBackgroundTasks: mobile.loadBackgroundTasks } : {})}
       onLoadSessionConfiguration={mobile.loadSessionConfiguration}
       onConfigureSession={mobile.configureSession}
@@ -146,8 +149,6 @@ function MobileAssistantConversation({
         onLoadSessionPermissions: mobile.loadSessionPermissions,
         onSaveSessionPermissions: mobile.saveSessionPermissions,
       } : {})}
-      onPreviewRewind={mobile.previewRewind}
-      onRewindSession={mobile.rewindSession}
       sessionMenu={{
         rename: canCommand || canRename ? async (targetSessionId, title) => {
           if (canCommand && desktopRuntimeId(session) === "claude-desktop") {
@@ -156,12 +157,6 @@ function MobileAssistantConversation({
             await mobile.renameSession(targetSessionId, title.trim());
           }
         } : undefined,
-        fork: mobile.forkSession,
-        move: snapshot?.host.capabilities.includes("section.move.v1") ? mobile.moveSessionSection : undefined,
-        ...(snapshot?.host.capabilities.includes("session.visibility.v1") ? {
-          archive: mobile.archiveSession,
-          delete: mobile.deleteSession,
-        } : {}),
       }}
     />
   );
@@ -474,7 +469,7 @@ function MobileApp({ themeControl }: { themeControl: ThemeControl }) {
                 setFocusRequest({ sessionId, key: Date.now() });
                 setTab("sessions");
               }}
-              renderConversation={(sessionId) => {
+              renderConversation={(sessionId, stage) => {
                 const boundSession = snapshot?.sessions.find((candidate) => candidate.sessionId === sessionId);
                 return boundSession ? (
                   <MobileAssistantConversation
@@ -483,6 +478,7 @@ function MobileApp({ themeControl }: { themeControl: ThemeControl }) {
                     snapshot={snapshot}
                     visible={tab === "assistant"}
                     mobile={mobile}
+                    {...stage}
                     onNavigateToSession={(otherSessionId) => {
                       setFocusRequest({ sessionId: otherSessionId, key: Date.now() });
                       setTab("sessions");

@@ -1,4 +1,5 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
+import { ASSISTANT_WORKSPACE_POLICY } from "@bridge/protocol";
 import type {
   BridgeAssistantMailSnapshot,
   BridgeMailCard,
@@ -9,14 +10,18 @@ import type {
   DesktopControlSnapshot,
 } from "@bridge/protocol";
 import { MailBodyParseError, type AssistantMailService } from "../../../../plugins/assistant-mail/desktop.js";
+import type { ClaudeDesktopBridge } from "../claude/claude-desktop-bridge.js";
+import { isAssistantTool, type WorkspaceProvisioner } from "./assistant-workspace.js";
 import { BridgeRequestError, stringParam } from "./request-error.js";
 
 export const ASSISTANT_MAIL_CAPABILITIES = [
   "plugin.assistant-mail.v1",
   "plugin.assistant-mail.manual-reference.v1",
+  "plugin.assistant-mail.account.v1",
 ] as const;
 
 export interface AssistantMailCoordinatorHost {
+  broker?: Pick<ClaudeDesktopBridge, "canProvisionAssistantWorkspace" | "createSession" | "configureSession" | "session">;
   allSessions(): BridgeSessionInfo[];
   allProjects(): BridgeProjectInfo[];
   canStartTurn(): boolean;
@@ -29,13 +34,18 @@ export function assistantMailSnapshot(
   available: boolean,
   changeToken: string,
 ): BridgeAssistantMailSnapshot {
-  const binding = mail.binding();
+  const stored = mail.binding();
+  const binding = stored && {
+    assistantId: stored.assistantId, nativeSessionId: stored.nativeSessionId,
+    sectionId: stored.sectionId, previousSessionIds: stored.previousSessionIds,
+  };
   const session = sessions.find(candidate => candidate.sessionId === binding?.nativeSessionId);
+  const { state, accounts, credentialsSupported } = mail.status();
   return {
     ...(binding ? { binding } : {}),
     bindingState: !binding?.nativeSessionId ? binding?.previousSessionIds.length ? "needs-rebind" : "unbound"
       : session?.archivedAt ? "needs-rebind" : !available ? "unavailable" : !session ? "missing" : "ready",
-    receiverState: mail.status().state,
+    receiverState: state, accounts, credentialsSupported,
     automaticDelivery: false,
     changeToken,
   };
@@ -45,7 +55,7 @@ export function assistantMailSnapshot(
 export function pauseAssistantBinding(mail: AssistantMailService | undefined, sessionId: string): void {
   const binding = mail?.binding();
   if (binding?.nativeSessionId !== sessionId) return;
-  mail!.setBinding({ ...binding, nativeSessionId: null,
+  mail!.setBinding({ assistantId: binding.assistantId, sectionId: binding.sectionId, nativeSessionId: null,
     previousSessionIds: [...new Set([...binding.previousSessionIds, sessionId])] });
 }
 
@@ -86,6 +96,7 @@ export class AssistantMailCoordinator {
   static readonly CAPABILITIES = ASSISTANT_MAIL_CAPABILITIES;
   private changeToken = randomUUID();
   private started = false;
+  private toolCatalog: { sessionId: string; unexpectedTools: string[] } | undefined;
   private readonly onServiceChanged = () => {
     this.changeToken = randomUUID();
     this.host.onChanged?.(this.snapshot());
@@ -94,7 +105,21 @@ export class AssistantMailCoordinator {
   constructor(
     private readonly mail: AssistantMailService,
     private readonly host: AssistantMailCoordinatorHost,
+    readonly workspace?: WorkspaceProvisioner,
   ) {}
+
+  capabilities() {
+    return this.workspace && this.host.broker
+      ? [...ASSISTANT_MAIL_CAPABILITIES, "plugin.assistant-mail.workspace.v1" as const]
+      : ASSISTANT_MAIL_CAPABILITIES;
+  }
+
+  observeToolCatalog(sessionId: string, tools: string[]): void {
+    const binding = this.mail.binding();
+    if (binding?.nativeSessionId !== sessionId || !binding.managed) return;
+    this.toolCatalog = { sessionId, unexpectedTools: [...new Set(tools.filter(tool => !isAssistantTool(tool)))].sort() };
+    this.onServiceChanged();
+  }
 
   start(): void {
     if (this.started) return;
@@ -111,7 +136,57 @@ export class AssistantMailCoordinator {
   }
 
   snapshot(): BridgeAssistantMailSnapshot {
-    return assistantMailSnapshot(this.mail, this.host.allSessions(), this.host.canStartTurn(), this.changeToken);
+    const snapshot = assistantMailSnapshot(this.mail, this.host.allSessions(), this.host.canStartTurn(), this.changeToken);
+    if (!this.workspace) return snapshot;
+    const binding = this.mail.binding();
+    const nativeSessionId = binding?.managed?.policy === ASSISTANT_WORKSPACE_POLICY ? binding.nativeSessionId : null;
+    const catalog = nativeSessionId && this.toolCatalog?.sessionId === nativeSessionId ? this.toolCatalog : undefined;
+    return { ...snapshot, workspace: {
+      path: this.workspace.path,
+      policy: ASSISTANT_WORKSPACE_POLICY,
+      ...(nativeSessionId ? { nativeSessionId } : {}),
+      toolIsolation: !catalog ? "unobserved" : catalog.unexpectedTools.length ? "warning" : "compatible",
+      ...(catalog?.unexpectedTools.length ? { unexpectedTools: catalog.unexpectedTools } : {}),
+    } };
+  }
+
+  private bindSession(session: BridgeSessionInfo, managed?: NonNullable<ReturnType<AssistantMailService["binding"]>>["managed"]): void {
+    const previous = this.mail.binding();
+    this.toolCatalog = undefined;
+    this.mail.setBinding({
+      assistantId: previous?.assistantId ?? randomUUID(),
+      nativeSessionId: session.sessionId,
+      sectionId: this.host.allProjects().find(project => project.projectId === session.projectId)?.kind === "desktop-group"
+        ? session.projectId : null,
+      previousSessionIds: [...new Set([
+        ...(previous?.previousSessionIds ?? []),
+        ...(previous?.nativeSessionId && previous.nativeSessionId !== session.sessionId ? [previous.nativeSessionId] : []),
+      ])],
+      ...(managed ? { managed } : {}),
+    });
+  }
+
+  private async initializeWorkspace(workspacePath: string): Promise<void> {
+    const { workspace, host: { broker } } = this;
+    if (!workspace || !broker?.canProvisionAssistantWorkspace()) {
+      throw new BridgeRequestError("UNSUPPORTED", "当前 Claude Desktop 无法初始化托管助理。");
+    }
+    if (workspacePath !== workspace.path) throw new BridgeRequestError("INVALID_TARGET", "请重新确认托管工作区。");
+    const previous = this.mail.binding()?.managed;
+    const token = randomBytes(32).toString("hex");
+    try {
+      const path = await workspace.prepare(token);
+      const session = await broker.createSession(path, "助理", undefined, true);
+      const configured = await broker.configureSession({ sessionId: session.sessionId, permissionMode: "dontAsk" });
+      const observed = broker.session(session.sessionId);
+      if (configured.nativePermissionMode !== "dontAsk" || observed?.cwd !== path) {
+        throw new BridgeRequestError("ASSISTANT_POLICY_UNCONFIRMED", "Claude Desktop 未确认托管工作区和会话权限。");
+      }
+      this.bindSession(observed, { path, token, policy: ASSISTANT_WORKSPACE_POLICY });
+    } catch (error) {
+      if (previous) await workspace.prepare(previous.token);
+      throw error;
+    }
   }
 
   pauseBinding(sessionId: string): void {
@@ -163,20 +238,32 @@ export class AssistantMailCoordinator {
       if (!session || session.archivedAt || session.transport !== "claude-desktop-native") {
         throw new BridgeRequestError("INVALID_SESSION", "请选择未归档的 Claude Desktop 原生会话。");
       }
-      const previous = this.mail.binding();
-      this.mail.setBinding({
-        assistantId: previous?.assistantId ?? randomUUID(),
-        nativeSessionId: sessionId,
-        sectionId: this.host.allProjects().find(project => project.projectId === session.projectId)?.kind === "desktop-group"
-          ? session.projectId
-          : null,
-        previousSessionIds: [...new Set([
-          ...(previous?.previousSessionIds ?? []),
-          ...(previous?.nativeSessionId && previous.nativeSessionId !== sessionId ? [previous.nativeSessionId] : []),
-        ])],
-      });
-      return { assistantMail: (await publish()).assistantMail };
-    }
-    throw new Error("Unsupported request method");
+      this.bindSession(session);
+    } else if (method === "plugin.assistant-mail.workspace.initialize") {
+      await this.initializeWorkspace(stringParam(params, "workspacePath")!);
+    } else if (method.startsWith("plugin.assistant-mail.account.")) {
+      if (!this.mail.status().credentialsSupported) {
+        throw new BridgeRequestError("UNSUPPORTED", "当前电脑不支持存储邮箱凭据。");
+      }
+      if (method === "plugin.assistant-mail.account.add") {
+        const { port } = params;
+        if (port !== undefined && (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535)) {
+          throw new BridgeRequestError("INVALID_PARAMS", "请输入有效的 IMAP 端口。");
+        }
+        await this.mail.enable({ host: stringParam(params, "host")!, user: stringParam(params, "user")!,
+          ...(port === undefined ? {} : { port }), password: stringParam(params, "credential")! });
+      } else {
+        const accountKey = stringParam(params, "accountKey")!;
+        if (method === "plugin.assistant-mail.account.update-credential") {
+          await this.mail.replacePassword(accountKey, stringParam(params, "credential")!);
+        } else if (method === "plugin.assistant-mail.account.set-enabled") {
+          if (typeof params.enabled !== "boolean") throw new BridgeRequestError("INVALID_PARAMS", "请选择启用或停用邮箱。");
+          await this.mail.setAccountEnabled(accountKey, params.enabled);
+        } else if (method === "plugin.assistant-mail.account.remove") {
+          await this.mail.removeAccount(accountKey);
+        } else throw new BridgeRequestError("UNSUPPORTED", "当前电脑不支持此邮箱操作。");
+      }
+    } else throw new BridgeRequestError("UNSUPPORTED", "当前电脑不支持此助理操作。");
+    return { assistantMail: (await publish()).assistantMail };
   }
 }

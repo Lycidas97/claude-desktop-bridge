@@ -39,7 +39,7 @@ import {
   type SessionEvidenceState,
   type SessionHistoryState,
 } from "../../hooks/useMobileBridge.js";
-import { useSessionCommands } from "../../hooks/useSessionCommands.js";
+import { sessionCommandName, useSessionCommands } from "../../hooks/useSessionCommands.js";
 import {
   aggregateFileChanges,
   canConfigureSession,
@@ -95,9 +95,13 @@ import { useConversationTasks } from "./useConversationTasks.js";
 import { useSessionFileDownload } from "./useSessionFileDownload.js";
 import { useAcknowledgeSessionCompletion } from "../session/useSeenSessionCompletions.js";
 
+const ASSISTANT_HIDDEN_COMMANDS = new Set(["fork", "rewind"]);
+
 export interface ConversationViewProps {
   variant?: "mobile" | "desktop" | undefined;
-  conversationTabLabel?: string | undefined;
+  surface?: "project" | "assistant" | undefined;
+  alternateStage?: ReactNode;
+  hideComposer?: boolean | undefined;
   hostId: string;
   session: BridgeSessionInfo;
   sessions: BridgeSessionInfo[];
@@ -183,7 +187,9 @@ export interface ConversationViewProps {
 
 export function ConversationView({
   variant = "mobile",
-  conversationTabLabel = "对话",
+  surface = "project",
+  alternateStage,
+  hideComposer = false,
   hostId,
   session,
   sessions,
@@ -245,6 +251,9 @@ export function ConversationView({
   onRewindSession,
 }: ConversationViewProps) {
   const isMobile = variant === "mobile";
+  const isAssistant = surface === "assistant";
+  const hasAlternateStage = isAssistant && alternateStage != null;
+  const composerHidden = isAssistant && hideComposer;
   const fallbackDrafts = useConversationDrafts(hostId);
   const conversationDrafts = externalDrafts ?? fallbackDrafts;
   const sessionDraft = conversationDrafts.session(hostId, session.sessionId, onUploadFile);
@@ -280,8 +289,9 @@ export function ConversationView({
   const previousDraftKeyRef = useRef(draftKey);
 
   const effectiveSessionView = controlledSessionView ?? internalSessionView;
+  const transcriptHidden = isAssistant && (hasAlternateStage || effectiveSessionView === "evidence");
   useAcknowledgeSessionCompletion(hostId, session,
-    visible && effectiveSessionView === "conversation" && (history?.status === "ready" || Boolean(history?.items.length)));
+    visible && !transcriptHidden && effectiveSessionView === "conversation" && (history?.status === "ready" || Boolean(history?.items.length)));
   function setSessionView(next: "conversation" | "evidence"): void {
     if (onSessionViewChange) onSessionViewChange(next);
     else setInternalSessionView(next);
@@ -380,12 +390,21 @@ export function ConversationView({
     enabled: runtimeId === "claude-desktop",
     supported: Boolean(snapshot?.host.capabilities.includes("session.command.v1")),
     onLoad: onLoadSessionCommands && runtimeId === "claude-desktop" && snapshot?.host.capabilities.includes("session.commands.v1")
-      ? () => onLoadSessionCommands(session.sessionId)
+      ? async () => {
+          const catalog = await onLoadSessionCommands(session.sessionId);
+          if (!isAssistant) return catalog;
+          return { ...catalog, commands: catalog.commands.filter((command) => !ASSISTANT_HIDDEN_COMMANDS.has(command.name.toLowerCase())) };
+        }
       : undefined,
-    onRun: onRunSessionCommand ? (value) => onRunSessionCommand(session.sessionId, value) : undefined,
+    onRun: onRunSessionCommand ? (value) => {
+      if (isAssistant && ASSISTANT_HIDDEN_COMMANDS.has(sessionCommandName(value) ?? "")) {
+        throw new Error("助理对话不支持 Fork 或 Rewind。");
+      }
+      return onRunSessionCommand(session.sessionId, value);
+    } : undefined,
     onModel: () => setConfigurationOpen(true),
     onRewind: () => setRewindTarget({ sessionId: session.sessionId }),
-    ...(menu.onRename ? { onRename: menu.onRename } : {}),
+    ...(!isAssistant && menu.onRename ? { onRename: menu.onRename } : {}),
     onSession: async (nextSessionId) => {
       await onSelectSession(nextSessionId);
     },
@@ -398,7 +417,7 @@ export function ConversationView({
       ?? runtimeId === "claude-desktop");
   const canConfigure = canConfigureSession(session, snapshot);
   const rewindAvailable = Boolean(
-    session.transport === "claude-desktop-native"
+    !isAssistant && session.transport === "claude-desktop-native"
     && snapshot?.host.capabilities.includes("session.rewind.v1")
     && onPreviewRewind
     && onRewindSession,
@@ -498,6 +517,8 @@ export function ConversationView({
     [sessionPermissions],
   );
   const activePermission = toolPermissions[0];
+  const alternateStageQuestion = hasAlternateStage ? sessionQuestions[0] : undefined;
+  const waitingQuestion = alternateStageQuestion ?? (effectiveSessionView === "evidence" ? sessionQuestions[0] : undefined);
   const sessionNativePrompts = useMemo(
     () => snapshot?.prompts?.filter((prompt) => prompt.sessionId === session.sessionId) ?? [],
     [session.sessionId, snapshot?.prompts],
@@ -569,12 +590,13 @@ export function ConversationView({
     if (
       visible
       && effectivePermissionOpen
+      && !alternateStageQuestion
       && !snapshot?.prompts?.some((prompt) => prompt.sessionId === session.sessionId)
       && !permissions.some((permission) => permission.sessionId === session.sessionId && permission.toolName !== "AskUserQuestion")
     ) {
       setPermissionOpen(false);
     }
-  }, [effectivePermissionOpen, permissions, session.sessionId, snapshot?.prompts, visible]);
+  }, [alternateStageQuestion, effectivePermissionOpen, permissions, session.sessionId, snapshot?.prompts, visible]);
 
   useEffect(() => {
     if (!isMobile || !visible) return;
@@ -639,7 +661,7 @@ export function ConversationView({
 
   useLayoutEffect(() => {
     const textarea = composerRef.current;
-    if (!textarea) return;
+    if (composerHidden || !textarea) return;
     const resize = () => {
       textarea.style.height = "auto";
       textarea.style.height = `${textarea.scrollHeight}px`;
@@ -647,11 +669,12 @@ export function ConversationView({
     resize();
     window.addEventListener("resize", resize);
     return () => window.removeEventListener("resize", resize);
-  }, [draftKey, effectiveSessionView, text, visible]);
+  }, [draftKey, effectiveSessionView, composerHidden, text, visible]);
 
   const { streamRef, onScroll } = useConversationScroll({
     sessionId: session.sessionId,
-    sessionView: effectiveSessionView,
+    sessionView: isAssistant ? "conversation" : effectiveSessionView,
+    streamVisible: !isAssistant || (visible && !transcriptHidden),
     history,
     openedEvidenceIds,
     timelineStreamKeys,
@@ -756,10 +779,10 @@ export function ConversationView({
       }
     }
   }
-  const parentSession = session.parentSessionId
+  const parentSession = !isAssistant && session.parentSessionId
     ? sessions.find((candidate) => candidate.sessionId === session.parentSessionId)
     : undefined;
-  const prSupported = Boolean(snapshot?.host.capabilities.includes("pr.autofix.v1"));
+  const prSupported = !isAssistant && Boolean(snapshot?.host.capabilities.includes("pr.autofix.v1"));
 
   const renderSubagent = (item: ConversationItem) => (
     <SubagentCard
@@ -1024,94 +1047,180 @@ export function ConversationView({
     </>
   );
 
-  const effectiveNavigation = isMobile ? navigation : false;
+  const transcript = (
+    <section
+      className={isMobile ? "conversation-stream" : "conversation-stream desktop-conversation-stream"}
+      hidden={transcriptHidden}
+      aria-live="polite"
+      ref={streamRef}
+      onScroll={onScroll}
+    >
+      {streamBody}
+    </section>
+  );
+  const evidenceView = effectiveSessionView === "evidence" && (
+    <section className={isMobile ? "mobile-evidence-view" : "mobile-evidence-view desktop-evidence-view"}>
+      {isAssistant && (
+        <button type="button" className="secondary-button" onClick={() => setSessionView("conversation")}>
+          返回对话
+        </button>
+      )}
+      {renderEvidence({
+        variant,
+        sessionId: session.sessionId,
+        cwd: session.cwd,
+        state: evidence,
+        conversationItems: items,
+        fileChanges: fileChangesSummary,
+        online: isOnline,
+        ...(onDownloadSessionFile ? { onRequestSessionFileDownload: files.requestDownload } : {}),
+        onResolvedFileCountChange: (count) => {
+          setResolvedEvidenceFileCount((previous) => (
+            previous?.sourceKey === evidenceSourceKey && previous.count === count
+              ? previous
+              : { sourceKey: evidenceSourceKey, count }
+          ));
+        },
+      })}
+    </section>
+  );
+
+  const composer = (
+    <>
+      {composerBanner}
+      {MobileComposer({
+        variant,
+        sessionView: isAssistant ? "conversation" : effectiveSessionView,
+        selectedSession: session,
+        snapshot,
+        connection,
+        desktopOnline,
+        connectionIssue,
+        runtimeName,
+        draftKey,
+        text,
+        attachments,
+        sending,
+        imageError,
+        canAttachImages,
+        commandDraft,
+        hasDraft,
+        stopTarget: tasks.stopTarget,
+        stopping: tasks.stopping,
+        activity: tasks.activity,
+        turnUsage: latestTurnUsage,
+        contextPopoverOpen,
+        onToggleContextPopover: () => setContextPopoverOpen((current) => !current),
+        ...(canCompactContext ? { onCompactContext: () => void runCompactContext() } : {}),
+        compactContextDisabled,
+        compactContextBusy: compactBusy || Boolean(session.isCompacting),
+        contextTriggerRef,
+        contextPopoverRef,
+        contextContainerRef,
+        fileUploads,
+        fileRef,
+        composerRef,
+        onUploadFile,
+        onLoadSessionCommands,
+        loadCommands: commands.load,
+        updateDraft,
+        addImages,
+        sendMessage,
+        onOpenStopConfirm: () => tasks.setStopConfirmOpen(true),
+        onRetry: onRetry ?? (async () => {}),
+      })}
+    </>
+  );
+  const effectiveNavigation = isMobile && !isAssistant && navigation;
   const MobileRoot = effectiveNavigation ? "main" : "section";
   const profileSummaryId = `${variant}-session-profile-summary`;
   return (
-    <MobileRoot className="mobile-workspace conversation-workspace">
-      <MobilePageHeader
-        navigation={effectiveNavigation}
-        {...(headerLeading ? { leading: headerLeading } : {})}
-        title={session.title}
-        subtitle={canConfigure ? (
-          <button
-            type="button"
-            className="m-host-chip"
-            aria-label="会话设置"
-            aria-describedby={profileSummaryId}
-            onClick={() => setConfigurationOpen(true)}
-          >
-            <SessionProfileSummary session={session} id={profileSummaryId} />
-            <ChevronDown size={13} />
-          </button>
-        ) : (
-          <span className="m-presence">
-            <SessionProfileSummary session={session} />
-          </span>
-        )}
-        {...(effectiveNavigation && onBackToCatalog ? {
-          backLabel: effectiveSessionView === "evidence" ? "返回对话" : "返回会话列表",
-          onBack: () => {
-            if (effectiveSessionView === "evidence") setSessionView("conversation");
-            else {
-              setForkChainOpen(false);
-              onBackToCatalog();
-            }
-          },
-        } : {})}
-        actions={(
-          <>
-            {isMobile ? (
-              <button
-                type="button"
-                className={`mobile-evidence-toggle${effectiveSessionView === "evidence" ? " is-active" : ""}`}
-                aria-label={`成果${evidenceCount > 0 ? ` ${evidenceCount}` : ""}`}
-                aria-pressed={effectiveSessionView === "evidence"}
-                onClick={() => setSessionView(effectiveSessionView === "evidence" ? "conversation" : "evidence")}
-              >
-                <FileText size={13} aria-hidden="true" />
-                <span className="mobile-evidence-word">成果</span>
-                {evidenceCount > 0 && <b className="mobile-evidence-count">{evidenceCount}</b>}
-              </button>
-            ) : (
-              <nav className="session-view-switch desktop-session-view-switch" aria-label="会话视图">
-                <button
-                  type="button"
-                  className={effectiveSessionView === "conversation" ? "active" : ""}
-                  onClick={() => setSessionView("conversation")}
-                >
-                  {conversationTabLabel}
-                </button>
-                <button
-                  type="button"
-                  className={effectiveSessionView === "evidence" ? "active" : ""}
-                  onClick={() => setSessionView("evidence")}
-                >
-                  成果
-                  {evidenceCount > 0 && <b>{evidenceCount}</b>}
-                </button>
-              </nav>
-            )}
-            {tasks.backgroundTasks.length > 0 && (
-              <IconButton
-                label={tasks.runningBackgroundTasks > 0 ? `后台任务，${tasks.runningBackgroundTasks} 个运行中` : "后台任务"}
-                className="background-tasks-button"
-                onClick={() => tasks.setBackgroundTasksOpen({})}
-              >
-                <Layers size={18} />
-                {tasks.runningBackgroundTasks > 0 && <span className="background-tasks-count">{tasks.runningBackgroundTasks}</span>}
-              </IconButton>
-            )}
-            <IconButton
-              label="会话操作"
-              onClick={menu.open}
+    <MobileRoot className={`mobile-workspace conversation-workspace${isAssistant ? " conversation-workspace--assistant" : ""}`}>
+      {!isAssistant && (
+        <MobilePageHeader
+          navigation={effectiveNavigation}
+          {...(headerLeading ? { leading: headerLeading } : {})}
+          title={session.title}
+          subtitle={canConfigure ? (
+            <button
+              type="button"
+              className="m-host-chip"
+              aria-label="会话设置"
+              aria-describedby={profileSummaryId}
+              onClick={() => setConfigurationOpen(true)}
             >
-              <MoreHorizontal size={isMobile ? 22 : 18} />
-            </IconButton>
-          </>
-        )}
-      />
-      {session.prs?.length ? (
+              <SessionProfileSummary session={session} id={profileSummaryId} />
+              <ChevronDown size={13} />
+            </button>
+          ) : (
+            <span className="m-presence">
+              <SessionProfileSummary session={session} />
+            </span>
+          )}
+          {...(effectiveNavigation && onBackToCatalog ? {
+            backLabel: effectiveSessionView === "evidence" ? "返回对话" : "返回会话列表",
+            onBack: () => {
+              if (effectiveSessionView === "evidence") setSessionView("conversation");
+              else {
+                setForkChainOpen(false);
+                onBackToCatalog();
+              }
+            },
+          } : {})}
+          actions={(
+            <>
+              {isMobile ? (
+                <button
+                  type="button"
+                  className={`mobile-evidence-toggle${effectiveSessionView === "evidence" ? " is-active" : ""}`}
+                  aria-label={`成果${evidenceCount > 0 ? ` ${evidenceCount}` : ""}`}
+                  aria-pressed={effectiveSessionView === "evidence"}
+                  onClick={() => setSessionView(effectiveSessionView === "evidence" ? "conversation" : "evidence")}
+                >
+                  <FileText size={13} aria-hidden="true" />
+                  <span className="mobile-evidence-word">成果</span>
+                  {evidenceCount > 0 && <b className="mobile-evidence-count">{evidenceCount}</b>}
+                </button>
+              ) : (
+                <nav className="session-view-switch desktop-session-view-switch" aria-label="会话视图">
+                  <button
+                    type="button"
+                    className={effectiveSessionView === "conversation" ? "active" : ""}
+                    onClick={() => setSessionView("conversation")}
+                  >
+                    对话
+                  </button>
+                  <button
+                    type="button"
+                    className={effectiveSessionView === "evidence" ? "active" : ""}
+                    onClick={() => setSessionView("evidence")}
+                  >
+                    成果
+                    {evidenceCount > 0 && <b>{evidenceCount}</b>}
+                  </button>
+                </nav>
+              )}
+              {tasks.backgroundTasks.length > 0 && (
+                <IconButton
+                  label={tasks.runningBackgroundTasks > 0 ? `后台任务，${tasks.runningBackgroundTasks} 个运行中` : "后台任务"}
+                  className="background-tasks-button"
+                  onClick={() => tasks.setBackgroundTasksOpen({})}
+                >
+                  <Layers size={18} />
+                  {tasks.runningBackgroundTasks > 0 && <span className="background-tasks-count">{tasks.runningBackgroundTasks}</span>}
+                </IconButton>
+              )}
+              <IconButton
+                label="会话操作"
+                onClick={menu.open}
+              >
+                <MoreHorizontal size={isMobile ? 22 : 18} />
+              </IconButton>
+            </>
+          )}
+        />
+      )}
+      {!isAssistant && session.prs?.length ? (
         <SessionPrBar
           key={`${hostId}:${session.sessionId}`}
           session={session}
@@ -1198,37 +1307,17 @@ export function ConversationView({
         </div>
       )}
       {files.warning}
-      {effectiveSessionView === "conversation" ? (
-        <section
-          className={isMobile ? "conversation-stream" : "conversation-stream desktop-conversation-stream"}
-          aria-live="polite"
-          ref={streamRef}
-          onScroll={onScroll}
-        >
-          {streamBody}
-        </section>
-      ) : (
-        <section className={isMobile ? "mobile-evidence-view" : "mobile-evidence-view desktop-evidence-view"}>
-          {renderEvidence({
-            variant,
-            sessionId: session.sessionId,
-            cwd: session.cwd,
-            state: evidence,
-            conversationItems: items,
-            fileChanges: fileChangesSummary,
-            online: isOnline,
-            ...(onDownloadSessionFile ? { onRequestSessionFileDownload: files.requestDownload } : {}),
-            onResolvedFileCountChange: (count) => {
-              setResolvedEvidenceFileCount((previous) => (
-                previous?.sourceKey === evidenceSourceKey && previous.count === count
-                  ? previous
-                  : { sourceKey: evidenceSourceKey, count }
-              ));
-            },
-          })}
-        </section>
-      )}
-      <div className={`permission-dock-slot ${activePermission || activeNativePrompt || otherPermission || otherNativePrompt || (effectiveSessionView === "evidence" && sessionQuestions.length) ? "has-attention" : ""}`}>
+      {isAssistant ? (
+        <div className="conversation-stage" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
+          {transcript}
+          {hasAlternateStage ? (
+            <div className="conversation-alternate-stage" style={{ flex: 1, overflowY: "auto" }}>
+              {alternateStage}
+            </div>
+          ) : evidenceView}
+        </div>
+      ) : effectiveSessionView === "conversation" ? transcript : evidenceView}
+      <div className={`permission-dock-slot ${activePermission || activeNativePrompt || otherPermission || otherNativePrompt || waitingQuestion ? "has-attention" : ""}`}>
         {activePermission ? (
           <button type="button" className="permission-dock" onClick={() => setPermissionOpen(true)}>
             <span className="permission-dock-icon"><AlertTriangle size={18} /></span>
@@ -1241,10 +1330,13 @@ export function ConversationView({
             <span><strong>{runtimeName} 正在等待确认</strong><small>{activeNativePrompt.title}</small></span>
             <b>{sessionNativePrompts.length > 1 ? `${sessionNativePrompts.length} 项` : "处理"}</b>
           </button>
-        ) : effectiveSessionView === "evidence" && sessionQuestions[0] ? (
-          <button type="button" className="permission-dock" onClick={() => setSessionView("conversation")}>
+        ) : waitingQuestion ? (
+          <button type="button" className="permission-dock" onClick={() => {
+            if (alternateStageQuestion) setPermissionOpen(true);
+            else setSessionView("conversation");
+          }}>
             <span className="permission-dock-icon"><AlertTriangle size={18} /></span>
-            <span><strong>{runtimeName} 正在等待回答</strong><small>{sessionQuestions[0].title || "提问与选择"}</small></span>
+            <span><strong>{runtimeName} 正在等待回答</strong><small>{waitingQuestion.title || "提问与选择"}</small></span>
             <b>回答</b>
           </button>
         ) : otherPermission && otherPermissionSession ? (
@@ -1261,53 +1353,16 @@ export function ConversationView({
           </button>
         ) : null}
       </div>
-      {composerBanner}
-      {MobileComposer({
-        variant,
-        sessionView: effectiveSessionView,
-        selectedSession: session,
-        snapshot,
-        connection,
-        desktopOnline,
-        connectionIssue,
-        runtimeName,
-        draftKey,
-        text,
-        attachments,
-        sending,
-        imageError,
-        canAttachImages,
-        commandDraft,
-        hasDraft,
-        stopTarget: tasks.stopTarget,
-        stopping: tasks.stopping,
-        activity: tasks.activity,
-        turnUsage: latestTurnUsage,
-        contextPopoverOpen,
-        onToggleContextPopover: () => setContextPopoverOpen((current) => !current),
-        ...(canCompactContext ? { onCompactContext: () => void runCompactContext() } : {}),
-        compactContextDisabled,
-        compactContextBusy: compactBusy || Boolean(session.isCompacting),
-        contextTriggerRef,
-        contextPopoverRef,
-        contextContainerRef,
-        fileUploads,
-        fileRef,
-        composerRef,
-        onUploadFile,
-        onLoadSessionCommands,
-        loadCommands: commands.load,
-        updateDraft,
-        addImages,
-        sendMessage,
-        onOpenStopConfirm: () => tasks.setStopConfirmOpen(true),
-        onRetry: onRetry ?? (async () => {}),
-      })}
-      {effectivePermissionOpen && (activePermission || activeNativePrompt) && (
+      {isAssistant ? (
+        <div className="conversation-composer-slot" hidden={composerHidden} style={{ flexShrink: 0 }}>
+          {composer}
+        </div>
+      ) : composer}
+      {(!isAssistant || visible) && effectivePermissionOpen && (activePermission || activeNativePrompt || alternateStageQuestion) && (
         <Sheet
           manageFocus={!isMobile}
           eyebrow="需要处理"
-          title={`${runtimeName} ${activePermission ? "等待授权" : "等待确认"}`}
+          title={`${runtimeName} ${activePermission ? "等待授权" : activeNativePrompt ? "等待确认" : "等待回答"}`}
           closeLabel="暂时关闭"
           onClose={() => setPermissionOpen(false)}
         >
@@ -1319,7 +1374,7 @@ export function ConversationView({
               onResolve={onResolvePermission}
               onEnableNativeFullAccess={(requestId) => onResolvePermission(requestId, "allow-once", undefined, undefined, "bypassPermissions")}
             />
-          ) : activeNativePrompt && (
+          ) : activeNativePrompt ? (
             <>
               {sessionNativePrompts.length > 1 && (
                 <SelectMenu
@@ -1340,10 +1395,12 @@ export function ConversationView({
                 {...(onResolvePrompt && snapshot?.host.capabilities.includes("prompt.native.v1") ? { onResolve: onResolvePrompt } : {})}
               />
             </>
+          ) : alternateStageQuestion && (
+            <PermissionPrompt key={alternateStageQuestion.requestId} permission={alternateStageQuestion} onResolve={onResolvePermission} />
           )}
         </Sheet>
       )}
-      {menu.renderSheets({
+      {!isAssistant && menu.renderSheets({
         sessionView: effectiveSessionView,
         evidenceCount,
         parentSession,

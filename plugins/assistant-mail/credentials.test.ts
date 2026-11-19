@@ -55,6 +55,20 @@ it("distinguishes a missing item from an unavailable Keychain without exposing s
   await expect(credentials.set("a".repeat(64), "secret")).rejects.toThrow(/^mail_credentials_unavailable$/);
 });
 
+it("deletes only the requested Keychain item and treats an already missing item as success", async () => {
+  const credentials = new KeychainMailCredentials("darwin");
+  const accountKey = "a".repeat(64);
+  await credentials.delete(accountKey);
+  expect(mocked.spawn).toHaveBeenCalledExactlyOnceWith("/usr/bin/security",
+    ["delete-generic-password", "-s", "Claude Desktop Bridge assistant-mail", "-a", accountKey],
+    { stdio: ["pipe", "pipe", "pipe"] });
+  expect(input).toBe("");
+  code = 44;
+  await expect(credentials.delete(accountKey)).resolves.toBeUndefined();
+  code = 36;
+  await expect(credentials.delete(accountKey)).rejects.toThrow(/^mail_credentials_unavailable$/);
+});
+
 it("rejects a command exceeding security's line buffer before starting the process", async () => {
   await expect(new KeychainMailCredentials("darwin").set("a".repeat(64), "secret".repeat(1_000))).rejects.toThrow("mail_password_too_long");
   expect(mocked.spawn).not.toHaveBeenCalled();
@@ -65,5 +79,6 @@ it.each(["win32", "linux"] as const)("explicitly refuses mailbox configuration o
   expect(credentials.supported).toBe(false);
   await expect(credentials.set("a".repeat(64), "secret")).rejects.toThrow("mail_credentials_unsupported");
   await expect(credentials.get("a".repeat(64))).rejects.toThrow("mail_credentials_unsupported");
+  await expect(credentials.delete("a".repeat(64))).rejects.toThrow("mail_credentials_unsupported");
   expect(mocked.spawn).not.toHaveBeenCalled();
 });

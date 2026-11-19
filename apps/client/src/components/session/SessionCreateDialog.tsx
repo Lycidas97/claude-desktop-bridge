@@ -7,6 +7,7 @@ import type {
 import { ArrowUp, Check, ChevronLeft, ChevronRight, Folder, FolderOpen, FolderPlus, LoaderCircle, Monitor, Pencil, X } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
+import { isAssistantWorkspacePath } from "../../lib/project-groups.js";
 import { desktopRuntimeName } from "../../lib/runtime-labels.js";
 import { IconButton } from "../common/IconButton.js";
 import { SelectMenu } from "../common/SelectMenu.js";
@@ -35,7 +36,8 @@ export function SessionCreateDialog({ snapshot, initialProjectId, initialCwd, co
   const titleId = useId();
   const dialogRef = useRef<HTMLElement>(null);
   const runtimeId = "claude-desktop";
-  const projects = snapshot.projects.filter((project) => (project.runtimeId ?? "claude-desktop") === runtimeId);
+  const assistantWorkspacePath = snapshot.assistantMail?.workspace?.path;
+  const projects = snapshot.projects.filter((project) => !project.managedAssistant && (project.runtimeId ?? "claude-desktop") === runtimeId);
   const initialProject = projects.find((project) => project.projectId === initialProjectId);
   const resolvedInitialCwd = initialCwd ?? initialProject?.cwd ?? "";
   const isDirectoryPickerOnly = Boolean(onPickDirectory);
@@ -76,7 +78,7 @@ export function SessionCreateDialog({ snapshot, initialProjectId, initialCwd, co
   const recentPaths = [...new Set([
     ...[...projects].sort((left, right) => right.lastActivityAt - left.lastActivityAt).map((project) => project.cwd),
     ...(listing?.recentPaths ?? []),
-  ])].filter(Boolean);
+  ])].filter(path => path && !isAssistantWorkspacePath(path, assistantWorkspacePath));
   const locked = busy || choosing || mkdirBusy;
   const groupUnavailable = Boolean(projectId && !groups.some((project) => project.projectId === projectId));
   const canCreate = connected && runtimeAvailable && Boolean(cwd.trim()) && !groupUnavailable && !locked;
@@ -138,6 +140,11 @@ export function SessionCreateDialog({ snapshot, initialProjectId, initialCwd, co
   }
 
   function selectFolder(path: string): void {
+    if (isAssistantWorkspacePath(path, assistantWorkspacePath)) {
+      if (view === "browse") setBrowseError("请从助理页面初始化托管会话。");
+      else setError("请从助理页面初始化托管会话。");
+      return;
+    }
     resetMkdir();
     if (onPickDirectory) {
       onPickDirectory(path);

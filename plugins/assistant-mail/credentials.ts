@@ -4,6 +4,7 @@ export interface MailCredentials {
   readonly supported: boolean;
   get(accountKey: string): Promise<string | undefined>;
   set(accountKey: string, password: string): Promise<void>;
+  delete(accountKey: string): Promise<void>;
 }
 
 const SERVICE = "Claude Desktop Bridge assistant-mail";
@@ -47,5 +48,11 @@ export class KeychainMailCredentials implements MailCredentials {
     if (Buffer.byteLength(command) >= 4096) throw new Error("mail_password_too_long");
     const result = await security(["-i"], command);
     if (result.code !== 0) throw new Error("mail_credentials_unavailable");
+  }
+
+  async delete(accountKey: string): Promise<void> {
+    if (!this.supported) throw new Error("mail_credentials_unsupported");
+    const result = await security(["delete-generic-password", "-s", SERVICE, "-a", accountKey]);
+    if (result.code !== 0 && result.code !== 44) throw new Error("mail_credentials_unavailable");
   }
 }

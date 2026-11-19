@@ -1,8 +1,9 @@
+import { spawnSync } from "node:child_process";
 import { EventEmitter, once } from "node:events";
 import * as http from "node:http";
 import { createConnection } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,6 +13,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { AssistantMailService } from "./desktop.js";
+import { ASSISTANT_TOKEN_ENV } from "./fs-guard.js";
 import { serveAssistantMailTools } from "./local-channel.js";
 import { MAIL_SOURCE, MailToolConnection, MailToolRequest } from "./tool-contract.js";
 
@@ -45,7 +47,7 @@ beforeEach(async () => {
   });
   createClient = vi.fn(() => inbox as unknown as ImapFlow);
   service = new AssistantMailService({ userDataPath: root, createClient,
-    credentials: { supported: true, get: async () => "fixture-password", set: async () => {} } });
+    credentials: { supported: true, get: async () => "fixture-password", set: async () => {}, delete: async () => {} } });
   await service.initialize();
   await service.enable({ host: "imap.example.test", user: "fixture@example.test", password: "fixture-password" });
   await vi.waitFor(() => expect(service.status().state).toBe("connected"));
@@ -138,6 +140,65 @@ it("closes owned connections during a partial authenticated request without disp
     expect(page).not.toHaveBeenCalled();
   } finally { socket.destroy(); await closing; }
 });
+
+it("rechecks the active binding after a partial managed request and records only authorized calls", async () => {
+  await channel!.close();
+  let active = "first-fixture";
+  const onManagedCall = vi.fn();
+  channel = await serveAssistantMailTools({ userDataPath: root, service,
+    authorizeManagedToken: token => token === active ? `local_${active}` : undefined, onManagedCall });
+  connection = MailToolConnection.parse(JSON.parse(await readFile(join(root, "private", "assistant", "mail-tools.json"), "utf8")));
+  const server = vi.mocked(http.createServer).mock.results.at(-1)!.value as http.Server;
+  const socket = createConnection({ port: connection.port, host: "127.0.0.1" });
+  await once(socket, "connect");
+  const request = { name: "mail.list_events", arguments: {} };
+  const body = JSON.stringify(request);
+  const received = once(server, "request");
+  const response = once(socket, "data");
+  try {
+    socket.write(`POST /tools HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer ${active}\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body.slice(0, 1)}`);
+    await received;
+    active = "second-fixture";
+    socket.write(body.slice(1));
+    expect(String((await response)[0])).toContain("403 Forbidden");
+    expect(onManagedCall).not.toHaveBeenCalled();
+    expect((await post(request, "first-fixture")).status).toBe(403);
+    expect((await post(request, connection.token, { "X-Bridge-Assistant-Managed": "1" })).status).toBe(403);
+    expect((await post(request)).status).toBe(200);
+    expect(onManagedCall).not.toHaveBeenCalled();
+    expect((await post(request, active)).status).toBe(200);
+    expect(onManagedCall).toHaveBeenCalledExactlyOnceWith("local_second-fixture", "mail.list_events");
+  } finally { socket.destroy(); }
+});
+
+it("requires the managed stdio token and rereads the descriptor port after the gateway restarts", async () => {
+  await build({ entryPoints: [fileURLToPath(new URL("./mcp-entry.ts", import.meta.url))], outfile: bundle, bundle: true, platform: "node", format: "cjs", target: "node22" });
+  const descriptor = join(root, "private", "assistant", "mail-tools.json");
+  const args = [bundle, descriptor, "--managed"];
+  const missing = spawnSync(process.execPath, args, { env: { ...process.env, [ASSISTANT_TOKEN_ENV]: "" }, encoding: "utf8", timeout: 5000 });
+  expect(missing.status).toBe(1);
+  expect(missing.stderr).toContain("Managed assistant session token is required");
+  const sessionToken = "fixture-session";
+  const client = new Client({ name: "fixture-managed", version: "1.0.0" });
+  clients.push(client);
+  await client.connect(new StdioClientTransport({ command: process.execPath, args, env: { [ASSISTANT_TOKEN_ENV]: sessionToken } }));
+  const request = { name: "mail.list_events", arguments: {} };
+  expect((await client.callTool(request)).isError).toBe(true);
+  const onManagedCall = vi.fn();
+  // Keep the first listener up until a different port has been allocated.
+  const oldChannel = channel!;
+  try {
+    channel = await serveAssistantMailTools({ userDataPath: root, service,
+      authorizeManagedToken: token => token === sessionToken ? "local_fixture" : undefined, onManagedCall });
+  } finally { await oldChannel.close(); }
+  const { port } = MailToolConnection.parse(JSON.parse(await readFile(descriptor, "utf8")));
+  expect(port).not.toBe(connection.port);
+  await writeFile(descriptor, JSON.stringify({ port }));
+  const result = await client.callTool(request);
+  expect(result.isError).toBeUndefined();
+  expect(JSON.stringify(result)).toContain(reference);
+  expect(onManagedCall).toHaveBeenCalledExactlyOnceWith("local_fixture", "mail.list_events");
+}, 20000);
 
 it("runs two real stdio MCP adapters over one receiver, round-trips all four tools and closes independently", async () => {
   const compilation = await build({ entryPoints: [fileURLToPath(new URL("./mcp-entry.ts", import.meta.url))], outfile: bundle, bundle: true, platform: "node", format: "cjs", target: "node22", metafile: true });

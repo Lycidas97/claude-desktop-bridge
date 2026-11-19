@@ -27,6 +27,17 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 
 const input = { sessionId: "local-native", text: "hello", requestId: "request", idempotencyKey: "key", origin: "mobile" as const };
 
+it("observes the main Native system/init tool directory with the Desktop session ID", async () => {
+  const f = await fixture();
+  try {
+    const observed = vi.fn();
+    f.bridge.on("system.init", observed);
+    await f.message({ type: "system", subtype: "init", session_id: "cli-id", parent_tool_use_id: "agent", tools: ["Bash"] });
+    await f.message({ type: "system", subtype: "init", session_id: "cli-id", tools: ["Read", null, "mcp__other__read"] });
+    expect(observed).toHaveBeenCalledExactlyOnceWith("local-native", ["Read", "mcp__other__read"]);
+  } finally { await f.close(); }
+});
+
 it.each(["assistant", "system"])("coalesces same-turn %s event projections without dropping messages", async (type) => {
   const f = await fixture();
   try {

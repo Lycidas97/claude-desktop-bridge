@@ -481,7 +481,9 @@ describe("EvidenceManager", () => {
     await large.truncate(20 * 1024 * 1024 + 1); await large.close();
     vi.mocked(readFile).mockClear();
     expect(await manager.fileTransferMetadata(directory, "file.txt", join(directory, "worktree"))).toMatchObject({ size: 13 });
-    for (const path of [".env", "escape", "large.bin", "../outside.txt"]) await expect(manager.fileTransferMetadata(directory, path)).rejects.toThrow();
+    await writeFile(join(directory, ".mcp.json"), "{\"fixture\":true}");
+    for (const path of [".env", ".mcp.json", "escape", "large.bin", "../outside.txt"]) await expect(manager.fileTransferMetadata(directory, path)).rejects.toThrow();
+    await expect(manager.openFileTransfer(directory, ".mcp.json", "phone-1")).rejects.toThrow("凭据或密钥文件");
     expect(readFile).not.toHaveBeenCalled();
     await manager.close();
   });

@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { readFile, writeFile } from "node:fs/promises";
+import { renameSync, writeFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { ImapFlow, type ImapFlowOptions } from "imapflow";
-import { hasCapability } from "imapflow/lib/tools.js";
 import { KeychainMailCredentials, type MailCredentials } from "./credentials.js";
+import { MailReceiver, type MailState } from "./receiver.js";
 import { AssistantMailStore, type AssistantBinding, type MailAnalysis, type MailProcessingStatus } from "./store.js";
 import { mailBodyText } from "./mime.js";
 export { MailBodyParseError } from "./mime.js";
@@ -16,7 +17,7 @@ export interface MailAccount {
 }
 
 type SavedAccount = MailAccount & { enabled: boolean };
-type MailState = "disabled" | "connecting" | "connected" | "reconnecting" | "unsupported" | "error" | "closed";
+export type MailAccountStatus = SavedAccount & { accountKey: string; state: MailState; errorCode?: string };
 
 function parseAccount(value: MailAccount): MailAccount {
   if (typeof value.host !== "string" || !value.host.trim() || /\s/.test(value.host.trim()) ||
@@ -26,19 +27,17 @@ function parseAccount(value: MailAccount): MailAccount {
   return { host: value.host.trim().toLowerCase(), port: value.port, user: value.user.trim() };
 }
 
-/** One instance belongs to the background service. Clients borrow this business API, never its connection. */
+function accountKey(account: MailAccount): string {
+  return createHash("sha256").update(JSON.stringify([account.host, account.port, account.user])).digest("hex");
+}
+
+/** One instance belongs to the background service. Clients borrow this business API, never its connections. */
 export class AssistantMailService extends EventEmitter {
   private readonly store: AssistantMailStore;
   private readonly credentials: MailCredentials;
   private readonly createClient: (options: ImapFlowOptions) => ImapFlow;
-  private account: SavedAccount | undefined;
-  private state: MailState = "disabled";
-  private errorCode: string | undefined;
-  private client: ImapFlow | undefined;
-  private receiver: Promise<void> | undefined;
-  private stopped = true;
-  private wake: () => void = () => {};
-  private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  private readonly accounts = new Map<string, { config: SavedAccount; receiver: MailReceiver }>();
+  private closed = false;
 
   constructor(options: {
     userDataPath: string;
@@ -57,47 +56,92 @@ export class AssistantMailService extends EventEmitter {
       if (error.code !== "ENOENT") throw error;
       return undefined;
     });
-    if (saved !== undefined) {
-      const value = JSON.parse(saved) as SavedAccount;
-      if (typeof value.enabled !== "boolean") throw new Error("Invalid saved IMAP account");
-      this.account = { ...parseAccount(value), enabled: value.enabled };
-      if (this.account.enabled) this.start();
-    }
+    if (saved === undefined) return;
+    const value = JSON.parse(saved) as SavedAccount | SavedAccount[];
+    const configs = (Array.isArray(value) ? value : [value]).map(config => {
+      if (typeof config?.enabled !== "boolean") throw new Error("Invalid saved IMAP account");
+      return { ...parseAccount(config), enabled: config.enabled };
+    });
+    if (!Array.isArray(value)) this.saveAccounts(configs);
+    for (const config of configs) this.addAccount(accountKey(config), config);
+    for (const { config, receiver } of this.accounts.values()) if (config.enabled) receiver.start();
   }
 
-  status(): { state: MailState; credentialsSupported: boolean; account?: SavedAccount; accountKey?: string; errorCode?: string } {
+  status(): {
+    state: MailState; credentialsSupported: boolean; accounts: MailAccountStatus[];
+    account?: SavedAccount; accountKey?: string; errorCode?: string;
+  } {
+    const accounts = Array.from(this.accounts, ([key, { config, receiver }]): MailAccountStatus => ({
+      ...config, accountKey: key,
+      state: this.closed ? "closed" : config.enabled ? receiver.state : "disabled",
+      ...(config.enabled && !this.closed && receiver.errorCode ? { errorCode: receiver.errorCode } : {}),
+    }));
+    const current = accounts.find(account => account.state === "connected") ?? accounts.find(account => account.enabled) ?? accounts[0];
     return {
-      state: this.state, credentialsSupported: this.credentials.supported,
-      ...(this.account ? { account: { ...this.account }, accountKey: this.accountKey(this.account) } : {}),
-      ...(this.errorCode ? { errorCode: this.errorCode } : {}),
+      state: current?.state ?? (this.closed ? "closed" : "disabled"), credentialsSupported: this.credentials.supported, accounts,
+      ...(current ? { account: { ...this.accounts.get(current.accountKey)!.config }, accountKey: current.accountKey } : {}),
+      ...(current?.errorCode ? { errorCode: current.errorCode } : {}),
     };
   }
 
   diagnosticsGauges(): { configured: boolean; unreadCount: number } {
-    return {
-      configured: Boolean(this.account),
-      unreadCount: this.store.unreadCount(),
-    };
+    return { configured: this.accounts.size > 0, unreadCount: this.store.unreadCount() };
   }
 
   async enable(input: { host: string; port?: number; user: string; password: string }): Promise<void> {
     if (!this.credentials.supported) throw new Error("mail_credentials_unsupported");
-    const account = parseAccount({ host: input.host, port: input.port ?? 993, user: input.user });
-    if (typeof input.password !== "string" || !input.password) throw new Error("Invalid IMAP password");
-    await this.credentials.set(this.accountKey(account), input.password);
-    await this.stop();
-    this.account = { ...account, enabled: true };
-    await this.saveAccount();
-    this.start();
+    const config = { ...parseAccount({ host: input.host, port: input.port ?? 993, user: input.user }), enabled: true };
+    const key = accountKey(config);
+    await this.savePassword(key, input.password);
+    const existing = this.accounts.get(key);
+    if (existing?.config.enabled) {
+      await this.restartReceiver(key);
+    } else if (existing) {
+      await this.setAccountEnabled(key, true);
+    } else {
+      this.saveAccounts([...Array.from(this.accounts.values(), account => account.config), config]);
+      this.addAccount(key, config).receiver.start();
+    }
+  }
+
+  async replacePassword(accountKey: string, password: string): Promise<void> {
+    this.requireAccount(accountKey);
+    await this.savePassword(accountKey, password);
+    await this.restartReceiver(accountKey);
+  }
+
+  async setAccountEnabled(accountKey: string, enabled: boolean): Promise<void> {
+    const account = this.requireAccount(accountKey);
+    if (enabled && !this.credentials.supported) throw new Error("mail_credentials_unsupported");
+    if (account.config.enabled === enabled) return;
+    this.saveAccounts(Array.from(this.accounts, ([key, { config }]) => key === accountKey ? { ...config, enabled } : config));
+    account.config.enabled = enabled;
+    if (enabled) {
+      await this.restartReceiver(accountKey);
+    } else {
+      const stopping = account.receiver.stop();
+      this.emit("changed");
+      await stopping;
+    }
+  }
+
+  async removeAccount(accountKey: string): Promise<void> {
+    const account = this.requireAccount(accountKey);
+    if (!this.credentials.supported) throw new Error("mail_credentials_unsupported");
+    await this.credentials.delete(accountKey).catch(() => { throw new Error("mail_credentials_unavailable"); });
+    this.saveAccounts(Array.from(this.accounts.values()).filter(entry => entry !== account).map(entry => entry.config));
+    this.accounts.delete(accountKey);
+    const stopping = account.receiver.stop();
+    this.emit("changed");
+    await stopping;
   }
 
   async disable(): Promise<void> {
-    await this.stop();
-    if (this.account) {
-      this.account.enabled = false;
-      await this.saveAccount();
-    }
-    this.setState("disabled");
+    await Promise.all(Array.from(this.accounts.keys(), key => this.setAccountEnabled(key, false)));
+  }
+
+  resume(): void {
+    for (const { config, receiver } of this.accounts.values()) if (config.enabled) receiver.resume();
   }
 
   binding(): AssistantBinding | undefined { return this.store.binding(); }
@@ -119,121 +163,56 @@ export class AssistantMailService extends EventEmitter {
     return event;
   }
 
-  private accountKey(account: MailAccount): string {
-    return createHash("sha256").update(JSON.stringify([account.host, account.port, account.user])).digest("hex");
+  private requireAccount(accountKey: string) {
+    const account = this.accounts.get(accountKey);
+    if (!account) throw new Error("mail_account_not_found");
+    return account;
   }
 
-  private saveAccount(): Promise<void> {
-    return writeFile(join(this.store.directory, "account.json"), JSON.stringify(this.account), { mode: 0o600 });
+  private async restartReceiver(accountKey: string): Promise<void> {
+    const account = this.accounts.get(accountKey);
+    if (!account?.config.enabled) return;
+    await account.receiver.stop();
+    if (account.config.enabled && this.accounts.get(accountKey) === account && !this.closed) account.receiver.start();
   }
 
-  private setState(state: MailState, errorCode?: string): void {
-    this.state = state;
-    this.errorCode = errorCode;
-    this.emit("changed");
+  private addAccount(accountKey: string, config: SavedAccount) {
+    const receiver = new MailReceiver({ ...config, accountKey }, this.store, this.credentials, this.createClient, {
+      changed: () => this.emit("changed"), mail: event => this.emit("mail", event), error: error => this.emit("error", error),
+    });
+    const account = { config, receiver };
+    this.accounts.set(accountKey, account);
+    return account;
   }
 
-  private start(): void {
-    if (!this.credentials.supported) { this.setState("unsupported", "mail_credentials_unsupported"); return; }
-    this.stopped = false;
-    this.receiver = this.receive(this.account!).catch(error => { this.emit("error", error); });
-  }
-
-  private async receive(account: SavedAccount): Promise<void> {
-    const accountKey = this.accountKey(account);
-    this.setState("connecting");
-    const password = await this.credentials.get(accountKey).catch(() => undefined);
-    if (!password) { this.setState("error", "mail_credentials_unavailable"); return; }
-    while (!this.stopped) {
-      const client = this.createClient({
-        host: account.host, port: account.port, secure: true,
-        auth: { user: account.user, pass: password }, logger: false, logRaw: false,
-        emitLogs: false, disableAutoIdle: true,
-      });
-      this.client = client;
-      let ended = false;
-      let changed = false;
-      const notify = () => { changed = true; this.wake(); };
-      client.on("exists", notify);
-      client.on("error", () => { ended = true; notify(); client.close(); });
-      client.on("close", () => { ended = true; notify(); });
-      let storageFailure = false;
-      try {
-        await client.connect();
-        if (this.stopped) break;
-        if (!hasCapability(client, "IDLE")) { this.setState("unsupported", "mail_idle_unsupported"); return; }
-        const mailbox = await client.mailboxOpen("INBOX", { readOnly: true });
-        const uidValidity = mailbox.uidValidity.toString();
-        storageFailure = true;
-        let lastUid = this.store.openMailbox(accountKey, uidValidity, mailbox.uidNext);
-        storageFailure = false;
-        this.setState("connected");
-        while (!this.stopped && !ended) {
-          changed = false;
-          // FETCH responses may arrive out of UID order. Enumerate IDs first so each commit covers every earlier new UID.
-          const uids: number[] = [];
-          for await (const message of client.fetch(`${lastUid + 1}:*`, { uid: true }, { uid: true })) uids.push(message.uid);
-          for (const uid of uids.sort((left, right) => left - right)) {
-            // UID ranges ending in '*' can include the last old UID when there is no new mail.
-            if (uid <= lastUid) continue;
-            const message = await client.fetchOne(String(uid), { uid: true, envelope: true, internalDate: true, source: true }, { uid: true });
-            if (!message) continue; // The server may have expunged it since enumeration.
-            if (!message.source) throw new Error("IMAP source unavailable");
-            storageFailure = true;
-            const event = await this.store.record({
-              accountKey, mailbox: "INBOX", uidValidity, uid: message.uid, source: message.source,
-              subject: message.envelope?.subject ?? "", from: message.envelope?.from ?? [],
-              receivedAt: message.internalDate instanceof Date ? message.internalDate.toISOString() : message.internalDate ?? new Date().toISOString(),
-            });
-            lastUid = message.uid;
-            storageFailure = false;
-            if (event) this.emit("mail", event);
-          }
-          if (this.stopped || ended) break;
-          if (changed) continue;
-          // Install the wakeup before entering IDLE. EXISTS during a fetch is consumed by the next scan.
-          const notified = new Promise<void>((resolve) => { this.wake = resolve; });
-          const idling = client.idle();
-          void idling.then(notify, notify);
-          await notified;
-          if (this.stopped || ended) { await idling; break; }
-          // Any command breaks IDLE. This is event-driven, never an IDLE-less polling fallback.
-          await client.noop();
-          if (await idling === false) { this.setState("unsupported", "mail_idle_unsupported"); return; }
-        }
-      } catch (error) {
-        if (this.stopped) return;
-        if (storageFailure) {
-          this.setState("error", "mail_storage_failed");
-          throw error;
-        }
-        this.setState("reconnecting", "mail_connection_failed");
-      } finally {
-        client.close();
-        this.client = undefined;
-      }
-      if (this.stopped) return;
-      this.setState("reconnecting", "mail_connection_failed");
-      await new Promise<void>((resolve) => {
-        this.wake = resolve;
-        this.reconnectTimer = setTimeout(resolve, 5_000);
-        this.reconnectTimer.unref();
-      });
-      this.reconnectTimer = undefined;
+  private saveAccounts(configs: SavedAccount[]): void {
+    const path = join(this.store.directory, "account.json");
+    const content = JSON.stringify(configs);
+    // The whole account list is one file. Replace it before publishing the in-memory change.
+    try {
+      writeFileSync(`${path}.tmp`, content, { mode: 0o600 });
+      renameSync(`${path}.tmp`, path);
+    } catch {
+      throw new Error("mail_storage_failed");
     }
   }
 
-  private async stop(): Promise<void> {
-    this.stopped = true;
-    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-    this.reconnectTimer = undefined;
-    this.wake();
-    this.client?.close();
-    await this.receiver;
-    this.receiver = undefined;
+  private async savePassword(accountKey: string, password: string): Promise<void> {
+    if (!this.credentials.supported) throw new Error("mail_credentials_unsupported");
+    if (typeof password !== "string" || !password) throw new Error("Invalid IMAP password");
+    await this.credentials.set(accountKey, password).catch((error: unknown) => {
+      if (error instanceof Error && error.message === "mail_password_too_long") throw new Error(error.message);
+      throw new Error("mail_credentials_unavailable");
+    });
   }
 
   async close(): Promise<void> {
-    try { await this.stop(); } finally { this.store.close(); this.setState("closed"); }
+    try {
+      await Promise.all(Array.from(this.accounts.values(), ({ receiver }) => receiver.stop()));
+    } finally {
+      this.store.close();
+      this.closed = true;
+      this.emit("changed");
+    }
   }
 }

@@ -1,5 +1,6 @@
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FetchMessageObject, ImapFlow } from "imapflow";
@@ -61,6 +62,7 @@ async function createService(inboxes: Inbox[] = [new Inbox()], supported = true)
   const credentials = { supported,
     get: vi.fn(async (key: string) => secrets.get(key)),
     set: vi.fn(async (key: string, password: string) => { secrets.set(key, password); }),
+    delete: vi.fn(async (key: string) => { secrets.delete(key); }),
   };
   const service = new AssistantMailService({ userDataPath: root, createClient, credentials });
   services.push(service);
@@ -250,12 +252,16 @@ it("reports a storage failure once and allows explicit disable and re-enable aft
   expect(onError).toHaveBeenCalledOnce();
 });
 
-it("shows fixed connection errors without exposing server diagnostics or credentials", async () => {
+it.each([
+  [false, "mail_connection_failed"], [true, "mail_authentication_failed"],
+])("shows a fixed connection error with authenticationFailed=%s", async (authenticationFailed, errorCode) => {
   const inbox = new Inbox();
-  inbox.connect.mockRejectedValueOnce(new Error(`AUTH failed: ${account.password}`));
+  inbox.connect.mockRejectedValueOnce(Object.assign(new Error(`AUTH failed: ${account.password}`), { authenticationFailed }));
   const { service } = await createService([inbox]);
   await service.enable(account);
-  await vi.waitFor(() => expect(service.status()).toMatchObject({ state: "reconnecting", errorCode: "mail_connection_failed" }));
+  await vi.waitFor(() => expect(service.status()).toMatchObject({ state: "reconnecting", errorCode,
+    accounts: [{ state: "reconnecting", errorCode }],
+  }));
   expect(JSON.stringify(service.status())).not.toContain(account.password);
   await service.disable();
   expect(service.status().state).toBe("disabled");
@@ -280,6 +286,132 @@ it("rejects unsupported platform credentials before connecting or writing accoun
   await expect(service.enable(account)).rejects.toThrow("mail_credentials_unsupported");
   expect(createClient).not.toHaveBeenCalled();
   await expect(readFile(join(root, "private", "assistant", "account.json"))).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+it("receives the same UID independently and manages one account without interrupting its peer", async () => {
+  const first = new Inbox();
+  const peer = new Inbox();
+  const replacement = new Inbox();
+  const reenabled = new Inbox();
+  const { service, createClient, credentials } = await createService([first, peer, replacement, reenabled]);
+  const second = { host: "imap.other.test", port: 1993, user: "other@example.test", password: "peer-secret" };
+  await Promise.all([service.enable(account), service.enable(second)]);
+  await vi.waitFor(() => expect(service.status().accounts.map(entry => entry.state)).toEqual(["connected", "connected"]));
+  const [firstStatus, secondStatus] = service.status().accounts;
+  const firstKey = firstStatus!.accountKey;
+  const secondKey = secondStatus!.accountKey;
+  expect(firstKey).not.toBe(secondKey);
+  expect(secondStatus).toEqual({ accountKey: secondKey, host: second.host, port: second.port, user: second.user, enabled: true, state: "connected" });
+  expect(JSON.parse(await readFile(join(root, "private", "assistant", "account.json"), "utf8"))).toEqual([
+    { host: account.host, port: 993, user: account.user, enabled: true },
+    { host: second.host, port: second.port, user: second.user, enabled: true },
+  ]);
+  first.deliver(5); peer.deliver(5);
+  await vi.waitFor(() => expect(service.page().events).toHaveLength(2));
+  const historical = service.page().events.find(event => event.accountKey === firstKey)!;
+  expect(service.page().events).toContainEqual(expect.objectContaining({ accountKey: secondKey, uid: 5 }));
+  expect(historical.uid).toBe(5);
+
+  credentials.set.mockRejectedValueOnce(new Error(`Keychain diagnostics: ${account.password}`));
+  await expect(service.replacePassword(firstKey, "replacement-secret")).rejects.toThrow(/^mail_credentials_unavailable$/);
+  expect(first.close).not.toHaveBeenCalled();
+  replacement.deliver(5); replacement.deliver(6);
+  await service.replacePassword(firstKey, "replacement-secret");
+  await vi.waitFor(() => expect(replacement.idle).toHaveBeenCalledOnce());
+  expect(first.close).toHaveBeenCalled();
+  expect(replacement.scans[0]).toBe("6:*");
+  expect(createClient).toHaveBeenLastCalledWith(expect.objectContaining({ auth: { user: account.user, pass: "replacement-secret" } }));
+
+  await service.setAccountEnabled(firstKey, false);
+  await service.replacePassword(firstKey, "disabled-secret");
+  expect(service.status().accounts[0]).toMatchObject({ enabled: false, state: "disabled" });
+  expect(createClient).toHaveBeenCalledTimes(3);
+  await service.setAccountEnabled(firstKey, true);
+  await vi.waitFor(() => expect(reenabled.idle).toHaveBeenCalledOnce());
+  expect(createClient).toHaveBeenLastCalledWith(expect.objectContaining({ auth: { user: account.user, pass: "disabled-secret" } }));
+  expect(reenabled.scans[0]).toBe("7:*");
+
+  credentials.delete.mockRejectedValueOnce(new Error(`Keychain diagnostics: ${account.password}`));
+  await expect(service.removeAccount(firstKey)).rejects.toThrow(/^mail_credentials_unavailable$/);
+  expect(reenabled.close).not.toHaveBeenCalled();
+  await service.removeAccount(firstKey);
+  expect(reenabled.close).toHaveBeenCalled();
+  expect(credentials.delete).toHaveBeenCalledWith(firstKey);
+  expect(secrets.has(firstKey)).toBe(false);
+  expect(secrets.get(secondKey)).toBe(second.password);
+  expect(service.status().accounts).toEqual([secondStatus]);
+  expect(JSON.parse(await readFile(join(root, "private", "assistant", "account.json"), "utf8"))).toEqual([
+    { host: second.host, port: second.port, user: second.user, enabled: true },
+  ]);
+  expect((await service.read(historical.mailRefId))?.source).toEqual(first.messages[0]!.source);
+  expect(peer.close).not.toHaveBeenCalled();
+  expect(peer.connect).toHaveBeenCalledOnce();
+  peer.deliver(6);
+  await vi.waitFor(() => expect(service.page().events).toContainEqual(expect.objectContaining({ accountKey: secondKey, uid: 6 })));
+});
+
+it.each([true, false])("migrates the legacy account in place and preserves credentials and watermarks with enabled=%s", async enabled => {
+  const store = new AssistantMailStore(root);
+  await store.initialize();
+  const key = createHash("sha256").update(JSON.stringify([account.host, 993, account.user])).digest("hex");
+  store.openMailbox(key, "1", 6);
+  store.close();
+  secrets.set(key, account.password);
+  const path = join(store.directory, "account.json");
+  await writeFile(path, JSON.stringify({ host: " IMAP.EXAMPLE.TEST ", port: 993, user: ` ${account.user} `, enabled }), { mode: 0o600 });
+  const inbox = new Inbox();
+  inbox.deliver(5); inbox.deliver(6);
+  const { service, credentials, createClient } = await createService([inbox]);
+  expect(JSON.parse(await readFile(path, "utf8"))).toEqual([{ host: account.host, port: 993, user: account.user, enabled }]);
+  expect(service.status().accounts[0]).toMatchObject({ accountKey: key, enabled });
+  if (!enabled) {
+    service.resume();
+    expect(createClient).not.toHaveBeenCalled();
+    await service.setAccountEnabled(key, true);
+  }
+  await vi.waitFor(() => expect(service.page().events.map(event => event.uid)).toEqual([6]));
+  expect(inbox.scans[0]).toBe("6:*");
+  expect(credentials.get).toHaveBeenCalledExactlyOnceWith(key);
+  expect(credentials.set).not.toHaveBeenCalled();
+  expect(credentials.delete).not.toHaveBeenCalled();
+});
+
+it("resumes all enabled accounts from the persisted array and wakes both IDLE and reconnect delays", async () => {
+  vi.useFakeTimers();
+  const oldFirst = new Inbox();
+  const oldSecond = new Inbox();
+  const { service } = await createService([oldFirst, oldSecond]);
+  await service.enable(account);
+  await service.enable({ ...account, user: "other@example.test" });
+  await vi.waitFor(() => expect(oldSecond.idle).toHaveBeenCalledOnce());
+  const [firstKey, secondKey] = service.status().accounts.map(entry => entry.accountKey);
+  await service.close();
+  services.splice(services.indexOf(service), 1);
+
+  const first = new Inbox();
+  const second = new Inbox();
+  const reconnected = new Inbox();
+  const restarted = await createService([first, second, reconnected]);
+  await vi.waitFor(() => expect(restarted.service.status().accounts.map(entry => entry.state)).toEqual(["connected", "connected"]));
+  first.deliver(5); second.deliver(5);
+  await vi.waitFor(() => expect(restarted.service.page().events).toHaveLength(2));
+  first.removeAllListeners("exists"); second.removeAllListeners("exists");
+  first.deliver(6); second.deliver(6);
+  restarted.service.resume();
+  await vi.waitFor(() => expect(restarted.service.page().events.filter(event => event.uid === 6).map(event => event.accountKey).sort())
+    .toEqual([firstKey, secondKey].sort()));
+
+  reconnected.deliver(6); reconnected.deliver(7);
+  first.close(); second.deliver(7);
+  await vi.waitFor(() => expect(restarted.service.status()).toMatchObject({ state: "connected", accounts: [
+    { state: "reconnecting", errorCode: "mail_connection_failed" }, { state: "connected" },
+  ] }));
+  expect(restarted.createClient).toHaveBeenCalledTimes(2);
+  restarted.service.resume();
+  await vi.waitFor(() => expect(restarted.service.page().events.filter(event => event.uid === 7).map(event => event.accountKey).sort())
+    .toEqual([firstKey, secondKey].sort()));
+  expect(reconnected.scans[0]).toBe("7:*");
+  expect(second.close).not.toHaveBeenCalled();
 });
 
 it("exposes numeric unread gauges without leaking account addresses, passwords, or mail contents", async () => {

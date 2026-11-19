@@ -3,12 +3,17 @@ import { join } from "node:path";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { BridgeInspectorAlert, BridgeInspectorStatus } from "@bridge/protocol";
 
-const resources = vi.hoisted(() => {
+const resources = await vi.hoisted(async () => {
+  const { EventEmitter } = await import("node:events");
   const resource = () => ({ initialize: vi.fn(async () => {}), close: vi.fn(async () => {}) });
   return {
     eventLog: resource(), state: resource(),
     evidence: resource(),
-    assistantMail: { ...resource(), on: vi.fn() }, mailOptions: vi.fn(), controllerOptions: vi.fn(),
+    assistantMail: Object.assign(new EventEmitter(), resource(), {
+      binding: vi.fn<() => { nativeSessionId: string } | undefined>(),
+      status: vi.fn<() => { accounts: { enabled: boolean }[] }>(), resume: vi.fn(),
+    }),
+    powerSaveBlocker: { start: vi.fn(() => 4), stop: vi.fn() }, mailOptions: vi.fn(), controllerOptions: vi.fn(),
     mailTools: { close: vi.fn(async () => {}) }, serveMailTools: vi.fn(),
     broker: resource(), nativeOptions: vi.fn(),
     controller: { ...resource(), attachUpdater: vi.fn(async () => {}), attachInspectorEnabler: vi.fn(), pauseForSleep: vi.fn(), reconnect: vi.fn(async () => {}), updateInspectorStatus: vi.fn() },
@@ -25,7 +30,8 @@ const resources = vi.hoisted(() => {
   };
 });
 vi.mock("electron", () => ({
-  app: { getVersion: () => resources.version, isPackaged: false }, safeStorage: {}, shell: {}, powerMonitor: new EventEmitter(),
+  app: { getVersion: () => resources.version, isPackaged: false, getAppPath: () => "/test/app" }, safeStorage: {}, shell: {}, powerMonitor: new EventEmitter(),
+  powerSaveBlocker: resources.powerSaveBlocker,
   systemPreferences: { isTrustedAccessibilityClient: vi.fn(() => true) },
   Notification: class extends EventEmitter {
     static isSupported() { return resources.notificationSupported(); }
@@ -64,6 +70,8 @@ vi.mock("../transport/webrtc-runtime.js", () => ({ loadDesktopPeerConnection: vi
 beforeEach(() => {
   vi.clearAllMocks();
   resources.serveMailTools.mockResolvedValue(resources.mailTools);
+  resources.assistantMail.binding.mockReturnValue(undefined);
+  resources.assistantMail.status.mockReturnValue({ accounts: [] });
   resources.version = "1.3.4";
   resources.diagnosticsEnabled = false;
   resources.notifications.length = 0;
@@ -201,8 +209,8 @@ it("owns one mail service and gives the Controller that exact instance", async (
   const runtime = await createServiceRuntime({ userDataPath: "/test/bridge" });
   expect(resources.mailOptions).toHaveBeenCalledExactlyOnceWith({ userDataPath: "/test/bridge" });
   expect(resources.assistantMail.initialize).toHaveBeenCalledOnce();
-  expect(resources.controllerOptions.mock.calls[0]?.at(-1)).toBe(resources.assistantMail);
-  expect(resources.serveMailTools).toHaveBeenCalledExactlyOnceWith({ userDataPath: "/test/bridge", service: resources.assistantMail });
+  expect(resources.controllerOptions.mock.calls[0]?.at(-2)).toBe(resources.assistantMail);
+  expect(resources.serveMailTools).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ userDataPath: "/test/bridge", service: resources.assistantMail }));
   expect(resources.assistantMail.initialize.mock.invocationCallOrder[0]).toBeLessThan(resources.controller.initialize.mock.invocationCallOrder[0]!);
   await runtime.close();
   expect(resources.assistantMail.close).toHaveBeenCalledOnce();
@@ -235,4 +243,32 @@ it("assembles the native facade", async () => {
     eventLog: resources.eventLog, conversationState: resources.state, evidence: resources.evidence,
   }));
   await runtime.close();
+});
+
+it("holds one suspension blocker while receiving or bound, wakes on resume, and releases on close", async () => {
+  const { createServiceRuntime } = await import("./service-runtime.js");
+  const { powerMonitor } = await import("electron");
+  const runtime = await createServiceRuntime({ userDataPath: "/test/bridge" });
+  const { assistantMail, powerSaveBlocker } = resources;
+  try {
+    expect(powerSaveBlocker.start).not.toHaveBeenCalled();
+    assistantMail.status.mockReturnValue({ accounts: [{ enabled: true }] });
+    assistantMail.emit("changed");
+    assistantMail.binding.mockReturnValue({ nativeSessionId: "local-mail" });
+    assistantMail.emit("changed");
+    expect(powerSaveBlocker.start).toHaveBeenCalledExactlyOnceWith("prevent-app-suspension");
+    powerMonitor.emit("resume");
+    expect(assistantMail.resume).toHaveBeenCalledOnce();
+    expect(resources.controller.reconnect).toHaveBeenCalledOnce();
+    assistantMail.status.mockReturnValue({ accounts: [{ enabled: false }] });
+    assistantMail.emit("changed");
+    expect(powerSaveBlocker.stop).not.toHaveBeenCalled();
+    assistantMail.binding.mockReturnValue(undefined);
+    assistantMail.emit("changed");
+    expect(powerSaveBlocker.stop).toHaveBeenCalledExactlyOnceWith(4);
+    assistantMail.binding.mockReturnValue({ nativeSessionId: "local-another" });
+    assistantMail.emit("changed");
+  } finally { await runtime.close(); }
+  expect(powerSaveBlocker.start).toHaveBeenCalledTimes(2);
+  expect(powerSaveBlocker.stop.mock.calls).toEqual([[4], [4]]);
 });

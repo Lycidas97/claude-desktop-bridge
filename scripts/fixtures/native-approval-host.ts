@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { EventEmitter, once } from "node:events";
 import { randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
   BridgeAssistantMailSnapshot, BridgeEffort, BridgePendingPrompt, BridgePermissionInfo, BridgePermissionResolution, BridgePullRequest, BridgeRequest, BridgeSDKPermissionMode,
@@ -17,6 +18,7 @@ import { magpieModelIdHash } from "../../apps/desktop/src/claude/claude-runtime-
 import { createNativeSectionFixture } from "./native-section-store.js";
 import { startAssistantMailFixture } from "./assistant-mail.js";
 import { AssistantMailCoordinator } from "../../apps/desktop/src/controller/assistant-mail.js";
+import { WorkspaceProvisioner } from "../../apps/desktop/src/controller/assistant-workspace.js";
 
 interface NativeApprovalResult {
   requestId: string;
@@ -319,8 +321,10 @@ export async function startNativeApprovalHost(options: {
         return;
       }
       if (method === "setPermissionMode") {
-        native.permissionMode = args[1] as BridgeSDKPermissionMode;
-        options.onModeChanged?.(native.permissionMode);
+        const target = nativeSessions.find(candidate => candidate.sessionId === args[0]);
+        assert.ok(target, "Native permission mode must target an existing session");
+        target.permissionMode = args[1] as BridgeSDKPermissionMode;
+        if (target === native) options.onModeChanged?.(target.permissionMode);
         return;
       }
       if (method === "respondToToolPermission") {
@@ -352,7 +356,10 @@ export async function startNativeApprovalHost(options: {
   await state.initialize();
   const eventLog = new SessionEventLog(join(options.directory, "native-events.jsonl"));
   await eventLog.initialize();
+  const mailRoot = options.assistantMail ? await realpath(await mkdtemp(join(tmpdir(), "bridge-assistant-mail-"))) : undefined;
+  const workspace = mailRoot && new WorkspaceProvisioner({ userDataPath: mailRoot, appPath: mailRoot, execPath: process.execPath });
   const broker = new ClaudeDesktopBridge({ eventLog, conversationState: state, inspector, settingsPath,
+    ...(workspace ? { assistantWorkspacePath: workspace.path } : {}),
     home: commandHome, environment: { ANTHROPIC_BASE_URL: "https://fixture.invalid", ANTHROPIC_AUTH_TOKEN: "synthetic" },
     fetchImpl: async (input) => new URL(String(input)).pathname === "/v1/models"
       ? Response.json({ data: [{ id: "synthetic-model", supported_reasoning_levels: ["none", "low", "high", "ultra"] }] })
@@ -365,14 +372,15 @@ export async function startNativeApprovalHost(options: {
     masterSecret: Buffer.alloc(32, 5).toString("base64url"),
   }) });
   await evidence.initialize();
-  const assistantMail = options.assistantMail ? await startAssistantMailFixture(join(options.directory, "mail")) : undefined;
-  const assistantMailCoordinator = assistantMail
+  const assistantMail = mailRoot ? await startAssistantMailFixture(mailRoot) : undefined;
+  const assistantMailCoordinator = assistantMail && workspace
     ? new AssistantMailCoordinator(assistantMail.service, {
         allSessions: () => broker.listSessions(),
         allProjects: () => broker.listProjects(),
         canStartTurn: () => broker.capabilities().includes("turn.start"),
         onChanged: snapshot => options.onMailChanged?.(snapshot),
-      })
+        broker,
+      }, workspace)
     : undefined;
   assistantMailCoordinator?.start();
   const mailSnapshot = () => assistantMailCoordinator?.snapshot();
@@ -400,6 +408,7 @@ export async function startNativeApprovalHost(options: {
   }
   return {
     cwd: commandCwd, harnessCwd, miscRoot, calls, failedRewindReadbacks, sections, assistantMail, mailSnapshot,
+    mailCapabilities: () => assistantMailCoordinator?.capabilities() ?? [],
     untrustedDir, manualTrustDir,
     dialogs,
     async openPrompt(kind: BridgePendingPrompt["kind"]) {
@@ -475,7 +484,9 @@ export async function startNativeApprovalHost(options: {
       await broker.refreshRuntime();
     },
     createSection: (request: BridgeRequest) => controller.handleRequest(request, "mobile", options.deviceId),
-    controllerRequest: (request: BridgeRequest) => controller.handleRequest(request, "mobile", options.deviceId),
+    controllerRequest: (request: BridgeRequest, origin: "mobile" | "desktop" = "mobile") => (
+      controller.handleRequest(request, origin, origin === "mobile" ? options.deviceId : undefined)
+    ),
     failRewindReadback(method: "getSession" | "getTranscriptPage") { rewindReadbackFailure = method; rewindCompleted = false; },
     profile() {
       const session = broker.session(options.sessionId)!;

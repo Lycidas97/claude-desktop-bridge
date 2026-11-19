@@ -122,11 +122,13 @@ export class DesktopController extends EventEmitter {
     updater?: DesktopUpdater,
     private readonly memoryRecorder?: Pick<MemoryRecorder, "diagnostics">,
     readonly assistantMail?: AssistantMailService,
+    assistantWorkspace?: import("./assistant-workspace.js").WorkspaceProvisioner,
   ) {
     super();
     this.updater = updater;
     this.assistantMailCoordinator = assistantMail
       ? new AssistantMailCoordinator(assistantMail, {
+          broker: this.broker,
           allSessions: () => this.allSessions(),
           allProjects: () => this.allProjects(),
           canStartTurn: () => this.broker.capabilities().includes("turn.start"),
@@ -138,7 +140,7 @@ export class DesktopController extends EventEmitter {
             });
             this.queuePublish();
           },
-        })
+        }, assistantWorkspace)
       : undefined;
   }
 
@@ -188,6 +190,9 @@ export class DesktopController extends EventEmitter {
       if (event.type !== "runtime.updated" || event.itemId !== "session:subagent-activity") this.queuePublish();
     });
     this.assistantMailCoordinator?.start();
+    this.broker.on("system.init", (sessionId: string, tools: string[]) => {
+      this.assistantMailCoordinator?.observeToolCatalog(sessionId, tools);
+    });
     this.broker.on("changed", () => {
       this.assistantMailCoordinator?.pauseIfArchived();
       this.queuePublish();
@@ -252,7 +257,7 @@ export class DesktopController extends EventEmitter {
           "turn.queue.cancel.v1",
           "transcript.toolDetail.v1",
           "plugin.magpie-quota.v1",
-          ...(this.assistantMailCoordinator ? AssistantMailCoordinator.CAPABILITIES : []),
+          ...(this.assistantMailCoordinator?.capabilities() ?? []),
           ...(this.updater ? ["system.update.v1" as const] : []),
         ],
       },

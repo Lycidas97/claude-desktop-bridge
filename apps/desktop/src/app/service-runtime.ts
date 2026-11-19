@@ -6,7 +6,7 @@ import {
   parseBridgeIceServers,
   relayPathForUrl,
 } from "@bridge/protocol";
-import { app, Notification, powerMonitor, safeStorage, shell, systemPreferences } from "electron";
+import { app, Notification, powerMonitor, powerSaveBlocker, safeStorage, shell, systemPreferences } from "electron";
 import { ClaudeInspectorMonitor } from "../claude/claude-inspector-monitor.js";
 import { ClaudeInspectorStartup } from "../claude/claude-inspector-startup.js";
 import {
@@ -36,6 +36,7 @@ import { ConversationStateStore } from "../controller/conversation-state-store.j
 import { MagpieConnectionRepository } from "../claude/magpie-connection.js";
 import { DesktopUpdater } from "../updater/desktop-updater.js";
 import { ServiceResources } from "./service-resources.js";
+import { WorkspaceProvisioner } from "../controller/assistant-workspace.js";
 import { diagnostics } from "./diag.js";
 import type { MemoryRecorder } from "./memory-recorder.js";
 import { AssistantMailService } from "../../../../plugins/assistant-mail/desktop.js";
@@ -150,7 +151,19 @@ export async function createServiceRuntime(options: {
     resources.defer("Assistant mail", () => assistantMail.close());
     options.onStage?.("打开邮件数据库");
     await assistantMail.initialize();
-    const mailTools = await serveAssistantMailTools({ userDataPath, service: assistantMail });
+    const workspace = new WorkspaceProvisioner({ userDataPath, appPath: app.getAppPath(), execPath: process.execPath });
+    const managed = assistantMail.binding()?.managed;
+    const assistantWorkspacePath = managed ? await workspace.prepare(managed.token) : workspace.path;
+    const mailTools = await serveAssistantMailTools({
+      userDataPath, service: assistantMail,
+      authorizeManagedToken: token => {
+        const binding = assistantMail.binding();
+        return binding?.managed?.token === token ? binding.nativeSessionId ?? undefined : undefined;
+      },
+      onManagedCall: (sessionId, tool) => {
+        void eventLog.append({ sessionId, origin: "system", type: "plugin.assistant-mail.tool-invoked", data: { tool } });
+      },
+    });
     resources.defer("Assistant mail tools", () => mailTools.close());
     const broker = new ClaudeDesktopBridge({
       settingsPath: connectorPaths().claudeSettings,
@@ -158,6 +171,7 @@ export async function createServiceRuntime(options: {
       conversationState,
       magpieConnection: new MagpieConnectionRepository(join(userDataPath, "magpie-connection-v1.json"), safeStorage),
       evidence,
+      assistantWorkspacePath,
     });
     resources.defer("Claude Desktop bridge", () => broker.close());
     const claudeDesktop = new ClaudeDesktopLifecycle();
@@ -192,6 +206,7 @@ export async function createServiceRuntime(options: {
       undefined,
       options.memoryRecorder,
       assistantMail,
+      workspace,
     );
 
     // The service owns the Claude broker and controller.
@@ -245,13 +260,30 @@ export async function createServiceRuntime(options: {
     resources.defer("Inspector monitor", () => inspector.close());
     await inspector.start();
     const onSuspend = () => controller.pauseForSleep();
-    const onResume = () => void controller.reconnect().catch((error: unknown) => {
-      process.stderr.write(`Bridge resume failed: ${String(error)}\n`);
-    });
+    let assistantBlocker: number | undefined;
+    const syncAssistantBlocker = () => {
+      const needed = Boolean(assistantMail.binding()?.nativeSessionId) || assistantMail.status().accounts.some(account => account.enabled);
+      if (needed && assistantBlocker === undefined) {
+        assistantBlocker = powerSaveBlocker.start("prevent-app-suspension");
+      } else if (!needed && assistantBlocker !== undefined) {
+        powerSaveBlocker.stop(assistantBlocker);
+        assistantBlocker = undefined;
+      }
+    };
+    const onResume = () => {
+      assistantMail.resume();
+      void controller.reconnect().catch((error: unknown) => {
+        process.stderr.write(`Bridge resume failed: ${String(error)}\n`);
+      });
+    };
     resources.defer("Power monitor", () => {
+      assistantMail.off("changed", syncAssistantBlocker);
+      if (assistantBlocker !== undefined) powerSaveBlocker.stop(assistantBlocker);
       powerMonitor.removeListener("suspend", onSuspend);
       powerMonitor.removeListener("resume", onResume);
     });
+    assistantMail.on("changed", syncAssistantBlocker);
+    syncAssistantBlocker();
     powerMonitor.on("suspend", onSuspend);
     powerMonitor.on("resume", onResume);
 

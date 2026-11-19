@@ -9,6 +9,7 @@ export interface AssistantBinding {
   nativeSessionId: string | null;
   sectionId: string | null;
   previousSessionIds: string[];
+  managed?: { path: string; policy: string; token: string };
 }
 
 export interface MailIdentity {
@@ -115,6 +116,9 @@ export class AssistantMailStore {
         UNIQUE (account_key, mailbox, uid_validity, uid)
       ) STRICT;
     `);
+    if (!this.database.prepare("PRAGMA table_info(assistant_binding)").all().some(column => column.name === "managed_json")) {
+      this.database.exec("ALTER TABLE assistant_binding ADD COLUMN managed_json TEXT");
+    }
     if (!this.database.prepare("PRAGMA table_info(mail_events)").all().some(column => column.name === "analysis_json")) {
       this.database.exec("ALTER TABLE mail_events ADD COLUMN analysis_json TEXT");
     }
@@ -127,21 +131,25 @@ export class AssistantMailStore {
 
   binding(): AssistantBinding | undefined {
     const row = this.db().prepare("SELECT * FROM assistant_binding WHERE singleton = 1").get() as {
-      assistant_id: string; native_session_id: string | null; section_id: string | null; previous_session_ids: string;
+      assistant_id: string; native_session_id: string | null; section_id: string | null;
+      previous_session_ids: string; managed_json: string | null;
     } | undefined;
     return row ? {
       assistantId: row.assistant_id, nativeSessionId: row.native_session_id,
       sectionId: row.section_id, previousSessionIds: JSON.parse(row.previous_session_ids) as string[],
+      ...(row.managed_json ? { managed: JSON.parse(row.managed_json) as NonNullable<AssistantBinding["managed"]> } : {}),
     } : undefined;
   }
 
   setBinding(binding: AssistantBinding): void {
     this.db().prepare(`
-      INSERT INTO assistant_binding VALUES (1, ?, ?, ?, ?)
+      INSERT INTO assistant_binding (singleton, assistant_id, native_session_id, section_id, previous_session_ids, managed_json)
+      VALUES (1, ?, ?, ?, ?, ?)
       ON CONFLICT(singleton) DO UPDATE SET assistant_id = excluded.assistant_id,
         native_session_id = excluded.native_session_id, section_id = excluded.section_id,
-        previous_session_ids = excluded.previous_session_ids
-    `).run(binding.assistantId, binding.nativeSessionId, binding.sectionId, JSON.stringify(binding.previousSessionIds));
+        previous_session_ids = excluded.previous_session_ids, managed_json = excluded.managed_json
+    `).run(binding.assistantId, binding.nativeSessionId, binding.sectionId, JSON.stringify(binding.previousSessionIds),
+      binding.managed ? JSON.stringify(binding.managed) : null);
   }
 
   /** A new mailbox generation starts at enable time; an existing one resumes its committed UID. */

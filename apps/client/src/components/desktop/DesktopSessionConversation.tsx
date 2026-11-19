@@ -52,7 +52,7 @@ import {
   type ConversationDraftsController,
 } from "../conversation/ConversationDraftsProvider.js";
 import { EvidencePanel } from "../evidence/EvidencePanel.js";
-import { ConversationView } from "../conversation/ConversationView.js";
+import { ConversationView, type ConversationViewProps } from "../conversation/ConversationView.js";
 import type { SessionConfigurationChange } from "../session/SessionConfigurationDialog.js";
 import { useDesktopConversationTransfers } from "./useDesktopConversationTransfers.js";
 
@@ -935,15 +935,16 @@ export function DesktopSessionConversation({
   onSelectSession,
   onForkCreated,
   headerLeading,
-  conversationTabLabel,
+  surface = "project",
+  alternateStage,
+  hideComposer,
   conversationDrafts: externalDrafts,
   externalActionError,
-}: Pick<DesktopConversationInput, "snapshot" | "events"> & {
+}: Pick<DesktopConversationInput, "snapshot" | "events"> & Pick<ConversationViewProps, "surface" | "alternateStage" | "hideComposer"> & {
   session: BridgeSessionInfo;
   onSelectSession(sessionId: string): void | Promise<void>;
   onForkCreated?(parentSessionId: string, created: BridgeSessionInfo): void;
   headerLeading?: ReactNode | undefined;
-  conversationTabLabel?: string | undefined;
   conversationDrafts?: ConversationDraftsController | undefined;
   externalActionError?: string | undefined;
 }) {
@@ -965,11 +966,16 @@ export function DesktopSessionConversation({
   );
   const canCommand = snapshot.host.capabilities.includes("session.command.v1");
   const canRename = snapshot.host.capabilities.includes("session.rename.v1");
+  const canFork = surface === "project" && !snapshot.projects.some((project) => (
+    project.projectId === session.projectId && project.managedAssistant
+  ));
 
   return (
     <ConversationView
       variant="desktop"
-      conversationTabLabel={conversationTabLabel}
+      surface={surface}
+      alternateStage={alternateStage}
+      hideComposer={hideComposer}
       hostId={hostId}
       session={session}
       {...(headerLeading ? { headerLeading } : {})}
@@ -1030,13 +1036,13 @@ export function DesktopSessionConversation({
       onRewindSession={controller.rewindSession}
       sessionMenu={{
         rename: ((canCommand && desktopRuntimeId(session) === "claude-desktop") || canRename) ? controller.renameSession : undefined,
-        move: snapshot.host.capabilities.includes("section.move.v1") ? controller.moveSessionSection : undefined,
-        async fork(targetSessionId) {
+        move: surface === "project" && snapshot.host.capabilities.includes("section.move.v1") ? controller.moveSessionSection : undefined,
+        fork: canFork ? async (targetSessionId) => {
           const created = await controller.forkSession(targetSessionId);
           onForkCreated?.(targetSessionId, created);
           await controller.onRefreshSnapshot();
           return created;
-        },
+        } : undefined,
         archive: controller.archiveSession,
         delete: controller.deleteSession,
         error: externalActionError,

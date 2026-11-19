@@ -84,9 +84,9 @@
 .assistant-mail-empty { text-align: center; padding: 48px 8px; color: var(--muted); }
 .assistant-mail-older { display: block; margin: 20px auto 0; }
 .conversation-stream > .assistant-mail-card, .desktop-conversation-stream > .assistant-mail-card { margin: 16px 0; }
-.assistant-page.is-conversation { display: flex; flex-direction: column; overflow: hidden; padding-bottom: 0; }
-.assistant-page.is-conversation > .assistant-page-content { flex: 0 0 auto; padding-bottom: 0; }
-.assistant-page.is-conversation > .assistant-page-content:empty { display: none; }
+.assistant-page.has-conversation { display: flex; flex-direction: column; overflow: hidden; padding-bottom: 0; }
+.assistant-page.has-conversation > .assistant-page-content { flex: 0 0 auto; padding-bottom: 0; }
+.assistant-page.has-conversation > .assistant-page-content:empty { display: none; }
 .assistant-view-tabs {
   display: inline-flex;
   align-items: center;
@@ -138,11 +138,13 @@
   color: var(--muted);
 }
 .assistant-page-mobile .m-header .assistant-view-tabs > .icon-button {
-  width: 36px;
-  height: 36px;
-  min-width: 36px;
-  min-height: 36px;
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
 }
+.assistant-page-mobile .assistant-view-switch > button { min-width: 44px; min-height: 44px; }
+.assistant-page-mobile :is(.assistant-session-link, .assistant-page-content .primary-button, .assistant-page-content .secondary-button, .assistant-page-content summary) { min-height: 44px; }
 .assistant-view-tabs > .icon-button:hover:not(:disabled) {
   background: var(--surface-2);
   color: var(--text);
@@ -164,3 +166,27 @@
 .assistant-mail-reference strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(13px * var(--font-scale)); }
 .assistant-mail-reference code { overflow-wrap: anywhere; }
 .assistant-mail-reference p { flex-basis: 100%; margin: 0; color: var(--danger-ink); font-size: calc(12px * var(--font-scale)); }
+
+.assistant-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; }
+.assistant-workspace-confirm, .assistant-account-confirm { margin: 12px 0; }
+.assistant-workspace-confirm code { display: block; margin-bottom: 12px; overflow-wrap: anywhere; color: var(--text); }
+.assistant-accounts-heading { border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.assistant-accounts-heading h2 { margin: 0; font-size: calc(16px * var(--font-scale)); font-weight: 600; }
+.assistant-accounts p { color: var(--muted); font-size: calc(13px * var(--font-scale)); line-height: 1.6; }
+.assistant-accounts p[role="alert"], .assistant-accounts .assistant-remove { color: var(--danger-ink); }
+.assistant-account-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 4px 18px; padding: 9px 0; border-bottom: 1px solid var(--line); }
+.assistant-account-identity { display: grid; gap: 3px; overflow-wrap: anywhere; }
+.assistant-account-identity strong { font-size: calc(14px * var(--font-scale)); font-weight: 600; }
+.assistant-account-identity span, .assistant-account-state { color: var(--muted); font-size: calc(12px * var(--font-scale)); }
+.assistant-account-state[data-state="connected"] { color: var(--success-ink); }
+.assistant-account-state[data-state="error"] { color: var(--danger-ink); }
+.assistant-account-state[data-state="reconnecting"] { color: var(--warm-ink); }
+.assistant-account-form { display: grid; min-width: 0; max-width: 30rem; gap: 12px; margin: 16px 0 0; padding: 0; border: 0; }
+.assistant-account-form legend { margin-bottom: 12px; padding: 0; font-size: calc(14px * var(--font-scale)); font-weight: 600; overflow-wrap: anywhere; }
+.assistant-account-form label { display: grid; gap: 5px; color: var(--muted); font-size: calc(13px * var(--font-scale)); }
+.assistant-account-form input { width: 100%; min-width: 0; min-height: 36px; padding: 7px 10px; border: 1px solid var(--line-strong); border-radius: var(--r-input); color: var(--text); background: var(--surface); font: inherit; }
+.assistant-account-server { display: grid; grid-template-columns: minmax(0, 1fr) 6rem; gap: 12px; }
+.assistant-page-mobile .assistant-account-row { grid-template-columns: minmax(0, 1fr) auto; }
+.assistant-page-mobile .assistant-account-actions { grid-column: 1 / -1; }
+.assistant-page-mobile .assistant-account-form input { min-height: 44px; font-size: max(16px, calc(13px * var(--font-scale))); }
+.assistant-page-mobile .assistant-accounts-heading button, .assistant-page-mobile .assistant-account-actions button { min-width: 44px; }

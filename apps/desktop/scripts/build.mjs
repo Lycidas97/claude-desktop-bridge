@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
+import { buildMailMcp } from "../../../plugins/assistant-mail/build.mjs";
 import { buildEnvironmentValue } from "./build-environment.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -73,6 +74,18 @@ await Promise.all([
   cp(resolve(nodeDataChannelSource, "LICENSE"), resolve(nodeDataChannelTarget, "LICENSE")),
 ]);
 await Promise.all([
+  buildMailMcp(resolve(dist, "assistant-mcp.cjs")),
+  build({
+    stdin: {
+      contents: 'import { runAssistantFsGuard } from "./fs-guard.ts"; void runAssistantFsGuard(process.argv[2]);',
+      resolveDir: resolve(root, "../../plugins/assistant-mail"),
+    },
+    outfile: resolve(dist, "assistant-fs-guard.cjs"),
+    bundle: true,
+    platform: "node",
+    format: "cjs",
+    target: "node22",
+  }),
   build({
     entryPoints: [resolve(root, "src/main.ts")],
     outfile: resolve(dist, "main.cjs"),

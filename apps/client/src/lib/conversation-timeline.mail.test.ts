@@ -66,6 +66,24 @@ describe("mail conversation timeline", () => {
     expect(conversationTimeline([], [], [first, second])).toEqual([batch]);
   });
 
+  it("recognizes a Native trigger when the inbox has not loaded any of its cards", () => {
+    const native = message({ turnId: "native-message", source: "assistant-trigger", requestId: "batch", delivery: "session-received" });
+    const alias = message({ ...native, id: "before-rekey" });
+    const manual = message({ id: "manual", requestId: "batch", text: native.text });
+    expect(conversationTimeline([alias, native, manual], [], [])).toEqual([
+      { kind: "assistant-trigger-batch", batchId: "batch", cards: [], nativeMessage: native },
+      { kind: "message", item: manual },
+    ]);
+  });
+
+  it("joins a live Native trigger to its batch before the mail list receives the message UUID", () => {
+    const native = message({ source: "assistant-trigger", requestId: "batch", delivery: "session-received" });
+    const first = card({ nativeDelivery: { state: "submitting", batchId: "batch", nativeSessionId: native.sessionId } });
+    expect(conversationTimeline([native], [], [first])).toEqual([
+      { kind: "assistant-trigger-batch", batchId: "batch", cards: [first], nativeMessage: native },
+    ]);
+  });
+
   it("shows recorded, unsubmitted mail without a native message, analysis, or ACK", () => {
     const mail = card();
 

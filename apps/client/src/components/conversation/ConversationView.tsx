@@ -853,8 +853,11 @@ export function ConversationView({
         }
         if (node.kind === "assistant-trigger-batch") {
           const key = `assistant-trigger:${node.batchId}`;
+          const delivery = node.nativeMessage?.delivery;
+          const state = delivery === "queued" || delivery === "uncertain" || delivery === "cancelled" || delivery === "failed" ? delivery
+            : node.nativeMessage ? "observed" : node.cards[0]!.nativeDelivery.state;
           return <section className="assistant-trigger-batch" key={key} data-stream-key={key} aria-label="助理唤醒">
-            <header><strong>助理唤醒</strong><span>{DELIVERY_LABELS[node.cards[0]!.nativeDelivery.state]}</span></header>
+            <header><strong>助理唤醒</strong><span>{DELIVERY_LABELS[state]}</span></header>
             {node.cards.map(card => <MailCard key={card.mailRefId} card={card} showBatchDelivery={false} />)}
             {node.nativeMessage && <details className="assistant-mail-native"><summary>关联原生消息</summary>
               <code>{node.nativeMessage.id}</code><pre>{node.nativeMessage.text}</pre>

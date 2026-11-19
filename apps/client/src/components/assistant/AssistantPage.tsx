@@ -141,8 +141,8 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
       {bindingError && <p role="alert">{bindingError}</p>}
       {displayedView === "settings" && capabilities.includes("plugin.assistant-mail.triggers.v1") && workspace?.nativeSessionId && binding?.nativeSessionId === workspace.nativeSessionId
         ? <div className="assistant-delivery-setting">
-          <label>
-            <span>主动助理</span>
+          <label className="toggle-row">
+            <span><strong>主动助理</strong></span>
             <input type="checkbox" role="switch" checked={mail.assistant?.automaticDelivery === true}
               disabled={!mail.online || deliveryBusy || bindingBusy || (!mail.assistant?.automaticDelivery && !mail.assistant?.automaticDeliveryAvailable)}
               onChange={event => {
@@ -152,6 +152,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
                   .catch(reason => setDeliveryError(reason instanceof Error ? reason.message : "主动助理设置失败。"))
                   .finally(() => setDeliveryBusy(false));
               }} />
+            <i aria-hidden="true" />
           </label>
           {mail.assistant?.automaticDelivery && !mail.assistant.automaticDeliveryAvailable && <p role="status">自动投递已暂停，等待托管会话就绪。</p>}
           {deliveryError && <p role="alert">{deliveryError}</p>}

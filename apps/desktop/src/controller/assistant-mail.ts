@@ -36,7 +36,7 @@ const managedHistoryMethods = new Set([
 ]);
 
 export interface AssistantMailCoordinatorHost {
-  broker?: Pick<ClaudeDesktopBridge, "canProvisionAssistantWorkspace" | "createSession" | "configureSession" | "session" | "startTurn" | "resolveUncertainDelivery" | "nativeAssistantSession">;
+  broker?: Pick<ClaudeDesktopBridge, "canProvisionAssistantWorkspace" | "createSession" | "configureSession" | "session" | "startTurn" | "resolveUncertainDelivery" | "readNativeSessionIdentity">;
   receipts?: ConversationStateStore | undefined;
   allSessions(): BridgeSessionInfo[];
   allProjects(): BridgeProjectInfo[];
@@ -150,16 +150,29 @@ export class AssistantMailCoordinator {
     return undefined;
   }
 
+  async readManagedNativeSession(sessionId: string) {
+    const binding = this.mail.binding();
+    if (binding?.nativeSessionId !== sessionId || !binding.managed) return undefined;
+    const native = await this.host.broker?.readNativeSessionIdentity(sessionId);
+    return native && native.cwd === binding.managed.path && !native.archived && native.permissionMode === "dontAsk" ? native : undefined;
+  }
+
+  compactContext(sessionId: string, event: "PreCompact" | "PostCompact" | "SessionStart"): string | undefined {
+    if (event === "PostCompact") return undefined;
+    return [
+      ...(event === "PreCompact" ? ["保留当前托管绑定、未结批次与待批提案的宿主标识。不要将外部邮件标题、发件人、正文或附件名写入摘要。"] : []),
+      "绑定：当前托管会话。未结事件（批次、类型、引用）：",
+      ...this.mail.triggers.unfinished(sessionId).map(({ batchId, kind, eventId }) => `${batchId} ${kind} ${eventId}`),
+    ].join("\n");
+  }
+
   startTriggers(): void {
     const { receipts, broker } = this.host;
     if (!this.workspace || !receipts || !broker) return;
     this.dispatcher = new EventTriggerDispatcher(this.mail.triggers, receipts, broker,
       () => this.mail.binding()?.managed?.automaticDelivery ? this.eligibleTarget() : undefined,
       () => this.host.canStartTurn(),
-      async sessionId => {
-        const path = this.mail.binding()?.managed?.path;
-        return Boolean(path && (await broker.nativeAssistantSession(sessionId))?.cwd === path);
-      },
+      async sessionId => Boolean(await this.readManagedNativeSession(sessionId)),
       () => this.publishMailChange(true));
     this.runtimeChanged(true);
   }
@@ -262,9 +275,10 @@ export class AssistantMailCoordinator {
     const previous = this.mail.binding()?.managed;
     const token = randomBytes(32).toString("hex");
     let observed: BridgeSessionInfo;
+    let path: string;
     this.initializingWorkspace = true;
     try {
-      const path = await workspace.prepare(token);
+      path = await workspace.prepare(token);
       const session = await broker.createSession(path, "助理", undefined, true);
       this.unconfirmedSessions.add(session.sessionId);
       const configured = await broker.configureSession({ sessionId: session.sessionId, permissionMode: "dontAsk" });
@@ -283,7 +297,7 @@ export class AssistantMailCoordinator {
       this.initializingWorkspace = false;
     }
     this.unconfirmedSessions.delete(observed.sessionId);
-    this.bindSession(observed, { path: workspacePath, token, policy: ASSISTANT_WORKSPACE_POLICY });
+    this.bindSession(observed, { path, token, policy: ASSISTANT_WORKSPACE_POLICY });
   }
 
   pauseBinding(sessionId: string): void {

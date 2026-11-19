@@ -178,19 +178,13 @@ export async function createServiceRuntime(options: {
       },
       compact: {
         async cliSessionId(sessionId) {
-          const session = await broker.nativeAssistantSession(sessionId);
-          return session && session.cwd === assistantMail.binding()?.managed?.path ? session.cliSessionId : undefined;
+          return (await controller.assistantMailCoordinator?.readManagedNativeSession(sessionId))?.cliSessionId;
         },
         observed(sessionId, hook) {
           void eventLog.append({ sessionId, origin: "system", type: "plugin.assistant-mail.compact-hook",
             data: { event: hook.event, ...(hook.event === "SessionStart" ? { source: hook.source } : { trigger: hook.trigger }) },
           });
-          if (hook.event === "PostCompact") return undefined;
-          const refs = assistantMail.triggers.unfinished(sessionId).map(({ batchId, kind, eventId }) => `${batchId} ${kind} ${eventId}`);
-          return [
-            ...(hook.event === "PreCompact" ? ["保留当前托管绑定、未结批次与待批提案的宿主标识。不要将外部邮件标题、发件人、正文或附件名写入摘要。"] : []),
-            "绑定：当前托管会话。未结事件（批次、类型、引用）：", ...refs,
-          ].join("\n");
+          return controller.assistantMailCoordinator?.compactContext(sessionId, hook.event);
         },
       },
     });

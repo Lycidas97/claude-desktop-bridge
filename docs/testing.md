@@ -456,7 +456,7 @@ Desktop，未操作托管会话或邮箱。
 
 ## 助理事件唤醒
 
-桌面 dispatcher 测试用 SQLite 和隔离 LocalSessions fixture 覆盖空闲／忙碌投递、缺少即时 `queued`、用原幂等键恢复收据、按 rekey 后 UUID 对账、换绑暂停和 `dontAsk` 回读。插件测试覆盖同事务提交、历史及开启前邮件不投递，以及三个压缩 hook 通过本机网关认证。浏览器 `assistant-mail` 场景验证开启、两封新邮件形成一条时间线批次、独立处理状态与关闭。
+桌面 dispatcher 测试用 SQLite 和隔离 LocalSessions fixture 覆盖空闲／忙碌投递、缺少即时 `queued`、用原幂等键恢复收据、按 rekey 后 UUID 对账、换绑暂停和 `dontAsk` 回读。插件测试覆盖同事务提交、历史及开启前邮件不投递，以及三个压缩 hook 通过本机网关认证。浏览器 `assistant-mail` 场景验证开启、两封新邮件形成一条时间线批次、独立处理状态与关闭；邮件列表暂时不可用时，Native 收据仍能识别批次，不把触发指令显示成普通消息。列表恢复后邮件补入同一批次。
 
 这些检查使用隔离数据。真实邮箱自动触发、物理手机唤醒、安装态无参 `/compact`、自动压缩和 hook 故障的影响需实机取证。此前手动带 focus 的探针见上节。
 

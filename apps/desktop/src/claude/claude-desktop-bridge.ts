@@ -639,11 +639,14 @@ export class ClaudeDesktopBridge extends EventEmitter {
 
   listSessions(): BridgeSessionInfo[] { return [...this.sessions.values()].sort((a, b) => b.lastActivityAt - a.lastActivityAt); }
   session(sessionId: string): BridgeSessionInfo | undefined { return this.sessions.get(sessionId); }
-  async nativeAssistantSession(sessionId: string): Promise<{ cwd: string; cliSessionId?: string } | undefined> {
+  async readNativeSessionIdentity(sessionId: string) {
     if (!this.inspector.ready || !this.inspector.supports("getSession")) return undefined;
     const native = record(await this.inspector.call("getSession", [sessionId]));
-    if (native.sessionId !== sessionId || typeof native.cwd !== "string" || native.isArchived || native.permissionMode !== "dontAsk") return undefined;
-    return { cwd: native.cwd, ...(typeof native.cliSessionId === "string" ? { cliSessionId: native.cliSessionId } : {}) };
+    if (native.sessionId !== sessionId || typeof native.cwd !== "string") return undefined;
+    return { cwd: native.cwd, archived: native.isArchived === true,
+      permissionMode: typeof native.permissionMode === "string" ? native.permissionMode : undefined,
+      cliSessionId: typeof native.cliSessionId === "string" ? native.cliSessionId : undefined,
+    };
   }
   executionCwd(sessionId: string): string | undefined {
     const session = this.native.get(sessionId);
@@ -967,6 +970,11 @@ export class ClaudeDesktopBridge extends EventEmitter {
     return { sessionId, messageId, scope, ...(prefill !== undefined ? { prefill } : {}) };
   }
 
+  private historyReceipt(sessionId: string, itemId: string): NativeDesktopReceipt | undefined {
+    return [...this.receipts.values()].find(receipt => receipt.sessionId === sessionId &&
+      (receipt.messageId === itemId || receipt.previousMessageIds?.includes(itemId)));
+  }
+
   async history(sessionId: string, cursor?: string, limit = 50, { hydrateModel = false } = {}): Promise<BridgeHistoryPage> {
     const id = this.desktopId(sessionId);
     const read = diagnostics.begin(cursor ? "history.cursor" : "history.initial", { cursor: Boolean(cursor), limit });
@@ -1022,11 +1030,15 @@ export class ClaudeDesktopBridge extends EventEmitter {
         if (JSON.stringify(this.session(sessionId)) !== previousSession) this.emit("changed");
       }
       for (const item of items) {
-        const receipt = item.role === "user" ? [...this.receipts.values()].find(receipt => receipt.sessionId === sessionId && receipt.messageId === item.id) : undefined;
+        const receipt = item.role === "user" ? this.historyReceipt(sessionId, item.id) : undefined;
         if (receipt) {
           item.delivery = receipt.state === "dispatching" ? "host-received" : receipt.state;
           item.commandId = receipt.commandId;
           item.requestId = receipt.requestId;
+          if (receipt.source) {
+            item.source = receipt.source;
+            item.turnId = receipt.messageId;
+          }
           if (receipt.queueSettled) item.queueSettled = true;
         }
       }
@@ -1803,7 +1815,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
       const items = nativeHistoryItems(sessionId, [event.message], projection);
       await this.enrichSubagentItems(sessionId, items);
       for (const item of items) {
-        const receipt = item.role === "user" ? [...this.receipts.values()].find(receipt => receipt.sessionId === sessionId && receipt.messageId === message.uuid) : undefined;
+        const receipt = item.role === "user" ? this.historyReceipt(sessionId, item.id) : undefined;
         if (item.role === "assistant") await this.options.eventLog.flushDeltas(sessionId);
         await this.record(nativeItemEventDraft(sessionId, item, receipt));
       }

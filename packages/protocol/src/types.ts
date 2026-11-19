@@ -958,6 +958,8 @@ export interface BridgeHistoryItem {
   /** Bridge receipt identity for a user message sent through the paired channel. */
   commandId?: string;
   requestId?: string;
+  /** Set by the host from its receipt, not inferred from transcript text. */
+  source?: "assistant-trigger";
   /** Last native delivery stage observed for this exact session and user UUID. */
   delivery?: BridgeDeliveryState;
   /** Desktop observed an idle, drained queue after acknowledging this input. */

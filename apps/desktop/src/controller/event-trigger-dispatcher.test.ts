@@ -18,7 +18,7 @@ let available: boolean;
 
 function createDispatcher() {
   return new EventTriggerDispatcher(mail.triggers, env.state, broker, () => deliveryTarget,
-    () => available, async sessionId => Boolean(await broker.nativeAssistantSession(sessionId)), () => undefined);
+    () => available, async sessionId => (await broker.readNativeSessionIdentity(sessionId))?.permissionMode === "dontAsk", () => undefined);
 }
 
 function recordMail(uid: number) {
@@ -110,10 +110,10 @@ it("does not submit on the stale dontAsk catalog after Native changes the permis
   clock.mockReturnValue(batch.readyAt);
   env.native.sessions[0]!.permissionMode = "bypassPermissions";
   expect(broker.session(target)?.nativePermissionMode).toBe("dontAsk");
-  const preflight = vi.spyOn(broker, "nativeAssistantSession");
+  const preflight = vi.spyOn(broker, "readNativeSessionIdentity");
   dispatcher.wake();
   expect(preflight).toHaveBeenCalledWith(target);
-  await expect(preflight.mock.results[0]!.value).resolves.toBeUndefined();
+  await expect(preflight.mock.results[0]!.value).resolves.toMatchObject({ permissionMode: "bypassPermissions" });
   expect(mail.triggers.batch(batch.batchId)?.attemptedAt).toBeNull();
   expect(sends()).toEqual([]);
   env.native.sessions[0]!.permissionMode = "dontAsk";
@@ -169,6 +169,10 @@ it("confirms an uncertain send only by its current native UUID, retaining the ol
   env.native.page.messages = [{ uuid: latest }];
   dispatcher.wake(true);
   await vi.waitFor(() => expect(dispatcher.project(batch, target).state).toBe("observed"));
+  env.native.page.messages = [original.messageId, latest].map(uuid => ({ uuid, type: "user", message: { role: "user", content: "Trigger references" } }));
+  expect((await broker.history(target)).items).toMatchObject([original.messageId, latest].map(id => ({
+    id, turnId: latest, requestId: batch.batchId, source: "assistant-trigger", delivery: "session-received",
+  })));
   expect(sends()).toHaveLength(1);
   expect(mail.page().events.find(item => item.mailRefId === event.mailRefId)?.processingStatus).toBe("pending");
 });

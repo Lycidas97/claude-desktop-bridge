@@ -484,6 +484,7 @@ export function conversationItems(
         createdAt: event.timestamp,
         origin: event.origin,
         delivery: mergeAcceptedDelivery(items.get(itemId)?.delivery, event.data.delivery as BridgeDeliveryState | undefined),
+        ...(event.data.source === "assistant-trigger" ? { source: event.data.source } : {}),
         ...(event.data.queueSettled === true ? { queueSettled: true } : {}),
         ...(attachments?.length ? { attachments } : {}),
         ...(typeof event.data.requestId === "string" ? { requestId: event.data.requestId } : {}),
@@ -869,6 +870,15 @@ export function conversationTimeline(
       batch.nativeMessage ??= item;
       batchByMessage.set(item, batch);
     }
+  }
+
+  for (const item of userMessages.values()) {
+    if (item.source !== "assistant-trigger" || !item.requestId) continue;
+    const batch = batches.get(item.requestId) ?? { kind: "assistant-trigger-batch", batchId: item.requestId, cards: [] };
+    if (batch.cards[0] && batch.cards[0].nativeDelivery.nativeSessionId !== item.sessionId) continue;
+    if (!batch.nativeMessage || item.id === item.turnId) batch.nativeMessage = item;
+    batchByMessage.set(item, batch);
+    batches.set(batch.batchId, batch);
   }
 
   const timeline: ConversationTimelineEntry[] = [];

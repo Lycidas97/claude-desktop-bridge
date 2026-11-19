@@ -517,6 +517,14 @@ it("binds the provisioned Native conversation only after checking the confirmed 
   expect((await run.publish()).assistantMail?.workspace).toMatchObject({ toolIsolation: "unobserved" });
 });
 
+it("persists the canonical workspace returned by provisioning, not the path from the request", async () => {
+  const canonical = join(root, "resolved-user-data", "private", "assistant", "workspace");
+  vi.spyOn(run.workspace, "prepare").mockResolvedValueOnce(canonical);
+  await run.request("plugin.assistant-mail.workspace.initialize", { workspacePath: run.workspace.path });
+  expect(run.broker.createSession).toHaveBeenCalledExactlyOnceWith(canonical, "助理", undefined, true);
+  expect(store.binding()?.managed?.path).toBe(canonical);
+});
+
 it("rejects manual binding to a previous managed session", async () => {
   await run.request("plugin.assistant-mail.workspace.initialize", { workspacePath: run.workspace.path });
   await run.request("plugin.assistant-mail.bind", { sessionId: "native-second" });

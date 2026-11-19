@@ -71,6 +71,8 @@ const SESSION_MANAGERS = `Object.values(process.mainModule.require('module')._ca
 
 export class NativeCallError extends Error {}
 export class InspectorDisconnectedError extends Error {}
+/** The socket or Bridge's renderer guard rejected the call before invoking LocalSessions. */
+export class InspectorNotDispatchedError extends InspectorDisconnectedError {}
 
 export interface NativeDesktopEvent {
   kind: "event" | "permission";
@@ -208,7 +210,7 @@ export class ClaudeDesktopInspector extends EventEmitter {
           dispose() { disposed = true; for (const stop of stops) stop(); if (waiter) waiter(null); queue.length = 0; delete globalThis[${JSON.stringify(STREAM)}]; }
         };
         return true;
-      })()`);
+      })()`, { allowMissingStream: true });
       this.ready = true;
       this.receiving = this.receiveEvents(socket);
       this.emit("connected");
@@ -221,14 +223,13 @@ export class ClaudeDesktopInspector extends EventEmitter {
 
   async call(method: string, args: unknown[] = []): Promise<unknown> {
     if (method === "armAutoFixOnNextPr") return this.startAutoFixOnNextPr(args[0] as string, args[1] as string);
-    if (!this.ready) throw new InspectorDisconnectedError("Claude Desktop inspector is disconnected; open the Node inspector from Desktop's developer menu");
+    if (!this.ready) throw new InspectorNotDispatchedError("Claude Desktop inspector is disconnected; open the Node inspector from Desktop's developer menu");
     if (!this.supports(method)) throw new NativeCallError(`Unsupported Claude Desktop method: ${method}`);
     diag("inspector.call.start", { method });
     try {
-      return await this.renderer(`(() => {
-        if (!globalThis[${JSON.stringify(STREAM)}]) throw new Error('BRIDGE_RENDERER_RELOADED');
-        return globalThis['claude.web'].LocalSessions[${JSON.stringify(method)}](${Array.from(args, arg => arg === undefined ? "undefined" : JSON.stringify(arg)).join(",")});
-      })()`, true, method === "getTranscriptPage" || method === "getTranscript" ? `native.${method}` : "native.other");
+      return await this.renderer(`globalThis['claude.web'].LocalSessions[${JSON.stringify(method)}](${Array.from(args, arg => arg === undefined ? "undefined" : JSON.stringify(arg)).join(",")})`, {
+        traceName: method === "getTranscriptPage" || method === "getTranscript" ? `native.${method}` : "native.other",
+      });
     } finally {
       diag("inspector.call.done", { method });
     }
@@ -274,7 +275,6 @@ export class ClaudeDesktopInspector extends EventEmitter {
     }
     await this.renderer(`(async () => {
       const stream = globalThis[${JSON.stringify(STREAM)}];
-      if (!stream) throw new Error('BRIDGE_RENDERER_RELOADED');
       const api = globalThis['claude.web'].LocalSessions;
       const sessionId = ${JSON.stringify(sessionId)};
       const branch = ${JSON.stringify(branch)};
@@ -343,7 +343,6 @@ export class ClaudeDesktopInspector extends EventEmitter {
   async availableCodeModels(): Promise<string[]> {
     if (!this.ready) throw new InspectorDisconnectedError("Claude Desktop inspector is disconnected");
     return this.renderer(`(async () => {
-      if (!globalThis[${JSON.stringify(STREAM)}]) throw new Error('BRIDGE_RENDERER_RELOADED');
       const response = await fetch('/api/bootstrap');
       if (!response.ok) throw new Error('Desktop model catalog request failed (' + response.status + ')');
       const bootstrap = await response.json();
@@ -360,7 +359,7 @@ export class ClaudeDesktopInspector extends EventEmitter {
     this.ready = false;
     try {
       if (socket.readyState === WebSocket.OPEN && this.webContentsId !== undefined) {
-        await this.renderer(`globalThis[${JSON.stringify(STREAM)}]?.dispose()`);
+        await this.renderer(`globalThis[${JSON.stringify(STREAM)}]?.dispose()`, { allowMissingStream: true });
       }
     } finally {
       this.disconnected();
@@ -373,7 +372,7 @@ export class ClaudeDesktopInspector extends EventEmitter {
     try {
       while (this.ready && this.socket === socket) {
         diag("inspector.events.wait");
-        const events = await this.renderer(`globalThis[${JSON.stringify(STREAM)}]?.next()`, false) as NativeDesktopEvent[] | null | undefined;
+        const events = await this.renderer(`globalThis[${JSON.stringify(STREAM)}]?.next()`, { timeout: false, allowMissingStream: true }) as NativeDesktopEvent[] | null | undefined;
         diag("inspector.events.batch", { count: events?.length ?? 0 });
         if (!events) break;
         for (const event of events) this.emit(event.kind, event.payload);
@@ -386,24 +385,32 @@ export class ClaudeDesktopInspector extends EventEmitter {
     }
   }
 
-  private async renderer(expression: string, timeout = true, traceName: DiagBucket = timeout ? "native.other" : "native.stream"): Promise<unknown> {
-    // Electron masks rejected executeJavaScript promises; carry native errors across that boundary.
-    const wrapped = `(async () => { try { return { ok: true, value: await (${expression}) }; } catch (error) { return { ok: false, error: String(error?.message ?? error) }; } })()`;
+  private async renderer(expression: string, { timeout = true, traceName = timeout ? "native.other" : "native.stream", allowMissingStream = false }:
+    { timeout?: boolean; traceName?: DiagBucket; allowMissingStream?: boolean } = {}): Promise<unknown> {
+    // Electron masks rejected executeJavaScript promises; keep guard results separate from Native values and errors.
+    const wrapped = `(async () => {
+      ${allowMissingStream ? "" : `if (!globalThis[${JSON.stringify(STREAM)}]) return { status: 'not-dispatched' };`}
+      try { return { status: 'ok', value: await (${expression}) }; }
+      catch (error) { return { status: 'error', message: String(error?.message ?? error) }; }
+    })()`;
     const result = await this.evaluate(`(() => {
       const page = process.mainModule.require('electron').webContents.fromId(${this.webContentsId});
-      if (!page) throw new Error('BRIDGE_RENDERER_RELOADED');
+      if (!page) return { status: 'not-dispatched' };
       return page.executeJavaScript(${JSON.stringify(wrapped)});
-    })()`, timeout, traceName) as { ok: boolean; value?: unknown; error?: string };
-    if (!result.ok) {
-      if (result.error?.includes("BRIDGE_RENDERER_RELOADED")) { const socket = this.socket; this.disconnected(); socket?.close(); }
-      throw new NativeCallError(result.error ?? "Desktop renderer call failed");
+    })()`, timeout, traceName) as { status: "ok"; value?: unknown } | { status: "error"; message: string } | { status: "not-dispatched" };
+    if (result.status === "not-dispatched") {
+      const socket = this.socket;
+      this.disconnected();
+      socket?.close();
+      throw new InspectorNotDispatchedError("Claude Desktop renderer was replaced before the call");
     }
+    if (result.status === "error") throw new NativeCallError(result.message);
     return result.value;
   }
 
   private evaluate(expression: string, timeout = true, traceName: DiagBucket = "native.other"): Promise<unknown> {
     const socket = this.socket;
-    if (!socket || socket.readyState !== WebSocket.OPEN) return Promise.reject(new InspectorDisconnectedError("Desktop inspector disconnected"));
+    if (!socket || socket.readyState !== WebSocket.OPEN) return Promise.reject(new InspectorNotDispatchedError("Desktop inspector disconnected"));
     const id = ++this.nextId;
     const settled = diagnostics.begin(traceName);
     diag("inspector.send", { request: id, codeUnits: expression.length, pending: this.pending.size, timeout });
@@ -430,7 +437,6 @@ export class ClaudeDesktopInspector extends EventEmitter {
     if (reply.error || exception) {
       const message = reply.error?.message ?? exception?.exception?.description ?? exception?.text ?? "Desktop call failed";
       pending.reject(new NativeCallError(message));
-      if (message.includes("BRIDGE_RENDERER_RELOADED")) { const socket = this.socket; this.disconnected(); socket?.close(); }
     } else pending.resolve(reply.result?.result?.value);
   }
 

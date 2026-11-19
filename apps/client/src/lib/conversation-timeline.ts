@@ -49,7 +49,8 @@ export function restorableSessionId(
 export type ConversationTimelineEntry =
   | { kind: "message"; item: ConversationItem }
   | { kind: "evidence"; evidence: BridgeEvidenceBundle }
-  | { kind: "mail"; card: BridgeMailCard; nativeMessage?: ConversationItem };
+  | { kind: "mail"; card: BridgeMailCard; nativeMessage?: ConversationItem }
+  | { kind: "assistant-trigger-batch"; batchId: string; cards: BridgeMailCard[]; nativeMessage?: ConversationItem };
 
 export function formatTime(value: number): string {
   return new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" }).format(value);
@@ -483,6 +484,7 @@ export function conversationItems(
         createdAt: event.timestamp,
         origin: event.origin,
         delivery: mergeAcceptedDelivery(items.get(itemId)?.delivery, event.data.delivery as BridgeDeliveryState | undefined),
+        ...(event.data.source === "assistant-trigger" ? { source: event.data.source } : {}),
         ...(event.data.queueSettled === true ? { queueSettled: true } : {}),
         ...(attachments?.length ? { attachments } : {}),
         ...(typeof event.data.requestId === "string" ? { requestId: event.data.requestId } : {}),
@@ -846,27 +848,66 @@ export function conversationTimeline(
     evidenceAfter.set(anchorIndex, anchored);
   }
 
+  const batches = new Map<string, Extract<ConversationTimelineEntry, { kind: "assistant-trigger-batch" }>>();
+  const standalone = mailCards.filter(card => !card.nativeDelivery.batchId);
+  for (const card of mailCards) {
+    const { batchId } = card.nativeDelivery;
+    if (!batchId) continue;
+    const batch = batches.get(batchId) ?? { kind: "assistant-trigger-batch", batchId, cards: [] };
+    batch.cards.push(card);
+    batches.set(batchId, batch);
+  }
+  const batchByMessage = new Map<ConversationItem, Extract<ConversationTimelineEntry, { kind: "assistant-trigger-batch" }>>();
+  const userMessages = new Map(items.filter(item => item.role === "user" && !item.sessionNotice)
+    .map(item => [JSON.stringify([item.sessionId, item.id]), item]));
+  for (const batch of batches.values()) {
+    batch.cards.sort((left, right) => left.recordedAt - right.recordedAt || left.seq - right.seq);
+    const { nativeSessionId, messageId, previousMessageIds } = batch.cards[0]!.nativeDelivery;
+    for (const id of [messageId, ...(previousMessageIds ?? [])]) {
+      if (!id) continue;
+      const item = userMessages.get(JSON.stringify([nativeSessionId, id]));
+      if (!item) continue;
+      batch.nativeMessage ??= item;
+      batchByMessage.set(item, batch);
+    }
+  }
+
+  for (const item of userMessages.values()) {
+    if (item.source !== "assistant-trigger" || !item.requestId) continue;
+    const batch = batches.get(item.requestId) ?? { kind: "assistant-trigger-batch", batchId: item.requestId, cards: [] };
+    if (batch.cards[0] && batch.cards[0].nativeDelivery.nativeSessionId !== item.sessionId) continue;
+    if (!batch.nativeMessage || item.id === item.turnId) batch.nativeMessage = item;
+    batchByMessage.set(item, batch);
+    batches.set(batch.batchId, batch);
+  }
+
   const timeline: ConversationTimelineEntry[] = [];
   const projected = new Set<string>();
   items.forEach((item, index) => {
-    const card = item.role === "user" ? mailCards.find(candidate => candidate.nativeDelivery.messageId === item.id && candidate.nativeDelivery.nativeSessionId === item.sessionId) : undefined;
+    const batch = batchByMessage.get(item);
+    const card = !batch && item.role === "user" ? standalone.find(candidate => candidate.nativeDelivery.messageId === item.id && candidate.nativeDelivery.nativeSessionId === item.sessionId) : undefined;
+    if (batch?.nativeMessage === item) timeline.push(batch);
     if (card) {
       projected.add(card.mailRefId);
       timeline.push({ kind: "mail", card, nativeMessage: item });
     }
-    // File-change tool cards are aggregated Codex-style into the 成果 tab;
-    // one card per edit would flood the conversation.
-    if (!card && !(item.role === "tool" && item.toolName === "File change")) {
-      timeline.push({ kind: "message", item });
-    }
-    for (const evidence of (evidenceAfter.get(index) ?? [])
-      .sort((left, right) => left.startedAt - right.startedAt)) {
+    // File changes are aggregated in 成果; rekey aliases share the batch's native position.
+    if (!batch && !card && !(item.role === "tool" && item.toolName === "File change")) timeline.push({ kind: "message", item });
+    for (const evidence of (evidenceAfter.get(index) ?? []).sort((left, right) => left.startedAt - right.startedAt)) {
       timeline.push({ kind: "evidence", evidence });
     }
   });
-  for (const card of mailCards.filter(candidate => candidate.seq >= 0 && !projected.has(candidate.mailRefId)).sort((left, right) => left.recordedAt - right.recordedAt || left.seq - right.seq)) {
-    const index = timeline.findIndex(entry => (entry.kind === "message" ? entry.item.createdAt : entry.kind === "evidence" ? entry.evidence.startedAt : entry.card.recordedAt) > card.recordedAt);
-    timeline.splice(index < 0 ? timeline.length : index, 0, { kind: "mail", card });
+  const position = (entry: ConversationTimelineEntry) => entry.kind === "message" ? entry.item.createdAt
+    : entry.kind === "evidence" ? entry.evidence.startedAt : entry.kind === "mail" ? entry.card.recordedAt
+      : entry.nativeMessage?.createdAt ?? entry.cards[0]!.nativeDelivery.readyAt ?? entry.cards[0]!.recordedAt;
+  const unmatched: ConversationTimelineEntry[] = [
+    ...standalone.filter(card => card.seq >= 0 && !projected.has(card.mailRefId))
+      .sort((left, right) => left.seq - right.seq).map(card => ({ kind: "mail" as const, card })),
+    ...[...batches.values()].filter(batch => !batch.nativeMessage),
+  ];
+  for (const entry of unmatched.sort((left, right) => position(left) - position(right))) {
+    const index = timeline.findIndex(candidate => position(candidate) > position(entry));
+    timeline.splice(index < 0 ? timeline.length : index, 0, entry);
   }
   return timeline;
 }

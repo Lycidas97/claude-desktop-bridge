@@ -106,6 +106,30 @@ it("has readable raw bytes before the event transaction and rolls back event and
   expect(store.openMailbox("test-account", "1", 99)).toBe(5);
 });
 
+it("commits forward triggers only while opted in, with the event and watermark", async () => {
+  store.openMailbox("test-account", "1", 5);
+  store.setBinding({ assistantId: "assistant", nativeSessionId: "managed", sectionId: null, previousSessionIds: [],
+    managed: { path: "/fixture/workspace", policy: "stage1-fenced-workspace", token: "fixture" } });
+  const before = (await store.record(message(5)))!;
+  store.setAutomaticDelivery(true);
+  const archived = (await store.record({ ...message(4), historical: true }))!;
+  const database = new DatabaseSync(join(store.directory, "assistant.sqlite"));
+  openDatabases.push(database);
+  database.exec("CREATE TRIGGER reject_trigger BEFORE INSERT ON trigger_deliveries BEGIN SELECT RAISE(ABORT, 'trigger write failed'); END");
+  await expect(store.record(message(6))).rejects.toThrow("trigger write failed");
+  expect(store.openMailbox("test-account", "1", 99)).toBe(5);
+  expect(store.page().events.map(event => event.uid)).toEqual([5, 4]);
+  expect(store.triggers.nextPending("managed")).toBeUndefined();
+  database.exec("DROP TRIGGER reject_trigger");
+  const after = (await store.record(message(6)))!;
+  expect(store.triggers.batchForEvent("mail.received", before.mailRefId)).toBeUndefined();
+  expect(store.triggers.batchForEvent("mail.received", archived.mailRefId)).toBeUndefined();
+  const batch = store.triggers.nextPending("managed")!;
+  expect(store.triggers.refs(batch.batchId)).toEqual([{ kind: "mail.received", eventId: after.mailRefId }]);
+  expect(batch.readyAt).toBe(after.recordedAt + 3_000);
+  expect(store.openMailbox("test-account", "1", 99)).toBe(6);
+});
+
 it("does not create an event or advance the watermark if raw storage fails", async () => {
   store.openMailbox("test-account", "1", 5);
   vi.spyOn(fs, "writeFile").mockRejectedValueOnce(Object.assign(new Error("disk full"), { code: "ENOSPC" }));
@@ -186,7 +210,7 @@ it("creates the assistant business tables and private POSIX files including WAL/
   const database = new DatabaseSync(join(store.directory, "assistant.sqlite"));
   openDatabases.push(database);
   expect(database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all().map(row => row.name))
-    .toEqual(["assistant_binding", "assistant_managed_binding", "imap_history", "imap_watermarks", "mail_events"]);
+    .toEqual(["assistant_binding", "assistant_managed_binding", "imap_history", "imap_watermarks", "mail_events", "trigger_batches", "trigger_deliveries"]);
   if (process.platform === "win32") return;
   for (const path of [join(root, "private"), store.directory, join(store.directory, "raw-mail")]) {
     expect((await fs.stat(path)).mode & 0o777).toBe(0o700);

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { sessionId, originalTitle } from "../config.mjs";
-import { eventually, openMobileDrawer, openMobileSession, selectCustomOption, customSelectValue } from "../helpers.mjs";
+import { desktopFixtureRequest, eventually, openMobileDrawer, openMobileSession, selectCustomOption, customSelectValue } from "../helpers.mjs";
 
 async function verifySessionHeader(page, host, steps, directory, baseUrl) {
   const session = host.snapshot.sessions.find(session => session.sessionId === sessionId);
@@ -82,8 +82,11 @@ async function verifySessionHeader(page, host, steps, directory, baseUrl) {
     }
   }
   await page.screenshot({ path: resolve(directory, "mobile-header-larger-320.png"), fullPage: true });
-  await page.exposeFunction("headerRequest", async input => ({ kind: "response", requestId: randomUUID(), ok: true,
-    result: await host.nativeApproval.controllerRequest({ kind: "request", requestId: randomUUID(), ...input }) }));
+  await page.exposeFunction("headerRequest", async input => {
+    const request = desktopFixtureRequest(input);
+    return { kind: "response", requestId: request.requestId, ok: true,
+      result: await host.nativeApproval.controllerRequest(request) };
+  });
   await page.addInitScript(snapshot => {
     window.__headerSnapshot = snapshot;
     window.bridgeDesktop = {
@@ -508,9 +511,10 @@ export async function verifyNativePromptsPr(page, host, steps, directory, baseUr
     claudeDesktop: { state: "running", detail: "隔离 Native 宿主", canLaunch: false, canQuit: true } }));
   await desktop.exposeFunction("prRequest", async input => {
     if (input.method === "pr.autoFix.set" && host.prWriteGate) await host.prWriteGate;
-    const update = await host.nativeApproval.request({ kind: "request", requestId: randomUUID(), ...input });
+    const request = desktopFixtureRequest(input);
+    const update = await host.nativeApproval.request(request);
     await host.syncNativeDialogs(update);
-    return { kind: "response", requestId: randomUUID(), ok: true, result: update.result };
+    return { kind: "response", requestId: request.requestId, ok: true, result: update.result };
   });
   await desktop.addInitScript(() => {
     window.bridgeDesktop = { getSnapshot: () => window.prSnapshot(), request: input => window.prRequest(input),

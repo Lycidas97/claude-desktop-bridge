@@ -13,10 +13,11 @@ const resources = await vi.hoisted(async () => {
     eventLog: resource(), state: resource(),
     evidence: resource(),
     assistantMail: Object.assign(new EventEmitter(), {
-      initialize: vi.fn(async (extend: (db: InstanceType<typeof DatabaseSync>) => void) => {
+      initialize: vi.fn(async (extend: (db: InstanceType<typeof DatabaseSync>) => void, _startReceivers: boolean) => {
         database = new DatabaseSync(":memory:");
         extend(database);
       }),
+      startReceivers: vi.fn(),
       close: vi.fn(async () => { database?.close(); database = undefined; }),
       binding: vi.fn<() => { nativeSessionId: string; managed?: { path: string; token: string } } | undefined>(),
       status: vi.fn<() => { accounts: { enabled: boolean }[] }>(), resume: vi.fn(),
@@ -236,10 +237,12 @@ it("owns one mail service and gives the Controller that exact instance", async (
   const { createServiceRuntime } = await import("./service-runtime.js");
   const runtime = await createServiceRuntime({ userDataPath: "/test/bridge" });
   expect(resources.mailOptions).toHaveBeenCalledExactlyOnceWith({ userDataPath: "/test/bridge", attachmentCMapUrl: join("/test/app", "dist", "renderer", "pdfjs", "cmaps") + "/" });
-  expect(resources.assistantMail.initialize).toHaveBeenCalledOnce();
+  expect(resources.assistantMail.initialize).toHaveBeenCalledExactlyOnceWith(expect.any(Function), false);
   expect(resources.controllerOptions.mock.calls[0]?.[13]).toBe(resources.assistantMail);
   expect(resources.serveMailTools).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ userDataPath: "/test/bridge", service: resources.assistantMail }));
   expect(resources.assistantMail.initialize.mock.invocationCallOrder[0]).toBeLessThan(resources.controller.initialize.mock.invocationCallOrder[0]!);
+  expect(resources.assistantMail.startReceivers).toHaveBeenCalledOnce();
+  expect(resources.assistantMail.startReceivers.mock.invocationCallOrder[0]).toBeGreaterThan(resources.controller.initialize.mock.invocationCallOrder[0]!);
   await runtime.close();
   expect(resources.assistantMail.close).toHaveBeenCalledOnce();
   expect(resources.controller.close.mock.invocationCallOrder[0]).toBeLessThan(resources.assistantMail.close.mock.invocationCallOrder[0]!);
@@ -284,7 +287,8 @@ it("starts the controller while historical mail is indexing and signals when met
   const mail = new AssistantMailService({ userDataPath: root });
   const changed = vi.fn();
   mail.on("changed", changed);
-  resources.assistantMail.initialize.mockImplementationOnce(extend => mail.initialize(extend));
+  resources.assistantMail.initialize.mockImplementationOnce((extend, startReceivers) => mail.initialize(extend, startReceivers));
+  resources.assistantMail.startReceivers.mockImplementationOnce(() => mail.startReceivers());
   try {
     const { createServiceRuntime } = await import("./service-runtime.js");
     const runtime = await createServiceRuntime({ userDataPath: root });
@@ -317,7 +321,8 @@ it.each(["invalid JSON", "directory in place of the account file"])("starts the 
     const invalid = '[{"fixture":"not public"}';
     if (damage === "invalid JSON") await fs.writeFile(path, invalid);
     else await fs.mkdir(path);
-    resources.assistantMail.initialize.mockImplementationOnce(extend => mail.initialize(extend));
+    resources.assistantMail.initialize.mockImplementationOnce((extend, startReceivers) => mail.initialize(extend, startReceivers));
+    resources.assistantMail.startReceivers.mockImplementationOnce(() => mail.startReceivers());
     const { createServiceRuntime } = await import("./service-runtime.js");
     const runtime = await createServiceRuntime({ userDataPath: root });
     try {

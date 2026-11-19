@@ -61,7 +61,7 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
-async function createService(inboxes: Inbox[] = [new Inbox()], supported = true) {
+async function createService(inboxes: Inbox[] = [new Inbox()], supported = true, startReceivers = true) {
   const createClient = vi.fn(() => inboxes.shift()! as unknown as ImapFlow);
   const credentials = { supported,
     get: vi.fn(async (key: string) => secrets.get(key)),
@@ -70,9 +70,24 @@ async function createService(inboxes: Inbox[] = [new Inbox()], supported = true)
   };
   const service = new AssistantMailService({ userDataPath: root, createClient, credentials });
   services.push(service);
-  await service.initialize();
+  await service.initialize(undefined, startReceivers);
   return { service, createClient, credentials };
 }
+
+it("can subscribe before cold-start IMAP catch-up commits its first new mail", async () => {
+  const { service: first } = await createService();
+  await first.enable(account);
+  await vi.waitFor(() => expect(first.status().state).toBe("connected"));
+  await first.close();
+  const inbox = new Inbox();
+  inbox.deliver(5);
+  const { service, createClient } = await createService([inbox], true, false);
+  expect(createClient).not.toHaveBeenCalled();
+  const received = once(service, "mail");
+  service.startReceivers();
+  expect(await received).toMatchObject([{ subject: "message 5" }]);
+  expect(createClient).toHaveBeenCalledOnce();
+});
 
 it("uses one background connection for history and live mail, emitting new-mail events only for live arrivals", async () => {
   const inbox = new Inbox();

@@ -66,7 +66,7 @@ async function writeAssistantRunner(agents: string, posix: boolean): Promise<str
   }
 }
 
-function guardCommand(execPath: string, guardPath: string, workspace: string, platform: NodeJS.Platform) {
+function hookCommand(execPath: string, guardPath: string, workspace: string, platform: NodeJS.Platform) {
   if (platform !== "win32") return {
     command: "/usr/bin/env", args: ["ELECTRON_RUN_AS_NODE=1", execPath, guardPath, workspace],
   };
@@ -141,6 +141,9 @@ export class WorkspaceProvisioner {
     const workspace = await realpath(this.path);
     const agents = join(workspace, ".claude", "agents");
     const mcpArgs = [join(appPath, "dist", "assistant-mcp.cjs"), join(dirname(workspace), "mail-tools.json"), "--managed"];
+    const compactHook = {
+      type: "command", ...hookCommand(execPath, join(appPath, "dist", "assistant-compact-hook.cjs"), workspace, this.platform), timeout: 5,
+    };
     const settings = {
       agent: await writeAssistantRunner(agents, posix),
       permissions: {
@@ -153,10 +156,15 @@ export class WorkspaceProvisioner {
       // Project MCP approval cannot control all inherited Desktop tools. #222
       // verifies the catch-all hook, effective native settings and @ references.
       allowedMcpServers: [{ serverCommand: [execPath, ...mcpArgs] }],
-      hooks: { PreToolUse: [{ matcher: "*", hooks: [{
-        type: "command", ...guardCommand(execPath, join(appPath, "dist", "assistant-fs-guard.cjs"), workspace, this.platform),
-        onFailure: "block", timeout: 10,
-      }] }] },
+      hooks: {
+        PreToolUse: [{ matcher: "*", hooks: [{
+          type: "command", ...hookCommand(execPath, join(appPath, "dist", "assistant-fs-guard.cjs"), workspace, this.platform),
+          onFailure: "block", timeout: 10,
+        }] }],
+        PreCompact: [{ matcher: "manual|auto", hooks: [compactHook] }],
+        PostCompact: [{ matcher: "manual|auto", hooks: [compactHook] }],
+        SessionStart: [{ matcher: "compact", hooks: [compactHook] }],
+      },
     };
     const mcp = { mcpServers: { [ASSISTANT_MCP]: {
       type: "stdio", command: execPath, args: mcpArgs,

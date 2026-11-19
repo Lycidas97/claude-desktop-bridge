@@ -5,6 +5,7 @@ import { formatSessionModelLabel } from "../../lib/conversation-timeline.js";
 import { IconButton } from "../common/IconButton.js";
 import { SelectMenu } from "../common/SelectMenu.js";
 import type { ConversationViewProps } from "../conversation/ConversationView.js";
+import { formatContextTokens } from "../conversation/SessionActivityIndicator.js";
 import { MobilePageHeader } from "../mobile/MobilePageHeader.js";
 import { effortLabel } from "../session/SessionConfigurationDialog.js";
 import { SessionCreateDialog } from "../session/SessionCreateDialog.js";
@@ -36,6 +37,8 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
   const [confirmWorkspace, setConfirmWorkspace] = useState(false);
   const [bindingBusy, setBindingBusy] = useState(false);
   const [bindingError, setBindingError] = useState("");
+  const [deliveryBusy, setDeliveryBusy] = useState(false);
+  const [deliveryError, setDeliveryError] = useState("");
   const browseDirectory = useMemo(
     () => (async (path?: string) => mailResult<{ listing: BridgeDirectoryListing }>(await mail!.request("directory.list", path ? { path } : {})).listing),
     [mail?.request],
@@ -54,6 +57,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
   const capabilities = snapshot?.host.capabilities ?? mail?.cache.workspace?.capabilities ?? [];
   const supportsWorkspace = capabilities.includes("plugin.assistant-mail.workspace.v1") && Boolean(workspace);
   const session = snapshot?.sessions.find(candidate => candidate.sessionId === binding?.nativeSessionId && !candidate.archivedAt);
+  const usage = session?.contextUsage;
   const managedProjectId = snapshot?.projects.find(project => project.managedAssistant)?.projectId;
   const bindableSessions = snapshot?.sessions.filter(candidate => candidate.transport === "claude-desktop-native" && !candidate.archivedAt
     && (candidate.sessionId === binding?.nativeSessionId || candidate.projectId !== managedProjectId)) ?? [];
@@ -135,7 +139,24 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
         </div> : <button type="button" className="secondary-button" disabled={!mail.online || bindingBusy} onClick={() => setConfirmWorkspace(true)}>初始化托管助理</button>
       )}
       {bindingError && <p role="alert">{bindingError}</p>}
-      <span className="assistant-delivery-disabled">自动投递未启用</span>
+      {displayedView === "settings" && capabilities.includes("plugin.assistant-mail.triggers.v1") && workspace?.nativeSessionId && binding?.nativeSessionId === workspace.nativeSessionId
+        ? <div className="assistant-delivery-setting">
+          <label className="toggle-row">
+            <span><strong>主动助理</strong></span>
+            <input type="checkbox" role="switch" checked={mail.assistant?.automaticDelivery === true}
+              disabled={!mail.online || deliveryBusy || bindingBusy || (!mail.assistant?.automaticDelivery && !mail.assistant?.automaticDeliveryAvailable)}
+              onChange={event => {
+                setDeliveryError(""); setDeliveryBusy(true);
+                void mail.request("plugin.assistant-mail.automatic-delivery.set", { sessionId: workspace.nativeSessionId, enabled: event.currentTarget.checked })
+                  .then(result => { mailResult(result); })
+                  .catch(reason => setDeliveryError(reason instanceof Error ? reason.message : "主动助理设置失败。"))
+                  .finally(() => setDeliveryBusy(false));
+              }} />
+            <i aria-hidden="true" />
+          </label>
+          {mail.assistant?.automaticDelivery && !mail.assistant.automaticDeliveryAvailable && <p role="status">自动投递已暂停，等待托管会话就绪。</p>}
+          {deliveryError && <p role="alert">{deliveryError}</p>}
+        </div> : !mail.assistant?.automaticDelivery && <span className="assistant-delivery-disabled">自动投递未启用</span>}
       {binding?.previousSessionIds.length ? <details><summary>以前的会话</summary><ul>{binding.previousSessionIds.map(sessionId => {
         const previous = snapshot?.sessions.find(candidate => candidate.sessionId === sessionId);
         return <li key={sessionId}>{previous ? <button type="button" className="assistant-session-link" onClick={() => onOpenSession(sessionId)}>{previous.title || sessionId}</button> : <span>{sessionId}</span>}</li>;
@@ -173,6 +194,10 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
         <ChevronRight size={16} aria-hidden="true" />
       </button>
     )}
+    {displayedView === "settings" && usage && usage.totalTokens > 0 && <dl className="assistant-context-usage">
+      <dt>上下文窗口</dt><dd>{formatContextTokens(usage.totalTokens)}
+        {usage.maxTokens ? ` / ${formatContextTokens(usage.maxTokens)}` : ""} tokens</dd>
+    </dl>}
     {notices}
     {displayedView === "settings" && mail && capabilities.includes("plugin.assistant-mail.account.v1") && <MailAccounts
       accounts={mail.assistant?.accounts ?? []}

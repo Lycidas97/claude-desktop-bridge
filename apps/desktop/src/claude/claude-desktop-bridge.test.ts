@@ -3789,6 +3789,55 @@ describe("Claude native relay", () => {
     } finally { await f.close(); }
   });
 
+  it("keeps a newer live usage sample when a concurrent open finishes its transcript lookback", async () => {
+    const f = await fixture();
+    try {
+      const model = "claude-sonnet-4-5";
+      f.native.sessions[0]!.model = "default";
+      f.native.sessions[0]!.turnRunning = true;
+      await f.bridge.refreshRuntime();
+      await f.message(planMessage("live-wrap", { recap: "Done" }, 20, "mcp__ccd_turn__wrap_up"));
+      f.native.page = { hasMore: true, messages: [{ type: "user", uuid: "latest", message: { content: "Latest request" } }] };
+      f.native.calls.length = 0;
+      let markLookbackStarted!: () => void;
+      const lookbackStarted = new Promise<void>(resolve => { markLookbackStarted = resolve; });
+      let releaseLookback!: () => void;
+      const lookbackReleased = new Promise<void>(resolve => { releaseLookback = resolve; });
+      const call = f.native.call.bind(f.native);
+      vi.spyOn(f.native, "call").mockImplementation(async (method, args = []) => {
+        if (method === "getTranscriptPage" && args[1] === "latest") {
+          f.native.calls.push({ method, args });
+          markLookbackStarted();
+          await lookbackReleased;
+          return { hasMore: false, messages: [{
+            type: "assistant", uuid: "older", message: { model, content: "Earlier reply", usage: { input_tokens: 12_000, output_tokens: 400 } },
+          }] };
+        }
+        return call(method, args);
+      });
+      const controller = createControllerFixture({ broker: f.bridge, eventLog: f.eventLog });
+      const first = controller.dispatchLocal({ method: "session.open", params: { sessionId: "local-native" } });
+      await lookbackStarted;
+      f.native.contextUsage = { totalTokens: 64_200, rawMaxTokens: 1_000_000 };
+      const second = await controller.dispatchLocal({ method: "session.open", params: { sessionId: "local-native" } });
+      releaseLookback();
+      const firstResult = await first;
+
+      const live = { totalTokens: 64_200, maxTokens: 1_000_000, estimated: false };
+      expect(second).toMatchObject({ ok: true, result: { session: { contextUsage: live } } });
+      expect(firstResult).toMatchObject({
+        ok: true,
+        result: { history: { items: [{ id: "latest" }], hasMore: true, nextCursor: "latest" } },
+      });
+      expect({ firstResult, projected: f.bridge.session("local-native")?.contextUsage }).toMatchObject({
+        firstResult: { ok: true, result: { session: { model, contextUsage: live } } }, projected: live,
+      });
+      expect(f.native.calls.filter(call => call.method === "getTranscriptPage").map(call => call.args.slice(1, 3))).toEqual([
+        ["", 18], ["latest", 100], ["", 18], ["", 20],
+      ]);
+    } finally { await f.close(); }
+  });
+
   it("keeps the live usage from the second concurrent open when both native replies arrive together", async () => {
     const f = await fixture();
     try {

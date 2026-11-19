@@ -8,6 +8,7 @@ export interface NativeContextState {
   maxTokensByModel: Map<string, number>;
   turnModel?: string;
   model?: string;
+  liveUsageSample?: symbol;
   estimated: boolean;
   hydrated: boolean;
   seenAssistantUuids: Set<string>;
@@ -201,6 +202,7 @@ export function applyLiveContextUsageState(
   state.totalTokens = live.totalTokens;
   updateContextModel(state, live.model);
   if (live.rawMaxTokens) state.maxTokensByModel.set(contextWindowModel(sessionModel, state.model), live.rawMaxTokens);
+  state.liveUsageSample = Symbol();
   state.estimated = false;
   state.hydrated = true;
   delete state.stream;
@@ -227,6 +229,7 @@ export function buildTranscriptContextState(messages: readonly unknown[], previo
     totalTokens: scan.estimate?.totalTokens ?? 0,
     maxTokensByModel: previous?.maxTokensByModel ?? new Map(),
     ...(previous?.turnModel !== undefined ? { turnModel: previous.turnModel } : {}),
+    ...(previous?.liveUsageSample !== undefined ? { liveUsageSample: previous.liveUsageSample } : {}),
     estimated: true,
     hydrated: true,
     seenAssistantUuids,

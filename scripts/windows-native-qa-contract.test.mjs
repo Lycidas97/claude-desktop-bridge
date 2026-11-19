@@ -161,6 +161,14 @@ test("packaged QA reads mail only when declared and keeps automatic delivery clo
   await assert.rejects(runQa(snapshot), /true !== false/u);
 });
 
+test("packaged QA reads a bounded proposal page through IPC when supported", async () => {
+  const snapshot = nativeSnapshot();
+  snapshot.host.capabilities.push("assistant.proposal.v1");
+  snapshot.assistantProposals = { changeToken: "fixture", pendingCount: 0, sources: [] };
+  const result = await runQa(snapshot, { "assistant.proposal.list": { ok: true, result: { proposals: [] } } });
+  assert.deepEqual(result.requests.filter(method => method.startsWith("assistant.proposal.")), ["assistant.proposal.list"]);
+});
+
 test("packaged QA distinguishes a ready Native host with no active sessions", async () => {
   const snapshot = nativeSnapshot();
   snapshot.runtime.desktopIntegration.state = "ready";

@@ -579,6 +579,7 @@ describe("zero-bloat timeline projection & RPC wiring", () => {
       {
         socket: { ack } as any,
         responseCache: new Map(),
+        isPairedDevice: () => true,
         rememberDevice: async () => {},
         sendToDevice,
         handleRequest,

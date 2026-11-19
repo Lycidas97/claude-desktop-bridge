@@ -3,6 +3,8 @@ import type { FetchMessageObject, ImapFlow } from "imapflow";
 import { AssistantAgendaService } from "../../plugins/assistant-mail/agenda.js";
 import { AgendaStore } from "../../plugins/assistant-mail/agenda-store.js";
 import { AssistantMailService } from "../../plugins/assistant-mail/desktop.js";
+import { ProposalExecutor } from "../../plugins/assistant-mail/proposal-executor.js";
+import { ProposalStore } from "../../plugins/assistant-mail/proposal-store.js";
 
 /** Synthetic IMAP boundary; the real receiver, SQLite store and MIME reader run unchanged. */
 export async function startAssistantMailFixture(directory: string, historyCount = 0) {
@@ -47,13 +49,18 @@ export async function startAssistantMailFixture(directory: string, historyCount 
     },
   });
   let store!: AgendaStore;
-  await service.initialize(db => { store = new AgendaStore(db); });
+  let proposalStore!: ProposalStore;
+  await service.initialize(db => { store = new AgendaStore(db); proposalStore = new ProposalStore(db); });
   const agenda = new AssistantAgendaService(store);
+  const proposals = new ProposalExecutor(proposalStore, store, {
+    available: () => false, encrypt: () => { throw new Error("No calendar credentials in fixture"); },
+    decrypt: () => { throw new Error("No calendar credentials in fixture"); },
+  }, sourceId => { void agenda.proposalChanged(sourceId); });
   const idle = once(seedInbox, "idle");
   await service.enable({ ...seedAccount, password: "synthetic-only" });
   await idle;
   return {
-    service, agenda,
+    service, agenda, proposals,
     seedCalendar(...resources: string[]) {
       const url = "https://caldav.example.test/fixtures/";
       const source = store.addSource({ url, user: "fixture", label: "外部日历" }, Buffer.from("sealed"));

@@ -13,7 +13,7 @@ export class CalDavError extends Error {
   }
 }
 
-type XmlElement = { uri: string; local: string; text: string; children: XmlElement[] };
+type XmlElement = { uri: string; local: string; text: string; children: XmlElement[]; componentName?: string };
 type DavRow = { href: string; status: number | undefined; props: XmlElement[] };
 
 function invalidResponse(): never {
@@ -27,8 +27,9 @@ function parseXml(xml: string): XmlElement | undefined {
   const parser = new SaxesParser({ xmlns: true });
   parser.on("error", () => { invalid = true; });
   parser.on("doctype", () => { invalid = true; });
-  parser.on("opentag", ({ uri, local }) => {
-    const element: XmlElement = { uri, local, text: "", children: [] };
+  parser.on("opentag", ({ uri, local, attributes }) => {
+    const componentName = uri === caldav && local === "comp" ? attributes.name?.value : undefined;
+    const element: XmlElement = { uri, local, text: "", children: [], ...(componentName ? { componentName } : {}) };
     (stack.at(-1)?.children ?? document).push(element);
     stack.push(element);
   });
@@ -80,6 +81,43 @@ async function readXml(response: Response): Promise<XmlElement | undefined> {
   return parseXml(body);
 }
 
+export type CalDavWrite = { href: string } & (
+  | { method: "PUT"; body: string; etag?: string }
+  | { method: "DELETE"; etag: string }
+);
+
+type MemberRequest = CalDavWrite | { method: "GET"; href: string };
+
+export async function requestCalDavMember(options: { url: string; user: string; credential: string; request: MemberRequest }, fetchDav = fetch) {
+  const { request } = options;
+  const collection = new URL(options.url);
+  const target = new URL(request.href);
+  const prefix = canonicalPath(collection.pathname);
+  const path = canonicalPath(target.pathname);
+  if (collection.protocol !== "https:" || target.origin !== collection.origin || target.username || target.password ||
+    /[?#]/u.test(target.href) || !prefix.endsWith("/") || !path.startsWith(prefix) || path === prefix || /%(?:2F|5C)/u.test(path.slice(prefix.length))) {
+    throw new CalDavError("response");
+  }
+  const headers: Record<string, string> = { Authorization: `Basic ${Buffer.from(`${options.user}:${options.credential}`).toString("base64")}` };
+  if (request.method !== "GET") {
+    if (request.etag !== undefined) headers["If-Match"] = request.etag;
+    else headers["If-None-Match"] = "*";
+  }
+  if (request.method === "PUT") headers["Content-Type"] = "text/calendar; charset=utf-8";
+  try {
+    const response = await fetchDav(target, {
+      method: request.method, headers, signal: AbortSignal.timeout(15_000), redirect: "manual",
+      ...(request.method === "PUT" ? { body: request.body } : {}),
+    });
+    if (request.method === "GET" && response.ok) return { status: response.status, body: await response.text() };
+    await response.body?.cancel();
+    return { status: response.status };
+  } catch (cause) {
+    if (cause instanceof TypeError || cause instanceof DOMException) throw new CalDavError("connection");
+    throw cause;
+  }
+}
+
 export async function readCalDav(options: {
   url: string;
   user: string;
@@ -93,6 +131,7 @@ export async function readCalDav(options: {
   ctag?: string;
   syncToken?: string;
   calendarTimeZone?: string;
+  proposalCreateKinds?: ("todo" | "calendar")[];
   removed: string[];
   changed: Array<{ href: string; etag: string; data: string }>;
 }> {
@@ -170,16 +209,24 @@ export async function readCalDav(options: {
 
   const metadata = rows(await request("PROPFIND",
     `<d:propfind xmlns:d="${dav}" xmlns:cs="${calendarserver}" xmlns:c="${caldav}">` +
-    `<d:prop><cs:getctag/><d:sync-token/><c:calendar-timezone/></d:prop></d:propfind>`,
+    `<d:prop><cs:getctag/><d:sync-token/><c:calendar-timezone/><c:supported-calendar-component-set/>` +
+    `<d:current-user-privilege-set/></d:prop></d:propfind>`,
     "0") ?? invalidResponse());
   const own = metadata.get(collectionHref);
   if (metadata.size !== 1 || !own || own.status !== undefined) invalidResponse();
   const ctag = text(property(own.props, "getctag", calendarserver))?.trim() || undefined;
   const observedToken = text(property(own.props, "sync-token"))?.trim() || undefined;
   const calendarTimeZone = text(property(own.props, "calendar-timezone", caldav));
+  const components = property(own.props, "supported-calendar-component-set", caldav);
+  const privileges = property(own.props, "current-user-privilege-set");
+  const canCreate = !privileges || privileges.children.some(privilege => privilege.uri === dav && privilege.local === "privilege"
+    && privilege.children.some(child => child.uri === dav && ["all", "write", "bind"].includes(child.local)));
+  const proposalCreateKinds = !canCreate ? [] : (["todo", "calendar"] as const).filter(kind =>
+    !components || components.children.some(child => child.componentName === (kind === "todo" ? "VTODO" : "VEVENT")));
   const collectionMetadata = {
     ...(ctag === undefined ? {} : { ctag }),
     ...(calendarTimeZone?.trim() ? { calendarTimeZone } : {}),
+    ...(components || privileges ? { proposalCreateKinds } : {}),
   };
   if ((observedToken && observedToken === options.syncToken)
     || (!options.syncToken && !observedToken && ctag && ctag === options.ctag)) {

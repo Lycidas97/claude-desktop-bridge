@@ -1,5 +1,6 @@
 import { isClaudeTranscriptControlMessage } from "@bridge/protocol";
 import type {
+  BridgeActionProposal,
   BridgeAttachment,
   BridgeDeliveryState,
   BridgeEvidenceBundle,
@@ -49,7 +50,8 @@ export function restorableSessionId(
 export type ConversationTimelineEntry =
   | { kind: "message"; item: ConversationItem }
   | { kind: "evidence"; evidence: BridgeEvidenceBundle }
-  | { kind: "mail"; card: BridgeMailCard; nativeMessage?: ConversationItem };
+  | { kind: "mail"; card: BridgeMailCard; nativeMessage?: ConversationItem }
+  | { kind: "proposal"; proposal: BridgeActionProposal; createdAt: number };
 
 export function formatTime(value: number): string {
   return new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" }).format(value);
@@ -489,6 +491,13 @@ export function conversationItems(
         ...(typeof event.data.commandId === "string" ? { commandId: event.data.commandId } : {}),
       });
     }
+    if (event.type === "assistant.proposal.receipt" && event.origin === "claude-desktop") {
+      const proposalReceipt = event.data.proposalReceipt as BridgeHistoryItem["proposalReceipt"];
+      if (proposalReceipt) {
+        const id = `tool:proposal-receipt:${proposalReceipt.toolUseId}`;
+        items.set(id, { id, sessionId, role: "tool", text: "", origin: event.origin, createdAt: event.timestamp, proposalReceipt });
+      }
+    }
     if (event.type === "command.output" || event.type === "command.status") {
       const text = eventText(event);
       if (text) {
@@ -604,7 +613,7 @@ export function conversationItems(
         toolName,
         text,
         createdAt: existing?.createdAt ?? event.timestamp,
-        origin: "claude-host",
+        origin: event.origin,
         ...(toolUseId ? { toolUseId } : {}),
         ...(isError ? { isError: true } : {}),
         ...(subagent?.state === "unknown" ? {} : {
@@ -809,10 +818,26 @@ export function conversationItems(
   return sorted;
 }
 
+export function proposalAnchors(items: ConversationItem[]) {
+  const receipts = new Map(items.flatMap(item => item.proposalReceipt && item.origin === "claude-desktop"
+    ? [[item.proposalReceipt.toolUseId, item.proposalReceipt] as const] : []));
+  const seen = new Set<string>();
+  return items.flatMap(item => {
+    if (item.role !== "tool" || item.origin !== "claude-desktop" || !item.toolUseId ||
+      (item.toolName !== "mcp__assistant-mail__proposal_create" && item.toolName !== "mcp__assistant-mail__proposal_update_pending")) return [];
+    const receipt = receipts.get(item.toolUseId);
+    if (!receipt || seen.has(receipt.proposalId)) return [];
+    seen.add(receipt.proposalId);
+    const { toolUseId: _tool, ...ref } = receipt;
+    return [{ ref, itemId: item.id }];
+  });
+}
+
 export function conversationTimeline(
   items: ConversationItem[],
   evidenceItems: BridgeEvidenceBundle[],
   mailCards: BridgeMailCard[] = [],
+  proposals?: ReadonlyMap<string, BridgeActionProposal>,
 ): ConversationTimelineEntry[] {
   const latestByTurn = new Map<string, BridgeEvidenceBundle>();
   for (const evidence of evidenceItems) {
@@ -856,7 +881,9 @@ export function conversationTimeline(
     }
     // File-change tool cards are aggregated Codex-style into the 成果 tab;
     // one card per edit would flood the conversation.
-    if (!card && !(item.role === "tool" && item.toolName === "File change")) {
+    const proposal = proposals?.get(item.id);
+    if (proposal) timeline.push({ kind: "proposal", proposal, createdAt: item.createdAt });
+    else if (!card && !item.proposalReceipt && !(item.role === "tool" && item.toolName === "File change")) {
       timeline.push({ kind: "message", item });
     }
     for (const evidence of (evidenceAfter.get(index) ?? [])
@@ -865,7 +892,8 @@ export function conversationTimeline(
     }
   });
   for (const card of mailCards.filter(candidate => candidate.seq >= 0 && !projected.has(candidate.mailRefId)).sort((left, right) => left.recordedAt - right.recordedAt || left.seq - right.seq)) {
-    const index = timeline.findIndex(entry => (entry.kind === "message" ? entry.item.createdAt : entry.kind === "evidence" ? entry.evidence.startedAt : entry.card.recordedAt) > card.recordedAt);
+    const index = timeline.findIndex(entry => (entry.kind === "message" ? entry.item.createdAt : entry.kind === "evidence" ? entry.evidence.startedAt
+      : entry.kind === "proposal" ? entry.createdAt : entry.card.recordedAt) > card.recordedAt);
     timeline.splice(index < 0 ? timeline.length : index, 0, { kind: "mail", card });
   }
   return timeline;

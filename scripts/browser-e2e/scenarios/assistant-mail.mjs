@@ -6,7 +6,7 @@ import { resolve } from "node:path";
 import { sessionId } from "../config.mjs";
 import { customSelectValue, eventually, openMobileDrawer, openMobileSession, selectCustomOption } from "../helpers.mjs";
 
-async function openDesktopAssistant(page, host, baseUrl, requests) {
+export async function openDesktopAssistant(page, host, baseUrl, requests) {
   await page.exposeFunction("assistantDesktopRequest", async input => {
     const requestId = randomUUID();
     requests.push(input);

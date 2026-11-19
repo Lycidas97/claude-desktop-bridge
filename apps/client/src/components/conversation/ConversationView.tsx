@@ -48,6 +48,7 @@ import {
   conversationTimeline,
   groupTimelineTools,
   isQueuedConversationMessage,
+  proposalAnchors,
   runtimeSupports,
   type ConversationItem,
 } from "../../lib/conversation-timeline.js";
@@ -56,7 +57,9 @@ import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
 import { desktopRuntimeId, desktopRuntimeName } from "../../lib/runtime-labels.js";
 import { sessionQueueLabel } from "../../lib/session-activity.js";
 import { useStreamEntrance } from "../../lib/stream-entrance.js";
+import { useInlineProposals } from "../assistant/AssistantProposalProvider.js";
 import { MailCard } from "../assistant/MailCard.js";
+import { ProposalCard } from "../assistant/ProposalCard.js";
 import { ConfirmationDialog } from "../common/ConfirmationDialog.js";
 import { IconButton } from "../common/IconButton.js";
 import { SelectMenu } from "../common/SelectMenu.js";
@@ -446,9 +449,11 @@ export function ConversationView({
     [events, history, localTurns, session.sessionId, sessionPromptReplies],
   );
   const fileChangesSummary = useMemo(() => aggregateFileChanges(items), [items]);
+  const anchors = useMemo(() => proposalAnchors(items), [items]);
+  const inlineProposals = useInlineProposals(session.sessionId, anchors);
   const timeline = useMemo(
-    () => conversationTimeline(items, evidence?.items ?? [], mailCards),
-    [evidence?.items, items, mailCards],
+    () => conversationTimeline(items, evidence?.items ?? [], mailCards, inlineProposals),
+    [evidence?.items, items, mailCards, inlineProposals],
   );
   const displayNodes = useMemo(() => groupTimelineTools(timeline), [timeline]);
   const latestMessage = displayNodes.filter((node) => node.kind === "message" && !node.item.sessionNotice
@@ -487,7 +492,7 @@ export function ConversationView({
       ? `evidence:${entry.evidence.id}`
       : entry.kind === "mail"
         ? `mail:${entry.card.mailRefId}`
-        : entry.item.id
+        : entry.kind === "proposal" ? `proposal:${entry.proposal.proposalId}` : entry.item.id
   )), [timeline]);
   const streamEntering = useStreamEntrance(session.sessionId, timelineStreamKeys);
 
@@ -842,6 +847,9 @@ export function ConversationView({
           </div>
         )}
       {displayNodes.map((node) => {
+        if (node.kind === "proposal") {
+          return <ProposalCard key={`proposal:${node.proposal.proposalId}`} proposal={node.proposal} mobile={isMobile} />;
+        }
         if (node.kind === "mail") {
           return (
             <MailCard

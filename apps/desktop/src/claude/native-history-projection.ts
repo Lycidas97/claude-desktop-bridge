@@ -11,6 +11,7 @@ import type { BridgeEventDraft } from "../controller/session-event-log.js";
 import { applyQuestionAnswers, extractInteractivePrompt, extractToolResultAnswers, updateClaudeTaskPlan, visibleMessage, type QuestionAnswers } from "../transcript/claude-history.js";
 import { summarizeNativeToolInput } from "../transcript/transcript-tool-detail.js";
 import { NativeCallError } from "./claude-desktop-inspector.js";
+import { proposalRef } from "../../../../plugins/assistant-mail/proposal-contract.js";
 
 export interface NativeMessageProjection {
   plan?: BridgeTaskPlan;
@@ -22,6 +23,18 @@ export interface NativeMessageProjection {
 
 function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function readProposalReceipt(content: unknown, toolUseId: string): BridgeHistoryItem["proposalReceipt"] {
+  const part = Array.isArray(content) && content.length === 1 ? record(content[0]) : undefined;
+  const text = typeof content === "string" ? content : part?.type === "text" ? part.text : undefined;
+  if (typeof text !== "string" || !text.includes('"proposalId"') || text.length > 1024) return;
+  let decoded: Record<string, unknown>;
+  try { decoded = record(JSON.parse(text)); }
+  catch (error) { if (error instanceof SyntaxError) return; throw error; }
+  if (record(decoded.source).kind !== "proposal") return;
+  const ref = proposalRef.safeParse(decoded.result);
+  if (ref.success) return { ...ref.data, toolUseId };
 }
 
 export function nativePlanMessages(messages: unknown[]) {
@@ -114,6 +127,11 @@ export function nativeHistoryItems(sessionId: string, messages: unknown[], proje
     if (Array.isArray(body.content)) for (const rawBlock of body.content) {
       const block = record(rawBlock);
       if (message.type === "user" && block.type === "tool_result" && typeof block.tool_use_id === "string") {
+        const proposalReceipt = block.is_error === true ? undefined : readProposalReceipt(block.content, block.tool_use_id);
+        if (proposalReceipt) {
+          const id = `proposal-receipt:${block.tool_use_id}`;
+          items.set(id, { id, sessionId, role: "tool", text: "", createdAt, origin: "claude-desktop", proposalReceipt });
+        }
         const answers = extractToolResultAnswers(message);
         const question = projection.questions?.get(block.tool_use_id);
         if (question?.interactivePrompt) {
@@ -212,7 +230,7 @@ export function nativeItemEventDraft(
     itemId: item.id,
     ...(receipt ? { turnId: receipt.messageId } : {}),
     origin: "claude-desktop",
-    type: item.role === "user"
+    type: item.proposalReceipt ? "assistant.proposal.receipt" : item.role === "user"
       ? "user.message.accepted"
       : item.role === "tool"
         ? item.subagent
@@ -230,6 +248,7 @@ export function nativeItemEventDraft(
       ...(item.interactivePrompt ? { interactivePrompt: item.interactivePrompt } : {}),
       ...(item.taskPlan ? { taskPlan: item.taskPlan, taskPlanSource: "native-main" } : {}),
       ...(item.subagent ? { subagent: item.subagent } : {}),
+      ...(item.proposalReceipt ? { proposalReceipt: item.proposalReceipt } : {}),
     },
   };
 }

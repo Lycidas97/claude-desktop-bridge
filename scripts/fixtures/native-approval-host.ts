@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter, once } from "node:events";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -19,6 +19,9 @@ import { createNativeSectionFixture } from "./native-section-store.js";
 import { startAssistantMailFixture } from "./assistant-mail.js";
 import { AssistantMailCoordinator } from "../../apps/desktop/src/controller/assistant-mail.js";
 import { WorkspaceProvisioner } from "../../apps/desktop/src/controller/assistant-workspace.js";
+import { ASSISTANT_WORKSPACE_POLICY } from "../../packages/protocol/src/assistant-mail.js";
+import { serveAssistantMailTools } from "../../plugins/assistant-mail/local-channel.js";
+import type { AgendaProposalAction } from "../../packages/protocol/src/assistant-proposal.js";
 
 interface NativeApprovalResult {
   requestId: string;
@@ -49,6 +52,7 @@ export async function startNativeApprovalHost(options: {
   initialMailHistory?: number;
   onMailChanged?(snapshot: BridgeAssistantMailSnapshot): void;
   onAgendaChanged?(snapshot: import("../../packages/protocol/src/index.js").BridgeAgendaSnapshot): void;
+  onProposalsChanged?(snapshot: import("../../packages/protocol/src/index.js").BridgeProposalSnapshot): void;
 }) {
   const commandCwd = join(options.directory, "command-project");
   const commandHome = join(options.directory, "command-personal");
@@ -384,6 +388,19 @@ export async function startNativeApprovalHost(options: {
   await evidence.initialize();
   const assistantMail = mailRoot ? await startAssistantMailFixture(mailRoot, options.initialMailHistory) : undefined;
   assistantMail?.agenda.on("changed", snapshot => options.onAgendaChanged?.(snapshot));
+  const proposals = options.onProposalsChanged ? assistantMail!.proposals : undefined;
+  proposals?.on("changed", options.onProposalsChanged!);
+  const toolToken = randomUUID();
+  const proposalChannel = proposals && await serveAssistantMailTools({
+    userDataPath: mailRoot!, service: assistantMail!.service, proposals,
+    authorizeManagedToken: token => {
+      const binding = assistantMail!.service.binding();
+      return binding?.managed?.token === token ? binding.nativeSessionId ?? undefined : undefined;
+    },
+  });
+  if (proposalChannel) assistantMail!.service.setBinding({ assistantId: randomUUID(), nativeSessionId: options.sessionId, sectionId: null,
+    previousSessionIds: [], managed: { path: workspace!.path, policy: ASSISTANT_WORKSPACE_POLICY, token: toolToken } });
+  const proposalPort = proposalChannel && JSON.parse(await readFile(join(mailRoot!, "private", "assistant", "mail-tools.json"), "utf8")).port as number | undefined;
   const assistantMailCoordinator = assistantMail && workspace
     ? new AssistantMailCoordinator(assistantMail.service, {
         allSessions: () => broker.listSessions(),
@@ -396,7 +413,7 @@ export async function startNativeApprovalHost(options: {
   assistantMailCoordinator?.start();
   const mailSnapshot = () => assistantMailCoordinator?.snapshot();
   const controller = createControllerFixture({
-    broker, evidence, eventLog, assistantMailCoordinator, assistantAgenda: assistantMail?.agenda,
+    broker, evidence, eventLog, assistantMailCoordinator, assistantAgenda: assistantMail?.agenda, proposals,
     allSessions: () => broker.listSessions(), allProjects: () => broker.listProjects(),
     publish: async () => ({ assistantMail: mailSnapshot() }),
     config: { hostDeviceId: "synthetic-desktop", desktopName: "隔离电脑", devices: [{ deviceId: options.deviceId, name: "隔离手机", platform: "android", pairedAt: 1 }] },
@@ -583,6 +600,14 @@ export async function startNativeApprovalHost(options: {
       await eventLog.flushDeltas(options.sessionId);
       return { events: eventLog.replay(after), history: await broker.history(options.sessionId), session: structuredClone(broker.session(options.sessionId)!) };
     },
+    async draftProposal(action: AgendaProposalAction) {
+      const response = await fetch(`http://127.0.0.1:${proposalPort}/tools`, {
+        method: "POST", headers: { Authorization: `Bearer ${toolToken}`, "X-Bridge-Assistant-Managed": "1" },
+        body: JSON.stringify({ name: "proposal.create", arguments: { action } }),
+      });
+      assert.equal(response.status, 200);
+      return response.json();
+    },
     async message(message: Record<string, unknown>) {
       messages.push(message);
       const after = eventLog.latestSeq();
@@ -634,6 +659,8 @@ export async function startNativeApprovalHost(options: {
     },
     async close() {
       await controller.close();
+      await proposalChannel?.close();
+      await proposals?.close();
       await assistantMail?.agenda.close();
       await assistantMail?.service.close();
       await broker.close();

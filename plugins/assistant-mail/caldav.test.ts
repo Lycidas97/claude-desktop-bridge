@@ -86,7 +86,7 @@ describe("readCalDav", () => {
       headers: expect.objectContaining({ Depth: "0" }),
       body: '<d:propfind xmlns:d="DAV:" xmlns:cs="http://calendarserver.org/ns/" ' +
         'xmlns:c="urn:ietf:params:xml:ns:caldav"><d:prop><cs:getctag/><d:sync-token/>' +
-        '<c:calendar-timezone/></d:prop></d:propfind>',
+        '<c:calendar-timezone/><c:supported-calendar-component-set/><d:current-user-privilege-set/></d:prop></d:propfind>',
     }));
     expect(result).toEqual({ ctag: "same", syncToken: "urn:sync:1", calendarTimeZone, removed: [], changed: [] });
   });

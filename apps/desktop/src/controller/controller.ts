@@ -30,9 +30,9 @@ import {
 import type { App } from "electron";
 import { diag, diagnostics } from "../app/diag.js";
 import type { MemoryRecorder } from "../app/memory-recorder.js";
-import { ASSISTANT_AGENDA_CAPABILITY } from "@bridge/protocol";
+import { ASSISTANT_AGENDA_CAPABILITY, ASSISTANT_PROPOSAL_CAPABILITY, type BridgeAgendaSnapshot, type BridgeProposalSnapshot } from "@bridge/protocol";
 import type { AssistantAgendaService } from "../../../../plugins/assistant-mail/agenda.js";
-import type { BridgeAgendaSnapshot } from "@bridge/protocol";
+import type { ProposalExecutor } from "../../../../plugins/assistant-mail/proposal-executor.js";
 import type { AssistantMailService } from "../../../../plugins/assistant-mail/desktop.js";
 import { createMagpieQuotaPlugin } from "../../../../plugins/magpie-quota/desktop.js";
 import type { ClaudeDesktopLifecycle } from "../app/claude-desktop-lifecycle.js";
@@ -127,6 +127,7 @@ export class DesktopController extends EventEmitter {
     readonly assistantMail?: AssistantMailService,
     assistantWorkspace?: import("./assistant-workspace.js").WorkspaceProvisioner,
     readonly assistantAgenda?: AssistantAgendaService,
+    readonly proposals?: ProposalExecutor,
   ) {
     super();
     this.updater = updater;
@@ -189,12 +190,14 @@ export class DesktopController extends EventEmitter {
         return;
       }
       const persistOffline = event.type === "permission.requested" || event.type === "question.requested" ||
-        event.type === "turn.completed" || event.type === "turn.failed";
+        event.type === "turn.completed" || event.type === "turn.failed" ||
+        (event.type === "assistant.proposal.changed" && event.data.wake === true);
       void this.broadcast({ kind: "event", event }, !persistOffline);
       if (event.type !== "runtime.updated" || event.itemId !== "session:subagent-activity") this.queuePublish();
     });
     this.assistantMailCoordinator?.start();
     this.assistantAgenda?.on("changed", this.onAgendaChanged);
+    this.proposals?.on("changed", this.onProposalsChanged);
     this.broker.on("system.init", (sessionId: string, tools: string[]) => {
       this.assistantMailCoordinator?.observeToolCatalog(sessionId, tools);
     });
@@ -263,6 +266,7 @@ export class DesktopController extends EventEmitter {
           "transcript.toolDetail.v1",
           "plugin.magpie-quota.v1",
           ...(this.assistantAgenda ? [ASSISTANT_AGENDA_CAPABILITY] as const : []),
+          ...(this.proposals ? [ASSISTANT_PROPOSAL_CAPABILITY] as const : []),
           ...(this.assistantMailCoordinator?.capabilities() ?? []),
           ...(this.updater ? ["system.update.v1" as const] : []),
         ],
@@ -293,6 +297,7 @@ export class DesktopController extends EventEmitter {
       managedDesktopEnabled: this.config.managedDesktopEnabled,
       ...await this.desktopAppSnapshot(),
       ...(this.assistantAgenda ? { assistantAgenda: this.assistantAgenda.snapshot() } : {}),
+      ...(this.proposals ? { assistantProposals: this.proposals.snapshot() } : {}),
       ...(this.assistantMailCoordinator ? { assistantMail: this.assistantMailCoordinator.snapshot() } : {}),
       ...(this.updater ? { updater: this.updater.snapshot() } : {}),
       ...(this.inspectorStatus ? { claudeInspector: this.inspectorStatus } : {}),
@@ -637,6 +642,7 @@ export class DesktopController extends EventEmitter {
   async close(): Promise<void> {
     this.assistantMailCoordinator?.close();
     this.assistantAgenda?.off("changed", this.onAgendaChanged);
+    this.proposals?.off("changed", this.onProposalsChanged);
     this.uploads.close();
     this.socket?.close();
   }
@@ -825,6 +831,10 @@ export class DesktopController extends EventEmitter {
     this.queuePublish();
   };
 
+  private readonly onProposalsChanged = (assistantProposals: BridgeProposalSnapshot, wake: boolean) => {
+    void this.eventLog.append({ origin: "system", type: "assistant.proposal.changed", data: { assistantProposals, wake } });
+  };
+
   /** Coalesce passive snapshots through completion; permissions still publish immediately. */
   private queuePublish(): void {
     void this.publishPermissions();
@@ -885,6 +895,7 @@ export class DesktopController extends EventEmitter {
         prompts: snapshot.prompts,
         updater: snapshot.updater,
         assistantMail: snapshot.assistantMail,
+        proposalSources: snapshot.assistantProposals?.sources,
         ...(snapshot.claudeInspector ? {
           claudeInspector: [
             snapshot.claudeInspector.state,

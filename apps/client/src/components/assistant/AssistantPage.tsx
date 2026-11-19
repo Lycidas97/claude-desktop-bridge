@@ -1,5 +1,5 @@
 import { MAIL_POLL_INTERVALS, type BridgeDirectoryListing, type BridgeHostSnapshot, type BridgeMailAccount, type BridgeMethod, type BridgeSessionInfo } from "@bridge/protocol";
-import { ChevronRight, RefreshCw, Settings } from "lucide-react";
+import { ChevronRight, ListChecks, RefreshCw, Settings } from "lucide-react";
 import { useEffect, useId, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { formatSessionModelLabel } from "../../lib/conversation-timeline.js";
 import { IconButton } from "../common/IconButton.js";
@@ -12,6 +12,8 @@ import { mailResult, useAssistantMail, type AssistantRequest } from "./Assistant
 import { AgendaSources } from "./AgendaSources.js";
 import { AgendaView } from "./AgendaView.js";
 import { useAssistantAgenda } from "./AssistantAgendaProvider.js";
+import { useAssistantProposals } from "./AssistantProposalProvider.js";
+import { ProposalPanel } from "./ProposalPanel.js";
 import { MailCard } from "./MailCard.js";
 import { MailReference } from "./MailReference.js";
 import "./assistant-mail.css";
@@ -26,9 +28,11 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
 }) {
   const mail = useAssistantMail();
   const agenda = useAssistantAgenda();
+  const proposals = useAssistantProposals();
   const toolWarningId = useId();
   const modelSettingsDescription = useId();
-  const [view, setView] = useState<"conversation" | "mail" | "agenda" | "settings">("conversation");
+  const [view, setView] = useState<"conversation" | "mail" | "agenda" | "settings" | "proposals">("conversation");
+  const [proposalReturn, setProposalReturn] = useState<Exclude<typeof view, "proposals">>("conversation");
   const [agendaTab, setAgendaTab] = useState<"todos" | "calendar">("todos");
   const [configuring, setConfiguring] = useState(false);
   const [selectedId, setSelectedId] = useState("");
@@ -59,7 +63,13 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
     && (candidate.sessionId === binding?.nativeSessionId || candidate.projectId !== managedProjectId)) ?? [];
   const state = mail?.assistant?.bindingState;
   const fallbackView = session ? "conversation" : mail ? "mail" : "agenda";
-  const displayedView = (view === "conversation" && !session) || (view === "mail" && !mail) || (view === "agenda" && !agenda) ? fallbackView : view;
+  const displayedView = (view === "conversation" && !session) || (view === "mail" && !mail) || (view === "agenda" && !agenda)
+    || (view === "proposals" && !proposals) ? fallbackView : view;
+  const pendingCount = proposals?.summary.pendingCount ?? 0;
+  function openProposals() {
+    if (displayedView !== "proposals") setProposalReturn(displayedView);
+    setView("proposals");
+  }
 
   async function configureBinding(method: "plugin.assistant-mail.bind" | "plugin.assistant-mail.workspace.initialize", params: Record<string, string>): Promise<boolean> {
     setBindingBusy(true); setBindingError("");
@@ -76,7 +86,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
     } finally { setBindingBusy(false); }
   }
 
-  const refresh = mail && displayedView !== "agenda" && <IconButton label="刷新邮件" disabled={!mail.online || mail.loading} onClick={mail.refresh}><RefreshCw size={16} /></IconButton>;
+  const refresh = mail && displayedView !== "agenda" && displayedView !== "proposals" && <IconButton label="刷新邮件" disabled={!mail.online || mail.loading} onClick={mail.refresh}><RefreshCw size={16} /></IconButton>;
   const viewTabs = (
     <nav className="assistant-view-tabs" aria-label="助理工作台">
       <div className="assistant-view-switch">
@@ -84,6 +94,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
         {mail && <button type="button" aria-pressed={displayedView === "mail"} onClick={() => setView("mail")}>收件</button>}
         {agenda && <button type="button" aria-pressed={displayedView === "agenda"} onClick={() => setView("agenda")}>议程</button>}
       </div>
+      {!mobile && proposals && <IconButton label="待确认提案" aria-pressed={displayedView === "proposals"} onClick={openProposals}><ListChecks size={16} /></IconButton>}
       <IconButton label="助理设置" aria-pressed={displayedView === "settings"} onClick={() => setView("settings")}><Settings size={16} /></IconButton>
       {refresh}
     </nav>
@@ -152,7 +163,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
     {mail.error && <p role="alert">{mail.error}</p>}
     {displayedView === "mail" && mail.online && mail.assistant?.history?.failed && <p role="alert">更早邮件读取失败。</p>}
   </>;
-  const stage = (openConfiguration?: () => void) => <div className="assistant-page-content">
+  const stage = (openConfiguration?: () => void) => displayedView === "proposals" ? <div className="assistant-page-content"><ProposalPanel mobile={mobile} /></div> : <div className="assistant-page-content">
     {bindingControls}
     {displayedView === "settings" && session && (
       <button type="button" className="assistant-model-settings" aria-label="模型与思考强度" aria-describedby={modelSettingsDescription} aria-haspopup="dialog"
@@ -185,18 +196,26 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
     </>}
   </div>;
   return <section className={`assistant-page ${mobile ? "assistant-page-mobile" : "desktop-page"}${session ? " has-conversation" : ""}`}>
-    {mobile && <MobilePageHeader title="助理" {...(headerLeading ? { leading: headerLeading } : {})} actions={viewTabs} />}
+    {mobile && (displayedView === "proposals" ? <MobilePageHeader title="待确认提案" onBack={() => setView(proposalReturn)} />
+      : <MobilePageHeader title="助理" {...(headerLeading ? { leading: headerLeading } : {})} actions={viewTabs} />)}
     {!mobile && <div className="assistant-desktop-header-band">
       {headerLeading && <div className="assistant-desktop-leading">{headerLeading}</div>}
       <div className="assistant-page-header-inner">
         <header className="desktop-page-heading"><h1>助理</h1>{viewTabs}</header>
       </div>
     </div>}
+    {proposals && displayedView !== "proposals" && (mobile || pendingCount > 0) && <div className="assistant-proposal-dock">
+      <button type="button" className="permission-dock" data-empty={!pendingCount} onClick={openProposals}>
+        <span className="permission-dock-icon"><ListChecks size={18} aria-hidden="true" /></span>
+        <span><strong>{pendingCount ? `${pendingCount} 项待你确认` : "提案"}</strong></span>
+        <ChevronRight size={16} aria-hidden="true" />
+      </button>
+    </div>}
     {session ? <>
       {displayedView === "conversation" && <div className="assistant-page-content">{bindingControls}{notices}</div>}
       <div className="assistant-conversation">{renderConversation(session.sessionId, {
         alternateStage: displayedView === "conversation" ? undefined : stage,
-        hideComposer: displayedView === "settings" || displayedView === "agenda" || workspace?.repairFailed === true,
+        hideComposer: displayedView === "settings" || displayedView === "agenda" || displayedView === "proposals" || workspace?.repairFailed === true,
       })}</div>
     </> : stage()}
     {creating && snapshot && mail && <SessionCreateDialog snapshot={snapshot} connected={mail.online}

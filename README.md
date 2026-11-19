@@ -19,7 +19,9 @@
   <img src="site/assets/product-mobile-approval.png" width="260" alt="Bridge 手机端答复 Claude 的命令授权" />
 </p>
 
-Bridge 把 Claude Desktop（含 Claude-3p）的本地 Code 会话带到手机。任务仍在你的电脑上运行，手机用来跟进进度、继续对话、处理需要你决定的事。
+Bridge 把 Claude Desktop 的本地 Code 会话带到手机。任务仍在你的电脑上运行，手机用来跟进进度、继续对话、处理需要你决定的事。
+
+Bridge 为 **Claude-3p**（通过第三方网关使用的 Claude Desktop）开发：Claude 官方的 Remote Control 不支持网关模式，Bridge 补上了这一块。
 
 - **接着聊**：在原生会话里发送文本、图片或文件，查看工具调用、任务计划和子代理进度。
 - **排队与调整**：任务运行中排队发送下一条指令，或在 Desktop 支持时立即调整。
@@ -29,6 +31,9 @@ Bridge 把 Claude Desktop（含 Claude-3p）的本地 Code 会话带到手机。
 - **扫码配对**：一次性二维码，十分钟内有效。
 
 日常使用与验证主要围绕 **macOS + Android**。Bridge 依赖 Desktop 的本地 `LocalSessions` 接口，可用操作取决于已安装的 Desktop 版本和账号 / 工作区策略；普通网页聊天记录不在这条接入路径内。除 Android 原生客户端外，通用手机 Web 客户端继续保留；原生 iOS 已退役。
+
+> [!CAUTION]
+> **用官方账号登录时，请自行评估封号风险。** Bridge 也能连接官方账号登录的 Claude Desktop，但它通过本机调试接口操作 Desktop，这不是 Anthropic 支持的用法。Bridge 只在本机调用 Desktop 自带的会话功能，原则上不太会触发封号，但无法排除这一风险。
 
 <a id="版本与下载"></a>
 

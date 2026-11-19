@@ -93,12 +93,15 @@ export class AssistantTriggerStore {
       (command_id IS NOT ? OR message_id IS NOT ?)`).run(receipt.commandId, receipt.messageId, batchId, receipt.commandId, receipt.messageId);
   }
 
-  unfinished(sessionId: string): Array<TriggerEventRef & { batchId: string }> {
-    return this.db.prepare(`
-      SELECT d.kind, d.event_id AS eventId, b.batch_id AS batchId FROM trigger_deliveries d
+  unfinished(sessionId: string, cursor = Number.MAX_SAFE_INTEGER) {
+    const rows = this.db.prepare(`
+      SELECT d.seq, d.kind, d.event_id AS eventId, b.batch_id AS batchId FROM trigger_deliveries d
       JOIN trigger_batches b USING (batch_id) LEFT JOIN mail_events m ON d.kind = 'mail.received' AND d.event_id = m.mail_ref_id
-      WHERE b.native_session_id = ? AND (m.processing_status IS NULL OR m.processing_status <> 'processed')
-      ORDER BY d.seq DESC LIMIT 100
-    `).all(sessionId) as unknown as Array<TriggerEventRef & { batchId: string }>;
+      WHERE b.native_session_id = ? AND d.seq < ? AND (m.processing_status IS NULL OR m.processing_status <> 'processed')
+      ORDER BY d.seq DESC LIMIT 101
+    `).all(sessionId, cursor) as unknown as Array<TriggerEventRef & { batchId: string; seq: number }>;
+    return { refs: rows.slice(0, 100).map(({ seq: _seq, ...ref }) => ref),
+      ...(rows.length > 100 ? { nextCursor: rows[99]!.seq } : {}),
+    };
   }
 }

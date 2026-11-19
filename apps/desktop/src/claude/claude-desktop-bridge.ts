@@ -13,7 +13,7 @@ import {
   type BridgeSessionConfiguration, type BridgeSessionContextUsage, type BridgeSessionInfo, type BridgeSessionRewindPreview, type BridgeSessionRewindResult, type BridgeSessionRewindScope, type BridgeSlashCommandCatalog, type BridgeSubagentSummary, type BridgeToolCallDetail,
 } from "@bridge/protocol";
 import { diag, diagnostics } from "../app/diag.js";
-import { ClaudeDesktopInspector, InspectorDisconnectedError, NativeCallError, type NativeSectionCatalog } from "./claude-desktop-inspector.js";
+import { ClaudeDesktopInspector, InspectorDisconnectedError, InspectorNotDispatchedError, NativeCallError, type NativeSectionCatalog } from "./claude-desktop-inspector.js";
 import type { ConversationStateStore, NativeDesktopReceipt } from "../controller/conversation-state-store.js";
 import { readClaudeTranscriptBackgroundTasks, readClaudeTranscriptSubagents, visibleMessage } from "../transcript/claude-history.js";
 import { extractToolCallDetailFromMessages, readSubagentToolCallDetail, summarizeNativeToolInput } from "../transcript/transcript-tool-detail.js";
@@ -147,6 +147,7 @@ interface NativeInput {
   origin: BridgeOrigin;
   sourceDeviceId?: string;
   source?: "assistant-trigger";
+  nativeTurnRunning?: boolean;
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -263,7 +264,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
 
   async initialize(): Promise<void> {
     for (const receipt of this.options.conversationState.listNativeDesktopReceipts()) {
-      if (receipt.state === "dispatching") {
+      if (receipt.state === "dispatching" && !receipt.notDispatched) {
         receipt.state = "uncertain";
         this.options.conversationState.saveNativeDesktopReceipt(receipt);
       }
@@ -643,7 +644,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
     if (!this.inspector.ready || !this.inspector.supports("getSession")) return undefined;
     const native = record(await this.inspector.call("getSession", [sessionId]));
     if (native.sessionId !== sessionId || typeof native.cwd !== "string") return undefined;
-    return { cwd: native.cwd, archived: native.isArchived === true,
+    return { cwd: native.cwd, archived: native.isArchived === true, turnRunning: native.turnRunning === true,
       permissionMode: typeof native.permissionMode === "string" ? native.permissionMode : undefined,
       cliSessionId: typeof native.cliSessionId === "string" ? native.cliSessionId : undefined,
     };
@@ -1029,9 +1030,19 @@ export class ClaudeDesktopBridge extends EventEmitter {
         this.projectSessions();
         if (JSON.stringify(this.session(sessionId)) !== previousSession) this.emit("changed");
       }
+      let observed = false;
       for (const item of items) {
         const receipt = item.role === "user" ? this.historyReceipt(sessionId, item.id) : undefined;
         if (receipt) {
+          if (receipt.source === "assistant-trigger" && receipt.messageId === item.id &&
+            (receipt.state === "submitted" || receipt.state === "queued")) {
+            receipt.state = "session-received";
+            this.trackReceivedInput(receipt);
+            this.options.conversationState.saveNativeDesktopReceipt(receipt);
+            await this.record({ sessionId, itemId: item.id, turnId: item.id, origin: "claude-desktop", type: "message.delivery",
+              data: { commandId: receipt.commandId, requestId: receipt.requestId, messageId: receipt.messageId, delivery: receipt.state } });
+            observed = true;
+          }
           item.delivery = receipt.state === "dispatching" ? "host-received" : receipt.state;
           item.commandId = receipt.commandId;
           item.requestId = receipt.requestId;
@@ -1041,6 +1052,10 @@ export class ClaudeDesktopBridge extends EventEmitter {
           }
           if (receipt.queueSettled) item.queueSettled = true;
         }
+      }
+      if (observed) {
+        this.projectSessions();
+        this.emit("changed");
       }
       diag("history.messages", { messages: items.length });
       return { sessionId, items, hasMore, ...(nextCursor ? { nextCursor } : {}) };
@@ -1311,19 +1326,25 @@ export class ClaudeDesktopBridge extends EventEmitter {
 
   private async send(input: NativeInput, priority: "later" | "now"): Promise<NativeDesktopReceipt> {
     const existing = this.options.conversationState.nativeDesktopReceipt(input.idempotencyKey);
-    if (existing) return existing;
+    if (existing && !(existing.notDispatched && input.source === "assistant-trigger")) return existing;
     const id = this.desktopId(input.sessionId);
-    const receipt: NativeDesktopReceipt = { idempotencyKey: input.idempotencyKey, commandId: randomUUID(), requestId: input.requestId, sessionId: input.sessionId, messageId: randomUUID(), queueMode: priority === "now" ? "steered" : "deferred", state: "dispatching", ...(input.source ? { source: input.source } : {}) };
+    const receipt: NativeDesktopReceipt = existing ?? { idempotencyKey: input.idempotencyKey, commandId: randomUUID(), requestId: input.requestId, sessionId: input.sessionId, messageId: randomUUID(), queueMode: priority === "now" ? "steered" : "deferred", state: "dispatching", ...(input.source ? { source: input.source } : {}) };
+    delete receipt.notDispatched;
     this.options.conversationState.saveNativeDesktopReceipt(receipt);
     this.receipts.set(receipt.commandId, receipt);
     await this.record({ sessionId: input.sessionId, turnId: receipt.messageId, origin: input.origin, type: "message.delivery", data: { ...receipt, delivery: "host-received", text: input.text } });
     let result: Record<string, unknown>;
     try {
       result = record(await this.inspector.call("sendMessage", [id, input.text, input.attachments?.length ? input.attachments.map(image => ({ base64: image.data, mimeType: image.mimeType, filename: image.name })) : undefined,
-        undefined, undefined, this.native.get(id)?.turnRunning ? priority : undefined, priority === "now" ? { ccdSteering: true, queuedMessageBar: true } : undefined,
+        undefined, undefined, (input.nativeTurnRunning ?? this.native.get(id)?.turnRunning) ? priority : undefined, priority === "now" ? { ccdSteering: true, queuedMessageBar: true } : undefined,
         receipt.messageId, undefined, input.text, undefined, undefined, undefined, undefined, { personSent: true, rejectUndelivered: true }]));
     } catch (error) {
       if (receipt.state !== "dispatching") return receipt;
+      if (receipt.source === "assistant-trigger" && error instanceof InspectorNotDispatchedError) {
+        receipt.notDispatched = true;
+        this.options.conversationState.saveNativeDesktopReceipt(receipt);
+        return receipt;
+      }
       receipt.state = error instanceof InspectorDisconnectedError ? "uncertain" : "failed";
       receipt.error = error instanceof Error ? error.message : String(error);
       this.options.conversationState.saveNativeDesktopReceipt(receipt);

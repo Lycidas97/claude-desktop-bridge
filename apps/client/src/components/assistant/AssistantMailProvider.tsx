@@ -17,6 +17,7 @@ interface AssistantMailState {
   selectedMail: BridgeMailCard | undefined;
   canReference: boolean;
   supportsAttachments: boolean;
+  supportsBatches: boolean;
   markViewed(card: BridgeMailCard): void;
   selectMail(card: BridgeMailCard): void;
   clearReference(): void;
@@ -60,7 +61,7 @@ export function AssistantMailProvider({ hostId, snapshot, online, request, loadC
     const timer = setTimeout(() => setRefreshStatus(undefined), 2_400);
     return () => clearTimeout(timer);
   }, [refreshStatus]);
-  const [selection, setSelection] = useState<{ sessionId: string; mailRefId: string }>();
+  const [selection, setSelection] = useState<{ sessionId: string; card: BridgeMailCard }>();
   const storageKey = hostId ? viewedMailStorageKey(hostId) : undefined;
   const [readState, setReadState] = useState<{ baselineSeq: number; viewed: Set<string> } | undefined>(() => {
     const saved = storageKey && typeof window !== "undefined" ? window.localStorage.getItem(storageKey) : null;
@@ -189,10 +190,12 @@ export function AssistantMailProvider({ hostId, snapshot, online, request, loadC
     for (const card of cache.cards) accountKeys.add(card.accountKey);
     return { accountLabels, showAccount: accountKeys.size > 1 };
   }, [accounts, cache.cards]);
-  const selectedMail = selection?.sessionId === assistant?.binding?.nativeSessionId ? cache.cards.find(card => card.mailRefId === selection?.mailRefId) : undefined;
+  const selectedMail = selection && selection.sessionId === assistant?.binding?.nativeSessionId
+    ? cache.cards.find(card => card.mailRefId === selection.card.mailRefId) ?? selection.card : undefined;
   return <AssistantMailContext.Provider value={enabled ? {
     cache, unreadCount, assistant, canReference, selectedMail,
     supportsAttachments: capabilities.includes("plugin.assistant-mail.attachments.v1"),
+    supportsBatches: capabilities.includes("plugin.assistant-mail.batches.v1"),
     accountLabel: accountKey => {
       const label = accountLabels.get(accountKey);
       if (accounts && !label) return "已移除的邮箱";
@@ -207,7 +210,7 @@ export function AssistantMailProvider({ hostId, snapshot, online, request, loadC
     selectMail: card => {
       if (!canReference) return;
       markViewed(card);
-      setSelection({ sessionId: assistant!.binding!.nativeSessionId!, mailRefId: card.mailRefId });
+      setSelection({ sessionId: assistant!.binding!.nativeSessionId!, card });
       onDiscuss?.();
     },
     clearReference: () => setSelection(undefined),

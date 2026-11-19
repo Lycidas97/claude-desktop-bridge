@@ -8,10 +8,10 @@ import type { AssistantAgendaService } from "./agenda.js";
 import { AgendaExpansionLimitError } from "./agenda-ical.js";
 import type { AssistantMailService } from "./desktop.js";
 import { MailAttachmentError } from "./mime.js";
-import { MAIL_SOURCE, MailToolRequest } from "./tool-contract.js";
+import { MAIL_SOURCE, MANAGED_MAIL_TOOLS, MailToolRequest } from "./tool-contract.js";
 import { CompactHookRequest } from "./compact-hook.js";
 
-type MailTools = Pick<AssistantMailService, "page" | "readEvent" | "readAttachment" | "updateAnalysis" | "setProcessingStatus">;
+type MailTools = Pick<AssistantMailService, "page" | "readEvent" | "readAttachment" | "updateAnalysis" | "setProcessingStatus" | "triggers">;
 
 /** The only listener given to mail tools; no management controller or broker is reachable here. */
 export async function serveAssistantMailTools(options: {
@@ -67,7 +67,7 @@ export async function serveAssistantMailTools(options: {
         return;
       }
       const input = MailToolRequest.parse(body);
-      if (input.name === "mail.read_attachment" && !sessionId) { reply(response, 403, { error: "MAIL_FORBIDDEN" }); return; }
+      if (MANAGED_MAIL_TOOLS.has(input.name) && !sessionId) { reply(response, 403, { error: "MAIL_FORBIDDEN" }); return; }
       if (sessionId) options.onManagedCall?.(sessionId, input.name);
       let result: unknown;
       switch (input.name) {
@@ -75,6 +75,7 @@ export async function serveAssistantMailTools(options: {
         case "calendar.list_events": result = options.agenda?.listEvents(input.arguments); break;
         case "calendar.find_free_slots": result = options.agenda?.freeSlots(input.arguments); break;
         case "mail.list_events": result = options.service.page(input.arguments); break;
+        case "mail.list_unfinished_triggers": result = options.service.triggers.unfinished(sessionId!, input.arguments.cursor); break;
         case "mail.read_event": result = await options.service.readEvent(input.arguments.mailRefId); break;
         case "mail.read_attachment": result = await options.service.readAttachment(input.arguments); break;
         case "mail.update_analysis": {

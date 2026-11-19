@@ -184,6 +184,9 @@ async function dispatchControllerRequestInner(
   sourceDeviceId?: string,
 ): Promise<unknown> {
   const params = request.params;
+  if (request.idempotencyKey.startsWith(ASSISTANT_TRIGGER_KEY_PREFIX)) {
+    throw new BridgeRequestError("INVALID_PARAMS", "该请求标识由助理保留。");
+  }
   if (request.method.startsWith("plugin.assistant-agenda.")) {
     if (!host.assistantAgenda) throw new BridgeRequestError("UNSUPPORTED", "当前电脑不支持日程。");
     const { client: _client, ...agendaParams } = params;
@@ -555,9 +558,6 @@ async function dispatchControllerRequestInner(
     return { commandId: turn.commandId, state: turn.state };
   }
   if (request.method === "turn.start" || request.method === "turn.steer") {
-    if (request.idempotencyKey.startsWith(ASSISTANT_TRIGGER_KEY_PREFIX)) {
-      throw new BridgeRequestError("INVALID_PARAMS", "该请求标识由助理保留。");
-    }
     const sessionId = stringParam(params, "sessionId")!;
     let text = stringParam(params, "text", false) ?? "";
     const attachments = attachmentsParam(params);

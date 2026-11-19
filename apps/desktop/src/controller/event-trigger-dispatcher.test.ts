@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { AssistantMailStore } from "../../../../plugins/assistant-mail/store.js";
 import { ClaudeDesktopBridge } from "../claude/claude-desktop-bridge.js";
 import { fixture } from "../claude/claude-desktop-bridge-fixture.js";
-import { InspectorDisconnectedError } from "../claude/claude-desktop-inspector.js";
+import { InspectorDisconnectedError, InspectorNotDispatchedError } from "../claude/claude-desktop-inspector.js";
 import { EventTriggerDispatcher } from "./event-trigger-dispatcher.js";
 
 const target = "local-native";
@@ -18,7 +18,10 @@ let available: boolean;
 
 function createDispatcher() {
   return new EventTriggerDispatcher(mail.triggers, env.state, broker, () => deliveryTarget,
-    () => available, async sessionId => (await broker.readNativeSessionIdentity(sessionId))?.permissionMode === "dontAsk", () => undefined);
+    () => available, async sessionId => {
+      const native = await broker.readNativeSessionIdentity(sessionId);
+      return native?.permissionMode === "dontAsk" ? native : undefined;
+    }, () => undefined);
 }
 
 function recordMail(uid: number) {
@@ -120,6 +123,79 @@ it("does not submit on the stale dontAsk catalog after Native changes the permis
   await broker.refreshRuntime();
   dispatcher.wake();
   await vi.waitFor(() => expect(sends()).toHaveLength(1));
+});
+
+it("passes later to the second ready batch when Native becomes busy before the catalog updates", async () => {
+  const clock = vi.spyOn(Date, "now").mockReturnValue(1_000);
+  await recordMail(1);
+  clock.mockReturnValue(4_000);
+  await recordMail(2);
+  clock.mockReturnValue(7_000);
+  const call = env.native.call.bind(env.native);
+  vi.spyOn(env.native, "call").mockImplementation(async (method, args) => {
+    const result = await call(method, args);
+    if (method === "sendMessage") env.native.sessions[0]!.turnRunning = true;
+    return result;
+  });
+  dispatcher.wake();
+  await vi.waitFor(() => expect(sends()).toHaveLength(2));
+  expect(sends().map(send => send.args[5])).toEqual([undefined, "later"]);
+});
+
+it.each([false, true])("uses the exact Native history UUID to observe a submitted or queued wake after restart (queued=%s)", async queued => {
+  const clock = vi.spyOn(Date, "now").mockReturnValue(1_000);
+  const event = (await recordMail(1))!;
+  const batch = mail.triggers.nextPending(target)!;
+  clock.mockReturnValue(batch.readyAt);
+  env.native.sendResult = { queued };
+  dispatcher.wake();
+  await vi.waitFor(() => expect(mail.triggers.batch(batch.batchId)?.commandId).toBeTruthy());
+  const receipt = env.state.nativeDesktopReceipt(batch.idempotencyKey)!;
+  expect(receipt.state).toBe(queued ? "queued" : "submitted");
+  dispatcher.close();
+  await broker.close();
+  env.native.page.messages = [{ uuid: receipt.messageId, type: "user", message: { role: "user", content: "Trigger" } }];
+  broker = new ClaudeDesktopBridge(env.options);
+  await broker.initialize();
+  expect((await broker.history(target)).items).toMatchObject([{ id: receipt.messageId, delivery: "session-received" }]);
+  expect(env.state.nativeDesktopReceipt(batch.idempotencyKey)?.state).toBe("session-received");
+  expect(mail.event(event.mailRefId)?.processingStatus).toBe("pending");
+  expect(sends()).toHaveLength(1);
+});
+
+it("reuses the original receipt when the inspector closes before the socket send", async () => {
+  const clock = vi.spyOn(Date, "now").mockReturnValue(1_000);
+  await recordMail(1);
+  const batch = mail.triggers.nextPending(target)!;
+  clock.mockReturnValue(batch.readyAt);
+  let logged!: () => void;
+  const waitingForLog = new Promise<void>(resolve => { logged = resolve; });
+  let resumeLog!: () => void;
+  const logGate = new Promise<void>(resolve => { resumeLog = resolve; });
+  const append = env.eventLog.append.bind(env.eventLog);
+  vi.spyOn(env.eventLog, "append").mockImplementationOnce(async draft => {
+    expect(draft.data?.delivery).toBe("host-received");
+    logged();
+    await logGate;
+    return append(draft);
+  });
+  const call = env.native.call.bind(env.native);
+  vi.spyOn(env.native, "call").mockImplementation(async (method, args) => {
+    if (!env.native.ready) throw new InspectorNotDispatchedError("Test disconnected before the socket send");
+    return call(method, args);
+  });
+  dispatcher.wake();
+  await waitingForLog;
+  const original = env.state.nativeDesktopReceipt(batch.idempotencyKey)!;
+  await env.native.close();
+  resumeLog();
+  await vi.waitFor(() => expect(dispatcher.project(batch, target).state).toBe("pending"));
+  expect(sends()).toHaveLength(0);
+  expect(mail.triggers.batch(batch.batchId)?.commandId).toBeNull();
+  await env.native.connect();
+  dispatcher.wake(true);
+  await vi.waitFor(() => expect(mail.triggers.batch(batch.batchId)?.commandId).toBe(original.commandId));
+  expect(sends().map(send => send.args[7])).toEqual([original.messageId]);
 });
 
 it("finds the receipt after Native accepts but before the batch has recorded its command ID", async () => {

@@ -56,7 +56,8 @@ import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
 import { desktopRuntimeId, desktopRuntimeName } from "../../lib/runtime-labels.js";
 import { sessionQueueLabel } from "../../lib/session-activity.js";
 import { useStreamEntrance } from "../../lib/stream-entrance.js";
-import { DELIVERY_LABELS, MailCard } from "../assistant/MailCard.js";
+import { AssistantTriggerBatch } from "../assistant/AssistantTriggerBatch.js";
+import { MailCard } from "../assistant/MailCard.js";
 import { ConfirmationDialog } from "../common/ConfirmationDialog.js";
 import { IconButton } from "../common/IconButton.js";
 import { SelectMenu } from "../common/SelectMenu.js";
@@ -456,9 +457,12 @@ export function ConversationView({
   const inlineQueuedIds = new Set<string>();
   if (effectiveSessionView === "conversation" && session.pendingCount > 0) {
     for (const node of displayNodes) {
-      if (node.kind === "message" && node.item.role === "user" && !node.item.sessionNotice
-        && node.item.commandId && isQueuedConversationMessage(node.item, session)) {
-        inlineQueuedIds.add(node.item.commandId);
+      const item = node.kind === "message" ? node.item : node.kind === "assistant-trigger-batch" ? node.nativeMessage : undefined;
+      if (item?.role === "user" && !item.sessionNotice && item.commandId && isQueuedConversationMessage(item, session)) {
+        inlineQueuedIds.add(item.commandId);
+      } else if (node.kind === "assistant-trigger-batch") {
+        const delivery = node.cards[0]?.nativeDelivery;
+        if (delivery?.state === "queued" && delivery.commandId) inlineQueuedIds.add(delivery.commandId);
       }
     }
   }
@@ -852,17 +856,8 @@ export function ConversationView({
           );
         }
         if (node.kind === "assistant-trigger-batch") {
-          const key = `assistant-trigger:${node.batchId}`;
-          const delivery = node.nativeMessage?.delivery;
-          const state = delivery === "queued" || delivery === "uncertain" || delivery === "cancelled" || delivery === "failed" ? delivery
-            : node.nativeMessage ? "observed" : node.cards[0]!.nativeDelivery.state;
-          return <section className="assistant-trigger-batch" key={key} data-stream-key={key} aria-label="助理唤醒">
-            <header><strong>助理唤醒</strong><span>{DELIVERY_LABELS[state]}</span></header>
-            {node.cards.map(card => <MailCard key={card.mailRefId} card={card} showBatchDelivery={false} />)}
-            {node.nativeMessage && <details className="assistant-mail-native"><summary>关联原生消息</summary>
-              <code>{node.nativeMessage.id}</code><pre>{node.nativeMessage.text}</pre>
-            </details>}
-          </section>;
+          return <AssistantTriggerBatch key={`${hostId}:${session.sessionId}:${node.batchId}`} sessionId={session.sessionId}
+            batchId={node.batchId} cards={node.cards} nativeMessage={node.nativeMessage} onCancel={onCancelQueuedTurn} />;
         }
         if (node.kind === "evidence") {
           return (

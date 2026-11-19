@@ -29,7 +29,7 @@ export const ASSISTANT_MAIL_CAPABILITIES = [
 ] as const;
 
 const managedHistoryMethods = new Set([
-  "session.open", "session.history", "session.tool.detail", "session.configuration", "session.permissions",
+  "session.open", "session.history", "session.tool.detail", "session.configuration", "session.permissions", "plugin.assistant-mail.batch",
   "session.archive", "session.delete", "turn.interrupt", "turn.queue.cancel", "prompt.list",
   "evidence.list", "artifact.preview", "artifact.transfer.open", "artifact.transfer.read", "artifact.transfer.close",
   "file.stat", "file.transfer.open", "file.transfer.read", "file.transfer.close",
@@ -87,19 +87,23 @@ function sliceSurrogateSafeCodeUnits(text: string, maxUnits: number): string {
   return text.slice(0, safeEnd);
 }
 
+function projectMailCard(event: NonNullable<ReturnType<AssistantMailService["event"]>>, nativeDelivery: BridgeMailCard["nativeDelivery"] = { state: "not-submitted" }): BridgeMailCard {
+  return {
+    seq: event.seq, mailRefId: event.mailRefId, accountKey: event.accountKey, mailbox: event.mailbox,
+    subject: event.subject, from: event.from, receivedAt: event.receivedAt, recordedAt: event.recordedAt,
+    processingStatus: event.processingStatus, preview: event.preview,
+    ...(event.analysis ? { analysis: event.analysis } : {}),
+    ...(event.previewError ? { previewError: event.previewError } : {}),
+    ...(event.attachmentCount ? { attachments: event.attachments.slice(0, 32), attachmentCount: event.attachmentCount } : {}),
+    nativeDelivery,
+  };
+}
+
 export function assistantMailPage(mail: AssistantMailService, options: Parameters<AssistantMailService["page"]>[0], includeHistory: boolean,
   delivery?: (mailRefId: string) => BridgeMailCard["nativeDelivery"] | undefined): BridgeMailPage {
   const page = mail.page(options, includeHistory);
   return {
-    cards: page.events.map(event => ({
-      seq: event.seq, mailRefId: event.mailRefId, accountKey: event.accountKey, mailbox: event.mailbox,
-      subject: event.subject, from: event.from, receivedAt: event.receivedAt, recordedAt: event.recordedAt,
-      processingStatus: event.processingStatus, preview: event.preview,
-      ...(event.analysis ? { analysis: event.analysis } : {}),
-      ...(event.previewError ? { previewError: event.previewError } : {}),
-      ...(event.attachmentCount ? { attachments: event.attachments, attachmentCount: event.attachmentCount } : {}),
-      nativeDelivery: delivery?.(event.mailRefId) ?? { state: "not-submitted" },
-    } satisfies BridgeMailCard)),
+    cards: page.events.map(event => projectMailCard(event, delivery?.(event.mailRefId))),
     ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
   };
 }
@@ -134,7 +138,7 @@ export class AssistantMailCoordinator {
     return [
       ...ASSISTANT_MAIL_CAPABILITIES,
       ...(this.workspace && this.host.broker?.canProvisionAssistantWorkspace() ? ["plugin.assistant-mail.workspace.v1"] as const : []),
-      ...(this.dispatcher ? ["plugin.assistant-mail.triggers.v1"] as const : []),
+      ...(this.dispatcher ? ["plugin.assistant-mail.triggers.v1", "plugin.assistant-mail.batches.v1"] as const : []),
     ];
   }
 
@@ -159,10 +163,12 @@ export class AssistantMailCoordinator {
 
   compactContext(sessionId: string, event: "PreCompact" | "PostCompact" | "SessionStart"): string | undefined {
     if (event === "PostCompact") return undefined;
+    const { refs, nextCursor } = this.mail.triggers.unfinished(sessionId);
     return [
       ...(event === "PreCompact" ? ["保留当前托管绑定、未结批次与待批提案的宿主标识。不要将外部邮件标题、发件人、正文或附件名写入摘要。"] : []),
       "绑定：当前托管会话。未结事件（批次、类型、引用）：",
-      ...this.mail.triggers.unfinished(sessionId).map(({ batchId, kind, eventId }) => `${batchId} ${kind} ${eventId}`),
+      ...refs.map(({ batchId, kind, eventId }) => `${batchId} ${kind} ${eventId}`),
+      ...(nextCursor === undefined ? [] : [`还有更早的未结事件。调用 mail.list_unfinished_triggers({"cursor":${nextCursor}}) 继续读取。`]),
     ].join("\n");
   }
 
@@ -172,7 +178,7 @@ export class AssistantMailCoordinator {
     this.dispatcher = new EventTriggerDispatcher(this.mail.triggers, receipts, broker,
       () => this.mail.binding()?.managed?.automaticDelivery ? this.eligibleTarget() : undefined,
       () => this.host.canStartTurn(),
-      async sessionId => Boolean(await this.readManagedNativeSession(sessionId)),
+      sessionId => this.readManagedNativeSession(sessionId),
       () => this.publishMailChange(true));
     this.runtimeChanged(true);
   }
@@ -274,11 +280,9 @@ export class AssistantMailCoordinator {
     if (this.initializingWorkspace) throw new BridgeRequestError("ASSISTANT_INITIALIZING", "托管助理正在初始化。");
     const previous = this.mail.binding()?.managed;
     const token = randomBytes(32).toString("hex");
-    let observed: BridgeSessionInfo;
-    let path: string;
     this.initializingWorkspace = true;
     try {
-      path = await workspace.prepare(token);
+      const path = await workspace.prepare(token);
       const session = await broker.createSession(path, "助理", undefined, true);
       this.unconfirmedSessions.add(session.sessionId);
       const configured = await broker.configureSession({ sessionId: session.sessionId, permissionMode: "dontAsk" });
@@ -286,7 +290,9 @@ export class AssistantMailCoordinator {
       if (configured.nativePermissionMode !== "dontAsk" || confirmed?.cwd !== path) {
         throw new BridgeRequestError("ASSISTANT_POLICY_UNCONFIRMED", "Claude Desktop 未确认托管工作区和会话权限。");
       }
-      observed = confirmed;
+      this.unconfirmedSessions.delete(confirmed.sessionId);
+      this.initializingWorkspace = false;
+      this.bindSession(confirmed, { path, token, policy: ASSISTANT_WORKSPACE_POLICY });
     } catch (error) {
       if (previous) {
         await workspace.restore(previous.token, previous.path);
@@ -296,8 +302,6 @@ export class AssistantMailCoordinator {
     } finally {
       this.initializingWorkspace = false;
     }
-    this.unconfirmedSessions.delete(observed.sessionId);
-    this.bindSession(observed, { path, token, policy: ASSISTANT_WORKSPACE_POLICY });
   }
 
   pauseBinding(sessionId: string): void {
@@ -366,6 +370,32 @@ export class AssistantMailCoordinator {
         const batch = this.mail.triggers.batchForEvent("mail.received", mailRefId);
         return batch ? this.dispatcher!.project(batch, enabledSessionId) : undefined;
       })) };
+    }
+    if (method === "plugin.assistant-mail.batch") {
+      const sessionId = stringParam(params, "sessionId")!;
+      const batchId = stringParam(params, "batchId")!;
+      this.assertSessionRequest(sessionId, method);
+      if (!this.dispatcher) throw new BridgeRequestError("UNSUPPORTED", "当前电脑不支持助理批次读取。");
+      const batch = this.mail.triggers.batch(batchId);
+      if (batch?.nativeSessionId !== sessionId) throw new BridgeRequestError("NOT_FOUND", "此会话没有该助理批次。");
+      const cursor = stringParam(params, "cursor", false);
+      if (cursor !== undefined && !/^(?:[1-9]|[12]\d|3[01])$/u.test(cursor)) throw new BridgeRequestError("INVALID_PARAMS", "批次游标无效。");
+      const binding = this.mail.binding();
+      const delivery = this.dispatcher.project(batch, binding?.managed?.automaticDelivery ? binding.nativeSessionId ?? undefined : undefined);
+      const refs = this.mail.triggers.refs(batchId);
+      const cards: BridgeMailCard[] = [];
+      let bytes = 0;
+      for (let index = Number(cursor ?? 0); index < refs.length; index++) {
+        const ref = refs[index]!;
+        const event = ref.kind === "mail.received" ? this.mail.event(ref.eventId) : undefined;
+        if (!event) continue;
+        const card = projectMailCard(event, delivery);
+        bytes += Buffer.byteLength(JSON.stringify(card));
+        // Always return at least one card, including a large but schema-valid analysis.
+        if (cards.length && bytes > 512 * 1024) return { mailPage: { cards, nextCursor: String(index) } satisfies BridgeMailPage };
+        cards.push(card);
+      }
+      return { mailPage: { cards } satisfies BridgeMailPage };
     }
     if (method === "plugin.assistant-mail.history") {
       const { client: _client, ...input } = params;

@@ -155,7 +155,7 @@ export async function createServiceRuntime(options: {
     resources.defer("Assistant mail", () => assistantMail.close());
     options.onStage?.("打开邮件数据库");
     let agendaStore!: AgendaStore;
-    await assistantMail.initialize(database => { agendaStore = new AgendaStore(database); });
+    await assistantMail.initialize(database => { agendaStore = new AgendaStore(database); }, false);
     const assistantAgenda = new AssistantAgendaService(agendaStore, {
       available: () => safeStorage.isEncryptionAvailable() &&
         (process.platform !== "linux" || safeStorage.getSelectedStorageBackend() !== "basic_text"),
@@ -238,6 +238,7 @@ export async function createServiceRuntime(options: {
     resources.defer("Desktop controller", () => controller.close());
     options.onStage?.("初始化运行时与中继连接");
     await controller.initialize();
+    assistantMail.startReceivers();
     assistantAgenda.start();
     if (process.platform === "win32" || process.platform === "darwin" || process.platform === "linux") {
       const updater = new DesktopUpdater({

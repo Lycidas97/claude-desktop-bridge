@@ -130,6 +130,27 @@ it("accepts compact hooks only from the current managed CLI session and never fo
   ]);
 });
 
+it("pages unfinished references only for the authorized managed session", async () => {
+  await channel!.close();
+  service.setBinding({ assistantId: "assistant", nativeSessionId: "local-managed", sectionId: null, previousSessionIds: [],
+    managed: { path: "/workspace", policy: "stage1-fenced-workspace", token: "fixture", automaticDelivery: true } });
+  const first = randomUUID();
+  service.triggers.record({ kind: "mail.received", eventId: first }, "mail-1", 1_000);
+  for (let uid = 2; uid <= 101; uid++) service.triggers.record({ kind: "mail.received", eventId: randomUUID() }, `mail-${uid}`, 1_000);
+  channel = await serveAssistantMailTools({ userDataPath: root, service,
+    authorizeManagedToken: token => token === "managed-fixture" ? "local-managed" : token === "other-fixture" ? "local-other" : undefined,
+  });
+  connection = MailToolConnection.parse(JSON.parse(await readFile(join(root, "private", "assistant", "mail-tools.json"), "utf8")));
+  const name = "mail.list_unfinished_triggers";
+  expect((await post({ name, arguments: {} })).status).toBe(403);
+  expect(await (await post({ name, arguments: {} }, "other-fixture")).json()).toMatchObject({ result: { refs: [] } });
+  const { result } = await (await post({ name, arguments: {} }, "managed-fixture")).json();
+  expect(result.refs).toHaveLength(100);
+  expect(result.nextCursor).toBe(2);
+  expect(await (await post({ name, arguments: { cursor: result.nextCursor } }, "managed-fixture")).json())
+    .toMatchObject({ result: { refs: [{ kind: "mail.received", eventId: first }] } });
+});
+
 it("rejects missing/wrong credentials, browser origins and every non-mail management operation", async () => {
   const request = { name: "mail.list_events", arguments: {} };
   expect((await fetch(`http://127.0.0.1:${connection.port}/tools`, { method: "POST", body: JSON.stringify(request) })).status).toBe(403);

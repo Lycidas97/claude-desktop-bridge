@@ -71,6 +71,8 @@ const SESSION_MANAGERS = `Object.values(process.mainModule.require('module')._ca
 
 export class NativeCallError extends Error {}
 export class InspectorDisconnectedError extends Error {}
+/** The transport rejected the call before handing a request to its socket. */
+export class InspectorNotDispatchedError extends InspectorDisconnectedError {}
 
 export interface NativeDesktopEvent {
   kind: "event" | "permission";
@@ -221,7 +223,7 @@ export class ClaudeDesktopInspector extends EventEmitter {
 
   async call(method: string, args: unknown[] = []): Promise<unknown> {
     if (method === "armAutoFixOnNextPr") return this.startAutoFixOnNextPr(args[0] as string, args[1] as string);
-    if (!this.ready) throw new InspectorDisconnectedError("Claude Desktop inspector is disconnected; open the Node inspector from Desktop's developer menu");
+    if (!this.ready) throw new InspectorNotDispatchedError("Claude Desktop inspector is disconnected; open the Node inspector from Desktop's developer menu");
     if (!this.supports(method)) throw new NativeCallError(`Unsupported Claude Desktop method: ${method}`);
     diag("inspector.call.start", { method });
     try {
@@ -403,7 +405,7 @@ export class ClaudeDesktopInspector extends EventEmitter {
 
   private evaluate(expression: string, timeout = true, traceName: DiagBucket = "native.other"): Promise<unknown> {
     const socket = this.socket;
-    if (!socket || socket.readyState !== WebSocket.OPEN) return Promise.reject(new InspectorDisconnectedError("Desktop inspector disconnected"));
+    if (!socket || socket.readyState !== WebSocket.OPEN) return Promise.reject(new InspectorNotDispatchedError("Desktop inspector disconnected"));
     const id = ++this.nextId;
     const settled = diagnostics.begin(traceName);
     diag("inspector.send", { request: id, codeUnits: expression.length, pending: this.pending.size, timeout });

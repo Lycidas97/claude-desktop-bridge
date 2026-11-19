@@ -249,13 +249,18 @@ export async function startNativeApprovalHost(options: {
           return reportQueued ? { delivered: true, queued: true } : { delivered: true };
         }
         if (textArg.startsWith("助理事件批次 ")) {
+          if (target.turnRunning) {
+            assert.equal(args[5], "later");
+            queued.add(String(args[7]));
+            return { delivered: true, queued: true };
+          }
           inspector.emit("event", { type: "message", sessionId: target.sessionId,
             message: { type: "user", uuid: args[7], timestamp: Date.now(), message: { content: args[1] } } });
         }
         return { delivered: true };
       }
       if (["promoteQueuedMessage", "sendSteeredNow", "cancelQueuedMessage"].includes(method)) {
-        assert.equal(args[0], options.sessionId);
+        assert.ok(nativeSessions.some(session => session.sessionId === args[0]));
         if (queueGate) await queueGate;
         const accepted = queued.has(String(args[1])) && queueResults.get(method) !== false;
         if (accepted && method === "cancelQueuedMessage") queued.delete(String(args[1]));
@@ -402,7 +407,7 @@ export async function startNativeApprovalHost(options: {
   assistantMailCoordinator?.startTriggers();
   eventLog.on("event", event => {
     assistantMailCoordinator?.observeDelivery(event);
-    if (event.type === "user.message.accepted" && state.listNativeDesktopReceipts().some(receipt => receipt.source === "assistant-trigger" && receipt.commandId === event.data.commandId)) {
+    if ((event.type === "user.message.accepted" || event.type === "message.delivery") && event.data.source === "assistant-trigger") {
       options.onTriggerMessage?.(event);
     }
   });
@@ -556,6 +561,11 @@ export async function startNativeApprovalHost(options: {
     session: () => structuredClone(broker.session(options.sessionId)!),
     receipts: () => state.listNativeDesktopReceipts(),
     queuedReply(enabled: boolean) { reportQueued = enabled; },
+    setSessionBusy(sessionId: string, busy: boolean) {
+      const target = nativeSessions.find(session => session.sessionId === sessionId);
+      assert.ok(target);
+      target.turnRunning = busy;
+    },
     queueResult(method: "promoteQueuedMessage" | "sendSteeredNow" | "cancelQueuedMessage", accepted: boolean) {
       queueResults.set(method, accepted);
     },

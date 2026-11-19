@@ -31,7 +31,7 @@ test("RPC stages distinguish handler from sending and settle on failure", async 
   vi.spyOn(diagnostics, "begin").mockImplementation(name => trace.begin(name));
   const handling = gate(), sending = gate();
   const host = { rememberDevice: vi.fn(async () => {}), responseCache: new Map(), handleRequest: vi.fn((request, origin) => dispatchControllerRequest({ snapshot: async () => { await handling.promise; return {}; } } as never, request, origin)), cacheResponse: vi.fn(), sendToDevice: vi.fn(async () => { await sending.promise; throw new Error("fixture send"); }), socket: { ack: vi.fn() } };
-  const message = { header: { from: "mobile", fromDeviceId: "private-device" }, payload: { kind: "request", method: "snapshot.get", requestId: "private-request", params: {} } };
+  const message = { header: { from: "mobile", fromDeviceId: "private-device" }, payload: { kind: "request", method: "snapshot.get", requestId: "private-request", idempotencyKey: "private-request", params: {} } };
   const pending = deliverTransportMessage(host as never, message as never, { id: "private-envelope" } as never, () => ({ kind: "response", requestId: "private-request", ok: false, error: { code: "FIXTURE", message: "fixture", retryable: false } }));
   await vi.waitFor(() => expect(trace.snapshot().stages["handler.snapshot.get"]!.active).toBe(1));
   expect(trace.snapshot().stages["send.snapshot.get"]?.active ?? 0).toBe(0);

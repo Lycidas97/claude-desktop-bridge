@@ -22,6 +22,7 @@ interface AssistantMailState {
   clearReference(): void;
   referenceFor(sessionId: string): string | undefined;
   loading: boolean;
+  hasOlderMail: boolean;
   error: string;
   online: boolean;
   loadOlder(): Promise<void>;
@@ -63,7 +64,7 @@ export function AssistantMailProvider({ hostId, snapshot, online, request, loadC
   }, [storageKey, readState]);
 
   function initializeUnreadBaseline(baselineSeq: number): void {
-    setReadState(current => current ?? { baselineSeq, viewed: new Set() });
+    setReadState(current => current ?? { baselineSeq: Math.max(0, baselineSeq), viewed: new Set() });
   }
 
   function markViewed({ seq, mailRefId }: BridgeMailCard): void {
@@ -128,11 +129,18 @@ export function AssistantMailProvider({ hostId, snapshot, online, request, loadC
     return () => { active = false; };
   }, [enabled, online, cacheReady, changeToken, refreshKey, request]);
 
+  const canFetchHistory = capabilities.includes("plugin.assistant-mail.history.v1") && assistant?.history?.available === true;
+  const historyLoading = online && assistant?.history?.loading === true;
+  const hasOlderMail = Boolean(cache.nextCursor || canFetchHistory);
   async function loadOlder(): Promise<void> {
-    if (!online || loading || !cache.nextCursor) return;
+    if (!online || loading || historyLoading || !hasOlderMail) return;
     setLoading(true);
     setError("");
     try {
+      if (!cache.nextCursor) {
+        mailResult(await request("plugin.assistant-mail.history", {}));
+        return;
+      }
       const { mailPage } = mailResult<{ mailPage: BridgeMailPage }>(await request("plugin.assistant-mail.list", { cursor: cache.nextCursor }));
       if (!mounted.current) return;
       setCache({ cards: mergeMailCards(cacheRef.current.cards, mailPage.cards), changeToken,
@@ -180,7 +188,7 @@ export function AssistantMailProvider({ hostId, snapshot, online, request, loadC
       onDiscuss?.();
     },
     clearReference: () => setSelection(undefined),
-    loading, error, online, request, loadOlder,
+    loading: loading || historyLoading, hasOlderMail, error, online, request, loadOlder,
     refresh: () => setRefreshKey(value => value + 1),
     read: async mailRefId => mailResult<{ mailDetail: BridgeMailDetail }>(await request("plugin.assistant-mail.read", { mailRefId })).mailDetail,
   } : undefined}>{children}</AssistantMailContext.Provider>;

@@ -5,10 +5,21 @@ import { AgendaStore } from "../../plugins/assistant-mail/agenda-store.js";
 import { AssistantMailService } from "../../plugins/assistant-mail/desktop.js";
 
 /** Synthetic IMAP boundary; the real receiver, SQLite store and MIME reader run unchanged. */
-export async function startAssistantMailFixture(directory: string) {
+export async function startAssistantMailFixture(directory: string, historyCount = 0) {
   const seedAccount = { host: "imap.example.test", user: "assistant@example.test" };
   const seedInbox = new EventEmitter();
   const messages: FetchMessageObject[] = [];
+  function append(count: number, source?: Buffer) {
+    const last = messages.length + count;
+    for (let uid = messages.length + 1; uid <= last; uid++) messages.push({
+      uid, seq: uid, internalDate: new Date(Date.UTC(2026, 10, 12, 2, uid)),
+      envelope: { subject: uid === 1 ? '<img src="https://tracker.invalid/pixel" onerror="window.mailInjected=1">' : `收件记录 ${uid}`,
+        from: [{ name: "研究协作", address: "sender@example.test" }] },
+      source: source ?? Buffer.from('Content-Type: text/plain; charset=utf-8\r\n\r\n邮件正文 <script>window.mailInjected=1</script>\n<img src="https://tracker.invalid/body">\nhttps://trusted.example@actual.example.test/path\nhttps://actual.example.test/unsubscribe\nhttps://[invalid'),
+    });
+    return last;
+  }
+  append(historyCount);
   const credentials = new Map<string, string>();
   const service = new AssistantMailService({ userDataPath: directory,
     createClient: ({ host, auth }) => {
@@ -21,6 +32,7 @@ export async function startAssistantMailFixture(directory: string) {
         async connect() {},
         async mailboxOpen() { return { uidValidity: 1n, uidNext: mailbox.length + 1 }; },
         async *fetch(range: string) { yield* mailbox.filter(message => message.uid >= Number(range.split(":")[0])); },
+        async search({ uid }: { uid: string }) { return mailbox.filter(message => message.uid <= Number(uid.split(":")[1])).map(message => message.uid); },
         async fetchOne(uid: string) { return mailbox.find(message => message.uid === Number(uid)) ?? false; },
         idle() { return new Promise<void>(resolve => { finishIdle = resolve; queueMicrotask(() => inbox.emit("idle")); }); },
         async noop() { finishIdle?.(); },
@@ -48,16 +60,10 @@ export async function startAssistantMailFixture(directory: string) {
       store.applySync(source, { removed: [], changed: resources.map((data, index) => ({ href: `${url}${index}.ics`, etag: '"1"', data })) });
     },
     async deliver(count: number, source?: Buffer) {
-      const next = messages.length + 1;
-      for (let uid = next; uid < next + count; uid++) messages.push({
-        uid, seq: uid, internalDate: new Date(Date.UTC(2026, 10, 12, 2, uid)),
-        envelope: { subject: uid === 1 ? '<img src="https://tracker.invalid/pixel" onerror="window.mailInjected=1">' : `收件记录 ${uid}`,
-          from: [{ name: "研究协作", address: "sender@example.test" }] },
-        source: source ?? Buffer.from('Content-Type: text/plain; charset=utf-8\r\n\r\n邮件正文 <script>window.mailInjected=1</script>\n<img src="https://tracker.invalid/body">\nhttps://trusted.example@actual.example.test/path\nhttps://actual.example.test/unsubscribe\nhttps://[invalid'),
-      });
+      const last = append(count, source);
       const received = new Promise<void>(resolve => {
         const onMail = (event: { uid: number }) => {
-          if (event.uid === next + count - 1) { service.off("mail", onMail); resolve(); }
+          if (event.uid === last) { service.off("mail", onMail); resolve(); }
         };
         service.on("mail", onMail);
       });

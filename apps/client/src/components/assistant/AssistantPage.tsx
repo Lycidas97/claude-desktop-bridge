@@ -150,6 +150,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
     {!mail.online && <p role="status">电脑离线，显示已缓存邮件。</p>}
     {!snapshot && binding?.nativeSessionId && <p>绑定会话：{binding.nativeSessionId}</p>}
     {mail.error && <p role="alert">{mail.error}</p>}
+    {displayedView === "mail" && mail.online && mail.assistant?.history?.failed && <p role="alert">更早邮件读取失败。</p>}
   </>;
   const stage = (openConfiguration?: () => void) => <div className="assistant-page-content">
     {bindingControls}
@@ -180,7 +181,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
       {!session && binding?.nativeSessionId && <MailReference sessionId={binding.nativeSessionId} />}
       <div className="assistant-mail-list" aria-label="邮件输入">{mail.cache.cards.map(card => <MailCard key={card.mailRefId} card={card} onDiscuss={() => setView("conversation")} />)}</div>
       {!mail.cache.cards.length && <p className="assistant-mail-empty" role="status">{mail.loading ? "正在同步邮件…" : "暂无已记录邮件"}</p>}
-      {mail.cache.nextCursor && <button type="button" className="secondary-button assistant-mail-older" disabled={!mail.online || mail.loading} onClick={() => void mail.loadOlder()}>{mail.loading ? "正在读取…" : "更早邮件"}</button>}
+      {mail.hasOlderMail && <button type="button" className="secondary-button assistant-mail-older" disabled={!mail.online || mail.loading} onClick={() => void mail.loadOlder()}>{mail.loading ? "正在读取…" : "更早邮件"}</button>}
     </>}
   </div>;
   return <section className={`assistant-page ${mobile ? "assistant-page-mobile" : "desktop-page"}${session ? " has-conversation" : ""}`}>

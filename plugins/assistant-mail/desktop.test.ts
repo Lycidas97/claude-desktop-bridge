@@ -14,6 +14,8 @@ class Inbox extends EventEmitter {
   capabilities = new Map([["IDLE", true]]);
   enabled = new Set<string>();
   fetchOne = vi.fn(async (uid: string) => this.messages.find(message => message.uid === Number(uid)) ?? false);
+  search = vi.fn(async ({ uid }: { uid: string }): Promise<number[] | false> =>
+    this.messages.filter(message => message.uid <= Number(uid.split(":")[1])).map(message => message.uid));
   uidValidity = 1n;
   uidNext = 5;
   messages: FetchMessageObject[] = [];
@@ -72,16 +74,22 @@ async function createService(inboxes: Inbox[] = [new Inbox()], supported = true)
   return { service, createClient, credentials };
 }
 
-it("keeps one background receiver independent of readers, skips old tail UIDs and persists new mail", async () => {
+it("uses one background connection for history and live mail, emitting new-mail events only for live arrivals", async () => {
   const inbox = new Inbox();
   inbox.deliver(4);
   const { service, createClient } = await createService([inbox]);
+  const live = vi.fn();
+  service.on("mail", live);
   expect(createClient).not.toHaveBeenCalled();
   await service.enable(account);
   await vi.waitFor(() => expect(inbox.idle).toHaveBeenCalledOnce());
-  expect(service.page().events).toEqual([]);
+  expect(service.page().events.map(event => event.uid)).toEqual([4]);
+  expect(live).not.toHaveBeenCalled();
+  expect(service.diagnosticsGauges().unreadCount).toBe(0);
   inbox.deliver(5);
-  await vi.waitFor(() => expect(service.page().events).toHaveLength(1));
+  await vi.waitFor(() => expect(service.page().events.map(event => event.uid)).toEqual([5, 4]));
+  expect(live).toHaveBeenCalledOnce();
+  expect(service.diagnosticsGauges().unreadCount).toBe(1);
   const event = service.page().events[0]!;
   await Promise.all([service.read(event.mailRefId), service.read(event.mailRefId)]);
   service.page(); service.page();
@@ -93,6 +101,57 @@ it("keeps one background receiver independent of readers, skips old tail UIDs an
   const config = await readFile(join(root, "private", "assistant", "accounts.json"), "utf8");
   expect(config).not.toContain(account.password);
   if (process.platform !== "win32") expect((await stat(join(root, "private", "assistant", "accounts.json"))).mode & 0o777).toBe(0o600);
+});
+
+it("backfills a configured mailbox with sparse UIDs, preserving both page and forward cursors on restart", async () => {
+  const { host, user, password } = account;
+  const accountKey = createHash("sha256").update(JSON.stringify([host, 993, user])).digest("hex");
+  const store = new AssistantMailStore(root);
+  await store.initialize();
+  try {
+    store.openMailbox(accountKey, "1", 500);
+    await store.record({ accountKey, mailbox: "INBOX", uidValidity: "1", uid: 500,
+      subject: "Already received", from: [], receivedAt: "2026-11-14T12:00:00Z", source: Buffer.from("Subject: already received\r\n\r\nbody") });
+    await writeFile(join(store.directory, "accounts.json"), JSON.stringify([{ host, port: 993, user, enabled: true }]));
+    secrets.set(accountKey, password);
+  } finally {
+    store.close();
+  }
+
+  const inbox = new Inbox();
+  const older = Array.from({ length: 43 }, (_, index) => 473 - index * 11);
+  for (const uid of [...older].reverse()) inbox.deliver(uid);
+  inbox.deliver(500);
+  inbox.deliver(501);
+  const { service } = await createService([inbox]);
+  await vi.waitFor(() => expect(inbox.idle).toHaveBeenCalledOnce());
+  expect(service.page().events.map(event => event.uid)).toEqual([501, 500, ...older.slice(0, 20)]);
+  expect(inbox.scans[0]).toBe("501:*");
+  expect(inbox.search).toHaveBeenCalledExactlyOnceWith({ uid: "1:499" }, { uid: true });
+  const start = service.page({ limit: 5 });
+  expect(Number(start.nextCursor)).toBeLessThan(0);
+  expect(service.page({ cursor: start.nextCursor }).events.map(event => event.uid)).toEqual(older.slice(3, 20));
+  const tail = String(service.page().events.at(-1)!.seq);
+
+  inbox.search.mockResolvedValueOnce(false);
+  service.requestOlder();
+  await vi.waitFor(() => expect(service.status().history).toEqual({ available: true, loading: false, failed: true }));
+  expect(service.page({ cursor: tail }).events).toEqual([]);
+  service.requestOlder();
+  await vi.waitFor(() => expect(service.status().history).toEqual({ available: true, loading: false, failed: false }));
+  expect(service.page({ cursor: tail }).events.map(event => event.uid)).toEqual(older.slice(20, 40));
+  await service.close();
+  services.splice(services.indexOf(service), 1);
+
+  inbox.deliver(502);
+  const { service: restarted } = await createService([inbox]);
+  await vi.waitFor(() => expect(inbox.idle).toHaveBeenCalledTimes(4));
+  expect(inbox.scans.at(-1)).toBe("502:*");
+  expect(inbox.search).toHaveBeenCalledTimes(3);
+  expect(restarted.page().events.map(event => event.uid)).toEqual([502, 501, 500, ...older.slice(0, 40)]);
+  restarted.requestOlder();
+  await vi.waitFor(() => expect(restarted.status().history).toEqual({ available: false, loading: false, failed: false }));
+  expect(restarted.page().events.map(event => event.uid)).toEqual([502, 501, 500, ...older]);
 });
 
 it("persists all new UIDs even when FETCH responses arrive out of order", async () => {
@@ -226,21 +285,21 @@ it("polls for new mail by default when the server does not advertise IDLE", asyn
   inbox.deliver(5);
   await vi.advanceTimersByTimeAsync(59_999);
   expect(inbox.scans).toEqual(["5:*"]);
-  expect(service.page().events).toEqual([]);
+  expect(service.page().events.map(event => event.uid)).toEqual([4]);
   await vi.advanceTimersByTimeAsync(1);
-  await vi.waitFor(() => expect(service.page().events.map(event => event.uid)).toEqual([5]));
+  await vi.waitFor(() => expect(service.page().events.map(event => event.uid)).toEqual([5, 4]));
   await vi.advanceTimersByTimeAsync(60_000);
-  expect(service.page().events.map(event => event.uid)).toEqual([5]);
-  expect(inbox.fetchOne).toHaveBeenCalledOnce();
+  expect(service.page().events.map(event => event.uid)).toEqual([5, 4]);
+  expect(inbox.fetchOne).toHaveBeenCalledTimes(2);
 
   inbox.uidValidity = 2n;
   inbox.messages = [];
   inbox.deliver(4);
   await vi.advanceTimersByTimeAsync(60_000);
-  expect(service.page().events.map(event => event.uidValidity)).toEqual(["1"]);
+  await vi.waitFor(() => expect(service.page().events.map(event => [event.uidValidity, event.uid])).toEqual([["1", 5], ["1", 4], ["2", 4]]));
   inbox.deliver(5);
   await vi.advanceTimersByTimeAsync(60_000);
-  await vi.waitFor(() => expect(service.page().events.map(event => [event.uidValidity, event.uid])).toEqual([["2", 5], ["1", 5]]));
+  await vi.waitFor(() => expect(service.page().events.map(event => [event.uidValidity, event.uid])).toEqual([["2", 5], ["1", 5], ["1", 4], ["2", 4]]));
   expect(inbox.mailboxOpen).toHaveBeenLastCalledWith("INBOX", { readOnly: true });
   expect(inbox.idle).not.toHaveBeenCalled();
   expect(createClient).toHaveBeenCalledOnce();
@@ -254,7 +313,7 @@ it("polls for new mail by default when the server does not advertise IDLE", asyn
   await vi.advanceTimersByTimeAsync(4_999);
   expect(createClient).toHaveBeenCalledOnce();
   await vi.advanceTimersByTimeAsync(1);
-  await vi.waitFor(() => expect(service.page().events.map(event => event.uid)).toEqual([6, 5, 5]));
+  await vi.waitFor(() => expect(service.page().events.map(event => event.uid)).toEqual([6, 5, 5, 4, 4]));
   expect(service.status().state).toBe("polling");
 });
 
@@ -320,6 +379,7 @@ it.each(["NO", "BYE"])("receives new mail after an IMAP server advertising IDLE 
           socket.write(`* ${delivered ? 1 : 0} EXISTS\r\n* OK [UIDVALIDITY 1] valid\r\n* OK [UIDNEXT ${delivered ? 6 : 5}] next\r\n${tag} OK [READ-ONLY] examined\r\n`);
           break;
         case "UID":
+          if (line.includes(" UID SEARCH ")) { socket.write(`* SEARCH\r\n${ok}`); break; }
           socket.write((!delivered ? "" : line.includes("BODY.PEEK[]")
             ? `* 1 FETCH (UID 5 BODY[] {${Buffer.byteLength(source)}}\r\n${source})\r\n`
             : "* 1 FETCH (UID 5)\r\n") + ok);
@@ -386,6 +446,7 @@ it.each([0, 1])("polls an IMAP mailbox without UIDNEXT, with %s old messages", a
           break;
         case "FETCH":
         case "UID":
+          if (line.includes(" UID SEARCH ")) { socket.write(`* SEARCH${oldCount ? ` ${oldUid}` : ""}\r\n${ok}`); break; }
           socket.write((!count ? "" : line.includes("BODY.PEEK[]")
             ? `${tail} BODY[] {${Buffer.byteLength(source)}}\r\n${source})\r\n`
             : `${tail})\r\n`) + ok);
@@ -405,21 +466,23 @@ it.each([0, 1])("polls an IMAP mailbox without UIDNEXT, with %s old messages", a
     await service.initialize();
     await service.enable({ ...account, host: "127.0.0.1", port });
     await vi.waitFor(() => expect(service.status().accounts[0]).toMatchObject({ state: "polling" }));
-    expect(service.page().events).toEqual([]);
+    const older = oldCount ? [oldUid] : [];
+    expect(service.page().events.map(event => event.uid)).toEqual(older);
     expect(commands).toContain(`UID FETCH ${oldCount ? newUid : 1}:* UID`);
-    expect(commands.some(command => command.includes("BODY.PEEK[]"))).toBe(false);
+    expect(commands.some(command => command.includes("BODY.PEEK[]"))).toBe(Boolean(oldCount));
 
     delivered++;
     await vi.advanceTimersByTimeAsync(60_000);
-    await vi.waitFor(() => expect(service.page().events.map(event => event.uid)).toEqual([newUid]));
+    await vi.waitFor(() => expect(service.page().events.map(event => event.uid)).toEqual([newUid, ...older]));
     expect((await service.read(service.page().events[0]!.mailRefId))?.source.toString()).toBe(source);
 
     const { accountKey } = service.status().accounts[0]!;
     await service.setAccountEnabled(accountKey, false);
     delivered++;
     await service.setAccountEnabled(accountKey, true);
-    await vi.waitFor(() => expect(service.page().events.map(event => event.uid)).toEqual([newUid + 1, newUid]));
+    await vi.waitFor(() => expect(service.page().events.map(event => event.uid)).toEqual([newUid + 1, newUid, ...older]));
     expect(commands.filter(command => command.startsWith("FETCH "))).toEqual(oldCount ? ["FETCH 1 UID"] : []);
+    expect(commands.filter(command => command.startsWith("UID SEARCH"))).toHaveLength(oldCount);
   } finally {
     await service.close();
     await new Promise<void>(resolve => server.close(() => resolve()));
@@ -681,7 +744,7 @@ it.each([true, false])("reads the legacy account without modifying its format an
     expect(createClient).not.toHaveBeenCalled();
     await service.setAccountEnabled(key, true);
   }
-  await vi.waitFor(() => expect(service.page().events.map(event => event.uid)).toEqual([6]));
+  await vi.waitFor(() => expect(service.page().events.map(event => event.uid)).toEqual([6, 5]));
   expect(inbox.scans[0]).toBe("6:*");
   expect(credentials.get).toHaveBeenCalledExactlyOnceWith(key);
   expect(credentials.set).not.toHaveBeenCalled();

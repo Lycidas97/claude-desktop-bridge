@@ -70,6 +70,19 @@ describe("refreshMailPages", () => {
     expect(load.mock.calls).toEqual([[undefined]]);
   });
 
+  it("appends an imported history page after the exact end of the previously loaded inbox", async () => {
+    const cards = Array.from({ length: 50 }, (_, index) => card(-index - 1));
+    const older = [card(-51), card(-52)];
+    const load = vi.fn<(cursor?: string) => Promise<BridgeMailPage>>()
+      .mockResolvedValueOnce({ cards, nextCursor: "-50" })
+      .mockResolvedValueOnce({ cards: older });
+
+    expect(await refreshMailPages(load, { cards, changeToken: "before" }, "history")).toEqual({
+      cards: [...cards, ...older], changeToken: "history",
+    });
+    expect(load.mock.calls).toEqual([[undefined], ["-50"]]);
+  });
+
   it("clears an exhausted cursor after reaching the end of the mailbox", async () => {
     const load = vi.fn<(cursor?: string) => Promise<BridgeMailPage>>()
       .mockResolvedValueOnce({ cards: [card(4), card(3)], nextCursor: "3" })

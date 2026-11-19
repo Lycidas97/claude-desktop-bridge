@@ -46,6 +46,7 @@ export async function startNativeApprovalHost(options: {
   onModelChanged?(model: string): void;
   sections?: boolean;
   assistantMail?: boolean;
+  initialMailHistory?: number;
   onMailChanged?(snapshot: BridgeAssistantMailSnapshot): void;
   onAgendaChanged?(snapshot: import("../../packages/protocol/src/index.js").BridgeAgendaSnapshot): void;
 }) {
@@ -381,7 +382,7 @@ export async function startNativeApprovalHost(options: {
     html: async () => { throw new Error("Unexpected HTML render"); },
   } });
   await evidence.initialize();
-  const assistantMail = mailRoot ? await startAssistantMailFixture(mailRoot) : undefined;
+  const assistantMail = mailRoot ? await startAssistantMailFixture(mailRoot, options.initialMailHistory) : undefined;
   assistantMail?.agenda.on("changed", snapshot => options.onAgendaChanged?.(snapshot));
   const assistantMailCoordinator = assistantMail && workspace
     ? new AssistantMailCoordinator(assistantMail.service, {

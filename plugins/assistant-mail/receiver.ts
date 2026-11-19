@@ -5,10 +5,14 @@ import type { AssistantMailStore, MailEvent } from "./store.js";
 import type { MailPollInterval } from "../../packages/protocol/src/assistant-mail.js";
 
 export type MailState = "disabled" | "connecting" | "connected" | "polling" | "reconnecting" | "unsupported" | "error" | "closed";
+const historyBatchSize = 20;
 
 export class MailReceiver {
   state: MailState = "disabled";
   errorCode: string | undefined;
+  historyLoading = false;
+  historyFailed = false;
+  private historyBefore = 0;
   private client: ImapFlow | undefined;
   private receiving: Promise<void> | undefined;
   private stopped = true;
@@ -22,7 +26,7 @@ export class MailReceiver {
     private readonly store: AssistantMailStore,
     private readonly credentials: MailCredentials,
     private readonly createClient: (options: ImapFlowOptions) => ImapFlow,
-    private readonly events: { changed(): void; mail(event: MailEvent): void; error(error: unknown): void },
+    private readonly events: { changed(mailDataChanged?: boolean): void; mail(event: MailEvent): void; error(error: unknown): void },
   ) {}
 
   start(): void {
@@ -35,6 +39,18 @@ export class MailReceiver {
   resume(): void {
     if (this.requestScan) this.requestScan();
     else if (this.reconnectTimer) this.wake();
+  }
+
+  get hasOlderMail(): boolean {
+    return this.historyBefore > 1 && !this.stopped && (this.state === "connected" || this.state === "polling");
+  }
+
+  requestOlder(): boolean {
+    if (!this.hasOlderMail || this.historyLoading) return false;
+    this.historyLoading = true;
+    this.historyFailed = false;
+    this.resume();
+    return true;
   }
 
   async stop(): Promise<void> {
@@ -76,12 +92,27 @@ export class MailReceiver {
       client.on("close", () => { ended = true; notify(); });
       let storageFailure = false;
       let connectionError = "mail_connection_failed";
+      const record = async (uidValidity: string, uid: number, historical?: true) => {
+        const message = await client.fetchOne(String(uid), { uid: true, envelope: true, internalDate: true, source: true }, { uid: true });
+        if (!message || this.stopped || ended) return;
+        if (!message.source) throw new Error("IMAP source unavailable");
+        storageFailure = true;
+        const event = await this.store.record({
+          accountKey, mailbox: "INBOX", uidValidity, uid: message.uid, source: message.source,
+          subject: message.envelope?.subject ?? "", from: message.envelope?.from ?? [],
+          receivedAt: message.internalDate instanceof Date ? message.internalDate.toISOString() : message.internalDate ?? new Date().toISOString(),
+          ...(historical ? { historical } : {}),
+        });
+        storageFailure = false;
+        return { uid: message.uid, event };
+      };
       try {
         await client.connect();
         if (this.stopped) break;
         useIdle = !idleRefusedOnClose && hasCapability(client, "IDLE");
         let uidValidity: string | undefined;
         let lastUid = 0;
+        let checkInitialHistory = true;
         while (!this.stopped && !ended) {
           changed = false;
           if (!useIdle && this.account.pollIntervalSeconds === null) {
@@ -98,7 +129,7 @@ export class MailReceiver {
               let watermark = this.store.openMailbox(accountKey, generation, mailbox.uidNext);
               storageFailure = false;
               if (watermark === undefined) {
-                // Some servers omit UIDNEXT. Read only the tail UID; don't import history.
+                // Some servers omit UIDNEXT. Read only the tail UID to establish the forward watermark.
                 let nextUid = 1;
                 if (mailbox.exists !== 0) {
                   const tail = await client.fetchOne("*", { uid: true });
@@ -112,6 +143,7 @@ export class MailReceiver {
               }
               uidValidity = generation;
               lastUid = watermark;
+              checkInitialHistory = true;
             }
             if (useIdle) this.setState("connected");
           }
@@ -121,20 +153,48 @@ export class MailReceiver {
           for (const uid of uids.sort((left, right) => left - right)) {
             // UID ranges ending in '*' can include the last old UID when there is no new mail.
             if (uid <= lastUid) continue;
-            const message = await client.fetchOne(String(uid), { uid: true, envelope: true, internalDate: true, source: true }, { uid: true });
-            if (!message) continue; // The server may have expunged it since enumeration.
-            if (!message.source) throw new Error("IMAP source unavailable");
-            storageFailure = true;
-            const event = await this.store.record({
-              accountKey, mailbox: "INBOX", uidValidity, uid: message.uid, source: message.source,
-              subject: message.envelope?.subject ?? "", from: message.envelope?.from ?? [],
-              receivedAt: message.internalDate instanceof Date ? message.internalDate.toISOString() : message.internalDate ?? new Date().toISOString(),
-            });
-            lastUid = message.uid;
-            storageFailure = false;
-            if (event) this.events.mail(event);
+            const result = await record(uidValidity, uid);
+            if (!result) continue; // The server may have expunged it since enumeration.
+            lastUid = result.uid;
+            if (result.event) this.events.mail(result.event);
           }
           if (this.stopped || ended) break;
+          if (checkInitialHistory || this.historyLoading) {
+            checkInitialHistory = false;
+            const previous = this.historyBefore;
+            const requested = this.historyLoading;
+            let imported = 0;
+            try {
+              storageFailure = true;
+              const { cursor, before, imported: previousImports } = this.store.historyWindow(accountKey, uidValidity, lastUid);
+              storageFailure = false;
+              this.historyBefore = before;
+              if (cursor === null || requested) {
+                this.historyFailed = true;
+                const limit = cursor === null ? historyBatchSize - previousImports : historyBatchSize;
+                const older = before > 1 ? await client.search({ uid: `1:${before - 1}` }, { uid: true }) : [];
+                if (this.stopped || ended) break;
+                if (older) {
+                  older.sort((left, right) => right - left);
+                  let index = 0;
+                  for (; index < older.length && imported < limit; index++) {
+                    const result = await record(uidValidity, older[index]!, true);
+                    if (result?.event) imported++;
+                    if (this.stopped || ended) break;
+                  }
+                  if (this.stopped || ended) break;
+                  this.historyBefore = index < older.length ? (older[index - 1] ?? before) : 0;
+                  storageFailure = true;
+                  this.store.finishHistory(accountKey, uidValidity, this.historyBefore);
+                  storageFailure = false;
+                  this.historyFailed = false;
+                }
+              }
+            } finally {
+              this.historyLoading = false;
+              if (requested || imported > 0 || this.historyBefore !== previous || this.historyFailed) this.events.changed(imported > 0);
+            }
+          }
           if (useIdle) {
             if (changed) continue;
             // Install the wakeup before IDLE. EXISTS during a fetch is consumed by the next scan.
@@ -177,6 +237,11 @@ export class MailReceiver {
         client.close();
         this.client = undefined;
         this.requestScan = undefined;
+        if (this.historyLoading) {
+          this.historyLoading = false;
+          this.historyFailed = true;
+          this.events.changed();
+        }
       }
       if (this.stopped) return;
       if (idleRefusedOnClose && this.account.pollIntervalSeconds === null) {

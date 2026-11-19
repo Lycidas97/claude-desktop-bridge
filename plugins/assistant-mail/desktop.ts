@@ -96,7 +96,9 @@ export class AssistantMailService extends EventEmitter {
     state: MailState; credentialsSupported: boolean; accounts: MailAccountStatus[];
     account?: SavedAccount; accountKey?: string; errorCode?: string;
     accountConfigError?: "mail_account_config_unavailable";
+    history: { available: boolean; loading: boolean; failed: boolean };
   } {
+    const receivers = Array.from(this.accounts.values()).filter(({ config }) => config.enabled && !this.closed).map(({ receiver }) => receiver);
     const accounts = Array.from(this.accounts, ([key, { config, receiver }]): MailAccountStatus => ({
       ...config, accountKey: key,
       state: this.closed ? "closed" : config.enabled ? receiver.state : "disabled",
@@ -106,6 +108,8 @@ export class AssistantMailService extends EventEmitter {
     return {
       state: this.closed ? "closed" : this.accountConfigError ? "error" : current?.state ?? "disabled",
       credentialsSupported: this.credentials.supported, accounts,
+      history: { available: receivers.some(receiver => receiver.hasOlderMail), loading: receivers.some(receiver => receiver.historyLoading),
+        failed: receivers.some(receiver => receiver.historyFailed) },
       ...(this.accountConfigError ? { accountConfigError: this.accountConfigError } : {}),
       ...(current ? { account: { ...this.accounts.get(current.accountKey)!.config }, accountKey: current.accountKey } : {}),
       ...(current?.errorCode ? { errorCode: current.errorCode } : {}),
@@ -218,6 +222,12 @@ export class AssistantMailService extends EventEmitter {
     for (const { config, receiver } of this.accounts.values()) if (config.enabled) receiver.resume();
   }
 
+  requestOlder(): void {
+    const receivers = Array.from(this.accounts.values()).filter(({ config }) => config.enabled).map(({ receiver }) => receiver);
+    if (receivers.some(receiver => receiver.historyLoading)) return;
+    if (receivers.map(receiver => receiver.requestOlder()).some(Boolean)) this.emit("changed");
+  }
+
   binding(): AssistantBinding | undefined { return this.store.binding(); }
   setBinding(binding: AssistantBinding): void { this.store.setBinding(binding); this.emit("changed"); }
   page(options?: Parameters<AssistantMailStore["page"]>[0]): ReturnType<AssistantMailStore["page"]> { return this.store.page(options); }
@@ -290,7 +300,7 @@ export class AssistantMailService extends EventEmitter {
 
   private addAccount(accountKey: string, config: SavedAccount) {
     const receiver = new MailReceiver(accountKey, config, this.store, this.credentials, this.createClient, {
-      changed: () => this.emit("changed"), mail: event => this.emit("mail", event),
+      changed: mailDataChanged => this.emit("changed", mailDataChanged), mail: event => this.emit("mail", event),
       error: error => this.emit("error", error, { accountKey, errorCode: receiver.errorCode ?? "mail_receiver_failed" } satisfies MailAccountFailure),
     });
     const account = { config, receiver };

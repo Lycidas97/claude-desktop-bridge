@@ -6,7 +6,7 @@ export function mergeMailCards(current: BridgeMailCard[], incoming: BridgeMailCa
   return [...cards.values()].sort((left, right) => right.seq - left.seq);
 }
 
-/** Re-read the loaded range: business updates do not change the insertion cursor. */
+/** Re-read the loaded range, including newly imported history if the client was at the end. */
 export async function refreshMailPages(load: (cursor?: string) => Promise<BridgeMailPage>, current: BridgeMailCache, changeToken: string): Promise<BridgeMailCache> {
   const oldest = current.cards.at(-1)?.seq;
   let cards: BridgeMailCard[] = [];
@@ -16,6 +16,6 @@ export async function refreshMailPages(load: (cursor?: string) => Promise<Bridge
     page = await load(cursor);
     cards = mergeMailCards(cards, page.cards);
     cursor = page.nextCursor;
-  } while (cursor && oldest !== undefined && page.cards.at(-1)!.seq > oldest);
+  } while (cursor && oldest !== undefined && (!current.nextCursor || page.cards.at(-1)!.seq > oldest));
   return { cards, changeToken, ...(current.workspace ? { workspace: current.workspace } : {}), ...(cursor ? { nextCursor: cursor } : {}) };
 }

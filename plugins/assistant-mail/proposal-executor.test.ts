@@ -6,6 +6,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { AgendaEventInput } from "../../packages/protocol/src/assistant-agenda.js";
 import { AgendaStore } from "./agenda-store.js";
 import { requestCalDavMember } from "./caldav.js";
+import { proposalAction } from "./proposal-contract.js";
 import { ProposalExecutor } from "./proposal-executor.js";
 import { ProposalStore } from "./proposal-store.js";
 
@@ -189,12 +190,12 @@ it("does not let an old Native receipt expose a model revision or its manual des
 
 it("preserves full untouched CalDAV text properties when changing event times", async () => {
   const notes = `${"x".repeat(8000)}TAIL`;
-  const summary = `${"x".repeat(500)}TITLETAIL`;
+  const summary = `${"x".repeat(499)} TITLETAIL`;
   const location = `${"x".repeat(1000)}PLACETAIL`;
   seedRemote(sourceBody.replace("SUMMARY:Original", `SUMMARY:${summary}\r\nDESCRIPTION:${notes}\r\nLOCATION:${location}`));
   const { id, title, notes: displayedNotes, location: displayedLocation } = agenda.listEvents(window).records[0]!;
-  const ref = service.create("bound-session", { kind: "calendar.reschedule", recordId: id,
-    value: { ...meeting, title, notes: displayedNotes, location: displayedLocation } });
+  const ref = service.create("bound-session", proposalAction.parse({ kind: "calendar.reschedule", recordId: id,
+    value: { ...meeting, title, notes: displayedNotes, location: displayedLocation } }));
   fetchDav.mockResolvedValueOnce(new Response(null, { status: 204 }));
   await service.commit(ref, "phone");
   const unfolded = String(fetchDav.mock.calls[0]?.[1]?.body).replace(/\r\n[ \t]/gu, "");
@@ -216,6 +217,28 @@ it("preserves the approved CalDAV event timezone when rescheduling and importing
   expect(body).toContain("DTSTART;TZID=America/New_York:20270104T100000");
   agenda.applySync(sourceId, { changed: [{ href, data: body, etag: '"version-two"' }], removed: [] });
   expect(agenda.listEvents(window).records[0]).toMatchObject(next);
+});
+
+it.each(["05:30", "06:30"])("rejects an ambiguous NY CalDAV start of %s UTC before creating a proposal", start => {
+  const sourceId = seedRemote();
+  const action = proposalAction.parse({ kind: "calendar.create", sourceId, value: {
+    ...meeting, startAt: `2027-11-07T${start}:00.000Z`, endAt: "2027-11-07T07:30:00.000Z", timeZone: "America/New_York",
+  } });
+  expect(() => service.create("bound-session", action)).toThrow("夏令时");
+  expect(service.snapshot().pendingCount).toBe(0);
+  expect(fetchDav).not.toHaveBeenCalled();
+});
+
+it("round-trips an unambiguous New York event on the DST fallback date", async () => {
+  const sourceId = seedRemote();
+  const value = { ...meeting, startAt: "2027-11-07T07:30:00.000Z", endAt: "2027-11-07T08:30:00.000Z", timeZone: "America/New_York" };
+  const ref = service.create("bound-session", proposalAction.parse({ kind: "calendar.create", sourceId, value }));
+  fetchDav.mockResolvedValueOnce(new Response(null, { status: 201 }));
+  await expect(service.commit(ref, "phone")).resolves.toMatchObject({ state: "applied" });
+  const [target, request] = fetchDav.mock.calls[0]!;
+  expect(request).toMatchObject({ method: "PUT", headers: { "If-None-Match": "*" } });
+  agenda.applySync(sourceId, { changed: [{ href: String(target), etag: '"created"', data: String(request?.body) }], removed: [] });
+  expect(agenda.listEvents({ from: "2027-11-07T00:00:00Z", to: "2027-11-08T00:00:00Z" }).records[0]).toMatchObject(value);
 });
 
 it("does not silently move a task's approved reminder when moving its deadline", () => {

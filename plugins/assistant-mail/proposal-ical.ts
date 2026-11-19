@@ -3,6 +3,7 @@ import { tzlib_get_ical_block } from "timezones-ical-library";
 import type { AgendaEventInput, AgendaTodoInput } from "../../packages/protocol/src/assistant-agenda.js";
 import type { AgendaProposalAction } from "../../packages/protocol/src/assistant-proposal.js";
 import { AgendaEditError } from "./agenda-store.js";
+import { isRepeatedWallTime } from "./agenda-time.js";
 
 const todoStatuses: Record<AgendaTodoInput["status"], string> = {
   pending: "NEEDS-ACTION", "in-progress": "IN-PROCESS", completed: "COMPLETED", cancelled: "CANCELLED",
@@ -36,7 +37,11 @@ export function proposalCalendarBody(
     if (!value) return;
     if (value.length === 10) item.addPropertyWithValue(name, ICAL.Time.fromDateString(value));
     else {
-      const time = ICAL.Time.fromJSDate(new Date(value), true).convertToZone(zone);
+      const instant = ICAL.Time.fromJSDate(new Date(value), true);
+      const time = instant.convertToZone(zone);
+      if (zone !== ICAL.Timezone.utcTimezone && (isRepeatedWallTime(Date.parse(value), zone.tzid) || time.toUnixTime() !== instant.toUnixTime())) {
+        throw new AgendaEditError("UNSUPPORTED", "CalDAV 无法在夏令时切换处无歧义地保留此时刻和时区，请选择其他时间。");
+      }
       const property = item.addPropertyWithValue(name, time);
       if (zone !== ICAL.Timezone.utcTimezone) property.setParameter("tzid", zone.tzid);
     }
@@ -46,7 +51,7 @@ export function proposalCalendarBody(
     else item.updatePropertyWithValue(name, value);
   }
   if (action.kind !== "todo.complete") {
-    if (previous?.value.title !== action.value.title) field("summary", action.value.title);
+    if (previous?.value.title.trim() !== action.value.title) field("summary", action.value.title);
     if (previous?.value.notes !== action.value.notes) field("description", action.value.notes);
   }
   if (action.kind === "calendar.create" || action.kind === "calendar.reschedule") {

@@ -1,4 +1,5 @@
 import { createContext, useContext, type ReactNode } from "react";
+import { useAssistantAgenda } from "../assistant/AssistantAgendaProvider.js";
 import { useAssistantMail } from "../assistant/AssistantMailProvider.js";
 
 export type MobileTab = "sessions" | "assistant" | "computers" | "settings";
@@ -32,7 +33,8 @@ export function MobileAppShell({
   children: ReactNode;
 }) {
   const assistant = useAssistantMail();
-  const resolvedAssistant = assistantAvailable ?? Boolean(assistant);
+  const agenda = useAssistantAgenda();
+  const resolvedAssistant = assistantAvailable ?? Boolean(assistant || agenda);
 
   return (
     <MobileNavContext.Provider

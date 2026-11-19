@@ -1,0 +1,230 @@
+import { createHash, randomUUID } from "node:crypto";
+import type { DatabaseSync } from "node:sqlite";
+import type {
+  AgendaEventInput, AgendaPage, AgendaPageQuery, AgendaRecordIdentity, AgendaTodoInput, AgendaWindow,
+  BridgeAgendaEvent, BridgeAgendaSource, BridgeAgendaTodo,
+} from "../../packages/protocol/src/assistant-agenda.js";
+import { agendaInstant, parseAgendaObject } from "./agenda-ical.js";
+
+export const LOCAL_AGENDA_ID = "local";
+export type AgendaErrorCode = NonNullable<BridgeAgendaSource["errorCode"]>;
+export class AgendaCalendarDataError extends Error {}
+export class AgendaEditError extends Error {
+  constructor(readonly code: "NOT_FOUND" | "CONFLICT" | "UNSUPPORTED" | "INVALID_PARAMS", message: string) { super(message); }
+}
+
+type SourceRow = {
+  id: string; label: string; url: string | null; user: string | null; credential: Uint8Array | null;
+  enabled: number; status: BridgeAgendaSource["status"]; error: AgendaErrorCode | null;
+  ctag: string | null; token: string | null; refreshed_at: string | null;
+};
+type RecordRow = { id: string; source_id: string; revision: number; value: string };
+type Entity = "todos" | "calendar_events";
+const objectKey = (...parts: string[]) => createHash("sha256").update(JSON.stringify(parts)).digest("hex");
+
+function makePage<T>(records: T[], limit: number, key: (record: T) => string): AgendaPage<T> {
+  const page = records.slice(0, limit);
+  return { records: page, ...(records.length > page.length ? { nextCursor: key(page[page.length - 1]!) } : {}) };
+}
+
+export class AgendaStore {
+  constructor(private readonly db: DatabaseSync, private readonly timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS assistant_sources (
+        id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('local', 'caldav')), label TEXT NOT NULL,
+        url TEXT, user TEXT, credential BLOB, enabled INTEGER NOT NULL DEFAULT 1,
+        status TEXT NOT NULL, error TEXT, refreshed_at TEXT, ctag TEXT, token TEXT
+      ) STRICT;
+      INSERT OR IGNORE INTO assistant_sources (id, kind, label, status) VALUES ('local', 'local', '本地', 'ready');
+      CREATE TABLE IF NOT EXISTS agenda_caldav_objects (
+        source_id TEXT NOT NULL REFERENCES assistant_sources(id) ON DELETE CASCADE,
+        href TEXT NOT NULL, etag TEXT NOT NULL, uid TEXT NOT NULL, data TEXT NOT NULL,
+        recurring INTEGER NOT NULL, PRIMARY KEY (source_id, href)
+      ) STRICT;
+      CREATE TABLE IF NOT EXISTS todos (
+        id TEXT PRIMARY KEY, source_id TEXT NOT NULL REFERENCES assistant_sources(id) ON DELETE CASCADE,
+        href TEXT, revision INTEGER NOT NULL, value TEXT NOT NULL,
+        status TEXT GENERATED ALWAYS AS (json_extract(value, '$.status')) STORED,
+        due_at TEXT GENERATED ALWAYS AS (json_extract(value, '$.dueAt')) STORED
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS todo_order ON todos (COALESCE(due_at, '~'), id);
+      CREATE INDEX IF NOT EXISTS todo_source_href ON todos (source_id, href);
+      CREATE TABLE IF NOT EXISTS calendar_events (
+        id TEXT PRIMARY KEY, source_id TEXT NOT NULL REFERENCES assistant_sources(id) ON DELETE CASCADE,
+        href TEXT, revision INTEGER NOT NULL, value TEXT NOT NULL,
+        start_at TEXT GENERATED ALWAYS AS (json_extract(value, '$.startAt')) STORED,
+        end_at TEXT GENERATED ALWAYS AS (json_extract(value, '$.endAt')) STORED
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS event_source_href ON calendar_events (source_id, href);
+    `);
+  }
+
+  sources(): BridgeAgendaSource[] {
+    const rows = this.db.prepare("SELECT id, label, enabled, status, error, refreshed_at FROM assistant_sources ORDER BY kind DESC, label, id").all() as Pick<SourceRow, "id" | "label" | "enabled" | "status" | "error" | "refreshed_at">[];
+    return rows.map(row => ({
+      id: row.id, label: row.label, enabled: Boolean(row.enabled), writable: row.id === LOCAL_AGENDA_ID,
+      configurable: row.id !== LOCAL_AGENDA_ID, status: row.status,
+      ...(row.error ? { errorCode: row.error } : {}), ...(row.refreshed_at ? { refreshedAt: row.refreshed_at } : {}),
+    }));
+  }
+
+  source(id: string): SourceRow {
+    const row = this.db.prepare("SELECT * FROM assistant_sources WHERE id = ? AND kind = 'caldav'").get(id) as SourceRow | undefined;
+    if (!row) throw new AgendaEditError("NOT_FOUND", "找不到此日历源。");
+    return row;
+  }
+
+  enabledSourceIds(): string[] {
+    return this.db.prepare("SELECT id FROM assistant_sources WHERE kind = 'caldav' AND enabled = 1").all().map(row => row.id as string);
+  }
+
+  addSource(input: { url: string; label: string; user: string }, credential: Uint8Array): string {
+    const id = objectKey(input.url, input.user);
+    if (this.db.prepare("SELECT 1 FROM assistant_sources WHERE id = ?").get(id)) throw new AgendaEditError("CONFLICT", "此日历源已添加。");
+    this.db.prepare(`INSERT INTO assistant_sources (id, kind, label, url, user, credential, status)
+      VALUES (?, 'caldav', ?, ?, ?, ?, 'pending')`).run(id, input.label, input.url, input.user, credential);
+    return id;
+  }
+
+  setCredential(id: string, credential: Uint8Array) {
+    this.db.prepare("UPDATE assistant_sources SET credential = ?, error = NULL WHERE id = ?").run(credential, id);
+  }
+
+  setEnabled(id: string, enabled: boolean) {
+    this.db.prepare("UPDATE assistant_sources SET enabled = ?, status = ?, error = NULL WHERE id = ?").run(Number(enabled), enabled ? "pending" : "disabled", id);
+  }
+
+  markError(id: string, error: AgendaErrorCode) {
+    this.db.prepare("UPDATE assistant_sources SET status = 'error', error = ? WHERE id = ?").run(error, id);
+  }
+
+  removeSource(id: string) {
+    this.db.prepare("DELETE FROM assistant_sources WHERE id = ?").run(id);
+  }
+
+  knownEtags(id: string): ReadonlyMap<string, string> {
+    return new Map(this.db.prepare("SELECT href, etag FROM agenda_caldav_objects WHERE source_id = ?").all(id)
+      .map(row => [row.href as string, row.etag as string]));
+  }
+
+  applySync(sourceId: string, delta: { ctag?: string; syncToken?: string; removed: string[]; changed: Array<{ href: string; etag: string; data: string }> }): void {
+    const collection = this.source(sourceId).url!;
+    // Parse all changed objects before replacing anything. A bad resource leaves the previous mirror and token intact.
+    let parsed;
+    try { parsed = delta.changed.map(item => ({ ...item, ...parseAgendaObject(item.data, this.timeZone) })); }
+    catch (cause) { throw new AgendaCalendarDataError("Invalid calendar data", { cause }); }
+    this.db.exec("BEGIN");
+    try {
+      for (const href of [...delta.removed, ...parsed.map(item => item.href)]) {
+        this.db.prepare("DELETE FROM todos WHERE source_id = ? AND href = ?").run(sourceId, href);
+        this.db.prepare("DELETE FROM calendar_events WHERE source_id = ? AND href = ?").run(sourceId, href);
+        this.db.prepare("DELETE FROM agenda_caldav_objects WHERE source_id = ? AND href = ?").run(sourceId, href);
+      }
+      for (const { href, etag, data, uid, recurring, todos, events } of parsed) {
+        this.db.prepare("INSERT INTO agenda_caldav_objects VALUES (?, ?, ?, ?, ?, ?)").run(sourceId, href, etag, uid, data, Number(recurring));
+        for (const [table, values] of [["todos", todos], ["calendar_events", events]] as const) {
+          const insert = this.db.prepare(`INSERT INTO ${table} (id, source_id, href, revision, value) VALUES (?, ?, ?, ?, ?)`);
+          for (const value of values) {
+            const id = objectKey(sourceId, href, value.recurrenceId ?? "");
+            insert.run(id, sourceId, href, 1, JSON.stringify({ ...value, id, sourceId, collection, uid, resourceHref: href, etag, revision: 1, origin: "untrusted_external" }));
+          }
+        }
+      }
+      this.db.prepare("UPDATE assistant_sources SET status = 'ready', error = NULL, ctag = ?, token = ?, refreshed_at = ? WHERE id = ?")
+        .run(delta.ctag ?? null, delta.syncToken ?? null, new Date().toISOString(), sourceId);
+      this.db.exec("COMMIT");
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+  }
+
+  saveTodo(value: AgendaTodoInput, existing?: { id: string; revision: number }): BridgeAgendaTodo {
+    return this.saveLocal("todos", value, existing);
+  }
+
+  saveEvent(value: AgendaEventInput, existing?: { id: string; revision: number }): BridgeAgendaEvent {
+    return this.saveLocal("calendar_events", { ...value, busy: true }, existing);
+  }
+
+  completeTodo(input: { id: string; revision: number; completed: boolean }): BridgeAgendaTodo {
+    const { id, sourceId, revision, collection, uid, origin, etag, recurrenceId, resourceHref, ...value } = JSON.parse(this.localRow("todos", input.id).value) as BridgeAgendaTodo;
+    return this.saveTodo({ ...value, status: input.completed ? "completed" : "pending" }, input);
+  }
+
+  private localRow(table: Entity, id: string): RecordRow {
+    const row = this.db.prepare(`SELECT id, source_id, revision, value FROM ${table} WHERE id = ?`).get(id) as RecordRow | undefined;
+    if (!row) throw new AgendaEditError("NOT_FOUND", "此记录已不存在。");
+    if (row.source_id !== LOCAL_AGENDA_ID) throw new AgendaEditError("UNSUPPORTED", "此数据源只读。");
+    return row;
+  }
+
+  private saveLocal<T extends AgendaTodoInput | (AgendaEventInput & { busy: boolean })>(table: Entity, value: T, existing?: { id: string; revision: number }): T & AgendaRecordIdentity {
+    if (existing) this.localRow(table, existing.id);
+    const id = existing?.id ?? randomUUID();
+    const revision = (existing?.revision ?? 0) + 1;
+    const record = { ...value, id, sourceId: LOCAL_AGENDA_ID, collection: LOCAL_AGENDA_ID, uid: id, revision, origin: "user_local" as const };
+    if (existing) {
+      const update = this.db.prepare(`UPDATE ${table} SET value = ?, revision = ? WHERE id = ? AND revision = ?`)
+        .run(JSON.stringify(record), revision, id, existing.revision);
+      if (!update.changes) throw new AgendaEditError("CONFLICT", "记录已更新，请重新打开后再编辑。");
+    } else this.db.prepare(`INSERT INTO ${table} (id, source_id, revision, value) VALUES (?, 'local', 1, ?)`)
+      .run(id, JSON.stringify(record));
+    return record;
+  }
+
+  listTodos(query: AgendaPageQuery & { status?: AgendaTodoInput["status"] | undefined }): AgendaPage<BridgeAgendaTodo> {
+    const limit = query.limit ?? 50;
+    const [date = "", id = ""] = query.cursor?.split("|") ?? [];
+    const rows = this.db.prepare(`SELECT value FROM todos WHERE (? IS NULL OR status = ?) AND (COALESCE(due_at, '~'), id) > (?, ?)
+      ORDER BY COALESCE(due_at, '~'), id LIMIT ?`).all(query.status ?? null, query.status ?? null, date, id, limit + 1);
+    return makePage(rows.map(row => JSON.parse(row.value as string) as BridgeAgendaTodo), limit, record => `${record.dueAt ?? "~"}|${record.id}`);
+  }
+
+  listEvents(query: AgendaPageQuery & AgendaWindow): AgendaPage<BridgeAgendaEvent> {
+    const limit = query.limit ?? 50;
+    const key = (record: BridgeAgendaEvent) => `${new Date(this.eventStart(record)).toISOString()}|${record.id}`;
+    const records = this.eventsIn(query).filter(record => !query.cursor || key(record) > query.cursor);
+    return makePage(records, limit, key);
+  }
+
+  private eventStart(event: BridgeAgendaEvent) {
+    return agendaInstant(event.startAt, event.allDay && event.origin === "untrusted_external" ? this.timeZone : event.timeZone);
+  }
+
+  private eventEnd(event: BridgeAgendaEvent) {
+    return agendaInstant(event.endAt, event.allDay && event.origin === "untrusted_external" ? this.timeZone : event.timeZone);
+  }
+
+  private eventsIn(window: AgendaWindow): BridgeAgendaEvent[] {
+    const from = Date.parse(window.from), to = Date.parse(window.to);
+    const rows = this.db.prepare(`SELECT event.value FROM calendar_events event
+      LEFT JOIN agenda_caldav_objects object ON object.source_id = event.source_id AND object.href = event.href
+      WHERE COALESCE(object.recurring, 0) = 0 AND event.start_at < ? AND event.end_at >= ?`)
+      .all(new Date(to + 86_400_000).toISOString(), new Date(from - 86_400_000).toISOString().slice(0, 10));
+    const records = rows.map(row => JSON.parse(row.value as string) as BridgeAgendaEvent);
+    for (const row of this.db.prepare(`SELECT object.*, source.url FROM agenda_caldav_objects object
+      JOIN assistant_sources source ON source.id = object.source_id WHERE object.recurring = 1`).iterate()) {
+      const { uid, events } = parseAgendaObject(row.data as string, this.timeZone, window);
+      for (const event of events) records.push({
+        ...event, id: objectKey(row.source_id as string, row.href as string, event.recurrenceId ?? ""),
+        sourceId: row.source_id as string, collection: row.url as string, uid, resourceHref: row.href as string, etag: row.etag as string,
+        revision: 1, origin: "untrusted_external",
+      });
+    }
+    return records.filter(event => this.eventStart(event) < to && (this.eventEnd(event) > from || this.eventStart(event) === this.eventEnd(event) && this.eventStart(event) >= from))
+      .sort((a, b) => this.eventStart(a) - this.eventStart(b) || a.id.localeCompare(b.id));
+  }
+
+  freeSlots(query: AgendaWindow & { durationMinutes: number }) {
+    let next = Date.parse(query.from);
+    const end = Date.parse(query.to);
+    const duration = query.durationMinutes * 60_000;
+    const slots: Array<{ from: string; to: string }> = [];
+    for (const event of this.eventsIn(query)) {
+      if (!event.busy || this.eventEnd(event) <= this.eventStart(event)) continue;
+      const start = this.eventStart(event);
+      if (start - next >= duration) slots.push({ from: new Date(next).toISOString(), to: new Date(start).toISOString() });
+      next = Math.max(next, this.eventEnd(event));
+    }
+    if (end - next >= duration) slots.push({ from: new Date(next).toISOString(), to: query.to });
+    return { slots: slots.slice(0, 100), truncated: slots.length > 100 };
+  }
+}

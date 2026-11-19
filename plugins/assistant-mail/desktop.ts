@@ -53,8 +53,8 @@ export class AssistantMailService extends EventEmitter {
     this.createClient = options.createClient ?? ((config) => new ImapFlow(config));
   }
 
-  async initialize(): Promise<void> {
-    await this.store.initialize();
+  async initialize(extendStore?: (database: import("node:sqlite").DatabaseSync) => void): Promise<void> {
+    await this.store.initialize(extendStore);
     let configs: SavedAccount[];
     try {
       let saved: string | undefined;

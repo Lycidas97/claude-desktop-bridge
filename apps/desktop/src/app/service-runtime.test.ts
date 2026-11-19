@@ -6,11 +6,18 @@ import { WorkspaceProvisioner } from "../controller/assistant-workspace.js";
 
 const resources = await vi.hoisted(async () => {
   const { EventEmitter } = await import("node:events");
+  const { DatabaseSync } = await import("node:sqlite");
+  let database: InstanceType<typeof DatabaseSync> | undefined;
   const resource = () => ({ initialize: vi.fn(async () => {}), close: vi.fn(async () => {}) });
   return {
     eventLog: resource(), state: resource(),
     evidence: resource(),
-    assistantMail: Object.assign(new EventEmitter(), resource(), {
+    assistantMail: Object.assign(new EventEmitter(), {
+      initialize: vi.fn(async (extend: (db: InstanceType<typeof DatabaseSync>) => void) => {
+        database = new DatabaseSync(":memory:");
+        extend(database);
+      }),
+      close: vi.fn(async () => { database?.close(); database = undefined; }),
       binding: vi.fn<() => { nativeSessionId: string; managed?: { path: string; token: string } } | undefined>(),
       status: vi.fn<() => { accounts: { enabled: boolean }[] }>(), resume: vi.fn(),
     }),
@@ -31,7 +38,7 @@ const resources = await vi.hoisted(async () => {
   };
 });
 vi.mock("electron", () => ({
-  app: { getVersion: () => resources.version, isPackaged: false, getAppPath: () => "/test/app" }, safeStorage: {}, shell: {}, powerMonitor: new EventEmitter(),
+  app: { getVersion: () => resources.version, isPackaged: false, getAppPath: () => "/test/app" }, safeStorage: { isEncryptionAvailable: () => false }, shell: {}, powerMonitor: new EventEmitter(),
   powerSaveBlocker: resources.powerSaveBlocker,
   systemPreferences: { isTrustedAccessibilityClient: vi.fn(() => true) },
   Notification: class extends EventEmitter {
@@ -210,7 +217,7 @@ it("owns one mail service and gives the Controller that exact instance", async (
   const runtime = await createServiceRuntime({ userDataPath: "/test/bridge" });
   expect(resources.mailOptions).toHaveBeenCalledExactlyOnceWith({ userDataPath: "/test/bridge" });
   expect(resources.assistantMail.initialize).toHaveBeenCalledOnce();
-  expect(resources.controllerOptions.mock.calls[0]?.at(-2)).toBe(resources.assistantMail);
+  expect(resources.controllerOptions.mock.calls[0]?.[13]).toBe(resources.assistantMail);
   expect(resources.serveMailTools).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ userDataPath: "/test/bridge", service: resources.assistantMail }));
   expect(resources.assistantMail.initialize.mock.invocationCallOrder[0]).toBeLessThan(resources.controller.initialize.mock.invocationCallOrder[0]!);
   await runtime.close();
@@ -259,7 +266,7 @@ it.each(["invalid JSON", "directory in place of the account file"])("starts the 
     const invalid = '[{"fixture":"not public"}';
     if (damage === "invalid JSON") await fs.writeFile(path, invalid);
     else await fs.mkdir(path);
-    resources.assistantMail.initialize.mockImplementationOnce(() => mail.initialize());
+    resources.assistantMail.initialize.mockImplementationOnce(extend => mail.initialize(extend));
     const { createServiceRuntime } = await import("./service-runtime.js");
     const runtime = await createServiceRuntime({ userDataPath: root });
     try {

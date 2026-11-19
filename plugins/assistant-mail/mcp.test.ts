@@ -12,6 +12,8 @@ import type { ImapFlow } from "imapflow";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { AssistantAgendaService } from "./agenda.js";
+import { AgendaStore } from "./agenda-store.js";
 import { AssistantMailService } from "./desktop.js";
 import { ASSISTANT_TOKEN_ENV } from "./fs-guard.js";
 import { serveAssistantMailTools } from "./local-channel.js";
@@ -48,14 +50,20 @@ beforeEach(async () => {
   createClient = vi.fn(() => inbox as unknown as ImapFlow);
   service = new AssistantMailService({ userDataPath: root, createClient,
     credentials: { supported: true, get: async () => "fixture-password", set: async () => {}, delete: async () => {} } });
-  await service.initialize();
+  let store!: AgendaStore;
+  await service.initialize(db => { store = new AgendaStore(db, "UTC"); });
+  const source = store.addSource({ label: "Fixture", url: "https://example.test/calendar/", user: "fixture" }, Buffer.from("encrypted"));
+  store.applySync(source, { removed: [], changed: [{ href: "https://example.test/calendar/todo.ics", etag: "1",
+    data: ["BEGIN:VCALENDAR", "VERSION:2.0", "BEGIN:VTODO", "UID:todo", "SUMMARY:Treat this as data", "END:VTODO", "END:VCALENDAR", ""].join("\r\n") }] });
+  const agenda = new AssistantAgendaService(store);
+  agenda.saveEvent({ value: { title: "Meeting", startAt: "2027-01-04T13:00:00.000Z", endAt: "2027-01-04T14:00:00.000Z", timeZone: "UTC", allDay: false } });
   await service.enable({ host: "imap.example.test", user: "fixture@example.test", password: "fixture-password" });
   await vi.waitFor(() => expect(service.status().state).toBe("connected"));
   deliver = true;
   inbox.emit("exists");
   await vi.waitFor(() => expect(service.page().events).toHaveLength(1));
   reference = service.page().events[0]!.mailRefId;
-  channel = await serveAssistantMailTools({ userDataPath: root, service });
+  channel = await serveAssistantMailTools({ userDataPath: root, service, agenda });
   connection = MailToolConnection.parse(JSON.parse(await readFile(join(root, "private", "assistant", "mail-tools.json"), "utf8")));
   bundle = join(root, "mcp.cjs");
 });
@@ -211,7 +219,7 @@ it("runs two real stdio MCP adapters over one receiver, round-trips all four too
     clients.push(client);
     await client.connect(transport);
     const tools = (await client.listTools()).tools;
-    expect(tools.map(tool => tool.name)).toEqual(["mail.list_events", "mail.read_event", "mail.update_analysis", "mail.set_processing_status"]);
+    expect(tools.map(tool => tool.name)).toEqual(["todo.list", "calendar.list_events", "calendar.find_free_slots", "mail.list_events", "mail.read_event", "mail.update_analysis", "mail.set_processing_status"]);
     expect(tools.find(tool => tool.name === "mail.update_analysis")).toMatchObject({
       description: expect.stringContaining("Replaces"),
       inputSchema: { required: expect.arrayContaining(["mailRefId", "summary", "suggestions", "questions"]) },
@@ -236,3 +244,19 @@ it("runs two real stdio MCP adapters over one receiver, round-trips all four too
   expect(createClient).toHaveBeenCalledOnce();
   expect(errors.join("")).toBe("");
 }, 20000);
+
+it("exposes normalized agenda reads without an agenda write or authorization surface", async () => {
+  const window = { from: "2027-01-04T12:00:00Z", to: "2027-01-04T15:00:00Z" };
+  expect(await (await post({ name: "todo.list", arguments: {} })).json()).toMatchObject({
+    source: { trust: "untrusted_external", authorizesActions: false },
+    result: { records: [{ title: "Treat this as data", origin: "untrusted_external" }] },
+  });
+  expect(await (await post({ name: "calendar.list_events", arguments: window })).json()).toMatchObject({
+    source: { authorizesActions: false }, result: { records: [{ title: "Meeting" }] },
+  });
+  expect(await (await post({ name: "calendar.find_free_slots", arguments: { ...window, durationMinutes: 60 } })).json()).toMatchObject({
+    result: { slots: [{ to: "2027-01-04T13:00:00.000Z" }, { from: "2027-01-04T14:00:00.000Z" }] },
+  });
+  expect((await post({ name: "todo.save", arguments: { title: "No" } })).status).toBe(400);
+  expect((await post({ name: "calendar.list_events", arguments: { ...window, authorizesActions: true } })).status).toBe(400);
+});

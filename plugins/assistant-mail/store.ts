@@ -73,7 +73,7 @@ export class AssistantMailStore {
     this.directory = join(userDataPath, "private", "assistant");
   }
 
-  async initialize(): Promise<void> {
+  async initialize(extend?: (database: DatabaseSync) => void): Promise<void> {
     for (const directory of [join(this.userDataPath, "private"), this.directory, join(this.directory, "raw-mail")]) {
       await mkdir(directory, { recursive: true, mode: 0o700 });
       await chmod(directory, 0o700);
@@ -128,6 +128,7 @@ export class AssistantMailStore {
     if (!this.database.prepare("PRAGMA table_info(mail_events)").all().some(column => column.name === "analysis_json")) {
       this.database.exec("ALTER TABLE mail_events ADD COLUMN analysis_json TEXT");
     }
+    extend?.(this.database);
   }
 
   private db(): DatabaseSync {

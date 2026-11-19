@@ -47,6 +47,7 @@ export async function startNativeApprovalHost(options: {
   sections?: boolean;
   assistantMail?: boolean;
   onMailChanged?(snapshot: BridgeAssistantMailSnapshot): void;
+  onAgendaChanged?(snapshot: import("../../packages/protocol/src/index.js").BridgeAgendaSnapshot): void;
 }) {
   const commandCwd = join(options.directory, "command-project");
   const commandHome = join(options.directory, "command-personal");
@@ -373,6 +374,7 @@ export async function startNativeApprovalHost(options: {
   }) });
   await evidence.initialize();
   const assistantMail = mailRoot ? await startAssistantMailFixture(mailRoot) : undefined;
+  assistantMail?.agenda.on("changed", snapshot => options.onAgendaChanged?.(snapshot));
   const assistantMailCoordinator = assistantMail && workspace
     ? new AssistantMailCoordinator(assistantMail.service, {
         allSessions: () => broker.listSessions(),
@@ -385,7 +387,7 @@ export async function startNativeApprovalHost(options: {
   assistantMailCoordinator?.start();
   const mailSnapshot = () => assistantMailCoordinator?.snapshot();
   const controller = createControllerFixture({
-    broker, evidence, eventLog, assistantMailCoordinator,
+    broker, evidence, eventLog, assistantMailCoordinator, assistantAgenda: assistantMail?.agenda,
     allSessions: () => broker.listSessions(), allProjects: () => broker.listProjects(),
     publish: async () => ({ assistantMail: mailSnapshot() }),
     config: { hostDeviceId: "synthetic-desktop", desktopName: "隔离电脑", devices: [{ deviceId: options.deviceId, name: "隔离手机", platform: "android", pairedAt: 1 }] },
@@ -623,6 +625,7 @@ export async function startNativeApprovalHost(options: {
     },
     async close() {
       await controller.close();
+      await assistantMail?.agenda.close();
       await assistantMail?.service.close();
       await broker.close();
       await evidence.close();

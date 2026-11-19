@@ -65,6 +65,16 @@ Enable that project MCP server through Desktop's project trust/approval flow. Do
 
 Project configuration limits where this integration is enabled; it is not an OS sandbox against other processes running as the same user. It does not revoke inherited tools, prove a complete whitelist, or pass the automatic-delivery gate. The manual configuration uses the descriptor token and has no managed-session attribution. Cards read the durable event projection, with `changed` notifications triggering refreshes.
 
+## Assistant agenda
+
+Open **助理 → 议程** to add, complete or edit local tasks and create or edit local calendar events. The desktop and phone read the same saved records. A date-only event uses an exclusive end date, so an all-day event on one date ends on the next date.
+
+In **助理设置 → 日历来源**, enter the full HTTPS **collection URL** for a CalDAV calendar or task list, the account name and a credential. Add each collection separately. Bridge imports `VEVENT` and `VTODO` as read-only records. A paused collection keeps its last saved copy. Removing the source drops its local mirror. Credentials are encrypted with the host OS credential backend through Electron. The insecure Linux `basic_text` backend cannot configure CalDAV.
+
+The background service refreshes enabled sources on startup, every 15 minutes, after system resume, and on manual refresh. It uses ctag and sync tokens where available, reconciles ETags after token expiration, and commits changed resources and the new cursor together. The same `assistant.sqlite` holds source state, task and event records, and the original recurrence rules. A failed refresh preserves the last saved records and cursor.
+
+The existing MCP server provides `todo.list`, `calendar.list_events` and `calendar.find_free_slots`. The calendar tools accept a date range of up to 366 days. A free slot is a gap in saved busy events. Imported text is external data and grants no authorization. Local user edits run through the authenticated Bridge client.
+
 ## Checks
 
 The plugin is outside npm workspaces. Root `package.json` installs IMAPFlow and explicitly invokes its typecheck; `scripts/test.mjs` explicitly runs its Vitest suite. Consequently `verify` and `ci:local` include it. The plugin manifest also declares its direct runtime dependency for standalone tooling.

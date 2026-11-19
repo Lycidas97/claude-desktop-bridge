@@ -362,6 +362,32 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   steps.push("managed setup confirms the path and Native permissions, pins the project, and keeps previous managed sessions out of the manual binding picker");
 
   const desktopRequests = [];
+  await page.locator(".assistant-view-tabs").getByRole("button", { name: "议程", exact: true }).click();
+  await page.getByRole("button", { name: "新建待办", exact: true }).click();
+  await page.getByLabel("标题", { exact: true }).fill("手机创建的待办");
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await page.getByText("手机创建的待办", { exact: true }).waitFor();
+  await page.getByRole("checkbox", { name: "完成 手机创建的待办", exact: true }).click();
+  await eventually(() => host.nativeApproval.assistantMail.agenda.listTodos({}).records[0]?.status, "completed", "Mobile agenda mutations reach the authenticated controller");
+  await eventually(() => page.getByRole("checkbox", { name: "完成 手机创建的待办", exact: true }).isChecked(), true, "Live agenda change refreshes the mobile checkbox");
+  await capture("mobile-agenda");
+  const agendaFixture = host.nativeApproval.assistantMail.agenda;
+  host.mailOffline = true;
+  host.socket.close();
+  await page.getByText("电脑离线，连接后可同步议程。", { exact: true }).waitFor();
+  for (let index = 1; index <= 51; index++) {
+    agendaFixture.saveTodo({ value: { title: `分页待办 ${index}`, status: "pending", dueAt: new Date(Date.UTC(2027, 0, index)).toISOString().slice(0, 10) } });
+  }
+  host.mailOffline = false;
+  host.socket.connect();
+  await eventually(() => page.getByRole("list", { name: "待办列表" }).getByRole("listitem").count(), 50, "Reconnect reloads the first agenda page");
+  await page.getByRole("button", { name: "加载更多", exact: true }).click();
+  await eventually(() => page.getByRole("list", { name: "待办列表" }).getByRole("listitem").count(), 52, "Agenda retains cursor pagination after reconnect");
+  const secondPage = agendaFixture.listTodos({ limit: 100 }).records.find(record => record.title === "分页待办 51");
+  agendaFixture.saveTodo({ existing: { id: secondPage.id, revision: secondPage.revision }, value: { title: "第二页已同步", status: "pending", dueAt: secondPage.dueAt } });
+  await page.getByText("第二页已同步", { exact: true }).waitFor();
+  steps.push("agenda reconnect and live changes reload the requested page depth");
+
   await page.exposeFunction("assistantDesktopRequest", async input => {
     const requestId = randomUUID();
     desktopRequests.push(input);
@@ -383,6 +409,7 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
       request: async input => {
         const response = await window.assistantDesktopRequest(input);
         if (response.result.assistantMail) window.assistantDesktopSnapshot({ assistantMail: response.result.assistantMail });
+        if (response.result.assistantAgenda) window.assistantDesktopSnapshot({ assistantAgenda: response.result.assistantAgenda });
         return response;
       },
     };
@@ -400,6 +427,22 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   assert.equal(await page.locator(".assistant-conversation .desktop-session-layout, .assistant-conversation .is-fixed-session").count(), 0, "Desktop AssistantPage mounts DesktopSessionConversation directly without DesktopSessions layout");
   await page.locator(".assistant-conversation .desktop-conversation-stream [data-mail-id]").first().waitFor();
   await page.locator(".assistant-conversation textarea").fill("桌面跨页共享草稿");
+  await page.locator(".assistant-view-tabs").getByRole("button", { name: "议程", exact: true }).click();
+  await page.getByRole("button", { name: "加载更多", exact: true }).click();
+  await page.getByText("手机创建的待办", { exact: true }).waitFor();
+  assert.equal(await page.getByRole("checkbox", { name: "完成 手机创建的待办", exact: true }).isChecked(), true);
+  await page.getByRole("button", { name: "编辑 手机创建的待办", exact: true }).click();
+  await page.getByLabel("标题", { exact: true }).fill("桌面编辑的待办");
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await page.getByText("桌面编辑的待办", { exact: true }).waitFor();
+  await capture("desktop-agenda");
+  await page.getByRole("button", { name: "日历", exact: true }).click();
+  await page.getByRole("button", { name: "新建日程", exact: true }).click();
+  await page.getByLabel("标题", { exact: true }).fill("桌面创建的日程");
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await page.getByText("桌面创建的日程", { exact: true }).waitFor();
+  steps.push("local task creation through phone E2EE, completion, Desktop edit, and Desktop event creation share durable agenda storage");
+
   await page.locator(".assistant-view-tabs").getByRole("button", { name: "收件", exact: true }).click();
   await page.locator(".assistant-view-tabs").getByRole("button", { name: "助理设置", exact: true }).click();
   await page.locator(".assistant-view-tabs").getByRole("button", { name: "对话", exact: true }).click();

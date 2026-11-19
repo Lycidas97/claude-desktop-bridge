@@ -38,6 +38,7 @@ interface MailProjection {
 }
 
 const unavailablePreview = "原文无法解析，预览不可用。";
+const mailOrder = "CASE WHEN historical = 1 THEN -seq ELSE seq END";
 
 function mailProjection({ bodyText, bodyError, attachments, attachmentCount }: Awaited<ReturnType<typeof parseMail>>): MailProjection {
   return { preview: bodyError ? "" : Array.from(bodyText.slice(0, 480)).slice(0, 240).join(""),
@@ -79,11 +80,12 @@ type EventRow = {
   analysis_json: string | null;
   raw_file: string;
   mime_projection: string | null;
+  historical: number;
 };
 
 function eventFromRow(row: EventRow): MailEvent {
   return {
-    seq: row.seq, mailRefId: row.mail_ref_id, accountKey: row.account_key,
+    seq: row.historical === 1 ? -row.seq : row.seq, mailRefId: row.mail_ref_id, accountKey: row.account_key,
     mailbox: row.mailbox, uidValidity: row.uid_validity, uid: row.uid,
     subject: row.subject, from: JSON.parse(row.from_json) as MailEvent["from"],
     receivedAt: row.received_at, recordedAt: row.recorded_at,
@@ -136,6 +138,12 @@ export class AssistantMailStore {
         last_persisted_uid INTEGER NOT NULL,
         PRIMARY KEY (account_key, mailbox)
       ) STRICT;
+      CREATE TABLE IF NOT EXISTS imap_history (
+        account_key TEXT NOT NULL,
+        uid_validity TEXT NOT NULL,
+        before_uid INTEGER NOT NULL,
+        PRIMARY KEY (account_key, uid_validity)
+      ) STRICT;
       CREATE TABLE IF NOT EXISTS mail_events (
         seq INTEGER PRIMARY KEY,
         mail_ref_id TEXT NOT NULL UNIQUE,
@@ -158,6 +166,8 @@ export class AssistantMailStore {
       this.database.exec("ALTER TABLE mail_events ADD COLUMN analysis_json TEXT");
     }
     if (!columns.includes("mime_projection")) this.database.exec("ALTER TABLE mail_events ADD COLUMN mime_projection TEXT");
+    if (!columns.includes("historical")) this.database.exec("ALTER TABLE mail_events ADD COLUMN historical INTEGER NOT NULL DEFAULT 0");
+    this.database.exec(`CREATE INDEX IF NOT EXISTS mail_events_page_order ON mail_events (${mailOrder})`);
     extend?.(this.database);
   }
 
@@ -232,14 +242,33 @@ export class AssistantMailStore {
     if (row?.uid_validity === uidValidity) return row.last_persisted_uid;
     if (uidNext === undefined) return undefined;
     this.db().prepare(`
-      INSERT INTO imap_watermarks VALUES (?, 'INBOX', ?, ?)
+      INSERT INTO imap_watermarks (account_key, mailbox, uid_validity, last_persisted_uid) VALUES (?, 'INBOX', ?, ?)
       ON CONFLICT(account_key, mailbox) DO UPDATE SET uid_validity = excluded.uid_validity,
         last_persisted_uid = excluded.last_persisted_uid
     `).run(accountKey, uidValidity, uidNext - 1);
     return uidNext - 1;
   }
 
-  async record(message: MailIdentity & Pick<MailEvent, "subject" | "from" | "receivedAt"> & { source: Buffer }): Promise<MailEvent | undefined> {
+  historyWindow(accountKey: string, uidValidity: string, lastUid: number) {
+    const history = this.db().prepare("SELECT before_uid FROM imap_history WHERE account_key = ? AND uid_validity = ?")
+      .get(accountKey, uidValidity) as { before_uid: number } | undefined;
+    const cursor = history?.before_uid ?? null;
+    const { oldest, imported } = this.db().prepare(`
+      SELECT MIN(uid) AS oldest, COALESCE(SUM(historical), 0) AS imported FROM mail_events
+      WHERE account_key = ? AND mailbox = 'INBOX' AND uid_validity = ?
+    `).get(accountKey, uidValidity) as { oldest: number | null; imported: number };
+    // A partial batch may have committed before a connection was lost.
+    return { cursor, before: Math.min(cursor ?? lastUid + 1, oldest ?? lastUid + 1), imported };
+  }
+
+  finishHistory(accountKey: string, uidValidity: string, before: number): void {
+    this.db().prepare(`
+      INSERT INTO imap_history (account_key, uid_validity, before_uid) VALUES (?, ?, ?)
+      ON CONFLICT(account_key, uid_validity) DO UPDATE SET before_uid = excluded.before_uid
+    `).run(accountKey, uidValidity, before);
+  }
+
+  async record(message: MailIdentity & Pick<MailEvent, "subject" | "from" | "receivedAt"> & { source: Buffer; historical?: true }): Promise<MailEvent | undefined> {
     if (this.db().prepare("SELECT 1 FROM mail_events WHERE account_key = ? AND mailbox = ? AND uid_validity = ? AND uid = ?")
       .get(message.accountKey, message.mailbox, message.uidValidity, message.uid)) return undefined;
     const mailRefId = randomUUID();
@@ -252,14 +281,16 @@ export class AssistantMailStore {
     try {
       const result = db.prepare(`
         INSERT INTO mail_events (mail_ref_id, account_key, mailbox, uid_validity, uid, subject, from_json,
-          received_at, recorded_at, raw_file, mime_projection) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          received_at, recorded_at, raw_file, mime_projection, historical) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(mailRefId, message.accountKey, message.mailbox, message.uidValidity, message.uid, message.subject,
-        JSON.stringify(message.from), message.receivedAt, Date.now(), rawFile, JSON.stringify(projection));
-      const watermark = db.prepare(`
-        UPDATE imap_watermarks SET last_persisted_uid = MAX(last_persisted_uid, ?)
-        WHERE account_key = ? AND mailbox = ? AND uid_validity = ?
-      `).run(message.uid, message.accountKey, message.mailbox, message.uidValidity);
-      if (watermark.changes !== 1) throw new Error("Mail watermark generation does not match");
+        JSON.stringify(message.from), message.receivedAt, Date.now(), rawFile, JSON.stringify(projection), message.historical ? 1 : 0);
+      if (!message.historical) {
+        const watermark = db.prepare(`
+          UPDATE imap_watermarks SET last_persisted_uid = MAX(last_persisted_uid, ?)
+          WHERE account_key = ? AND mailbox = ? AND uid_validity = ?
+        `).run(message.uid, message.accountKey, message.mailbox, message.uidValidity);
+        if (watermark.changes !== 1) throw new Error("Mail watermark generation does not match");
+      }
       db.exec("COMMIT");
       return eventFromRow(db.prepare("SELECT * FROM mail_events WHERE seq = ?").get(result.lastInsertRowid) as EventRow);
     } catch (error) {
@@ -268,11 +299,12 @@ export class AssistantMailStore {
     }
   }
 
-  page(input: unknown = {}): { events: MailEvent[]; nextCursor?: string } {
+  page(input: unknown = {}, includeHistory = true): { events: MailEvent[]; nextCursor?: string } {
     const { cursor, limit = 50, processingStatus } = MailPageParameters.parse(input);
+    const order = includeHistory ? mailOrder : "seq";
     const rows = this.db().prepare(`
-      SELECT * FROM mail_events WHERE seq < ? AND (? IS NULL OR processing_status = ?)
-      ORDER BY seq DESC LIMIT ?
+      SELECT * FROM mail_events WHERE (${order}) < ? AND (? IS NULL OR processing_status = ?)${includeHistory ? "" : " AND historical = 0"}
+      ORDER BY (${order}) DESC LIMIT ?
     `).all(cursor ? Number(cursor) : Number.MAX_SAFE_INTEGER,
       processingStatus ?? null, processingStatus ?? null, limit + 1) as EventRow[];
     const events = rows.slice(0, limit).map(row => {
@@ -312,7 +344,7 @@ export class AssistantMailStore {
   unreadCount(): number {
     if (!this.database) return 0;
     const row = this.database
-      .prepare("SELECT COUNT(*) AS count FROM mail_events WHERE processing_status = 'pending'")
+      .prepare("SELECT COUNT(*) AS count FROM mail_events WHERE historical = 0 AND processing_status = 'pending'")
       .get() as { count: number | bigint } | undefined;
     return Number(row?.count ?? 0);
   }

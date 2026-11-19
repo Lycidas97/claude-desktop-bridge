@@ -1,5 +1,5 @@
 import type { BridgeAssistantMailSnapshot, BridgeHostSnapshot, BridgeMailCache, BridgeMailCard, BridgeMailDetail, BridgeMailPage, BridgeMethod, BridgeResponse } from "@bridge/protocol";
-import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { mergeMailCards, refreshMailPages } from "../../lib/assistant-mail.js";
 
 export type AssistantRequest = (method: BridgeMethod, params: Record<string, unknown>) => Promise<BridgeResponse | undefined>;
@@ -22,6 +22,7 @@ interface AssistantMailState {
   clearReference(): void;
   referenceFor(sessionId: string): string | undefined;
   loading: boolean;
+  hasOlderMail: boolean;
   error: string;
   online: boolean;
   loadOlder(): Promise<void>;
@@ -63,7 +64,7 @@ export function AssistantMailProvider({ hostId, snapshot, online, request, loadC
   }, [storageKey, readState]);
 
   function initializeUnreadBaseline(baselineSeq: number): void {
-    setReadState(current => current ?? { baselineSeq, viewed: new Set() });
+    setReadState(current => current ?? { baselineSeq: Math.max(0, baselineSeq), viewed: new Set() });
   }
 
   function markViewed({ seq, mailRefId }: BridgeMailCard): void {
@@ -112,12 +113,16 @@ export function AssistantMailProvider({ hostId, snapshot, online, request, loadC
 
   useEffect(() => { setSelection(undefined); }, [assistant?.binding?.nativeSessionId]);
   const changeToken = assistant?.changeToken ?? "";
+  const supportsHistory = capabilities.includes("plugin.assistant-mail.history.v1");
+  const loadPage = useCallback(async (cursor?: string) => mailResult<{ mailPage: BridgeMailPage }>(await request(
+    "plugin.assistant-mail.list", { ...(cursor ? { cursor } : {}), ...(supportsHistory ? { includeHistory: true } : {}) },
+  )).mailPage, [request, supportsHistory]);
   useEffect(() => {
     if (!enabled || !online || !cacheReady) return;
     let active = true;
     setLoading(true);
     setError("");
-    void refreshMailPages(async cursor => mailResult<{ mailPage: BridgeMailPage }>(await request("plugin.assistant-mail.list", cursor ? { cursor } : {})).mailPage, cacheRef.current, changeToken)
+    void refreshMailPages(loadPage, cacheRef.current, changeToken)
       .then(next => {
         if (!active) return;
         initializeUnreadBaseline(next.cards[0]?.seq ?? 0);
@@ -126,14 +131,21 @@ export function AssistantMailProvider({ hostId, snapshot, online, request, loadC
       .catch(reason => { if (active) setError(reason instanceof Error ? reason.message : "邮件同步失败"); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [enabled, online, cacheReady, changeToken, refreshKey, request]);
+  }, [enabled, online, cacheReady, changeToken, refreshKey, loadPage]);
 
+  const canFetchHistory = supportsHistory && assistant?.history?.available === true;
+  const historyLoading = online && assistant?.history?.loading === true;
+  const hasOlderMail = Boolean(cache.nextCursor || canFetchHistory);
   async function loadOlder(): Promise<void> {
-    if (!online || loading || !cache.nextCursor) return;
+    if (!online || loading || historyLoading || !hasOlderMail) return;
     setLoading(true);
     setError("");
     try {
-      const { mailPage } = mailResult<{ mailPage: BridgeMailPage }>(await request("plugin.assistant-mail.list", { cursor: cache.nextCursor }));
+      if (!cache.nextCursor) {
+        mailResult(await request("plugin.assistant-mail.history", {}));
+        return;
+      }
+      const mailPage = await loadPage(cache.nextCursor);
       if (!mounted.current) return;
       setCache({ cards: mergeMailCards(cacheRef.current.cards, mailPage.cards), changeToken,
         ...(cacheRef.current.workspace ? { workspace: cacheRef.current.workspace } : {}),
@@ -180,7 +192,7 @@ export function AssistantMailProvider({ hostId, snapshot, online, request, loadC
       onDiscuss?.();
     },
     clearReference: () => setSelection(undefined),
-    loading, error, online, request, loadOlder,
+    loading: loading || historyLoading, hasOlderMail, error, online, request, loadOlder,
     refresh: () => setRefreshKey(value => value + 1),
     read: async mailRefId => mailResult<{ mailDetail: BridgeMailDetail }>(await request("plugin.assistant-mail.read", { mailRefId })).mailDetail,
   } : undefined}>{children}</AssistantMailContext.Provider>;

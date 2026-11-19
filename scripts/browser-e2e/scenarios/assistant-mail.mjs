@@ -178,6 +178,38 @@ export async function verifyAssistantMailUnread(page, host, steps, directory, vi
   steps.push("Unopened arrivals badge the assistant; opening and discussing clear only the viewed mail while processing stays pending, on mobile and desktop; viewed state survives mobile reload");
 }
 
+export async function verifyAssistantMailHistory(page, host, steps, directory, viewports) {
+  await openMobileDrawer(page);
+  const assistant = page.locator(".drawer-assistant-capsule");
+  const back = page.locator(".assistant-page").getByRole("button", { name: "返回", exact: true });
+  const inbox = page.getByRole("button", { name: "收件", exact: true });
+  const cards = page.locator(".assistant-mail-list > [data-mail-id]");
+  const older = page.getByRole("button", { name: "更早邮件", exact: true });
+
+  await assistant.click();
+  await inbox.click();
+  await eventually(() => cards.count(), 20, "An unimported 25-message INBOX loads its latest 20 mails");
+  await cards.first().getByText("收件记录 25", { exact: true }).waitFor();
+  await cards.last().getByText("收件记录 6", { exact: true }).waitFor();
+  await older.click();
+  await eventually(() => cards.count(), 25, "Older loads the remaining five messages from IMAP");
+  await older.waitFor({ state: "hidden" });
+  assert.equal(new Set(await cards.evaluateAll(elements => elements.map(element => element.dataset.mailId))).size, 25);
+  await cards.first().getByText("收件记录 25", { exact: true }).waitFor();
+  await cards.last().getByText("原文", { exact: true }).click();
+  await cards.last().locator("details[open] pre").waitFor();
+  await page.screenshot({ path: resolve(directory, "assistant-mail-history.png"), fullPage: true });
+  viewports.push({ page: "assistant-mail-history", ...page.viewportSize() });
+  await back.click();
+  assert.equal(await assistant.getAttribute("aria-label"), "助理", "Backfill does not count as unread");
+  await host.nativeApproval.assistantMail.deliver(1);
+  await eventually(() => assistant.getAttribute("aria-label"), "助理，1 条未读", "New mail after backfill is still unread");
+  await assistant.click();
+  await inbox.click();
+  await cards.first().getByText("收件记录 26", { exact: true }).waitFor();
+  steps.push("First inbox imports 20 existing mails, older loads all remaining without a badge, and a new live arrival still badges");
+}
+
 export async function verifyAssistantMail(page, host, steps, directory, viewports, baseUrl) {
   const cards = () => page.locator('.assistant-mail-list > [data-mail-id]');
   async function openAssistant() {

@@ -4,7 +4,7 @@ import { eventList, freeSlotQuery, todoList } from "./agenda-contract.js";
 const reference = z.string().uuid();
 const processingStatus = z.enum(["pending", "processing", "processed"]);
 export const MailPageParameters = z.object({
-  cursor: z.string().regex(/^[1-9]\d*$/).refine(value => Number.isSafeInteger(Number(value))).optional(),
+  cursor: z.string().regex(/^-?[1-9]\d*$/).refine(value => Number.isSafeInteger(Number(value))).optional(),
   limit: z.number().int().min(1).max(100).optional(), processingStatus: processingStatus.optional(),
 }).strict();
 const parameters = {

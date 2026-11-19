@@ -22,6 +22,7 @@ export const ASSISTANT_MAIL_CAPABILITIES = [
   "plugin.assistant-mail.account.v1",
   "plugin.assistant-mail.polling.v1",
   "plugin.assistant-mail.attachments.v1",
+  "plugin.assistant-mail.history.v1",
 ] as const;
 
 const managedHistoryMethods = new Set([
@@ -51,7 +52,7 @@ export function assistantMailSnapshot(
     sectionId: stored.sectionId, previousSessionIds: stored.previousSessionIds,
   };
   const session = sessions.find(candidate => candidate.sessionId === binding?.nativeSessionId);
-  const { state, accounts, accountConfigError, credentialsSupported } = mail.status();
+  const { state, accounts, accountConfigError, credentialsSupported, history } = mail.status();
   return {
     ...(binding ? { binding } : {}),
     bindingState: !binding?.nativeSessionId ? binding?.previousSessionIds.length ? "needs-rebind" : "unbound"
@@ -60,6 +61,7 @@ export function assistantMailSnapshot(
     accounts: accounts.map(account => account.state === "polling"
       ? { ...account, state: "connected", receivingMode: "polling" } : { ...account, state: account.state }),
     credentialsSupported,
+    ...(history.available || history.loading || history.failed ? { history } : {}),
     ...(accountConfigError ? { accountConfigError } : {}),
     automaticDelivery: false,
     changeToken,
@@ -81,8 +83,8 @@ function sliceSurrogateSafeCodeUnits(text: string, maxUnits: number): string {
   return text.slice(0, safeEnd);
 }
 
-export function assistantMailPage(mail: AssistantMailService, options: Parameters<AssistantMailService["page"]>[0]): BridgeMailPage {
-  const page = mail.page(options);
+export function assistantMailPage(mail: AssistantMailService, options: Parameters<AssistantMailService["page"]>[0], includeHistory: boolean): BridgeMailPage {
+  const page = mail.page(options, includeHistory);
   return {
     cards: page.events.map(event => ({
       seq: event.seq, mailRefId: event.mailRefId, accountKey: event.accountKey, mailbox: event.mailbox,
@@ -286,8 +288,17 @@ export class AssistantMailCoordinator {
     publish: () => Promise<DesktopControlSnapshot>,
   ): Promise<unknown> {
     if (method === "plugin.assistant-mail.list") {
-      const { client: _client, ...pageParams } = params;
-      return { mailPage: assistantMailPage(this.mail, pageParams as Parameters<AssistantMailService["page"]>[0]) };
+      const { client: _client, includeHistory, ...pageParams } = params;
+      if (includeHistory !== undefined && typeof includeHistory !== "boolean") {
+        throw new BridgeRequestError("INVALID_PARAMS", "请选择是否包含历史邮件。");
+      }
+      return { mailPage: assistantMailPage(this.mail, pageParams, includeHistory === true) };
+    }
+    if (method === "plugin.assistant-mail.history") {
+      const { client: _client, ...input } = params;
+      if (Object.keys(input).length) throw new BridgeRequestError("INVALID_PARAMS", "更早邮件不接受参数。");
+      this.mail.requestOlder();
+      return { assistantMail: this.snapshot() };
     }
     if (method === "plugin.assistant-mail.read") {
       const mailRefId = stringParam(params, "mailRefId")!;

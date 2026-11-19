@@ -30,6 +30,7 @@ class SyntheticMailInbox extends EventEmitter {
   idle = vi.fn(() => new Promise<void>((resolve) => { this.finishIdle = resolve; }));
   close = vi.fn(() => { this.finishIdle?.(); this.emit("close"); });
   fetchOne = vi.fn(async (uid: string) => this.messages.find((message) => message.uid === Number(uid)) ?? false);
+  search = vi.fn(async ({ uid }: { uid: string }) => this.messages.filter(message => message.uid <= Number(uid.split(":")[1])).map(message => message.uid));
 
   async *fetch(range: string) {
     const start = Number(range.split(":")[0]);

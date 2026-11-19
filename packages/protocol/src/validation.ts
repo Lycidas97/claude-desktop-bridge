@@ -109,6 +109,7 @@ const METHODS = new Set([
   "plugin.assistant-agenda.source.refresh",
   "plugin.assistant-agenda.source.remove",
   "plugin.assistant-mail.list",
+  "plugin.assistant-mail.history",
   "plugin.assistant-mail.read",
   "plugin.assistant-mail.bind",
   "plugin.assistant-mail.workspace.initialize",

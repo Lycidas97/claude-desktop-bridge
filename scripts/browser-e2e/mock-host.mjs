@@ -339,6 +339,7 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
     host.sectionsEnabled = sections;
     host.nativeApproval = await startNativeApprovalHost({
       directory, sessionId, title: originalTitle, deviceId: pairing.deviceId, sections, assistantMail,
+      initialMailHistory: options.initialMailHistory,
       onAgendaChanged(assistantAgenda) {
         snapshot.assistantAgenda = assistantAgenda;
         const event = { eventId: randomUUID(), seq: ++snapshot.latestSeq, timestamp: Date.now(), origin: "system",
@@ -460,6 +461,7 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
         case "plugin.assistant-agenda.event.save":
         case "plugin.assistant-agenda.todo.complete":
         case "plugin.assistant-mail.list":
+        case "plugin.assistant-mail.history":
         case "plugin.assistant-mail.read":
         case "plugin.assistant-mail.bind":
         case "plugin.assistant-mail.workspace.initialize":

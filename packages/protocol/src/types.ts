@@ -231,6 +231,7 @@ export type BridgeCapability =
   | "plugin.assistant-mail.account.v1"
   | "plugin.assistant-mail.polling.v1"
   | "plugin.assistant-mail.attachments.v1"
+  | "plugin.assistant-mail.history.v1"
   | "system.update.v1";
 
 /**
@@ -1389,6 +1390,7 @@ export type BridgeMethod =
   | "plugin.assistant-agenda.source.refresh"
   | "plugin.assistant-agenda.source.remove"
   | "plugin.assistant-mail.list"
+  | "plugin.assistant-mail.history"
   | "plugin.assistant-mail.read"
   | "plugin.assistant-mail.bind"
   | "plugin.assistant-mail.workspace.initialize"

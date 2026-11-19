@@ -50,6 +50,7 @@ export interface BridgeAssistantMailSnapshot {
   credentialsSupported?: boolean;
   workspace?: BridgeAssistantWorkspace;
   changeToken: string;
+  history?: { available: boolean; loading: boolean; failed: boolean };
   /** The native delivery gate is closed. Enabling delivery belongs to a later capability. */
   automaticDelivery: false;
 }
@@ -75,6 +76,7 @@ export interface BridgeMailAttachment {
 }
 
 export interface BridgeMailCard {
+  /** Descending list order: positive for live arrivals, negative for historical imports. */
   seq: number;
   mailRefId: string;
   accountKey: string;
@@ -98,6 +100,7 @@ export interface BridgeMailCard {
   };
 }
 
+/** `plugin.assistant-mail.list` includes historical cards only with `includeHistory: true` on a history-capable host. */
 export interface BridgeMailPage {
   cards: BridgeMailCard[];
   nextCursor?: string;

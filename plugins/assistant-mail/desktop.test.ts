@@ -452,12 +452,13 @@ it.each(["NO", "BAD"])("skips a historical FETCH %s and still receives older and
   let closing = false;
   const source = "Subject: live mail\r\n\r\nbody\r\n";
   const server = createServer(socket => {
-    socket.on("error", (error: NodeJS.ErrnoException) => {
+    const onError = (error: NodeJS.ErrnoException) => {
       if (!closing || error.code !== "ECONNRESET") throw error;
-    });
+    };
+    socket.on("error", onError);
     let idleTag: string | undefined;
     socket.write("* PREAUTH test mailbox\r\n");
-    createInterface({ input: socket }).on("line", line => {
+    createInterface({ input: socket }).on("error", onError).on("line", line => {
       if (line === "DONE") { socket.write(`${idleTag} OK idled\r\n`); return; }
       const [tag, command, action, range] = line.split(" ");
       commands.push(line.slice(tag!.length + 1));

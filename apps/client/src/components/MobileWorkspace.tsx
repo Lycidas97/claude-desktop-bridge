@@ -275,6 +275,7 @@ export function MobileWorkspace({
     manualSections,
     projectsByActivity,
     projectOrder,
+    managedProjectId,
     grouped,
     archivedSessions,
     archivedFamilies,
@@ -414,7 +415,7 @@ export function MobileWorkspace({
     ),
   );
   const renameCanSave = Boolean(renameTitle.trim() && renameTitle.trim() !== menuSession?.title && !sessionActionBusy);
-  const menuSupportsFork = Boolean(menuSession && onForkSession && desktopRuntimeId(menuSession) === "claude-desktop");
+  const menuSupportsFork = Boolean(menuSession && menuSession.projectId !== managedProjectId && onForkSession && desktopRuntimeId(menuSession) === "claude-desktop");
 
   useEffect(() => {
     if (!renameOpen || !sessionActionBusy) return;
@@ -803,13 +804,13 @@ export function MobileWorkspace({
         renameDialogRef={renameDialogRef}
         leadingGroup={menuSession && menuSession === selectedSession ? (
           <div className="m-group">
-            <SheetAction
+            {menuSession.projectId !== managedProjectId && <SheetAction
               icon={<SquarePen size={19} />}
               label="新建会话"
               detail="使用当前目录与分组"
               disabled={sessionActionBusy || !snapshot || !online}
               onClick={() => startNewChat(menuSession.projectId, menuSession.cwd)}
-            />
+            />}
             <SheetAction
               icon={sessionView === "evidence" ? <MessageSquare size={19} /> : <PackageCheck size={19} />}
               label={sessionView === "evidence" ? "返回对话" : `成果${evidenceCount > 0 ? ` ${evidenceCount}` : ""}`}

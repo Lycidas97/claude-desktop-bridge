@@ -35,7 +35,8 @@ export function SessionCreateDialog({ snapshot, initialProjectId, initialCwd, co
   const titleId = useId();
   const dialogRef = useRef<HTMLElement>(null);
   const runtimeId = "claude-desktop";
-  const projects = snapshot.projects.filter((project) => (project.runtimeId ?? "claude-desktop") === runtimeId);
+  const assistantWorkspacePath = snapshot.assistantMail?.workspace?.path;
+  const projects = snapshot.projects.filter((project) => !project.managedAssistant && (project.runtimeId ?? "claude-desktop") === runtimeId);
   const initialProject = projects.find((project) => project.projectId === initialProjectId);
   const resolvedInitialCwd = initialCwd ?? initialProject?.cwd ?? "";
   const isDirectoryPickerOnly = Boolean(onPickDirectory);
@@ -76,7 +77,9 @@ export function SessionCreateDialog({ snapshot, initialProjectId, initialCwd, co
   const recentPaths = [...new Set([
     ...[...projects].sort((left, right) => right.lastActivityAt - left.lastActivityAt).map((project) => project.cwd),
     ...(listing?.recentPaths ?? []),
-  ])].filter(Boolean);
+  ])].filter(path => path && (!assistantWorkspacePath || (
+    path !== assistantWorkspacePath && !path.startsWith(`${assistantWorkspacePath}/`) && !path.startsWith(`${assistantWorkspacePath}\\`)
+  )));
   const locked = busy || choosing || mkdirBusy;
   const groupUnavailable = Boolean(projectId && !groups.some((project) => project.projectId === projectId));
   const canCreate = connected && runtimeAvailable && Boolean(cwd.trim()) && !groupUnavailable && !locked;

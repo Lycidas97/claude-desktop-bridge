@@ -375,7 +375,7 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
     Object.assign(session, host.nativeApproval.profile());
     nativeHosts.push(host.nativeApproval);
     if (assistantMail) {
-      snapshot.host.capabilities.push("plugin.assistant-mail.v1", "plugin.assistant-mail.manual-reference.v1");
+      snapshot.host.capabilities.push(...host.nativeApproval.mailCapabilities(), "workspace.upload.v1");
       snapshot.assistantMail = host.nativeApproval.mailSnapshot();
       const initialMailCount = options.initialMailCount ?? 60;
       if (initialMailCount > 0) {
@@ -446,10 +446,30 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
         case "plugin.assistant-mail.list":
         case "plugin.assistant-mail.read":
         case "plugin.assistant-mail.bind":
+        case "plugin.assistant-mail.workspace.initialize":
+        case "plugin.assistant-mail.account.add":
+        case "plugin.assistant-mail.account.update-credential":
+        case "plugin.assistant-mail.account.set-enabled":
+        case "plugin.assistant-mail.account.remove":
           try {
             if (request.method === "plugin.assistant-mail.list" && host.mailPageFailure) throw new Error("隔离邮件列表读取失败");
             result = await host.nativeApproval.controllerRequest(request);
+            if (request.method === "plugin.assistant-mail.workspace.initialize") {
+              await syncNativeSections(host);
+              await host.send({ kind: "snapshot", snapshot });
+            }
           } catch (failure) { error = { code: failure.code ?? "MAIL_REJECTED", message: failure.message }; }
+          break;
+        case "file.upload.open":
+        case "file.upload.write":
+        case "file.upload.commit":
+        case "file.upload.cancel":
+          result = await host.nativeApproval.controllerRequest(request);
+          if (request.method === "file.upload.commit" && host.uploadCommitGate) {
+            const gate = host.uploadCommitGate;
+            host.uploadCommitGate = undefined;
+            await gate;
+          }
           break;
         case "plugin.magpie-quota.list":
           result = { status: "available", fetchedAt: Date.now(), accounts: [{ provider: "claude", name: "隔离 Magpie 账号", windows: [{ name: "5 hours", remaining: 73 }, { name: "7 days", remaining: 81 }] }] };

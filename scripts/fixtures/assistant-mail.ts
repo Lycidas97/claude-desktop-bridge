@@ -4,27 +4,37 @@ import { AssistantMailService } from "../../plugins/assistant-mail/desktop.js";
 
 /** Synthetic IMAP boundary; the real receiver, SQLite store and MIME reader run unchanged. */
 export async function startAssistantMailFixture(directory: string) {
-  const inbox = new EventEmitter();
+  const seedAccount = { host: "imap.example.test", user: "assistant@example.test" };
+  const seedInbox = new EventEmitter();
   const messages: FetchMessageObject[] = [];
-  let finishIdle: (() => void) | undefined;
-  Object.assign(inbox, {
-    capabilities: new Map([["IDLE", true]]), enabled: new Set(),
-    async connect() {},
-    async mailboxOpen() { return { uidValidity: 1n, uidNext: 1 }; },
-    async *fetch(range: string) { yield* messages.filter(message => message.uid >= Number(range.split(":")[0])); },
-    async fetchOne(uid: string) { return messages.find(message => message.uid === Number(uid)) ?? false; },
-    idle() { return new Promise<void>(resolve => { finishIdle = resolve; queueMicrotask(() => inbox.emit("idle")); }); },
-    async noop() { finishIdle?.(); },
-    close() { finishIdle?.(); inbox.emit("close"); },
-  });
-  let password = "";
+  const credentials = new Map<string, string>();
   const service = new AssistantMailService({ userDataPath: directory,
-    createClient: () => inbox as unknown as ImapFlow,
-    credentials: { supported: true, get: async () => password, set: async (_key, value) => { password = value; } },
+    createClient: ({ host, auth }) => {
+      const seeded = host === seedAccount.host && auth?.user === seedAccount.user;
+      const inbox = seeded ? seedInbox : new EventEmitter();
+      const mailbox = seeded ? messages : [];
+      let finishIdle: (() => void) | undefined;
+      return Object.assign(inbox, {
+        capabilities: new Map([["IDLE", true]]), enabled: new Set(),
+        async connect() {},
+        async mailboxOpen() { return { uidValidity: 1n, uidNext: mailbox.length + 1 }; },
+        async *fetch(range: string) { yield* mailbox.filter(message => message.uid >= Number(range.split(":")[0])); },
+        async fetchOne(uid: string) { return mailbox.find(message => message.uid === Number(uid)) ?? false; },
+        idle() { return new Promise<void>(resolve => { finishIdle = resolve; queueMicrotask(() => inbox.emit("idle")); }); },
+        async noop() { finishIdle?.(); },
+        close() { finishIdle?.(); inbox.emit("close"); },
+      }) as unknown as ImapFlow;
+    },
+    credentials: {
+      supported: true,
+      get: async key => credentials.get(key),
+      set: async (key, value) => { credentials.set(key, value); },
+      delete: async key => { credentials.delete(key); },
+    },
   });
   await service.initialize();
-  const idle = once(inbox, "idle");
-  await service.enable({ host: "imap.example.test", user: "assistant@example.test", password: "synthetic-only" });
+  const idle = once(seedInbox, "idle");
+  await service.enable({ ...seedAccount, password: "synthetic-only" });
   await idle;
   return {
     service,
@@ -42,7 +52,7 @@ export async function startAssistantMailFixture(directory: string) {
         };
         service.on("mail", onMail);
       });
-      inbox.emit("exists");
+      seedInbox.emit("exists");
       await received;
       return service.page({ limit: 1 }).events[0]!;
     },

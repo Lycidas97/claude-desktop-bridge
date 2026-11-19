@@ -84,6 +84,7 @@ export function sensitiveArtifactReason(relativePath: string): string | undefine
   if (segments.includes(".git")) return "Git 内部数据不允许远程读取";
   if (name === ".env" || name.startsWith(".env.")) return "环境变量文件不允许远程读取";
   if (
+    name === ".mcp.json" ||
     name === ".npmrc" ||
     name === ".pypirc" ||
     name === ".netrc" ||

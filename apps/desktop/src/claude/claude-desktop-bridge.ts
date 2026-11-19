@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter, on } from "node:events";
-import { basename, isAbsolute } from "node:path";
+import { basename, isAbsolute, relative } from "node:path";
 import {
   BRIDGE_EFFORT_LEVELS,
   CLAUDE_UNSECTIONED_PROJECT_ID,
@@ -235,6 +235,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
     scanCatalog?: () => Promise<ClaudeCatalogSnapshot>;
     refreshIntervalMs?: number;
     autoTitleGraceMs?: number;
+    assistantWorkspacePath?: string;
   }) {
     super();
     this.inspector = options.inspector ?? new ClaudeDesktopInspector(process.env.BRIDGE_CLAUDE_INSPECTOR_URL ? { origin: process.env.BRIDGE_CLAUDE_INSPECTOR_URL } : {});
@@ -341,6 +342,14 @@ export class ClaudeDesktopBridge extends EventEmitter {
       diag("refresh.done", { ok: false });
       return false;
     }
+  }
+
+  canProvisionAssistantWorkspace(): boolean {
+    return this.inspector.ready && ["start", "saveTrust", "setPermissionMode", "getSession"].every(method => this.inspector.supports(method));
+  }
+
+  private isAssistantWorkspace(cwd: string): boolean {
+    return Boolean(this.options.assistantWorkspacePath && relative(this.options.assistantWorkspacePath, cwd) === "");
   }
 
   capabilities(): BridgeRuntimeCapability[] {
@@ -580,10 +589,11 @@ export class ClaudeDesktopBridge extends EventEmitter {
       const parentSessionId = native.forkedFromSessionId ?? native.spawnedFrom?.sessionId;
       const projectCwd = this.projectCwd(native.cwd);
       const section = this.sectionCatalog?.sections.find(section => section.id === this.sectionCatalog?.assignments[sessionId]);
-      const projectId = this.sectionCatalog
+      const managedAssistant = this.isAssistantWorkspace(native.cwd);
+      const projectId = managedAssistant ? projectIdForCwd(this.options.assistantWorkspacePath!) : this.sectionCatalog
         ? section?.id ?? CLAUDE_UNSECTIONED_PROJECT_ID
         : projectIdForCwd(projectCwd);
-      const projectName = this.sectionCatalog
+      const projectName = managedAssistant ? "助理" : this.sectionCatalog
         ? section?.name ?? CLAUDE_UNSECTIONED_PROJECT_NAME
         : (basename(projectCwd) || projectCwd);
       const resolvedModel = this.resolveSessionModel(sessionId, native.model);
@@ -618,7 +628,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
           canInterrupt: ready && this.inspector.supports("interrupt") && (running || native.hasBackgroundWork === true),
           canSwitchProvider: false, canContinueOfficial: false, canRelay: false,
           canConfigure: ready && this.inspector.supports("setModel"),
-          ...(ready && this.sectionCatalog && this.inspector.assignSection && !native.isArchived && !native.scheduledTaskId ? { canMoveSection: true } : {}),
+          ...(ready && this.sectionCatalog && this.inspector.assignSection && !native.isArchived && !native.scheduledTaskId && !managedAssistant ? { canMoveSection: true } : {}),
           ...(!ready ? { reason: "Claude Desktop inspector 已断开" } : {}),
         },
       });
@@ -646,8 +656,13 @@ export class ClaudeDesktopBridge extends EventEmitter {
       const projectCwd = this.projectCwd(session.cwd);
       const project = projects.get(session.projectId) ?? { projectId: session.projectId, name: session.projectName, cwd: projectCwd, runtimeId: "claude-desktop", sessionCount: 0, runningCount: 0, pendingCount: 0, lastActivityAt: 0 };
       const active = session.archivedAt === undefined;
+      if (this.isAssistantWorkspace(session.cwd)) {
+        project.kind = "directory";
+        project.managedAssistant = true;
+        project.cwd = "";
+      }
       const previous = cwdPriority.get(session.projectId);
-      if (!previous || (active && !previous.active) || (active === previous.active && session.lastActivityAt > previous.lastActivityAt)) {
+      if (!project.managedAssistant && (!previous || (active && !previous.active) || (active === previous.active && session.lastActivityAt > previous.lastActivityAt))) {
         project.cwd = projectCwd;
         cwdPriority.set(session.projectId, { active, lastActivityAt: session.lastActivityAt });
       }
@@ -1051,13 +1066,21 @@ export class ClaudeDesktopBridge extends EventEmitter {
       const value = record(command);
       return { name: String(value.name ?? value.command ?? ""), description: String(value.description ?? ""), ...(typeof value.argumentHint === "string" ? { argumentHint: value.argumentHint } : {}) };
     }).filter(command => command.name) };
-    if (!catalog.commands.some(command => command.name === "btw")) catalog.commands.push({ name: "btw", description: "Ask a question in a side chat", argumentHint: "<question>" });
+    if (this.isAssistantWorkspace(this.session(sessionId)!.cwd)) {
+      catalog.commands = catalog.commands.filter(command => command.name !== "btw");
+    } else if (!catalog.commands.some(command => command.name === "btw")) {
+      catalog.commands.push({ name: "btw", description: "Ask a question in a side chat", argumentHint: "<question>" });
+    }
     catalog.commands = catalog.commands.filter(command => command.name !== "rewind");
     if (this.capabilities().includes("session.rewind")) catalog.commands.push({ name: "rewind", description: "Rewind conversation or file changes", action: "rewind" });
     return catalog;
   }
 
   async runCommand(input: NativeInput): Promise<BridgeSessionCommandResult> {
+    const session = this.session(input.sessionId);
+    if (session && this.isAssistantWorkspace(session.cwd) && /^\/btw(?:\s|$)/u.test(input.text.trim())) {
+      throw new NativeCallError("托管助理工作区不支持派生会话。");
+    }
     if (input.text.trim() === "/rewind") {
       this.desktopId(input.sessionId);
       if (!this.capabilities().includes("session.rewind")) throw new NativeCallError("Unsupported Claude Desktop rewind methods");
@@ -1703,6 +1726,9 @@ export class ClaudeDesktopBridge extends EventEmitter {
     }
     for (const delivery of deliveries) await this.record(delivery);
     if (sidechain) return;
+    if (message.type === "system" && message.subtype === "init" && Array.isArray(message.tools)) {
+      this.emit("system.init", sessionId, message.tools.filter((tool): tool is string => typeof tool === "string"));
+    }
     const stream = record(message.event);
     if (message.type === "stream_event" && !message.parent_tool_use_id) {
       if (stream.type === "message_start") {

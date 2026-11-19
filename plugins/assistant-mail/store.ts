@@ -9,6 +9,7 @@ export interface AssistantBinding {
   nativeSessionId: string | null;
   sectionId: string | null;
   previousSessionIds: string[];
+  managed?: { path: string; policy: string; token: string };
 }
 
 export interface MailIdentity {
@@ -91,6 +92,15 @@ export class AssistantMailStore {
         section_id TEXT,
         previous_session_ids TEXT NOT NULL
       ) STRICT;
+      CREATE TABLE IF NOT EXISTS assistant_managed_binding (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        managed_json TEXT NOT NULL
+      ) STRICT;
+      CREATE TRIGGER IF NOT EXISTS revoke_assistant_managed_binding
+      AFTER UPDATE ON assistant_binding
+      BEGIN
+        DELETE FROM assistant_managed_binding WHERE singleton = NEW.singleton;
+      END;
       CREATE TABLE IF NOT EXISTS imap_watermarks (
         account_key TEXT NOT NULL,
         mailbox TEXT NOT NULL,
@@ -126,22 +136,39 @@ export class AssistantMailStore {
   }
 
   binding(): AssistantBinding | undefined {
-    const row = this.db().prepare("SELECT * FROM assistant_binding WHERE singleton = 1").get() as {
-      assistant_id: string; native_session_id: string | null; section_id: string | null; previous_session_ids: string;
+    const row = this.db().prepare(`
+      SELECT binding.*, managed.managed_json FROM assistant_binding binding
+      LEFT JOIN assistant_managed_binding managed USING (singleton)
+      WHERE binding.singleton = 1
+    `).get() as {
+      assistant_id: string; native_session_id: string | null; section_id: string | null;
+      previous_session_ids: string; managed_json: string | null;
     } | undefined;
     return row ? {
       assistantId: row.assistant_id, nativeSessionId: row.native_session_id,
       sectionId: row.section_id, previousSessionIds: JSON.parse(row.previous_session_ids) as string[],
+      ...(row.managed_json ? { managed: JSON.parse(row.managed_json) as NonNullable<AssistantBinding["managed"]> } : {}),
     } : undefined;
   }
 
   setBinding(binding: AssistantBinding): void {
-    this.db().prepare(`
-      INSERT INTO assistant_binding VALUES (1, ?, ?, ?, ?)
-      ON CONFLICT(singleton) DO UPDATE SET assistant_id = excluded.assistant_id,
-        native_session_id = excluded.native_session_id, section_id = excluded.section_id,
-        previous_session_ids = excluded.previous_session_ids
-    `).run(binding.assistantId, binding.nativeSessionId, binding.sectionId, JSON.stringify(binding.previousSessionIds));
+    const db = this.db();
+    db.exec("BEGIN");
+    try {
+      db.prepare(`
+        INSERT INTO assistant_binding VALUES (1, ?, ?, ?, ?)
+        ON CONFLICT(singleton) DO UPDATE SET assistant_id = excluded.assistant_id,
+          native_session_id = excluded.native_session_id, section_id = excluded.section_id,
+          previous_session_ids = excluded.previous_session_ids
+      `).run(binding.assistantId, binding.nativeSessionId, binding.sectionId, JSON.stringify(binding.previousSessionIds));
+      if (binding.managed) {
+        db.prepare("INSERT INTO assistant_managed_binding VALUES (1, ?)").run(JSON.stringify(binding.managed));
+      }
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   /** A new mailbox generation starts at enable time; an existing one resumes its committed UID. */

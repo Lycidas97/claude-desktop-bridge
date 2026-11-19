@@ -518,7 +518,7 @@ export function MobileSessionCatalog({
                       onToggle={() => toggleProject(projectId, isEmptyManualGroup)}
                       actions={(
                         <>
-                          <IconButton
+                          {!group.project?.managedAssistant && <IconButton
                             label={`新建会话：${projectName}`}
                             className="session-row-action"
                             disabled={!snapshot || !online}
@@ -528,7 +528,7 @@ export function MobileSessionCatalog({
                             }}
                           >
                             <Plus size={16} />
-                          </IconButton>
+                          </IconButton>}
                           {sectionManage.canManage(group.project) && (
                             <IconButton
                               label={`管理分组：${projectName}`}

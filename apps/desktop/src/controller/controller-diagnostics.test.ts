@@ -297,6 +297,7 @@ describe("DesktopController unified diagnostics & redaction", () => {
         supported: true,
         get: async (key) => secrets.get(key),
         set: async (key, value) => { secrets.set(key, value); },
+        delete: async key => { secrets.delete(key); },
       },
       createClient: () => inbox as unknown as ImapFlow,
     });

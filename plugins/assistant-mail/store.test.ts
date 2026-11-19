@@ -121,6 +121,23 @@ it("persists the single assistant binding and previous native session references
   expect(store.binding()).toEqual(binding);
 });
 
+it("allows a legacy five-value binding write after provisioning a managed binding", () => {
+  const binding = { assistantId: "assistant", nativeSessionId: "native-managed", sectionId: null, previousSessionIds: [] };
+  store.setBinding({ ...binding, managed: { path: "/fixture/workspace", policy: "stage1-fenced-workspace", token: "fixture-managed-token" } });
+  const database = new DatabaseSync(join(store.directory, "assistant.sqlite"));
+  openDatabases.push(database);
+  const legacyBind = database.prepare(`
+    INSERT INTO assistant_binding VALUES (1, ?, ?, ?, ?)
+    ON CONFLICT(singleton) DO UPDATE SET assistant_id = excluded.assistant_id,
+      native_session_id = excluded.native_session_id, section_id = excluded.section_id,
+      previous_session_ids = excluded.previous_session_ids
+  `);
+  legacyBind.run(binding.assistantId, "native-legacy", null, JSON.stringify([binding.nativeSessionId]));
+  expect(store.binding()).toEqual({ ...binding, nativeSessionId: "native-legacy", previousSessionIds: [binding.nativeSessionId] });
+  legacyBind.run(binding.assistantId, binding.nativeSessionId, null, JSON.stringify(["native-legacy"]));
+  expect(store.binding()).not.toHaveProperty("managed");
+});
+
 it("migrates an existing event and persists analysis/status on the same identity without changing raw bytes or watermark", async () => {
   store.openMailbox("test-account", "1", 5);
   const event = (await store.record(message()))!;
@@ -144,13 +161,13 @@ it("migrates an existing event and persists analysis/status on the same identity
   expect(store.openMailbox("test-account", "1", 100)).toBe(5);
 });
 
-it("creates exactly the three business tables and private POSIX files including WAL/SHM", async () => {
+it("creates the assistant business tables and private POSIX files including WAL/SHM", async () => {
   store.openMailbox("test-account", "1", 5);
   await store.record(message());
   const database = new DatabaseSync(join(store.directory, "assistant.sqlite"));
   openDatabases.push(database);
   expect(database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all().map(row => row.name))
-    .toEqual(["assistant_binding", "imap_watermarks", "mail_events"]);
+    .toEqual(["assistant_binding", "assistant_managed_binding", "imap_watermarks", "mail_events"]);
   if (process.platform === "win32") return;
   for (const path of [join(root, "private"), store.directory, join(store.directory, "raw-mail")]) {
     expect((await fs.stat(path)).mode & 0o777).toBe(0o700);

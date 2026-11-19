@@ -11,12 +11,13 @@ const PROCESSING_LABELS = { pending: "待处理", processing: "处理中", proce
 
 export function MailCard({ card, nativeMessage, onDiscuss }: { card: BridgeMailCard; nativeMessage?: BridgeHistoryItem; onDiscuss?(): void }) {
   const mail = useAssistantMail();
+  const accountLabel = mail?.accountLabel(card.accountKey) ?? "邮件插件";
   const [detail, setDetail] = useState<BridgeMailDetail>();
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const links = detail ? [...new Set(detail.bodyText.match(/https?:\/\/[^\s<>"']+/gu) ?? [])].filter(href => URL.canParse(href)).map(href => new URL(href)) : [];
   return <article className="assistant-mail-card" data-mail-id={card.mailRefId} data-stream-key={`mail:${card.mailRefId}`} aria-label={`邮件：${card.subject || "无主题"}`}>
-    <header><span><Mail size={15} aria-hidden="true" />邮件插件</span><time dateTime={card.receivedAt}>{new Date(card.receivedAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</time></header>
+    <header><span><Mail size={15} aria-hidden="true" />{accountLabel}</span><time dateTime={card.receivedAt}>{new Date(card.receivedAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</time></header>
     <h3>{card.subject || "无主题"}</h3>
     <p className="assistant-mail-from">{card.from.map(sender => [sender.name, sender.address].filter(Boolean).join(" ")).join("，") || "未知发件人"}</p>
     {card.preview && <p className="assistant-mail-preview">{card.preview}</p>}

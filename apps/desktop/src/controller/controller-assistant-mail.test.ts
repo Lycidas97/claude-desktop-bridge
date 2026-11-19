@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { join } from "node:path";
 import {
   BridgeCrypto, PROTOCOL_VERSION,
@@ -10,6 +10,7 @@ import { AssistantMailService } from "../../../../plugins/assistant-mail/desktop
 import { AssistantMailStore } from "../../../../plugins/assistant-mail/store.js";
 import type { LoadedDesktopConfig } from "../transport/config.js";
 import { assistantMailSnapshot } from "./assistant-mail.js";
+import { WorkspaceProvisioner } from "./assistant-workspace.js";
 import { DesktopController } from "./controller.js";
 import { createControllerFixture } from "./controller-fixture.js";
 
@@ -41,6 +42,7 @@ async function fixture() {
     { projectId: "assistant-section", name: "Assistant", kind: "desktop-group", cwd: "", runtimeId: "claude-desktop", sessionCount: 1, runningCount: 0, pendingCount: 0, lastActivityAt: 1 },
     { projectId: "directory-project", name: "Directory", cwd: "/synthetic/assistant", runtimeId: "claude-desktop", sessionCount: 1, runningCount: 0, pendingCount: 0, lastActivityAt: 1 },
   ];
+  const workspace = new WorkspaceProvisioner({ userDataPath: await realpath(root), appPath: "/fixture/app", execPath: "/fixture/Bridge" });
   const broker = Object.assign(new EventEmitter(), {
     initialize: vi.fn(async () => undefined), listSessions: () => [...sessions], listProjects: () => projects,
     capabilities: vi.fn((): string[] => ["turn.start"]),
@@ -48,8 +50,21 @@ async function fixture() {
     permissionsList: () => [], promptsList: () => [], magpieSettings: async () => ({}),
     archive: vi.fn(async (_sessionId: string, _archived: boolean) => undefined),
     deleteSession: vi.fn(async (_sessionId: string) => undefined),
-    createSession: vi.fn(), startTurn: vi.fn(), steerTurn: vi.fn(),
+    canProvisionAssistantWorkspace: () => true,
+    session: (id: string) => sessions.find(session => session.sessionId === id),
+    createSession: vi.fn(async (cwd: string) => {
+      const created = nativeSession("local-managed", { cwd, projectName: "助理", projectId: "managed-project" });
+      sessions.push(created);
+      return created;
+    }),
+    configureSession: vi.fn(async () => ({ nativePermissionMode: "dontAsk" })),
+    refreshDesktopSession: vi.fn(async () => undefined),
+    history: vi.fn(async (sessionId: string) => ({ sessionId, items: [], hasMore: false })),
+    forkSession: vi.fn(), startTurn: vi.fn(), steerTurn: vi.fn(),
   });
+  const evidence = { list: vi.fn((sessionId: string, cursor?: string) => ({
+    sessionId, items: [], hasMore: cursor === undefined, ...(cursor === undefined ? { nextCursor: "evidence-next" } : {}),
+  })) };
   const eventLog = Object.assign(new EventEmitter(), { append: vi.fn(async () => undefined), latestSeq: () => 0 });
   const relayUrl = "ws://127.0.0.1:18789/ws";
   const host = await BridgeCrypto.createHost(relayUrl, "Mail fixture");
@@ -68,8 +83,8 @@ async function fixture() {
     { loadOrCreate: async () => config, save: vi.fn(async () => undefined) } as unknown as ControllerArguments[1],
     "http://127.0.0.1:18789", relayUrl,
     broker as unknown as ControllerArguments[4], eventLog as unknown as ControllerArguments[5],
-    {} as ControllerArguments[6], { status: async () => ({ state: "stopped" }) } as unknown as ControllerArguments[7],
-    undefined, undefined, undefined, undefined, undefined, service,
+    evidence as unknown as ControllerArguments[6], { status: async () => ({ state: "stopped" }) } as unknown as ControllerArguments[7],
+    undefined, undefined, undefined, undefined, undefined, service, workspace,
   );
   // Keep initialization subscriptions and snapshot/RPC/publication logic real; stop at external I/O and scheduling.
   const boundaries = {
@@ -80,7 +95,7 @@ async function fixture() {
   await controller.initialize();
   const internals = controller as unknown as ControllerInternals;
   return {
-    controller, broker, eventLog, sessions, projects, broadcast: boundaries.broadcast, queuePublish: boundaries.queuePublish,
+    controller, broker, eventLog, sessions, projects, workspace, broadcast: boundaries.broadcast, queuePublish: boundaries.queuePublish,
     publish: () => internals.publish(),
     request: <T = unknown>(method: BridgeRequest["method"], params: Record<string, unknown> = {}) => internals.handleRequest(
       { kind: "request", requestId: "mail-request", idempotencyKey: "mail-key", method, params }, "mobile",
@@ -95,7 +110,7 @@ beforeEach(async () => {
   store.openMailbox("synthetic-account", "1", 1);
   service = new AssistantMailService({
     userDataPath: root,
-    credentials: { supported: true, get: vi.fn(async () => { throw new Error("Unexpected credential read"); }), set: vi.fn() },
+    credentials: { supported: true, get: vi.fn(async () => { throw new Error("Unexpected credential read"); }), set: vi.fn(), delete: vi.fn() },
     createClient: vi.fn(() => { throw new Error("Unexpected IMAP connection"); }),
   });
   await service.initialize();
@@ -365,7 +380,7 @@ describe("assistant native session binding", () => {
 
   it("keeps automatic delivery disabled for every helper binding state", () => {
     expect(assistantMailSnapshot(service, [], true, "unbound")).toEqual({
-      bindingState: "unbound", receiverState: "disabled", automaticDelivery: false, changeToken: "unbound",
+      bindingState: "unbound", receiverState: "disabled", accounts: [], credentialsSupported: true, automaticDelivery: false, changeToken: "unbound",
     });
     service.setBinding({ assistantId: "assistant", nativeSessionId: "native-first", sectionId: null, previousSessionIds: [] });
     for (const [sessions, available, bindingState] of [
@@ -373,7 +388,7 @@ describe("assistant native session binding", () => {
       [[nativeSession("native-first", { archivedAt: 123 })], true, "needs-rebind"],
     ] as const) {
       expect(assistantMailSnapshot(service, [...sessions], available, "marker")).toEqual({
-        binding: service.binding(), bindingState, receiverState: "disabled", automaticDelivery: false, changeToken: "marker",
+        binding: service.binding(), bindingState, receiverState: "disabled", accounts: [], credentialsSupported: true, automaticDelivery: false, changeToken: "marker",
       });
     }
     service.setBinding({ assistantId: "assistant", nativeSessionId: null, sectionId: null, previousSessionIds: ["native-first"] });
@@ -405,4 +420,116 @@ describe("assistant mail snapshot publication", () => {
     expect(run.broadcast).not.toHaveBeenCalled();
     expect(run.broker.startTurn).not.toHaveBeenCalled();
   });
+});
+
+it("binds the provisioned Native conversation only after checking the confirmed path and mode", async () => {
+  const workspacePath = run.workspace.path;
+  await expect(run.request("plugin.assistant-mail.workspace.initialize", { workspacePath: join(root, "elsewhere") }))
+    .rejects.toMatchObject({ code: "INVALID_TARGET" });
+  expect(run.broker.createSession).not.toHaveBeenCalled();
+  await run.request("plugin.assistant-mail.workspace.initialize", { workspacePath });
+  expect(run.broker.createSession).toHaveBeenCalledExactlyOnceWith(workspacePath, "助理", undefined, true);
+  expect(run.broker.configureSession).toHaveBeenCalledExactlyOnceWith({ sessionId: "local-managed", permissionMode: "dontAsk" });
+  const stored = store.binding()!;
+  expect(stored.managed).toMatchObject({ path: workspacePath, policy: "stage1-fenced-workspace" });
+  const initial = await run.publish();
+  expect(initial.assistantMail?.workspace).toMatchObject({ toolIsolation: "unobserved", nativeSessionId: "local-managed" });
+  expect(JSON.stringify(initial.assistantMail)).not.toContain(stored.managed!.token);
+  expect(JSON.stringify(run.eventLog.append.mock.calls)).not.toContain(stored.managed!.token);
+  await expect(run.request("session.create", { cwd: workspacePath })).rejects.toMatchObject({ code: "INVALID_TARGET" });
+  await expect(run.request("session.fork", { sessionId: "local-managed" })).rejects.toMatchObject({ code: "INVALID_TARGET" });
+  expect(run.broker.forkSession).not.toHaveBeenCalled();
+  run.broker.emit("system.init", "native-first", ["Bash"]);
+  run.broker.emit("system.init", "local-managed", ["Read", "mcp__assistant-mail__mail_read_event", "Bash", "mcp__ccd_session__start_session"]);
+  expect((await run.publish()).assistantMail).toMatchObject({
+    changeToken: initial.assistantMail?.changeToken,
+    workspace: { toolIsolation: "warning", unexpectedTools: ["Bash", "mcp__ccd_session__start_session"] },
+  });
+  await run.request("plugin.assistant-mail.bind", { sessionId: "native-second" });
+  expect(store.binding()).toMatchObject({ nativeSessionId: "native-second", previousSessionIds: ["local-managed"] });
+  expect(store.binding()).not.toHaveProperty("managed");
+  expect((await run.publish()).assistantMail?.workspace).toMatchObject({ toolIsolation: "unobserved" });
+});
+
+it("rejects manual binding to a previous managed session", async () => {
+  await run.request("plugin.assistant-mail.workspace.initialize", { workspacePath: run.workspace.path });
+  await run.request("plugin.assistant-mail.bind", { sessionId: "native-second" });
+  await expect(run.request("plugin.assistant-mail.bind", { sessionId: "local-managed" }))
+    .rejects.toMatchObject({ code: "INVALID_TARGET" });
+  expect(store.binding()).toMatchObject({ nativeSessionId: "native-second", previousSessionIds: ["local-managed"] });
+});
+
+it("serves history and evidence pages for a previous managed session without submitting a turn", async () => {
+  await run.request("plugin.assistant-mail.workspace.initialize", { workspacePath: run.workspace.path });
+  await run.request("plugin.assistant-mail.bind", { sessionId: "native-second" });
+  const sessionId = "local-managed";
+  await expect(run.request("session.open", { sessionId })).resolves.toMatchObject({ session: { sessionId }, history: { sessionId } });
+  await expect(run.request("evidence.list", { sessionId })).resolves.toEqual({ evidence: { sessionId, items: [], hasMore: true, nextCursor: "evidence-next" } });
+  await expect(run.request("evidence.list", { sessionId, cursor: "evidence-next" })).resolves.toEqual({ evidence: { sessionId, items: [], hasMore: false } });
+  await expect(run.request("turn.start", { sessionId, text: "history is read only" })).rejects.toMatchObject({ code: "INVALID_TARGET" });
+  expect(run.broker.startTurn).not.toHaveBeenCalled();
+});
+
+it("preserves the managed binding and observed tools when the same session is selected", async () => {
+  await run.request("plugin.assistant-mail.workspace.initialize", { workspacePath: run.workspace.path });
+  const previous = store.binding();
+  run.broker.emit("system.init", "local-managed", ["Read"]);
+  await run.request("plugin.assistant-mail.bind", { sessionId: "local-managed" });
+  expect(store.binding()).toEqual(previous);
+  expect((await run.publish()).assistantMail?.workspace?.toolIsolation).toBe("compatible");
+});
+
+it("keeps the workspace token and binding consistent when two initializations overlap", async () => {
+  const prepare = vi.spyOn(run.workspace, "prepare");
+  let startReadback!: () => void;
+  let releaseReadback!: () => void;
+  const readbackStarted = new Promise<void>(resolve => { startReadback = resolve; });
+  const readbackReleased = new Promise<void>(resolve => { releaseReadback = resolve; });
+  run.broker.createSession.mockImplementation(async cwd => {
+    const created = nativeSession(`local-managed-${run.broker.createSession.mock.calls.length}`, { cwd });
+    run.sessions.push(created);
+    return created;
+  });
+  run.broker.configureSession.mockImplementationOnce(async () => {
+    startReadback();
+    await readbackReleased;
+    return { nativePermissionMode: "dontAsk" };
+  });
+  const params = { workspacePath: run.workspace.path };
+  const first = run.request("plugin.assistant-mail.workspace.initialize", params);
+  await readbackStarted;
+  try {
+    await expect(run.request("plugin.assistant-mail.workspace.initialize", params))
+      .rejects.toMatchObject({ code: "ASSISTANT_INITIALIZING" });
+  } finally {
+    releaseReadback();
+    await first;
+  }
+  expect(store.binding()?.managed?.token === prepare.mock.lastCall?.[0]).toBe(true);
+  expect(store.binding()?.nativeSessionId).toBe("local-managed-1");
+  expect(run.broker.createSession).toHaveBeenCalledOnce();
+});
+
+it("leaves the prior binding intact when Native does not confirm dontAsk", async () => {
+  await run.request("plugin.assistant-mail.bind", { sessionId: "native-first" });
+  run.broker.configureSession.mockResolvedValueOnce({ nativePermissionMode: "default" });
+  await expect(run.request("plugin.assistant-mail.workspace.initialize", { workspacePath: run.workspace.path }))
+    .rejects.toMatchObject({ code: "ASSISTANT_POLICY_UNCONFIRMED" });
+  expect(store.binding()).toMatchObject({ nativeSessionId: "native-first" });
+  expect(store.binding()).not.toHaveProperty("managed");
+  run.broker.startTurn.mockResolvedValue({ commandId: "unexpected-turn", state: "queued" });
+  await expect(run.request("turn.start", { sessionId: "local-managed", text: "candidate turn" }))
+    .rejects.toMatchObject({ code: "INVALID_TARGET" });
+  expect(run.broker.startTurn).not.toHaveBeenCalled();
+  expect((await run.publish()).sessions.some(session => session.sessionId === "local-managed")).toBe(false);
+  await expect(run.request("session.open", { sessionId: "local-managed" })).rejects.toMatchObject({ code: "INVALID_TARGET" });
+
+  run.broker.createSession.mockImplementationOnce(async cwd => {
+    const replacement = nativeSession("local-managed-retry", { cwd });
+    run.sessions.push(replacement);
+    return replacement;
+  });
+  await run.request("plugin.assistant-mail.workspace.initialize", { workspacePath: run.workspace.path });
+  expect(store.binding()?.nativeSessionId).toBe("local-managed-retry");
+  expect((await run.publish()).sessions.map(session => session.sessionId)).not.toContain("local-managed");
 });

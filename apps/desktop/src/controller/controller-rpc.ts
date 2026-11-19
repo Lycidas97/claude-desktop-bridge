@@ -192,6 +192,7 @@ async function dispatchControllerRequestInner(
   ) {
     throw new BridgeRequestError("UNSUPPORTED", "当前仅支持 Claude Desktop，其他 Agent 适配已停用。");
   }
+  if (typeof params.sessionId === "string") host.assistantMailCoordinator?.assertSessionRequest(params.sessionId, request.method);
   if (request.method === "claude.desktop.status") {
     return {
       claudeDesktop: host.claudeDesktopStatus
@@ -346,10 +347,16 @@ async function dispatchControllerRequestInner(
     if (params.trustWorkspace !== undefined && typeof params.trustWorkspace !== "boolean") {
       throw new Error("trustWorkspace must be a boolean");
     }
+    const cwd = stringParam(params, "cwd")!;
+    const workspace = host.assistantMailCoordinator?.workspace;
+    if (workspace && (await workspace.contains(cwd) ||
+        (projectId && host.allProjects().some(project => project.projectId === projectId && project.managedAssistant)))) {
+      throw new BridgeRequestError("INVALID_TARGET", "请从助理页面初始化托管会话。");
+    }
     try {
       return {
         session: await host.broker.createSession(
-          stringParam(params, "cwd")!,
+          cwd,
           stringParam(params, "title", false),
           typeof projectId === "string" ? projectId.trim() : undefined,
           ...(params.trustWorkspace === true ? [true] as const : []),
@@ -367,6 +374,11 @@ async function dispatchControllerRequestInner(
   }
   if (request.method === "session.fork") {
     const sessionId = stringParam(params, "sessionId")!;
+    const workspace = host.assistantMailCoordinator?.workspace;
+    const session = workspace ? host.broker.session(sessionId) : undefined;
+    if (workspace && session && await workspace.contains(session.cwd)) {
+      throw new BridgeRequestError("INVALID_TARGET", "托管助理工作区不支持派生会话。");
+    }
 
     return {
       session: await host.broker.forkSession(

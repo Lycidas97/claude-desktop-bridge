@@ -45,14 +45,17 @@ interface DragSession {
 
 export function ProjectOrderSheet({
   desktopName,
-  projectOrder,
-  projectsByActivity,
+  projectOrder: fullProjectOrder,
+  projectsByActivity: fullActivityOrder,
   projects,
   sessions,
   manageFocus = false,
   onPlaceProjects,
   onClose,
 }: ProjectOrderSheetProps) {
+  const managedProject = projects?.find(project => project.managedAssistant && fullProjectOrder.includes(project.projectId));
+  const projectOrder = fullProjectOrder.filter(id => id !== managedProject?.projectId);
+  const projectsByActivity = fullActivityOrder.filter(id => id !== managedProject?.projectId);
   const [drag, setDrag] = useState<{ projectId: string; order: string[] }>();
   const [ghost, setGhost] = useState<{ projectId: string; x: number; y: number; width: number; height: number; dropping?: boolean }>();
   const [positionProjectId, setPositionProjectId] = useState<string>();
@@ -202,7 +205,7 @@ export function ProjectOrderSheet({
     if (!session || !currentOrder || !list) return;
     const currentIndex = currentOrder.indexOf(session.projectId);
     if (currentIndex < 0) return;
-    const rows = Array.from(list.children) as HTMLElement[];
+    const rows = Array.from(list.children).slice(0, managedProject ? -1 : undefined);
     if (rows.length !== currentOrder.length) return;
     let targetIndex = currentIndex;
     for (let i = currentIndex + 1; i < rows.length; i += 1) {
@@ -378,6 +381,9 @@ export function ProjectOrderSheet({
             </Fragment>
           );
         })}
+        {managedProject && <div role="listitem" className="project-order-row" data-project-id={managedProject.projectId}>
+          <span><strong>{managedProject.name}</strong><small>{sessions.filter(session => session.projectId === managedProject.projectId && !session.archivedAt).length} 个会话</small></span>
+        </div>}
       </div>
     </Sheet>
   );

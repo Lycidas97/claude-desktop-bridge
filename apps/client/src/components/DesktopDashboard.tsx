@@ -141,13 +141,14 @@ export function DesktopDashboard({ themeControl }: { themeControl: ThemeControl 
                           snapshot={visibleSnapshot!}
                           headerLeading={headerLeading}
                           onOpenSession={openDesktopSession}
-                          renderConversation={(sessionId) => {
+                          renderConversation={(sessionId, stage) => {
                             const boundSession = visibleSnapshot!.sessions.find((candidate) => candidate.sessionId === sessionId);
                             return boundSession ? (
                               <section className="desktop-conversation">
                                 <DesktopSessionConversation
                                   session={boundSession}
-                                  conversationTabLabel="消息"
+                                  surface="assistant"
+                                  {...stage}
                                   snapshot={visibleSnapshot!}
                                   events={events}
                                   onSelectSession={(nextSessionId) => {

@@ -137,8 +137,9 @@ export function NewChatCanvas({
   const syncedCreatedGroupIdsRef = useRef(new Set<string>());
   const [sectionCreate, setSectionCreate] = useState<SectionCreateState>();
 
+  const managedProjectId = snapshot?.projects.find(project => project.managedAssistant)?.projectId;
   const projects: readonly BridgeProjectInfo[] = (snapshot?.projects ?? []).filter(
-    (project) => (project.runtimeId ?? runtimeId) === runtimeId,
+    (project) => !project.managedAssistant && (project.runtimeId ?? runtimeId) === runtimeId,
   );
   const manualGroups = useMemo(() => {
     const base = projects.filter((project) => project.kind === "desktop-group");
@@ -168,7 +169,7 @@ export function NewChatCanvas({
     }
   }, [createdGroups, projects]);
   const activeClaudeSessions = [...(snapshot?.sessions ?? [])]
-    .filter((candidate) => !candidate.archivedAt && (candidate.runtimeId ?? runtimeId) === runtimeId)
+    .filter((candidate) => !candidate.archivedAt && candidate.projectId !== managedProjectId && (candidate.runtimeId ?? runtimeId) === runtimeId)
     .sort((left, right) => right.lastActivityAt - left.lastActivityAt);
 
   const defaultFolderProject = [...projects]
@@ -211,7 +212,7 @@ export function NewChatCanvas({
 
   const referenceSession = useMemo(
     () => [...(snapshot?.sessions ?? [])]
-      .filter((candidate) => (candidate.runtimeId ?? runtimeId) === runtimeId)
+      .filter((candidate) => candidate.projectId !== managedProjectId && (candidate.runtimeId ?? runtimeId) === runtimeId)
       .sort((left, right) => right.lastActivityAt - left.lastActivityAt)
       .find((candidate) => Boolean(
         candidate.model
@@ -220,7 +221,7 @@ export function NewChatCanvas({
         || candidate.reasoningEffort
         || candidate.nativePermissionMode,
       )),
-    [snapshot?.sessions],
+    [managedProjectId, snapshot?.sessions],
   );
 
   const [configuration, setConfiguration] = useState<BridgeSessionConfiguration>();

@@ -8,10 +8,37 @@ export interface BridgeAssistantBinding {
   previousSessionIds: string[];
 }
 
+export type BridgeMailReceiverState = "disabled" | "connecting" | "connected" | "reconnecting" | "unsupported" | "error" | "closed";
+
+export interface BridgeMailAccount {
+  accountKey: string;
+  host: string;
+  port: number;
+  user: string;
+  enabled: boolean;
+  state: BridgeMailReceiverState;
+  errorCode?: string;
+}
+
+export const ASSISTANT_WORKSPACE_POLICY = "stage1-fenced-workspace";
+
+export interface BridgeAssistantWorkspace {
+  path: string;
+  policy: typeof ASSISTANT_WORKSPACE_POLICY;
+  nativeSessionId?: string;
+  toolIsolation: "unobserved" | "compatible" | "warning";
+  unexpectedTools?: string[];
+  repairFailed?: true;
+}
+
 export interface BridgeAssistantMailSnapshot {
   binding?: BridgeAssistantBinding;
   bindingState: "unbound" | "ready" | "unavailable" | "missing" | "needs-rebind";
-  receiverState: "disabled" | "connecting" | "connected" | "reconnecting" | "unsupported" | "error" | "closed";
+  receiverState: BridgeMailReceiverState;
+  accounts?: BridgeMailAccount[];
+  accountConfigError?: "mail_account_config_unavailable";
+  credentialsSupported?: boolean;
+  workspace?: BridgeAssistantWorkspace;
   changeToken: string;
   /** The native delivery gate is closed. Enabling delivery belongs to a later capability. */
   automaticDelivery: false;

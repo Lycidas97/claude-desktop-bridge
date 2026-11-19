@@ -154,6 +154,7 @@ export function DesktopSessions({
     activeSessions,
     projectsByActivity,
     projectOrder,
+    managedProjectId,
     grouped,
     archivedSessions,
     archivedFamilies,
@@ -521,10 +522,10 @@ export function DesktopSessions({
     && rowMenuSession.allowedActions?.canMoveSection,
   );
   const rowMenuSupportsFork = Boolean(
-    rowMenuSession && desktopRuntimeId(rowMenuSession) === "claude-desktop",
+    rowMenuSession && rowMenuSession.projectId !== managedProjectId && desktopRuntimeId(rowMenuSession) === "claude-desktop",
   );
 
-  const showProjectTree = hasActiveSessions || Boolean(searchQuery);
+  const showProjectTree = hasActiveSessions || Boolean(searchQuery || managedProjectId);
   const hasRenderedUnsectionedGroup = grouped.some((group) => group.projectId === CLAUDE_UNSECTIONED_PROJECT_ID);
   const showUnsectionedDropZone = Boolean(
     sessionDrag.dragState
@@ -676,13 +677,13 @@ export function DesktopSessions({
                         onToggle={() => toggleProject(groupProjectId, isEmptyGroup)}
                         actions={(
                           <>
-                            <IconButton
+                            {!project?.managedAssistant && <IconButton
                               label={`新建会话：${projectName}`}
                               className="session-row-action"
                               onClick={() => openCreateDialogForProject(groupProjectId)}
                             >
                               <Plus size={16} />
-                            </IconButton>
+                            </IconButton>}
                             {sectionManage.canManage(project) && (
                               <IconButton
                                 label={`管理分组：${projectName}`}

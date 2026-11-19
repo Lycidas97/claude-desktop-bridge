@@ -40,10 +40,11 @@ export function sortProjectSessionsByRecent<T extends { lastActivityAt: number }
  * The user's project order: projects they placed keep their places, and projects they
  * have not placed yet (new ones) lead in their given order so they are not missed.
  */
-export function orderProjects(projectIds: readonly string[], placed: readonly string[]): string[] {
+export function orderProjects(projectIds: readonly string[], placed: readonly string[], managedProjectId?: string): string[] {
   return [
-    ...projectIds.filter((projectId) => !placed.includes(projectId)),
-    ...placed.filter((projectId) => projectIds.includes(projectId)),
+    ...projectIds.filter((projectId) => projectId !== managedProjectId && !placed.includes(projectId)),
+    ...placed.filter((projectId) => projectId !== managedProjectId && projectIds.includes(projectId)),
+    ...(managedProjectId && projectIds.includes(managedProjectId) ? [managedProjectId] : []),
   ];
 }
 

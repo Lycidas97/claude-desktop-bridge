@@ -225,6 +225,8 @@ export type BridgeCapability =
   | "plugin.magpie-quota.v1"
   | "plugin.assistant-mail.v1"
   | "plugin.assistant-mail.manual-reference.v1"
+  | "plugin.assistant-mail.workspace.v1"
+  | "plugin.assistant-mail.account.v1"
   | "system.update.v1";
 
 /**
@@ -596,6 +598,7 @@ export interface BridgeDirectoryListing {
 export interface BridgeProjectInfo {
   /** Directory shortcuts are not native Desktop group IDs. */
   kind?: "directory" | "desktop-group";
+  managedAssistant?: true;
   projectId: string;
   name: string;
   cwd: string;
@@ -1373,6 +1376,11 @@ export type BridgeMethod =
   | "plugin.assistant-mail.list"
   | "plugin.assistant-mail.read"
   | "plugin.assistant-mail.bind"
+  | "plugin.assistant-mail.workspace.initialize"
+  | "plugin.assistant-mail.account.add"
+  | "plugin.assistant-mail.account.update-credential"
+  | "plugin.assistant-mail.account.set-enabled"
+  | "plugin.assistant-mail.account.remove"
   | "system.update";
 
 export interface BridgeRequest {
@@ -1399,6 +1407,7 @@ export type BridgeEventType =
   | "host.presence"
   | "snapshot.updated"
   | "plugin.assistant-mail.changed"
+  | "plugin.assistant-mail.tool-invoked"
   | "session.created"
   | "session.observed"
   | "session.ownership"

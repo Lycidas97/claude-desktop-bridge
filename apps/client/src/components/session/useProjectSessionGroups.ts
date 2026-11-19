@@ -55,32 +55,39 @@ export function useProjectSessionGroups({
     [sessions],
   );
 
+  const managedProjectId = projects?.find(project => project.managedAssistant)?.projectId;
   const projectsByActivity = useMemo(() => {
     const latest = new Map<string, number>(
       manualSections.map((project) => [project.projectId, 0]),
     );
+    if (managedProjectId) latest.set(managedProjectId, 0);
     for (const session of sessions) {
       if (!session.archivedAt) {
         latest.set(session.projectId, Math.max(latest.get(session.projectId) ?? 0, session.lastActivityAt));
       }
     }
-    return [...latest.keys()].sort((left, right) => latest.get(right)! - latest.get(left)!);
-  }, [manualSections, sessions]);
+    return [...latest.keys()].sort((left, right) => (
+      Number(left === managedProjectId) - Number(right === managedProjectId) || latest.get(right)! - latest.get(left)!
+    ));
+  }, [managedProjectId, manualSections, sessions]);
 
   const projectOrder = useMemo(
-    () => orderProjects(projectsByActivity, placedProjects),
-    [placedProjects, projectsByActivity],
+    () => orderProjects(projectsByActivity, placedProjects, managedProjectId),
+    [managedProjectId, placedProjects, projectsByActivity],
   );
 
   function placeProjects(order: string[]): void {
+    order = order.filter(projectId => projectId !== managedProjectId);
     writeStoredProjectOrder(projectOrderKey, order);
     setPlacedProjectsState({ key: projectOrderKey, order });
   }
 
   useEffect(() => {
-    const unplaced = projectOrder.filter((projectId) => !placedProjects.includes(projectId));
-    if (unplaced.length) placeProjects([...unplaced, ...placedProjects]);
-  }, [placedProjects, projectOrder]);
+    const unplaced = projectOrder.filter((projectId) => projectId !== managedProjectId && !placedProjects.includes(projectId));
+    if (unplaced.length || (managedProjectId && placedProjects.includes(managedProjectId))) {
+      placeProjects([...unplaced, ...placedProjects]);
+    }
+  }, [managedProjectId, placedProjects, projectOrder]);
 
   useEffect(() => {
     if (search.trim()) setCollapsedProjectIds(new Set());
@@ -141,7 +148,8 @@ export function useProjectSessionGroups({
       )
     ));
     const groups = new Map<string, BridgeSessionInfo[]>(
-      manualSections
+      (projects ?? [])
+        .filter((project) => project.kind === "desktop-group" || project.managedAssistant)
         .filter((project) => !searchQuery || `${project.name}\n${project.cwd}`.toLocaleLowerCase().includes(searchQuery))
         .map((project) => [project.projectId, []]),
     );
@@ -157,7 +165,7 @@ export function useProjectSessionGroups({
         project: projects?.find((candidate) => candidate.projectId === projectId),
         sessions: sortProjectSessionsByRecent(groups.get(projectId)!),
       }));
-  }, [manualSections, projectOrder, projects, searchQuery, sessions]);
+  }, [projectOrder, projects, searchQuery, sessions]);
 
   const archivedSessions = useMemo(
     () => sortProjectSessionsByRecent(sessions.filter((session) => Boolean(session.archivedAt))),
@@ -218,6 +226,7 @@ export function useProjectSessionGroups({
     activeSessions,
     projectsByActivity,
     projectOrder,
+    managedProjectId,
     grouped,
     archivedSessions,
     archivedFamilies,

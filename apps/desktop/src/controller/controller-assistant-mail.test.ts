@@ -145,6 +145,24 @@ async function record(uid: number, source = `Content-Type: text/plain; charset=u
 }
 
 describe("assistant mail mobile RPC projections", () => {
+  it("requires an explicitly supplied shared credential and saves the complete mailbox in one request", async () => {
+    const account = { host: "imap.example.test", user: "test@example.test" };
+    const smtp = { host: "smtp.example.test", port: 587, security: "starttls", from: account.user };
+    const credential = "shared-fixture-value";
+    for (const params of [{ ...account, smtp }, { ...account, credential, smtp: { ...smtp, credential } },
+      { ...account, credential, smtp: { ...smtp, security: "plain" } }]) {
+      await expect(run.request("plugin.assistant-mail.account.save", params)).rejects.toMatchObject({ code: "INVALID_PARAMS" });
+    }
+    expect(service.status().accounts).toEqual([]);
+    const result = await run.request("plugin.assistant-mail.account.save", { ...account, smtp, credential });
+    expect(result).toMatchObject({ assistantMail: { accounts: [{ ...account, port: 993, smtpSharedAuth: true, smtp: { ...smtp, user: account.user } }] } });
+    expect(JSON.stringify(result)).not.toContain(credential);
+    const { accountKey } = service.status().accounts[0]!;
+    await expect(run.request("plugin.assistant-mail.account.save", { accountKey, smtp: { ...smtp, host: "unapproved.example.test" } }))
+      .rejects.toMatchObject({ code: "INVALID_PARAMS" });
+    expect(service.smtpAccount(accountKey)?.smtp.host).toBe(smtp.host);
+  });
+
   it("validates the per-account polling setting before applying it", async () => {
     await run.request("plugin.assistant-mail.account.add", { host: "imap.example.test", user: "test@example.test", credential: "fixture" });
     const { accountKey } = service.status().accounts[0]!;

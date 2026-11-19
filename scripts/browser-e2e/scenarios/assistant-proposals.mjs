@@ -345,9 +345,10 @@ export async function verifyAssistantProposals(page, host, steps, directory, vie
     [{ from: "writer@example.test", to: finalTo, cc: mailCc, subject: finalSubject, bodyText: finalBody }]);
   steps.push("Mail confirmation displays the pinned envelope, rejects a stale confirmation, and keeps its in-flight state until one send finishes");
   await desktop.getByRole("button", { name: "助理设置", exact: true }).click();
-  await desktop.locator(".assistant-account-actions").getByRole("button", { name: /^SMTP 已配置：/u }).click();
-  const smtpForm = desktop.getByRole("group", { name: /的发信设置/u });
-  const port = smtpForm.getByLabel("端口", { exact: true });
+  const legacyAccount = desktop.locator(".assistant-account-row").filter({ hasText: "发信使用独立授权" });
+  await legacyAccount.getByRole("button", { name: /^账号设置：/u }).click();
+  const smtpForm = desktop.getByRole("group", { name: "发信", exact: true });
+  const port = smtpForm.getByLabel("SMTP 端口", { exact: true });
   const security = smtpForm.getByLabel("加密方式");
   assert.equal(await port.inputValue(), "465");
   await security.selectOption("starttls");
@@ -355,6 +356,16 @@ export async function verifyAssistantProposals(page, host, steps, directory, vie
   await port.fill("2525");
   await security.selectOption("tls");
   assert.equal(await port.inputValue(), "2525");
-  steps.push("SMTP switches to the conventional STARTTLS port without overwriting a custom port");
+  const form = desktop.locator(".assistant-accounts form");
+  assert.equal(await form.locator('input[type="password"]').count(), 1);
+  await form.getByLabel("密码", { exact: true }).fill("synthetic-shared-value");
+  await form.getByRole("button", { name: "保存并共用授权", exact: true }).click();
+  await form.waitFor({ state: "hidden" });
+  assert.equal(await legacyAccount.count(), 0);
+  const configured = host.snapshot.assistantMail.accounts.find(account => account.smtpSharedAuth);
+  assert.equal(configured?.smtp?.port, 2525);
+  assert.equal(configured?.smtp?.from, "writer@example.test");
+  assert.equal(configured?.smtp?.user, configured?.user);
+  steps.push("SMTP switches to the conventional STARTTLS port without overwriting a custom port; explicit conversion preserves the From address");
   await desktop.close();
 }

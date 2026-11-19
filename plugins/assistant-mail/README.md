@@ -30,7 +30,9 @@ macOS passwords are generic-password items in the system Keychain under service 
 
 ## Sending mail
 
-In **助理设置 → 邮箱账号 → 配置 SMTP**, choose an SMTP server, TLS or STARTTLS, login, and From address. Bridge requires server certificate validation and SMTP authentication. The SMTP credential has a separate Keychain item; the account file stores only connection settings. Disabling the mailbox or turning off SMTP prevents new sends on that account. A draft linked to a changed channel needs a new revision.
+In **助理设置 → 邮箱账号**, add the IMAP server and, if you want to send mail, the SMTP server and encryption mode in the same form. Both use the mailbox login and one Keychain credential. The From address defaults to the mailbox address and can be set separately. Bridge requires TLS with server certificate validation (implicit TLS or mandatory STARTTLS) and SMTP authentication. The account file stores no passwords.
+
+A mailbox with an existing separate SMTP credential keeps it until you choose **保存并共用授权** and enter the shared password. This replaces the receiving password and retires the separate SMTP item. Changing the sending channel or switching its authorization requires a new draft revision; changing only the password does not. **关闭发信** removes the SMTP channel without stopping reception. Disabling the mailbox prevents both receiving and sending. If Bridge exits while replacing a shared sending channel, sending can remain off; save the SMTP settings again. An older host can still receive mail but cannot send through a shared channel.
 
 `proposal.create` and `proposal.update_pending` can draft `mail.reply` or `mail.send`; `proposal.list` shows eligible account keys. Reply drafts must reference an email in that account. If the model omits `To`, Bridge uses the original `From`, not its `Reply-To`. The send drawer lists the exact final To/Cc and marks differences in the original reply address. Bcc is not supported. Neither the MCP gateway nor an older client can confirm a send.
 

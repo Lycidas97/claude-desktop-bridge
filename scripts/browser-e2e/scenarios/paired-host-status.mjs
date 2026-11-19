@@ -32,5 +32,8 @@ export async function verifyPairedHostStatus(page, previousHost, host, steps, di
   await previous.locator(".host-row").click();
   await page.getByText(previousHost.session.title, { exact: true }).waitFor();
   assert.equal(await page.getByText(host.session.title, { exact: true }).count(), 0, "Switching hosts must not mix catalogs");
-  steps.push("same-name pairings stay separate after reload; only the connected host is online and the previous catalog remains accessible offline");
+  await page.getByRole("button", { name: `当前电脑：${previousHost.pairing.desktopName}，切换电脑` }).click();
+  assert.equal(await current.locator(".drawer-host-option-meta").innerText(), "离线");
+  assert.equal(await current.locator(".is-online").count(), 0);
+  steps.push("same-name pairings stay separate after reload; the previous catalog remains accessible and is marked offline when selected");
 }

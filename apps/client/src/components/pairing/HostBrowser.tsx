@@ -142,14 +142,14 @@ export function HostBrowser({
                 >
                   <MoreHorizontal size={18} />
                 </IconButton>
-                {isOnline && host.attentionSessionId && (
+                {host.attentionSessionId && !host.needsRepair && (
                   <button
                     type="button"
                     className="host-attention-button"
                     disabled={Boolean(openingHostId) || removing}
                     onClick={() => void openHost(host, host.attentionSessionId)}
                   >
-                    查看待处理<ChevronRight size={15} aria-hidden="true" />
+                    {isOnline ? "查看待处理" : "查看上次待处理"}<ChevronRight size={15} aria-hidden="true" />
                   </button>
                 )}
               </div>

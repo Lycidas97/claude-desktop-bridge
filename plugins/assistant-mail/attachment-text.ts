@@ -1,5 +1,5 @@
 import { createRequire as createPdfRequire } from "node:module";
-import { dirname, join, sep } from "node:path";
+import { dirname, join } from "node:path";
 import { cleanMailText, MailAttachmentError } from "./mime.js";
 
 export const MAIL_TEXT_MAX_BYTES = 1024 * 1024;
@@ -28,7 +28,7 @@ export async function attachmentText(bytes: Buffer, mimeType: string, cMapUrl?: 
     import("pdfjs-dist/legacy/build/pdf.worker.mjs"),
   ]);
   Object.assign(globalThis, { pdfjsWorker: worker });
-  const resources = cMapUrl ?? join(dirname(createPdfRequire(import.meta.url).resolve("pdfjs-dist/package.json")), "cmaps") + sep;
+  const resources = cMapUrl ?? join(dirname(createPdfRequire(import.meta.url).resolve("pdfjs-dist/package.json")), "cmaps") + "/";
   const loading = pdf.getDocument({ data: Uint8Array.from(bytes), cMapUrl: resources, cMapPacked: true, disableFontFace: true, useSystemFonts: false, useWasm: false, stopAtErrors: true });
   try {
     const document = await loading.promise;

@@ -14,7 +14,9 @@
 </p>
 
 <p align="center">
-  <img src="site/assets/product-mobile.png" width="300" alt="A Claude Desktop session in the Bridge mobile app" />
+  <img src="site/assets/product-mobile.png" width="260" alt="A session in the Bridge mobile app: task plan, tool calls and reply" />
+  &nbsp;
+  <img src="site/assets/product-mobile-approval.png" width="260" alt="Answering a Claude command approval in the Bridge mobile app" />
 </p>
 
 Bridge brings local Claude Desktop Code sessions, including Claude-3p, to your phone. Tasks keep running on your computer; the phone lets you follow progress, continue the conversation and handle decisions that need you.

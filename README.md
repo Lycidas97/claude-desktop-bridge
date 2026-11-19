@@ -14,7 +14,9 @@
 </p>
 
 <p align="center">
-  <img src="site/assets/product-mobile.png" width="300" alt="Bridge 手机端的 Claude Desktop 会话界面" />
+  <img src="site/assets/product-mobile.png" width="260" alt="Bridge 手机端会话：任务计划、工具调用与回复" />
+  &nbsp;
+  <img src="site/assets/product-mobile-approval.png" width="260" alt="Bridge 手机端答复 Claude 的命令授权" />
 </p>
 
 Bridge 把 Claude Desktop（含 Claude-3p）的本地 Code 会话带到手机。任务仍在你的电脑上运行，手机用来跟进进度、继续对话、处理需要你决定的事。

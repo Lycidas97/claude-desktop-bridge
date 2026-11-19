@@ -204,6 +204,7 @@
 .assistant-mail-reference-summary strong { font-size: calc(13px * var(--font-scale)); font-weight: 600; }
 .assistant-mail-reference-summary span { flex: none; max-width: 32%; color: var(--muted); font-size: calc(12px * var(--font-scale)); }
 .assistant-mail-reference > .icon-button { width: 44px; height: 44px; color: var(--muted); }
+.assistant-mail-reference > .icon-button:hover { border-color: transparent; background: transparent; color: var(--accent-ink); }
 .assistant-mail-reference > .icon-button:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: -3px; }
 .assistant-mail-reference p { grid-column: 1 / -1; margin: 0 8px 8px 0; color: var(--danger-ink); font-size: calc(12px * var(--font-scale)); }
 

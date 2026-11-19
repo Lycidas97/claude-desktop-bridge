@@ -695,6 +695,13 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await capture("desktop-mail");
   await page.locator(`.assistant-mail-list [data-mail-id="${otherMail.mailRefId}"]`).getByRole("button", { name: "讨论此邮件", exact: true }).click();
   await verifyReference(otherMail);
+  const dismiss = reference.getByRole("button", { name: "清除邮件引用", exact: true });
+  await dismiss.hover();
+  await eventually(() => dismiss.evaluate(button => {
+    const { color, backgroundColor, borderTopColor } = getComputedStyle(button);
+    return color === getComputedStyle(button.parentElement.querySelector(":scope > svg")).color &&
+      backgroundColor === "rgba(0, 0, 0, 0)" && borderTopColor === "rgba(0, 0, 0, 0)";
+  }), true, "Hover highlights the dismiss icon without painting over the reference border");
   await capture("desktop-mail-reference");
   await composer.fill("桌面端核对引用");
   await page.getByRole("button", { name: "发送", exact: true }).click();

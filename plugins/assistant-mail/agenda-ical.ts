@@ -1,117 +1,216 @@
 import ICAL from "ical.js";
 import type { AgendaEventInput, AgendaTodoInput, AgendaWindow } from "../../packages/protocol/src/assistant-agenda.js";
+import { agendaInstant, componentZone, timestamp, type AgendaZone } from "./agenda-time.js";
 
+const DAY = 86_400_000;
+const expansionLimit = 100_000;
+const utc = ICAL.Timezone.utcTimezone;
 const text = (component: ICAL.Component, name: string, limit: number) => {
   const value = component.getFirstPropertyValue(name);
   return typeof value === "string" ? value.slice(0, limit) : undefined;
 };
+const instant = (time: ICAL.Time, zone: AgendaZone) => agendaInstant(timestamp(time, zone), zone);
+const shifted = (time: ICAL.Time, seconds: number) => {
+  const result = time.clone();
+  if (time.isDate) result.adjust(seconds * 1000 / DAY, 0, 0, 0);
+  else result.adjust(0, 0, 0, seconds);
+  return result;
+};
 
-function timestamp(time: ICAL.Time, timeZone?: string): string {
-  if (time.isDate) return time.toString();
-  if (time.zone !== ICAL.Timezone.localTimezone) return time.toJSDate().toISOString();
-  if (!timeZone) return time.toJSDate().toISOString();
-  return new Date(agendaInstant(time.toString(), timeZone)).toISOString();
+/** Days are calendar days. Hours, minutes and seconds are elapsed time within the resulting day. */
+function durationEnd(start: ICAL.Time, duration: ICAL.Duration, zone: AgendaZone): string {
+  const day = start.clone();
+  const sign = duration.isNegative ? -1 : 1;
+  day.day += sign * (duration.weeks * 7 + duration.days);
+  if (day.isDate) return day.toString();
+  const seconds = (duration.hours * 60 + duration.minutes) * 60 + duration.seconds;
+  return new Date(instant(day, zone) + sign * seconds * 1000).toISOString();
 }
 
-/** Interpret a date or floating wall time relative to the calendar, not the reader's device. */
-export function agendaInstant(value: string, zone: string): number {
-  if (value.endsWith("Z")) return Date.parse(value);
-  const utc = Date.parse(`${value.length === 10 ? `${value}T00:00:00` : value}Z`);
-  const formatter = new Intl.DateTimeFormat("en", { timeZone: zone, timeZoneName: "longOffset" });
-  const offsetAt = (instant: number) => {
-    const name = formatter.formatToParts(instant).find(part => part.type === "timeZoneName")!.value;
-    const match = /GMT([+-])(\d{2}):(\d{2})/.exec(name);
-    return match ? (match[1] === "-" ? -1 : 1) * (+match[2]! * 60 + +match[3]!) * 60_000 : 0;
+function timeValue(component: ICAL.Component, name: string): ICAL.Time | undefined {
+  const value = component.getFirstPropertyValue(name);
+  if (value === null) return undefined;
+  if (!(value instanceof ICAL.Time) || !Number.isFinite(Date.parse(value.toString().replace(/Z?$/, "Z")))) {
+    throw new Error(`Invalid calendar ${name}`);
+  }
+  return value;
+}
+
+function timing(component: ICAL.Component, fallback: AgendaZone, allDayZone?: string) {
+  const event = component.name === "vevent";
+  const start = timeValue(component, "dtstart");
+  const explicitEnd = timeValue(component, event ? "dtend" : "due");
+  const zone = start?.isDate && allDayZone ? allDayZone : componentZone(component, fallback);
+  const duration = component.getFirstPropertyValue("duration") as ICAL.Duration | null;
+  const cancelled = text(component, "status", 32)?.toUpperCase() === "CANCELLED";
+  if (event && !start && !cancelled) throw new Error("Missing event DTSTART");
+  const exactDelta = start && explicitEnd ? instant(explicitEnd, zone) - instant(start, zone) : 0;
+  const nominalDelta = start?.isDate && explicitEnd?.isDate ? explicitEnd.subtractDate(start).toSeconds() : undefined;
+  const endAt = (occurrence = start): string | undefined => {
+    if (explicitEnd) {
+      if (!occurrence || occurrence === start) return timestamp(explicitEnd, zone);
+      return nominalDelta !== undefined ? shifted(occurrence, nominalDelta).toString()
+        : new Date(instant(occurrence, zone) + exactDelta).toISOString();
+    }
+    if (!occurrence) return undefined;
+    if (duration) return durationEnd(occurrence, duration, zone);
+    if (event) return timestamp(occurrence.isDate ? shifted(occurrence, DAY / 1000) : occurrence, zone);
+    return undefined;
   };
-  return utc - offsetAt(utc - offsetAt(utc));
+  return { component, start, zone, endAt, cancelled };
 }
 
-function eventFields(event: ICAL.Event, start: ICAL.Time, end: ICAL.Time, timeZone: string) {
-  const component = event.component;
+type Timing = ReturnType<typeof timing>;
+type Instance = { item: Timing; start: ICAL.Time | undefined; recurrenceId?: string | undefined; endAt?: string | undefined };
+
+function ruleStarts(rule: ICAL.Recur, start: ICAL.Time, floor: number) {
+  const unit = ({ SECONDLY: 1000, MINUTELY: 60_000, HOURLY: 3_600_000 } as Record<string, number>)[rule.freq];
+  if (!start.isDate && start.zone === utc && unit && !Object.keys(rule.parts).length && floor !== -Infinity) {
+    const origin = start.toUnixTime() * 1000;
+    const step = rule.interval * unit;
+    const until = rule.until?.toUnixTime();
+    let index = Math.max(0, Math.ceil((floor - origin) / step));
+    return () => {
+      const time = origin + index * step;
+      if ((rule.count !== null && index >= rule.count) || (until !== undefined && time > until * 1000)) return null;
+      index++;
+      return ICAL.Time.fromJSDate(new Date(time), true);
+    };
+  }
+  const iterator = rule.iterator(start);
+  return () => iterator.next();
+}
+
+function expandSeries(items: Timing[], fallback: AgendaZone, window: AgendaWindow | undefined, expand: boolean): Instance[] {
+  const master = items.find(item => !item.component.hasProperty("recurrence-id"));
+  const zone = master?.zone ?? fallback;
+  const overrides = items.flatMap(item => {
+    const recurrence = timeValue(item.component, "recurrence-id");
+    return recurrence ? [{ item, recurrence, original: instant(recurrence, zone) }] : [];
+  });
+  const instances: Instance[] = overrides.map(({ item, recurrence }) => ({ item, start: item.start, recurrenceId: recurrence.toString() }));
+  if (!master) return instances;
+  const start = master.start;
+  const rules = master.component.getAllProperties("rrule").map(property => property.getFirstValue() as ICAL.Recur);
+  const extra = master.component.getAllProperties("rdate").flatMap(property => property.getValues() as Array<ICAL.Time | ICAL.Period>);
+  if (start && (rules.length || extra.length)) {
+    // Load recurrence fields at sync time, before the resource and cursor commit.
+    for (const rule of rules) rule.iterator(start);
+    master.component.getAllProperties("exdate").forEach(property => property.getValues());
+  }
+  if (!expand || !start || master.cancelled || (!rules.length && !extra.length)) {
+    return [{ item: master, start }, ...instances];
+  }
+
+  const excluded = new Set(master.component.getAllProperties("exdate").flatMap(property =>
+    (property.getValues() as ICAL.Time[]).map(time => instant(time, zone))));
+  for (const override of overrides) excluded.add(override.original);
+  const ranges = overrides.filter(({ item }) => item.component.getFirstProperty("recurrence-id")
+    ?.getFirstParameter("range")?.toUpperCase() === "THISANDFUTURE")
+    .map(override => ({ ...override, shift: override.item.start?.subtractDate(override.recurrence).toSeconds() ?? 0 }))
+    .sort((a, b) => b.original - a.original);
+
+  const from = window ? Date.parse(window.from) : -Infinity;
+  const to = window ? Date.parse(window.to) : rules.some(rule => rule.count === null && !rule.until) ? Date.now() + 366 * DAY : Infinity;
+  const utcSeries = !start.isDate && start.zone === utc && ranges.every(range => !range.item.start || range.item.start.zone === utc);
+  // Local recurrences are ordered by wall time, and a zone transition can move an instant back.
+  const zoneMargin = utcSeries ? 0 : DAY;
+  const upper = to + Math.max(0, ...ranges.map(range => -range.shift * 1000)) + zoneMargin;
+  const maxSpan = Math.max(0, ...items.map(item => {
+    const end = item.endAt();
+    return item.start && end ? agendaInstant(end, item.zone) - instant(item.start, item.zone) : 0;
+  }));
+  const lower = from - maxSpan - Math.max(0, ...ranges.map(range => range.shift * 1000)) - zoneMargin;
+  const candidates = new Map<number, { time: ICAL.Time; endAt?: string | undefined }>();
+  const add = (time: ICAL.Time, endAt?: string) => {
+    const key = instant(time, zone);
+    if (key < lower && !endAt || key >= upper || excluded.has(key)) return;
+    if (endAt || !candidates.has(key)) candidates.set(key, { time: time.clone(), endAt });
+  };
+  add(start);
+  for (const date of extra) {
+    const end = date instanceof ICAL.Period ? date.end : undefined;
+    if (date instanceof ICAL.Period) add(date.start, end ? timestamp(end, zone) : durationEnd(date.start, date.duration!, zone));
+    else add(date);
+  }
+  for (const rule of rules) {
+    const next = ruleStarts(rule, start, lower);
+    let count = 0;
+    for (let occurrence = next(); occurrence && instant(occurrence, zone) < upper; occurrence = next()) {
+      if (++count > expansionLimit) throw new Error("Calendar expansion exceeds supported occurrence count");
+      add(occurrence);
+    }
+  }
+  for (const [key, date] of candidates) {
+    const range = ranges.find(range => range.original < key);
+    if (range?.item.cancelled) continue;
+    const occurrence = range ? shifted(date.time, range.shift) : date.time;
+    if (range?.item.start) occurrence.zone = range.item.start.zone;
+    instances.push({ item: range?.item ?? master, start: occurrence, recurrenceId: date.time.toString(), endAt: range ? undefined : date.endAt });
+  }
+  return instances;
+}
+
+function todoFields({ item: { component, zone, endAt }, start, recurrenceId, endAt: periodEnd }: Instance) {
+  const dueAt = periodEnd ?? endAt(start);
+  const alarm = component.getFirstSubcomponent("valarm")?.getFirstProperty("trigger");
+  const trigger = alarm?.getFirstValue();
+  let remindAt = trigger instanceof ICAL.Time ? timestamp(trigger, zone) : undefined;
+  if (trigger instanceof ICAL.Duration) {
+    const anchor = alarm?.getFirstParameter("related")?.toUpperCase() === "END" ? dueAt : start && timestamp(start, zone);
+    if (anchor) remindAt = new Date(agendaInstant(anchor, zone) + trigger.toSeconds() * 1000).toISOString();
+  }
+  const status = text(component, "status", 32)?.toUpperCase();
+  const priority = component.getFirstPropertyValue("priority");
   return {
-    title: text(component, "summary", 500) || "无标题日程",
-    notes: text(component, "description", 8000), location: text(component, "location", 1000),
-    startAt: timestamp(start, timeZone), endAt: timestamp(end, timeZone), timeZone,
-    allDay: start.isDate,
-    attendees: component.getAllProperties("attendee").slice(0, 30).map(property =>
-      String(property.getFirstParameter("cn") ?? property.getFirstValue()).slice(0, 320)),
-    busy: text(component, "transp", 32)?.toUpperCase() !== "TRANSPARENT",
+    title: text(component, "summary", 500) || "无标题待办", notes: text(component, "description", 8000),
+    ...(typeof priority === "number" && priority >= 0 && priority <= 9 ? { priority } : {}),
+    dueAt, remindAt, recurrenceId,
+    status: (status === "COMPLETED" ? "completed" : status === "CANCELLED" ? "cancelled" : status === "IN-PROCESS" ? "in-progress" : "pending") as AgendaTodoInput["status"],
   };
-}
-
-function componentZone(component: ICAL.Component, fallback: string) {
-  const start = component.getFirstProperty("dtstart") ?? component.getFirstProperty("due");
-  return start?.getFirstParameter("tzid") ?? (String(start?.getFirstValue()).endsWith("Z") ? "UTC" : fallback);
 }
 
 type RemoteEvent = AgendaEventInput & { attendees: string[]; busy: boolean; recurrenceId?: string | undefined };
 
-export function parseAgendaObject(data: string, fallbackZone: string, window?: AgendaWindow): {
-  uid: string; todos: Array<AgendaTodoInput & { recurrenceId?: string | undefined }>; events: RemoteEvent[]; recurring: boolean;
-} {
+export function parseAgendaObject(data: string, fallbackZone: AgendaZone, options?: { window: AgendaWindow; allDayZone: string } | { todos: true }) {
   const calendar = new ICAL.Component(ICAL.parse(data));
-  const components = [...calendar.getAllSubcomponents("vevent"), ...calendar.getAllSubcomponents("vtodo")];
-  const uid = components[0] && text(components[0], "uid", 1000);
-  if (!uid || components.some(component => component.getFirstPropertyValue("uid") !== uid)) throw new Error("Invalid calendar UID");
-  const todos = calendar.getAllSubcomponents("vtodo").map(component => {
-    const zone = componentZone(component, fallbackZone);
-    const start = component.getFirstPropertyValue("dtstart") as ICAL.Time | null;
-    let due = component.getFirstPropertyValue("due") as ICAL.Time | null;
-    const duration = component.getFirstPropertyValue("duration") as ICAL.Duration | null;
-    if (!due && start && duration) { due = start.clone(); due.addDuration(duration); }
-    const alarm = component.getFirstSubcomponent("valarm")?.getFirstProperty("trigger");
-    const trigger = alarm?.getFirstValue();
-    let reminder = trigger instanceof ICAL.Time ? trigger : undefined;
-    if (trigger instanceof ICAL.Duration) {
-      const anchor = alarm?.getFirstParameter("related")?.toUpperCase() === "END" ? due : start;
-      if (anchor) { reminder = anchor.clone(); reminder.isDate = false; reminder.addDuration(trigger); }
-    }
-    const status = text(component, "status", 32)?.toUpperCase();
-    const priority = component.getFirstPropertyValue("priority");
-    return {
-      title: text(component, "summary", 500) || "无标题待办", notes: text(component, "description", 8000),
-      ...(typeof priority === "number" && priority >= 0 && priority <= 9 ? { priority } : {}),
-      dueAt: due ? timestamp(due, zone) : undefined, remindAt: reminder ? timestamp(reminder, zone) : undefined,
-      status: (status === "COMPLETED" ? "completed" : status === "CANCELLED" ? "cancelled" : status === "IN-PROCESS" ? "in-progress" : "pending") as AgendaTodoInput["status"],
-      recurrenceId: component.hasProperty("recurrence-id") ? String(component.getFirstPropertyValue("recurrence-id")) : undefined,
-    };
-  });
-  const eventComponents = calendar.getAllSubcomponents("vevent");
-  const master = eventComponents.find(component => !component.hasProperty("recurrence-id"));
-  const recurring = Boolean(master?.hasProperty("rrule") || master?.hasProperty("rdate") || eventComponents.some(component => component.hasProperty("recurrence-id")));
-  const events: RemoteEvent[] = [];
-  const append = (event: ICAL.Event, start: ICAL.Time, end: ICAL.Time, recurrenceId?: string | undefined) => {
-    if (text(event.component, "status", 32)?.toUpperCase() === "CANCELLED") return;
-    const zone = componentZone(event.component, fallbackZone);
-    if (!start || !end) throw new Error("Invalid event date");
-    const value = eventFields(event, start, end, zone);
-    const comparisonZone = start.isDate ? fallbackZone : zone;
-    if (!window || agendaInstant(value.startAt, comparisonZone) < Date.parse(window.to) && agendaInstant(value.endAt, comparisonZone) >= Date.parse(window.from)) {
-      events.push({ ...value, recurrenceId });
-    }
-  };
-  if (master) {
-    const event = new ICAL.Event(master);
-    if (!window || !event.isRecurring()) append(event, event.startDate, event.endDate);
-    else {
-      const iterator = event.iterator();
-      const end = Date.parse(window.to);
-      const zone = componentZone(master, fallbackZone);
-      // Direct overrides are added separately even if their original date lies outside the window.
-      let count = 0;
-      for (let occurrence = iterator.next(); occurrence; occurrence = iterator.next()) {
-        if (agendaInstant(timestamp(occurrence, zone), zone) >= end) break;
-        if (++count > 100_000) throw new Error("Calendar expansion exceeds supported occurrence count");
-        if (Object.hasOwn(event.exceptions, occurrence.toString()) || Object.hasOwn(event.exceptions, occurrence.convertToZone(ICAL.Timezone.utcTimezone).toString())) continue;
-        const details = event.getOccurrenceDetails(occurrence);
-        append(details.item, details.startDate, details.endDate, occurrence.toString());
-      }
+  if (calendar.name !== "vcalendar") throw new Error("Invalid calendar object");
+  const events = calendar.getAllSubcomponents("vevent");
+  const todos = calendar.getAllSubcomponents("vtodo");
+  const components = [...events, ...todos];
+  if (!components.length) return { uid: "", todos: [], events: [], recurring: 0 };
+  const uid = components[0]!.getFirstPropertyValue("uid");
+  if (typeof uid !== "string" || !uid || components.some(component => component.getFirstPropertyValue("uid") !== uid)) {
+    throw new Error("Invalid calendar UID");
+  }
+  const recurring = (events.some(isRecurring) ? 1 : 0) | (todos.some(isRecurring) ? 2 : 0);
+  const eventQuery = options && "window" in options ? options : undefined;
+  const window = eventQuery?.window;
+  const eventRecords: RemoteEvent[] = [];
+  if (!options || window) {
+    const from = window ? Date.parse(window.from) : -Infinity;
+    const to = window ? Date.parse(window.to) : Infinity;
+    const series = events.map(item => timing(item, fallbackZone, eventQuery?.allDayZone));
+    for (const instance of expandSeries(series, fallbackZone, window, Boolean(window))) {
+      const { item: { component, zone, endAt, cancelled }, start, recurrenceId } = instance;
+      if (cancelled) continue;
+      const startAt = timestamp(start!, zone);
+      const end = instance.endAt ?? endAt(start)!;
+      if (agendaInstant(startAt, zone) >= to || agendaInstant(end, zone) < from) continue;
+      eventRecords.push({
+        title: text(component, "summary", 500) || "无标题日程",
+        notes: text(component, "description", 8000), location: text(component, "location", 1000),
+        startAt, endAt: end, timeZone: typeof zone === "string" ? zone : zone === utc ? "UTC" : zone.tzid,
+        allDay: start!.isDate, recurrenceId,
+        attendees: component.getAllProperties("attendee").slice(0, 30).map(property =>
+          String(property.getFirstParameter("cn") ?? property.getFirstValue()).slice(0, 320)),
+        busy: text(component, "transp", 32)?.toUpperCase() !== "TRANSPARENT",
+      });
     }
   }
-  for (const component of eventComponents) {
-    if (component === master || !component.hasProperty("recurrence-id") || text(component, "status", 32)?.toUpperCase() === "CANCELLED") continue;
-    const event = new ICAL.Event(component);
-    append(event, event.startDate, event.endDate, event.recurrenceId.toString());
-  }
-  return { uid, todos, events, recurring };
+  return { uid, todos: window ? [] : expandSeries(todos.map(item => timing(item, fallbackZone)), fallbackZone, undefined, Boolean(options)).map(todoFields), events: eventRecords, recurring };
+}
+
+function isRecurring(component: ICAL.Component) {
+  return ["rrule", "rdate", "exdate", "recurrence-id"].some(name => component.hasProperty(name));
 }

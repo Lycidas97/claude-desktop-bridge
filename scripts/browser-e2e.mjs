@@ -72,6 +72,7 @@ async function runScenario(theme, scenario, mockHostRuntime) {
     const touch = ["mobile-safe-area", "native-queue-actions"].includes(scenario);
     context = await browser.newContext({
       viewport: { width: 375, height: 812 }, colorScheme: theme,
+      ...(scenario === "assistant-mail" ? { timezoneId: "America/Los_Angeles" } : {}),
       isMobile: touch, hasTouch: touch,
       serviceWorkers: "block",
     });

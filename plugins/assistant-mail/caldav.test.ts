@@ -5,6 +5,13 @@ const url = "https://calendar.example.test/dav/work/";
 const path = new URL(url).pathname;
 const vevent = "BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:one\nSUMMARY:First & second\nEND:VEVENT\nEND:VCALENDAR";
 const vtodo = "BEGIN:VCALENDAR\nBEGIN:VTODO\nUID:two\nEND:VTODO\nEND:VCALENDAR";
+const calendarTimeZone = [
+  "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Test//CalDAV//EN",
+  "BEGIN:VTIMEZONE", "TZID:America/New_York", "BEGIN:STANDARD",
+  "DTSTART:20261101T020000", "TZOFFSETFROM:-0400", "TZOFFSETTO:-0500",
+  "END:STANDARD", "END:VTIMEZONE", "END:VCALENDAR", "",
+].join("\n");
+const timezoneProperty = `<c:calendar-timezone><![CDATA[${calendarTimeZone}]]></c:calendar-timezone>`;
 const href = (name: string) => url + name;
 const propstat = (props: string, code = "200 OK") =>
   `<propstat><prop>${props}</prop><status>HTTP/1.1 ${code}</status></propstat>`;
@@ -44,7 +51,7 @@ function expectDavError(code: CalDavError["code"]) {
 describe("readCalDav", () => {
   it("reconciles a full listing and fetches only changed ETags from the collection", async () => {
     const { fetch, options } = fixture(
-      metadata(`${ctag("tag-1")}${token("urn:sync:1")}`),
+      metadata(`${ctag("tag-1")}${token("urn:sync:1")}${timezoneProperty}`),
       multi(collection + member("same.ics", "same") + member("%6Fevent.ics", "event-1") +
         member("todo%20name.ics", "todo-1") + row(path + "attachments/", propstat("<resourcetype><collection/></resourcetype>"))),
       multi(item("oevent.ics", "event-1", vevent) + item("todo%20name.ics", "todo-1", vtodo)),
@@ -52,7 +59,7 @@ describe("readCalDav", () => {
     options.knownEtags.set(href("same.ics"), '"same"').set(href("gone.ics"), '"gone"');
 
     await expect(readCalDav(options)).resolves.toEqual({
-      ctag: "tag-1", syncToken: "urn:sync:1", removed: [href("gone.ics")],
+      ctag: "tag-1", syncToken: "urn:sync:1", calendarTimeZone, removed: [href("gone.ics")],
       changed: [
         { href: href("oevent.ics"), etag: '"event-1"', data: vevent },
         { href: href("todo%20name.ics"), etag: '"todo-1"', data: vtodo },
@@ -69,17 +76,24 @@ describe("readCalDav", () => {
     expect(fetch.mock.calls[2]?.[1]?.body).not.toContain("same.ics");
   });
 
-  it("skips reconciliation when the advertised sync token matches", async () => {
-    const { fetch, options } = fixture(metadata(`${ctag("new")}${token("urn:sync:1")}`));
-    await expect(readCalDav({ ...options, ctag: "old", syncToken: "urn:sync:1" })).resolves.toEqual({
-      ctag: "new", syncToken: "urn:sync:1", removed: [], changed: [],
-    });
-    expect(fetch).toHaveBeenCalledTimes(1);
+  it("requests and returns the raw collection timezone even when the cursors match", async () => {
+    const { fetch, options } = fixture(multi(row(path,
+      propstat(`${ctag("same")}${token("urn:sync:1")}`) + propstat(timezoneProperty))));
+
+    const result = await readCalDav({ ...options, ctag: "same", syncToken: "urn:sync:1" });
+    expect.soft(fetch).toHaveBeenCalledExactlyOnceWith(url, expect.objectContaining({
+      method: "PROPFIND",
+      headers: expect.objectContaining({ Depth: "0" }),
+      body: '<d:propfind xmlns:d="DAV:" xmlns:cs="http://calendarserver.org/ns/" ' +
+        'xmlns:c="urn:ietf:params:xml:ns:caldav"><d:prop><cs:getctag/><d:sync-token/>' +
+        '<c:calendar-timezone/></d:prop></d:propfind>',
+    }));
+    expect(result).toEqual({ ctag: "same", syncToken: "urn:sync:1", calendarTimeZone, removed: [], changed: [] });
   });
 
-  it("uses ctag alone when sync-token is unsupported", async () => {
+  it("uses ctag alone when sync-token and calendar-timezone are unsupported", async () => {
     const { fetch, options } = fixture(multi(row(path,
-      propstat(ctag("same")) + propstat("<sync-token/>", "404 Not Found"))));
+      propstat(ctag("same")) + propstat("<sync-token/><c:calendar-timezone/>", "404 Not Found"))));
     await expect(readCalDav({ ...options, ctag: "same" })).resolves.toEqual({ ctag: "same", removed: [], changed: [] });
     expect(fetch).toHaveBeenCalledTimes(1);
   });

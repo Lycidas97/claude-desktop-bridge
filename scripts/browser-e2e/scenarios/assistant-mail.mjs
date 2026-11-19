@@ -454,6 +454,25 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await page.getByRole("button", { name: "取消", exact: true }).click();
   steps.push("local task creation through phone E2EE, completion, Desktop edit, and Desktop event creation share durable agenda storage");
 
+  host.nativeApproval.assistantMail.seedCalendar([
+    "BEGIN:VCALENDAR", "VERSION:2.0", "BEGIN:VTIMEZONE", "TZID:Eastern Standard Time", "BEGIN:STANDARD",
+    "DTSTART:19700101T000000", "TZOFFSETFROM:-0500", "TZOFFSETTO:-0500", "END:STANDARD", "END:VTIMEZONE",
+    "BEGIN:VEVENT", "UID:custom-zone", "SUMMARY:外部时区日程", "DTSTART;TZID=Eastern Standard Time:20270630T090000",
+    "DURATION:PT1H", "END:VEVENT", "END:VCALENDAR", "",
+  ].join("\r\n"));
+  await page.getByRole("button", { name: "新建日程", exact: true }).click();
+  await page.getByLabel("标题", { exact: true }).fill("东京跨月日程");
+  await page.locator(".agenda-form").getByRole("combobox").selectOption("Asia/Tokyo");
+  await page.getByLabel("开始时间", { exact: true }).fill("2027-07-01T00:15");
+  await page.getByLabel("结束时间", { exact: true }).fill("2027-07-01T01:15");
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await page.getByText("东京跨月日程", { exact: true }).waitFor();
+  assert.equal(await page.locator(".agenda-month strong").innerText(), "2027年6月");
+  const importedEvent = page.getByRole("listitem").filter({ hasText: "外部时区日程" });
+  await importedEvent.waitFor();
+  assert.match(await importedEvent.innerText(), /America\/Los_Angeles/u);
+  steps.push("saving a Tokyo event opens its Los Angeles month and an imported custom TZID renders in the device zone");
+
   await page.locator(".assistant-view-tabs").getByRole("button", { name: "收件", exact: true }).click();
   await page.locator(".assistant-view-tabs").getByRole("button", { name: "助理设置", exact: true }).click();
   await page.locator(".assistant-view-tabs").getByRole("button", { name: "对话", exact: true }).click();

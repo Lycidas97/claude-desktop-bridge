@@ -92,6 +92,7 @@ export async function readCalDav(options: {
 }): Promise<{
   ctag?: string;
   syncToken?: string;
+  calendarTimeZone?: string;
   removed: string[];
   changed: Array<{ href: string; etag: string; data: string }>;
 }> {
@@ -168,19 +169,25 @@ export async function readCalDav(options: {
   }
 
   const metadata = rows(await request("PROPFIND",
-    `<d:propfind xmlns:d="${dav}" xmlns:cs="${calendarserver}"><d:prop><cs:getctag/><d:sync-token/></d:prop></d:propfind>`,
+    `<d:propfind xmlns:d="${dav}" xmlns:cs="${calendarserver}" xmlns:c="${caldav}">` +
+    `<d:prop><cs:getctag/><d:sync-token/><c:calendar-timezone/></d:prop></d:propfind>`,
     "0") ?? invalidResponse());
   const own = metadata.get(collectionHref);
   if (metadata.size !== 1 || !own || own.status !== undefined) invalidResponse();
   const ctag = text(property(own.props, "getctag", calendarserver))?.trim() || undefined;
   const observedToken = text(property(own.props, "sync-token"))?.trim() || undefined;
-  const cursor = {
+  const calendarTimeZone = text(property(own.props, "calendar-timezone", caldav));
+  const collectionMetadata = {
     ...(ctag === undefined ? {} : { ctag }),
-    ...(observedToken === undefined ? {} : { syncToken: observedToken }),
+    ...(calendarTimeZone?.trim() ? { calendarTimeZone } : {}),
   };
   if ((observedToken && observedToken === options.syncToken)
     || (!options.syncToken && !observedToken && ctag && ctag === options.ctag)) {
-    return { ...cursor, removed: [], changed: [] };
+    return {
+      ...collectionMetadata,
+      ...(observedToken === undefined ? {} : { syncToken: observedToken }),
+      removed: [], changed: [],
+    };
   }
 
   const members = new Map<string, string | null>();
@@ -261,7 +268,7 @@ export async function readCalDav(options: {
     if (requested.size) invalidResponse();
   }
   return {
-    ...(ctag === undefined ? {} : { ctag }),
+    ...collectionMetadata,
     ...(nextToken === undefined ? {} : { syncToken: nextToken }),
     removed, changed,
   };

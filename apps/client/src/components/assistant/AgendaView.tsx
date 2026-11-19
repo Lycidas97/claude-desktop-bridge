@@ -1,7 +1,7 @@
 import type { AgendaEventInput, AgendaTodoInput, BridgeAgendaEvent, BridgeAgendaTodo } from "@bridge/protocol";
 import { ChevronLeft, ChevronRight, Pencil, Plus } from "lucide-react";
 import { useEffect, useId, useState, type FormEvent, type ReactNode } from "react";
-import { agendaInputTime, agendaInstant } from "../../lib/assistant-agenda.js";
+import { agendaCalendarDate, agendaInputTime, agendaInstant, agendaTimedRange } from "../../lib/assistant-agenda.js";
 import { IconButton } from "../common/IconButton.js";
 import { Sheet } from "../common/Sheet.js";
 import { useAssistantAgenda } from "./AssistantAgendaProvider.js";
@@ -88,7 +88,7 @@ export function AgendaView({ tab, onTabChange }: { tab: "todos" | "calendar"; on
     {page.records.length > 0 && <ul className="agenda-records" aria-label={calendar ? "日程列表" : "待办列表"}>
       {calendar ? agenda.events.records.map(event => row(event, <>
         <small>{event.allDay ? `${event.startAt}${event.endAt === shiftDate(event.startAt, 1) ? "" : ` 至 ${shiftDate(event.endAt, -1)}`} 全天`
-          : `${displayTime(event.startAt, event.timeZone)} 至 ${displayTime(event.endAt, event.timeZone)}${event.timeZone === deviceZone ? "" : ` (${event.timeZone})`}`}</small>
+          : agendaTimedRange(event.startAt, event.endAt, event.timeZone, deviceZone)}</small>
         {event.location && <small>{event.location}</small>}
         {!!event.attendees?.length && <small>{event.attendees.join("、")}</small>}
       </>, undefined, { type: "event", record: event })) : agenda.todos.records.map(todo => {
@@ -157,8 +157,7 @@ function AgendaEditor({ editor, month, onClose }: { editor: Editor; month: Date;
         const location = String(form.get("location")).trim();
         const value: AgendaEventInput = { ...fields, startAt, endAt, timeZone: zone, allDay, ...(location ? { location } : {}) };
         await agenda.mutate("plugin.assistant-agenda.event.save", { existing, value });
-        const [year, monthValue] = start.split("-").map(Number) as [number, number];
-        agenda.openCalendar(new Date(year, monthValue - 1, 1));
+        agenda.openCalendar(agendaCalendarDate(startAt, allDay));
       }
       onClose();
     } catch (reason) {

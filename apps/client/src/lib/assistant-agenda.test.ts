@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { agendaInputTime, agendaInstant, rereadAgendaPages } from "./assistant-agenda.js";
+import { agendaCalendarDate, agendaInputTime, agendaInstant, agendaTimedRange, rereadAgendaPages } from "./assistant-agenda.js";
 
 describe("agenda page refresh", () => {
   it("refreshes the loaded depth using the new cursor chain and drops missing records", async () => {
@@ -16,6 +16,30 @@ describe("agenda page refresh", () => {
     await expect(rereadAgendaPages(read, 4)).resolves.toMatchObject({ records: ["remaining"], pages: 1 });
     await expect(rereadAgendaPages(read, 0)).resolves.toMatchObject({ records: ["remaining"], pages: 1 });
     expect(read).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("calendar event times", () => {
+  it("displays an embedded CalDAV TZID using the device time zone when Intl rejects it", () => {
+    expect(agendaTimedRange("2026-01-15T14:00:00Z", "2026-01-15T15:00:00Z", "Eastern Standard Time", "America/Los_Angeles"))
+      .toBe("2026-01-15 06:00 至 2026-01-15 07:00 (America/Los_Angeles)");
+  });
+
+  it("displays a recognized event zone with its zone label", () => {
+    expect(agendaTimedRange("2026-06-30T15:15:00Z", "2026-06-30T16:15:00Z", "Asia/Tokyo", "America/Los_Angeles"))
+      .toBe("2026-07-01 00:15 至 2026-07-01 01:15 (Asia/Tokyo)");
+  });
+
+  it("opens the device month after saving a timed event and preserves the month of an all-day date", () => {
+    vi.stubEnv("TZ", "America/Los_Angeles");
+    try {
+      const midnightInTokyo = agendaInstant("2026-07-01T00:15", "Asia/Tokyo");
+      expect(agendaCalendarDate(midnightInTokyo, false).getMonth()).toBe(5);
+      expect(agendaCalendarDate("2026-07-01T00:15:00Z", false).getMonth()).toBe(5);
+      expect(agendaCalendarDate("2026-07-01", true).getMonth()).toBe(6);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 

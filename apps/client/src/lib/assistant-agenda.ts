@@ -17,13 +17,40 @@ export async function rereadAgendaPages<T>(
   return { records, pages, nextCursor };
 }
 
-export function agendaInputTime(instant: string, timeZone: string): string {
-  if (instant.length === 10) return instant;
-  const parts = new Intl.DateTimeFormat("en-GB", {
+function agendaTimeFormatter(timeZone: string): Intl.DateTimeFormat {
+  return new Intl.DateTimeFormat("en-GB", {
     timeZone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
-  }).formatToParts(new Date(instant));
+  });
+}
+
+function formatAgendaTime(instant: string, formatter: Intl.DateTimeFormat): string {
+  const parts = formatter.formatToParts(new Date(instant));
   const get = (type: Intl.DateTimeFormatPartTypes) => parts.find(part => part.type === type)?.value;
   return `${get("year")}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}`;
+}
+
+export function agendaInputTime(instant: string, timeZone: string): string {
+  return instant.length === 10 ? instant : formatAgendaTime(instant, agendaTimeFormatter(timeZone));
+}
+
+export function agendaTimedRange(startAt: string, endAt: string, timeZone: string, deviceZone: string): string {
+  let displayZone = timeZone;
+  let formatter: Intl.DateTimeFormat;
+  try {
+    formatter = agendaTimeFormatter(timeZone);
+  } catch (error) {
+    if (!(error instanceof RangeError)) throw error;
+    // CalDAV can supply a custom VTIMEZONE identifier that Intl does not recognize.
+    displayZone = deviceZone;
+    formatter = agendaTimeFormatter(displayZone);
+  }
+  const start = formatAgendaTime(startAt, formatter).replace("T", " ");
+  const end = formatAgendaTime(endAt, formatter).replace("T", " ");
+  return `${start} 至 ${end}${timeZone === deviceZone ? "" : ` (${displayZone})`}`;
+}
+
+export function agendaCalendarDate(startAt: string, allDay: boolean): Date {
+  return new Date(allDay ? `${startAt}T00:00:00` : startAt);
 }
 
 /** Convert the form's wall time in its selected zone. A repeated time defaults to the earlier instant. */

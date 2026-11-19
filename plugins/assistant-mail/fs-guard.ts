@@ -11,9 +11,10 @@ export const ASSISTANT_MCP = "assistant-mail";
 export const ASSISTANT_TOKEN_ENV = "BRIDGE_ASSISTANT_SESSION_TOKEN";
 export const AGENDA_TOOLS = ["todo_list", "calendar_list_events", "calendar_find_free_slots"].map(name => `mcp__${ASSISTANT_MCP}__${name}`);
 export const PROPOSAL_NATIVE_TOOLS = PROPOSAL_TOOLS.map(name => `mcp__${ASSISTANT_MCP}__${name.replace(".", "_")}`);
+export const ASSISTANT_MARK_READ_TOOL = `mcp__${ASSISTANT_MCP}__mail_mark_read`;
 const mailTools = ["list_events", "list_unfinished_triggers", "read_event", "read_attachment", "update_analysis", "set_processing_status"].map(name => `mcp__${ASSISTANT_MCP}__mail_${name}`);
 export const ASSISTANT_TOOLS = [
-  ...AGENDA_TOOLS, ...PROPOSAL_NATIVE_TOOLS, ...fileTools, "Agent", "ToolSearch", "TodoWrite", ...mailTools,
+  ...AGENDA_TOOLS, ...PROPOSAL_NATIVE_TOOLS, ...fileTools, "Agent", "ToolSearch", "TodoWrite", ...mailTools, ASSISTANT_MARK_READ_TOOL,
 ];
 export const MEMORY_LOOKUP_TOOL = `mcp__${ASSISTANT_MCP}__memory_lookup_entry`;
 const proposalDraftTools = PROPOSAL_NATIVE_TOOLS.slice(0, 2);
@@ -89,6 +90,7 @@ export async function allowAssistantTool(workspace: string, input: unknown, poli
   const params = args as Record<string, unknown>;
   const specialist = memory && typeof agentType === "string" ? ASSISTANT_SPECIALISTS.get(agentType) : undefined;
   if (memory && (specialist ? !specialist.includes(name) : agentId !== undefined)) return false;
+  if (name === ASSISTANT_MARK_READ_TOOL && agentId !== undefined) return false;
   if (name === "Agent") {
     // Resume, worktree, background and teammate modes carry a different execution scope.
     const target = params.subagent_type;

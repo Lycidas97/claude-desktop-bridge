@@ -110,6 +110,8 @@ export interface BridgeMailCard {
   attachments?: BridgeMailAttachment[];
   attachmentCount?: number;
   processingStatus: "pending" | "processing" | "processed";
+  /** Read on the Bridge host, independent of IMAP Seen and business processing. */
+  hostRead?: true;
   analysis?: { summary?: string; suggestions?: string[]; questions?: string[] };
   /** Correlation supplied by the host, never inferred from mail or transcript text. */
   nativeDelivery: {

@@ -63,6 +63,7 @@ export interface MailEvent extends MailIdentity, MailProjection {
   receivedAt: string;
   recordedAt: number;
   processingStatus: MailProcessingStatus;
+  hostRead?: true;
   analysis: MailAnalysis | null;
 }
 
@@ -78,6 +79,7 @@ type EventRow = {
   received_at: string;
   recorded_at: number;
   processing_status: MailProcessingStatus;
+  host_read: number;
   analysis_json: string | null;
   raw_file: string;
   mime_projection: string | null;
@@ -91,6 +93,7 @@ function eventFromRow(row: EventRow): MailEvent {
     subject: row.subject, from: JSON.parse(row.from_json) as MailEvent["from"],
     receivedAt: row.received_at, recordedAt: row.recorded_at,
     processingStatus: row.processing_status,
+    ...(row.host_read === 1 ? { hostRead: true as const } : {}),
     analysis: row.analysis_json ? JSON.parse(row.analysis_json) as MailAnalysis : null,
     ...(row.mime_projection ? JSON.parse(row.mime_projection) as MailProjection : { preview: "", attachments: [], attachmentCount: 0 }),
   };
@@ -169,6 +172,7 @@ export class AssistantMailStore {
     }
     if (!columns.includes("mime_projection")) this.database.exec("ALTER TABLE mail_events ADD COLUMN mime_projection TEXT");
     if (!columns.includes("historical")) this.database.exec("ALTER TABLE mail_events ADD COLUMN historical INTEGER NOT NULL DEFAULT 0");
+    if (!columns.includes("host_read")) this.database.exec("ALTER TABLE mail_events ADD COLUMN host_read INTEGER NOT NULL DEFAULT 0");
     this.database.exec(`CREATE INDEX IF NOT EXISTS mail_events_page_order ON mail_events (${mailOrder})`);
     this.triggers = new AssistantTriggerStore(this.database);
     extend?.(this.database);
@@ -335,6 +339,17 @@ export class AssistantMailStore {
     const row = this.db().prepare("UPDATE mail_events SET processing_status = ? WHERE mail_ref_id = ? RETURNING *")
       .get(status, mailRefId) as EventRow | undefined;
     return row ? eventFromRow(row) : undefined;
+  }
+
+  markRead(mailRefIds: readonly string[]): number | undefined {
+    const db = this.db();
+    const refs = [...new Set(mailRefIds)];
+    const ids = JSON.stringify(refs);
+    const { count } = db.prepare("SELECT COUNT(*) AS count FROM mail_events WHERE mail_ref_id IN (SELECT value FROM json_each(?))")
+      .get(ids) as { count: number };
+    if (count !== refs.length) return undefined;
+    return Number(db.prepare("UPDATE mail_events SET host_read = 1 WHERE host_read = 0 AND mail_ref_id IN (SELECT value FROM json_each(?))")
+      .run(ids).changes);
   }
 
   event(mailRefId: string): MailEvent | undefined {

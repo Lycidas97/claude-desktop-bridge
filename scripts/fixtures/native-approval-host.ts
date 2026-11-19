@@ -454,8 +454,16 @@ export async function startNativeApprovalHost(options: {
     while (broker.promptsList().some(prompt => prompt.promptId === promptId) !== open) await once(broker, "changed");
     return dialogs(after);
   }
+  async function callAssistantTool(name: string, args: object) {
+    const response = await fetch(`http://127.0.0.1:${proposalPort}/tools`, {
+      method: "POST", headers: { Authorization: `Bearer ${toolToken}`, "X-Bridge-Assistant-Managed": "1" },
+      body: JSON.stringify({ name, arguments: args }),
+    });
+    assert.equal(response.status, 200);
+    return response.json();
+  }
   return {
-    cwd: commandCwd, harnessCwd, miscRoot, calls, failedRewindReadbacks, sections, assistantMail, mailSnapshot,
+    cwd: commandCwd, harnessCwd, miscRoot, calls, failedRewindReadbacks, sections, assistantMail, mailSnapshot, callAssistantTool,
     mailCapabilities: () => assistantMailCoordinator?.capabilities() ?? [],
     untrustedDir, manualTrustDir,
     dialogs,
@@ -626,14 +634,7 @@ export async function startNativeApprovalHost(options: {
       return { events: eventLog.replay(after), history: await broker.history(options.sessionId), session: structuredClone(broker.session(options.sessionId)!) };
     },
     readFixtureProfile: () => readFile(join(workspace!.path, "PROFILE.md"), "utf8"),
-    async draftProposal(action: ProposalDraftAction) {
-      const response = await fetch(`http://127.0.0.1:${proposalPort}/tools`, {
-        method: "POST", headers: { Authorization: `Bearer ${toolToken}`, "X-Bridge-Assistant-Managed": "1" },
-        body: JSON.stringify({ name: "proposal.create", arguments: { action } }),
-      });
-      assert.equal(response.status, 200);
-      return response.json();
-    },
+    draftProposal: (action: ProposalDraftAction) => callAssistantTool("proposal.create", { action }),
     async message(message: Record<string, unknown>) {
       messages.push(message);
       const after = eventLog.latestSeq();

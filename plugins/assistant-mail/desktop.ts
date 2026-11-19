@@ -352,6 +352,13 @@ export class AssistantMailService extends EventEmitter {
     return event;
   }
 
+  markRead(mailRefIds: readonly string[]) {
+    const changedCount = this.store.markRead(mailRefIds);
+    if (changedCount === undefined) return undefined;
+    if (changedCount > 0) this.emit("changed", true);
+    return { changedCount };
+  }
+
   private async mutateAccount(key: string, mutate: () => Promise<void>): Promise<void> {
     if (this.accountConfigError) throw new Error(this.accountConfigError);
     const previous = this.accountMutations.get(key);

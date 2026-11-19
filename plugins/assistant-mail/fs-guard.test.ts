@@ -83,12 +83,14 @@ it("uses the exact mail tool names and limits delegation to the foreground proje
   expect(ASSISTANT_TOOLS.filter(name => name.startsWith("mcp__"))).toEqual(
     MAIL_TOOLS.filter(tool => tool.name !== "memory.lookup_entry").map(tool => `mcp__assistant-mail__${tool.name.replaceAll(".", "_")}`),
   );
-  for (const name of ["mcp__assistant-mail__mail_read_event", "ToolSearch", "TodoWrite"]) {
+  for (const name of ["mcp__assistant-mail__mail_read_event", "mcp__assistant-mail__mail_mark_read", "ToolSearch", "TodoWrite"]) {
     await expect(check(name, {})).resolves.toBe(true);
   }
   for (const name of ["Bash", "PowerShell", "NotebookEdit", "WebFetch", "SendMessage", "mcp__ccd__query", "mcp__assistant-mail__mail_read_event_extra"]) {
     await expect(check(name, {})).resolves.toBe(false);
   }
+  await expect(allowAssistantTool(workspace, { hook_event_name: "PreToolUse", cwd: workspace,
+    tool_name: "mcp__assistant-mail__mail_mark_read", tool_input: {}, agent_id: "helper-fixture", agent_type: "assistant-helper" })).resolves.toBe(false);
   const helper = { subagent_type: "assistant-helper", prompt: "Summarize the provided file", run_in_background: false };
   await expect(check("Agent", helper)).resolves.toBe(true);
   await expect(check("Agent", { ...helper, subagent_type: "general-purpose" })).resolves.toBe(false);
@@ -132,8 +134,10 @@ it("fences Stage 3 child roles and keeps generated instructions out of writable 
   await expect(stage3("mcp__assistant-mail__mail_set_processing_status", {}, "mail-triager")).resolves.toBe(false);
   for (const role of ["mail-triager", "schedule-planner", "memory-curator"]) {
     await expect(stage3("mcp__assistant-mail__proposal_list", {}, role)).resolves.toBe(false);
+    await expect(stage3("mcp__assistant-mail__mail_mark_read", {}, role)).resolves.toBe(false);
   }
   await expect(stage3("mcp__assistant-mail__proposal_list", {})).resolves.toBe(true);
+  await expect(stage3("mcp__assistant-mail__mail_mark_read", {})).resolves.toBe(true);
   const delegation = { subagent_type: "memory-curator", prompt: "整理资料" };
   await expect(stage3("Task", delegation)).resolves.toBe(true);
   await expect(stage3("Agent", delegation, "mail-triager")).resolves.toBe(false);

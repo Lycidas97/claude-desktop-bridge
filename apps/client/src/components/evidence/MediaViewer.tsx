@@ -1,5 +1,5 @@
 import { AlertTriangle, ChevronLeft, ChevronRight, LoaderCircle, Maximize, RotateCw, X, ZoomIn, ZoomOut } from "lucide-react";
-import { useEffect, useRef, useState, type TouchEvent } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type TouchEvent } from "react";
 import { flushSync } from "react-dom";
 import type { BridgeArtifactPreview } from "@bridge/protocol";
 import type { PDFDocumentProxy, PDFDocumentLoadingTask } from "pdfjs-dist";
@@ -19,6 +19,7 @@ function mediaAnchor(bounds: DOMRect, point: Point): Point {
 export default function MediaViewer({ target, request, onClose }: { target: MediaTarget; request: MediaRequest; onClose(): void }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const lastTouch = useRef<Point | undefined>(undefined);
   const pinch = useRef<{ distance: number; zoom: number; anchor: Point } | undefined>(undefined);
@@ -47,14 +48,17 @@ export default function MediaViewer({ target, request, onClose }: { target: Medi
   }, [onClose]);
 
   useEffect(() => {
+    if (target.kind === "text") return;
     const viewport = viewportRef.current!;
+    // Fit against the same area before and after classic scrollbars appear.
     const observer = new ResizeObserver(([entry]) => {
-      const { width, height } = entry!.contentRect;
-      setViewportSize({ width, height });
+      const { inlineSize, blockSize } = entry!.borderBoxSize[0]!;
+      const inset = Number.parseFloat(getComputedStyle(viewport).paddingTop) * 2;
+      setViewportSize({ width: inlineSize - inset, height: blockSize - inset });
     });
-    observer.observe(viewport);
+    observer.observe(viewport, { box: "border-box" });
     return () => observer.disconnect();
-  }, []);
+  }, [target.kind]);
 
   useEffect(() => {
     let disposed = false;
@@ -165,24 +169,45 @@ export default function MediaViewer({ target, request, onClose }: { target: Medi
     return () => { disposed = true; renderTask?.cancel(); };
   }, [pdf, pageNumber, width, pdfZoom, rotation]);
 
+  function resetPosition() {
+    stageRef.current!.style.removeProperty("--media-x");
+    stageRef.current!.style.removeProperty("--media-y");
+    viewportRef.current!.scrollTo(0, 0);
+  }
+
   function changePage(value: number) {
     const next = Math.min(pdf?.numPages ?? 1, Math.max(1, value));
     if (next === pageNumber) return;
     setBusy(true);
     setPageNumber(next);
-    viewportRef.current!.scrollTo(0, 0);
+    resetPosition();
   }
 
   function rotatePage(next: number) {
     if (pdf) setBusy(true);
     setRotation(next);
-    viewportRef.current!.scrollTo(0, 0);
+    resetPosition();
+  }
+
+  function positionMedia(stage: HTMLDivElement, media: DOMRect, point: Point, anchor: Point) {
+    const frame = stage.getBoundingClientRect();
+    const x = point.x - frame.left - anchor.x * media.width;
+    const y = point.y - frame.top - anchor.y * media.height;
+    const spareWidth = frame.width - media.width;
+    const spareHeight = frame.height - media.height;
+    const insetX = Math.max(0, Math.min(x, spareWidth));
+    const insetY = Math.max(0, Math.min(y, spareHeight));
+    // Place the media in the available space on fitted axes; scroll on overflow.
+    if (spareWidth > 0) stage.style.setProperty("--media-x", String(insetX / spareWidth));
+    if (spareHeight > 0) stage.style.setProperty("--media-y", String(insetY / spareHeight));
+    viewportRef.current!.scrollBy(insetX - x, insetY - y);
   }
 
   function zoomAt(value: number, point?: Point, anchor?: Point) {
     const next = Math.min(3, Math.max(0.5, value));
     const viewport = viewportRef.current!;
-    const media = viewport.querySelector("img, canvas");
+    const stage = stageRef.current!;
+    const media = stage.firstElementChild;
     const before = media?.getBoundingClientRect();
     if (!media || !before?.width || !before.height) {
       setZoom(next);
@@ -191,15 +216,14 @@ export default function MediaViewer({ target, request, onClose }: { target: Medi
     if (!point) {
       const bounds = viewport.getBoundingClientRect();
       point = {
-        x: (Math.max(bounds.left, before.left) + Math.min(bounds.right, before.right)) / 2,
-        y: (Math.max(bounds.top, before.top) + Math.min(bounds.bottom, before.bottom)) / 2,
+        x: (Math.max(bounds.left, before.left) + Math.min(bounds.left + viewport.clientWidth, before.right)) / 2,
+        y: (Math.max(bounds.top, before.top) + Math.min(bounds.top + viewport.clientHeight, before.bottom)) / 2,
       };
     }
     anchor ??= mediaAnchor(before, point);
     // Commit the new layout before measuring its origin and overflow.
     if (next !== zoom) flushSync(() => setZoom(next));
-    const after = media.getBoundingClientRect();
-    viewport.scrollBy(after.left + anchor.x * after.width - point.x, after.top + anchor.y * after.height - point.y);
+    positionMedia(stage, media.getBoundingClientRect(), point, anchor);
     return next;
   }
 
@@ -218,23 +242,34 @@ export default function MediaViewer({ target, request, onClose }: { target: Medi
       if (target.kind === "pdf") setPdfZoom(zoom);
     }
     if (busy || error || !first) return;
+    const stage = stageRef.current!;
     if (second) {
       const center = { x: (first.clientX + second.clientX) / 2, y: (first.clientY + second.clientY) / 2 };
       const distance = Math.hypot(first.clientX - second.clientX, first.clientY - second.clientY);
       if (!pinch.current) {
-        const bounds = viewport.querySelector("img, canvas")?.getBoundingClientRect();
+        const bounds = stage.firstElementChild?.getBoundingClientRect();
         if (distance && bounds?.width && bounds.height) pinch.current = { distance, zoom, anchor: mediaAnchor(bounds, center) };
       } else if (event.type === "touchmove") {
         zoomAt(pinch.current.zoom * distance / pinch.current.distance, center, pinch.current.anchor);
       }
     } else if (event.type === "touchmove" && previous) {
-      viewport.scrollBy(previous.x - first.clientX, previous.y - first.clientY);
+      const x = first.clientX - previous.x;
+      const y = first.clientY - previous.y;
+      const bounds = stage.firstElementChild?.getBoundingClientRect();
+      if (zoom > 1 && bounds) positionMedia(stage, bounds, { x: bounds.left + x, y: bounds.top + y }, { x: 0, y: 0 });
+      else viewport.scrollBy(-x, -y);
     }
   }
 
-  const imageWidth = imageSize && width > 0 && height > 0
-    ? Math.min(imageSize.width, width, imageSize.width * height / imageSize.height) * zoom
-    : undefined;
+  let fittedSize = pdfSize;
+  if (imageSize && width > 0 && height > 0) {
+    const fit = Math.min(1, width / imageSize.width, height / imageSize.height);
+    fittedSize = { width: imageSize.width * fit, height: imageSize.height * fit };
+  }
+  const stageStyle = fittedSize && {
+    "--media-width": `${fittedSize.width * zoom}px`,
+    "--media-height": `${fittedSize.height * zoom}px`,
+  } as CSSProperties;
 
   return (
     <dialog ref={dialogRef} className="media-viewer" aria-labelledby="media-viewer-title" onCancel={(event) => { event.preventDefault(); onClose(); }} onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}>
@@ -262,7 +297,7 @@ export default function MediaViewer({ target, request, onClose }: { target: Medi
               setZoom(1);
               if (target.kind === "pdf") setPdfZoom(1);
               if (rotation) rotatePage(0);
-              else viewportRef.current!.scrollTo(0, 0);
+              else resetPosition();
             }}><Maximize size={17} /></IconButton>
             {target.kind === "pdf" && <IconButton label="旋转页面" onClick={() => rotatePage((rotation + 90) % 360)}><RotateCw size={17} /></IconButton>}
           </div>}
@@ -281,13 +316,11 @@ export default function MediaViewer({ target, request, onClose }: { target: Medi
           {error && <div className="media-viewer-status" role="alert"><AlertTriangle size={22} /><span>{error}</span><button className="secondary-button" onClick={() => { setPdf(undefined); setAttempt((value) => value + 1); }}>重新加载</button></div>}
           {target.kind === "text" ? (!busy && !error && text !== undefined && <div id="text-preview-content" role={markdown ? "tabpanel" : undefined} aria-labelledby={markdown ? (showSource ? "text-preview-source-tab" : "text-preview-rendered-tab") : undefined} tabIndex={0}>
             {target.mailAttachment ? <pre className="text-preview-source text-preview-mail" aria-label={`${target.name} 全文`}><code>{text}</code></pre> : <TextPreview text={text} name={target.name} source={showSource} />}
-          </div>) : target.kind === "pdf" ? <canvas ref={canvasRef} aria-label={`${target.name} 第 ${pageNumber} 页`} style={{
-            visibility: busy || error ? "hidden" : "visible",
-            width: pdfSize && pdfSize.width * zoom,
-            height: pdfSize && pdfSize.height * zoom,
-          }} /> : imageUrl && <img src={imageUrl} alt={target.name} style={{ width: imageWidth }}
-            onLoad={({ currentTarget }) => setImageSize({ width: currentTarget.naturalWidth, height: currentTarget.naturalHeight })}
-            onError={() => { setError("图片无法显示，请重新加载"); setBusy(false); }} />}
+          </div>) : <div ref={stageRef} className="media-viewer-stage" style={stageStyle}>
+            {target.kind === "pdf" ? <canvas ref={canvasRef} aria-label={`${target.name} 第 ${pageNumber} 页`} style={{ visibility: busy || error ? "hidden" : "visible" }} /> : imageUrl && <img src={imageUrl} alt={target.name}
+              onLoad={({ currentTarget }) => setImageSize({ width: currentTarget.naturalWidth, height: currentTarget.naturalHeight })}
+              onError={() => { setError("图片无法显示，请重新加载"); setBusy(false); }} />}
+          </div>}
         </div>
         <footer>{target.kind === "text" ? `${text === "" && !busy && !error ? "空文件" : "全文预览"} · ${target.charset?.toUpperCase() ?? "UTF-8"}` : target.kind === "pdf" ? "按需读取页面内容" : "双指或按钮缩放"}</footer>
       </div>

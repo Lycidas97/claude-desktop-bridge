@@ -71,24 +71,27 @@ const browser = packaged
   : await chromium.launch({ channel: "chrome", headless: true });
 const results = [];
 
-async function verifyMediaGestures(page, media) {
+async function verifyMediaGestures(page, media, wide = false) {
   const touch = await page.context().newCDPSession(page);
   const viewport = page.locator(".media-viewer-viewport");
   const initial = await media.boundingBox();
   const initialBitmapWidth = await media.evaluate((element) => element instanceof HTMLCanvasElement ? element.width : 0);
-  const anchor = { x: initial.x + initial.width * 0.58, y: initial.y + initial.height * 0.45 };
+  const focal = { x: wide ? 0.52 : 0.58, y: initialBitmapWidth ? 0.45 : 0.5 };
+  const anchor = { x: initial.x + initial.width * focal.x, y: initial.y + initial.height * focal.y };
   const points = (distance) => [-1, 1].map((side, id) => ({ x: anchor.x + side * distance, y: anchor.y, id }));
   await touch.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: points(36) });
-  for (const distance of [54, 72, 90]) {
-    await touch.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: points(distance) });
+  for (const scale of wide ? [1.5] : [1.25, 1.5, 2, 2.5]) {
+    await touch.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: points(36 * scale) });
+    await page.waitForFunction((width) => Math.abs(document.querySelector(".media-viewer-viewport :is(img, canvas)").getBoundingClientRect().width - width) < 1, initial.width * scale);
+    const bounds = await media.boundingBox();
+    assert.ok(Math.abs(bounds.x + bounds.width * focal.x - anchor.x) <= 2, `${scale}× pinch keeps the horizontal content under the fingers`);
+    assert.ok(Math.abs(bounds.y + bounds.height * focal.y - anchor.y) <= 2, `${scale}× pinch keeps the vertical content under the fingers`);
   }
-  await page.waitForFunction((width) => document.querySelector(".media-viewer-viewport :is(img, canvas)").getBoundingClientRect().width > width * 2, initial.width);
   const zoomed = await media.boundingBox();
   if (initialBitmapWidth) assert.equal(await media.evaluate((canvas) => canvas.width), initialBitmapWidth, "Pinching does not rerasterize the PDF while fingers are down");
-  assert.ok(Math.abs(zoomed.x + zoomed.width * 0.58 - anchor.x) <= 2, "Pinch preserves the horizontal content under the fingers");
-  assert.ok(Math.abs(zoomed.y + zoomed.height * 0.45 - anchor.y) <= 2, "Pinch preserves the vertical content under the fingers");
   assert.equal(await page.evaluate(() => visualViewport.scale), 1, "Pinch leaves the browser page scale at 1:1");
   await touch.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  if (wide) { await touch.detach(); return; }
   if (initialBitmapWidth) {
     await page.waitForFunction((width) => document.querySelector(".media-viewer canvas").width > width && !document.querySelector(".media-viewer-status"), initialBitmapWidth);
     const rasterized = await media.boundingBox();
@@ -255,6 +258,7 @@ try {
     await page.locator(".media-file.image").filter({ hasText: "Diagram.svg" }).first().click();
     await page.waitForFunction(() => document.querySelector(".media-viewer img")?.naturalWidth > 0 || document.querySelector('.media-viewer [role="alert"]'));
     if (await page.getByRole("alert").count()) throw new Error("SVG transfer preview failed to render");
+    if (mobile) await verifyMediaGestures(page, page.locator(".media-viewer img"), true);
     await page.getByRole("button", { name: "关闭查看器" }).click();
     const beforeMarkdown = await page.evaluate(() => window.__mediaRequests.length);
     await page.locator(".markdown-file-link").filter({ hasText: "Research report" }).click();

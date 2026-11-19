@@ -192,14 +192,22 @@ describe("mobile app parent navigation", () => {
     hooks.mobile.state.pairingSync = { stage: "syncing" }; draw();
     expect(back()).toBe(true);
   });
-  it("clears conversation drafts for a forgotten computer on both list and detail removal", async () => {
+  it.each(["list", "details"])("clears drafts and viewed mail when forgetting a computer from %s", async source => {
     hooks.mobile.forgetHost = vi.fn().mockResolvedValue(undefined);
+    const removeItem = vi.fn();
+    vi.stubGlobal("window", { localStorage: { removeItem } });
     tab("computers");
     const clearHost = vi.fn();
     component(ConversationDraftsProvider)!.props.controllerRef.clearHost = clearHost;
-    await component(HostBrowser)!.props.onRemove("host");
+    if (source === "details") {
+      component(HostBrowser)!.props.onDetails("host"); draw();
+      await component(MobileHostDetails)!.props.onRemove();
+    } else {
+      await component(HostBrowser)!.props.onRemove("host");
+    }
     expect(hooks.mobile.forgetHost).toHaveBeenCalledWith("host");
     expect(clearHost).toHaveBeenCalledWith("host");
+    expect(removeItem).toHaveBeenCalledExactlyOnceWith("bridge-viewed-mail:host");
   });
   it("mounts sibling mobile tab pages for sessions and assistant without fixedSessionId coupling", () => {
     const tabPages = elements(tree).filter((element) => element.type === "div" && element.props.className === "mobile-tab-page");

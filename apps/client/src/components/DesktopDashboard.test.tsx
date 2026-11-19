@@ -2435,7 +2435,7 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
       changeToken: "tok-1",
       automaticDelivery: false,
     };
-    let mailCards = [
+    const arrivals = [
       {
         seq: 2,
         mailRefId: "mail-2",
@@ -2463,6 +2463,7 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
         nativeDelivery: { state: "not-submitted" as const },
       },
     ];
+    let mailCards: typeof arrivals = [];
     apiRequest.mockImplementation(async (req: { method: string }) => {
       if (req.method === "plugin.assistant-mail.list") {
         return {
@@ -2496,6 +2497,7 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
     const scheduledTimers = new Set<number>();
     let nextTimerId = 1;
     vi.stubGlobal("window", {
+      localStorage: { getItem: vi.fn().mockReturnValue(null), setItem: vi.fn() },
       setTimeout: vi.fn((fn: () => void) => {
         const id = nextTimerId++;
         scheduledTimers.add(id);
@@ -2531,24 +2533,32 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
     fullDashboard.draw();
     await settle();
     let dashTree = fullDashboard.draw();
+    expect(elements(dashTree).find((element) => element.props.className === "desktop-nav-badge")).toBeUndefined();
 
-    // Unread badge on pinned sidebar 助理 row reflects real pending mail count (1) and updates on changeToken
+    mailCards = arrivals;
+    snapshot = { ...snapshot, assistantMail: { ...snapshot.assistantMail!, changeToken: "tok-2" } };
+    onSnapshotListener?.(snapshot);
+    fullDashboard.draw();
+    await settle();
+    dashTree = fullDashboard.draw();
+
+    // Both unopened arrivals count, including the one the assistant already processed.
     expect(elements(dashTree).some((element) => element.props.className === "desktop-nav-v2")).toBe(false);
     const navBadge = elements(dashTree).find((element) => element.props.className === "desktop-nav-badge")!;
     expect(navBadge.props["aria-hidden"]).toBe("true");
-    expect(navBadge.props.children).toBe(1);
+    expect(navBadge.props.children).toBe(2);
     expect(elements(dashTree).some((element) => String(element.props.className).includes("m-status-dot is-online"))).toBe(true);
 
     mailCards = mailCards.map((card) => ({ ...card, processingStatus: "processed" as const }));
     snapshot = {
       ...snapshot,
-      assistantMail: { ...snapshot.assistantMail!, changeToken: "tok-2" },
+      assistantMail: { ...snapshot.assistantMail!, changeToken: "tok-3" },
     };
     onSnapshotListener?.(snapshot);
     dashTree = fullDashboard.draw();
     await settle();
     dashTree = fullDashboard.draw();
-    expect(elements(dashTree).find((element) => element.props.className === "desktop-nav-badge")).toBeUndefined();
+    expect(elements(dashTree).find((element) => element.props.className === "desktop-nav-badge")?.props.children).toBe(2);
 
     // Switch to 设置 -> 手机配对与设备 and verify folded DesktopDevices, empty state, pairing QR, unmount-safe clipboard, and revoke
     elements(dashTree).find((element) => element.type === "button" && String(element.props.className).includes("desktop-dock-settings"))!.props.onClick();

@@ -71,11 +71,10 @@ export async function verifyIncomingFile(page, startingHost, host, steps, direct
   await sheet.getByText(incomingFileName, { exact: true }).waitFor();
   await sheet.getByRole("button", { name: /Browser E2E 隔离电脑/ }).click();
   await sheet.getByRole("button", { name: "文件接收电脑" }).click();
-  await target.first().waitFor();
-  const matchingTargets = await target.count();
   const invoiceTarget = sheet.getByRole("button", { name: /处理发票附件/ });
   const planTarget = sheet.getByRole("button", { name: /审阅项目计划/ });
-  assert.deepEqual([matchingTargets, await invoiceTarget.count(), await planTarget.count()], [2, 1, 1]);
+  await planTarget.waitFor();
+  assert.deepEqual([await target.count(), await invoiceTarget.count(), await planTarget.count()], [2, 1, 1]);
   const archivedVisible = await sheet.getByRole("button", { name: "已归档的导入目标", exact: false }).isVisible();
   const sidechatVisible = await sheet.getByRole("button", { name: "侧聊导入目标", exact: false }).isVisible();
   for (const computer of [startingHost, host]) {

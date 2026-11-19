@@ -33,7 +33,7 @@ import { ProviderSettings } from "./components/session/ProviderSettings.js";
 import { MobileClientUpdateDialog, type RemoteDesktopUpdateControl } from "./components/updater/UpdaterSections.js";
 import { MAGPIE_QUOTA_METHOD, type QuotaLoader, type QuotaSnapshot } from "../../../plugins/magpie-quota/contract.js";
 import { MagpieQuotaProvider } from "../../../plugins/magpie-quota/client.js";
-import { AssistantMailProvider, useAssistantMail, type AssistantRequest } from "./components/assistant/AssistantMailProvider.js";
+import { AssistantMailProvider, useAssistantMail, viewedMailStorageKey, type AssistantRequest } from "./components/assistant/AssistantMailProvider.js";
 import { AssistantAgendaProvider } from "./components/assistant/AssistantAgendaProvider.js";
 import { AssistantPage } from "./components/assistant/AssistantPage.js";
 import { MailReference } from "./components/assistant/MailReference.js";
@@ -210,6 +210,7 @@ function MobileApp({ themeControl }: { themeControl: ThemeControl }) {
     await mobile.forgetHost(roomId);
     draftsHandle.clearHost?.(roomId);
     clearInitialRefreshedQuotaHost(roomId);
+    window.localStorage.removeItem(viewedMailStorageKey(roomId));
   }, [draftsHandle, mobile.forgetHost]);
   // requestMedia is the hook's plain request function; its identity never changes.
   const request = mobile.requestMedia;
@@ -347,7 +348,7 @@ function MobileApp({ themeControl }: { themeControl: ThemeControl }) {
           <DiagnosticFloatingEntry />
         </>
       ) : (
-    <AssistantMailProvider key={mobile.state.activeHostId ?? ""} snapshot={snapshot} online={mobile.state.connection === "connected" && mobile.state.desktopOnline} request={assistantRequest} loadCache={mobile.loadMailCache} saveCache={mobile.saveMailCache} onDiscuss={() => setTab("assistant")}>
+    <AssistantMailProvider key={mobile.state.activeHostId ?? ""} hostId={mobile.state.activeHostId} snapshot={snapshot} online={mobile.state.connection === "connected" && mobile.state.desktopOnline} request={assistantRequest} loadCache={mobile.loadMailCache} saveCache={mobile.saveMailCache} onDiscuss={() => setTab("assistant")}>
     <AssistantAgendaProvider snapshot={snapshot} online={mobile.state.connection === "connected" && mobile.state.desktopOnline} request={assistantRequest}>
     <MobileAppShell
       tab={tab}

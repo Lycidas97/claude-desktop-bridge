@@ -309,6 +309,127 @@ npm run ci:run -- exec -w @bridge/desktop -- vitest run src/claude/claude-deskto
 成功/拒绝结果和未运行项，满足[安全启用条件](SECURITY.md#外部邮件自动投递门禁)
 后才能启用自动处理；不为补证据添加自动重发、恢复循环或第二条执行队列。
 
+### 阶段 1 托管工作区实机复核
+
+[Issue 222](https://github.com/Lycidas97/claude-desktop-bridge/issues/222)，2026-11-19 UTC：
+**部分验证，自动投递保持关闭**。主机是 macOS 27.2（26B123），Claude Desktop 5.11492.5，
+原生 `system/init` 和重启版本查询均为 Claude Code 2.1.325。Bridge 是本机签名 dogfood
+`1.3.8-dev.18.diag`，基准提交 `07de59dd35e6b6d78be313a7477d1f537bd702ee`。
+`.diag` 表示构建时工作树不干净；用安装包 ASAR SHA-256
+`d2c666e18413fc887e93fdf7e56ce16e6fd06e61095d2c3c0a68a255f184d70c` 标识实物，不把
+基准提交当作该安装包完整内容的标识。
+
+本轮从源码的 `WorkspaceProvisioner` 生成隔离工作区，`PreToolUse` 和 stdio MCP 由已安装
+Bridge 的 Electron 和 `app.asar/dist` 启动。用真实 Desktop 的 `LocalSessions` 执行；
+没有更改生产绑定、启动第二条 Native 事件流或读取业务邮件。配置为 `assistant-runner`、
+`dontAsk`、`PreToolUse` `onFailure: "block"`（10 秒）；使用现有绑定的原生 model ID，
+其 SHA-256 前 12 位为 `46feb8e13ad1`，未独立核实服务端模型版本。配置摘要不是 Native
+最终合并配置取证。
+
+自有会话 `local_8f0fc461-95ab-4cf5-a2ec-d452b5eaa47e` 的 CLI 会话 ID 为
+`8939a22f-0267-4d2b-8491-5d47a64935c7`。11:54:17.065 的 init（本地 `/agents` 消息
+`ccb89668-0e6b-4f32-85fc-b8c07d682ec5`）显示 7 项工具、无白名单外项；`Task` 按 Native
+别名视为 `Agent`，当时邮件 MCP 仍为 `pending`。11:55:59.126 的 init 显示 15 项，
+其中 8 项为邮件和议程工具，MCP 为 `connected`，仍无白名单外项。目录与 `connected`
+都不是业务调用证据。
+
+#### 真实邮件只读往返
+
+浙大 IMAP 的自有测试邮件在 12:05:51 UTC 提交，`received_at` 为 12:06:15.000，
+Bridge SQLite 的 `recorded_at` 为 12:06:35.360，`mailRefId` 为
+`90621904-8dd7-430b-837f-5bc7224ea5d5`。没有读取其他邮件、重绑或改变该邮件的 `pending` 状态。
+
+在当前实际托管会话发出一次只读消息 `b9633988-027a-4148-90d4-4d5efea06672`，
+Native 于 12:09:14.265 接收，新的 `system/init` 于 12:09:14.292 显示邮件 MCP
+`connected`，CLI 会话 ID 的 SHA-256 前 12 位为 `91f63a4c1ff5`。新起的 MCP 进程使用
+安装包 Electron 和 `app.asar/dist/assistant-mcp.cjs --managed`。仅用 `ToolSearch`
+加载指定工具，随后调用一次 `mcp__assistant-mail__mail_read_event`，参数只含上述 `mailRefId`。
+
+| 证据 | UTC 时间 | 记录 |
+| --- | --- | --- |
+| Native `tool_use` | 12:09:18.378 | `call_00_ET_kyqHfuP0tsRYkoZD1sSC4473`，主会话调用 |
+| Gateway `plugin.assistant-mail.tool-invoked` | 12:09:18.594 | `44f4d951-54ca-4c7b-9670-97f4185fe4aa`，`mail.read_event`，事件会话确与实际绑定的 Native 会话相同（ID 的 SHA-256 前 12 位 `55ded5238425`） |
+| Native `tool_result` | 12:09:18.607 | 同一调用 ID，`is_error: false`，返回自有测试主题且 `source.authorizesActions: false` |
+
+这证明已安装版的真实收件、内置 MCP 往返和当前主会话归因；不证明其他会话被拒绝、
+子代理归因或自动投递。取证不导出邮件正文、账户凭据或会话令牌。
+
+#### 文件守卫与故障
+
+下表的时间均为 UTC。每行调用 ID 与对应 `tool_result.tool_use_id` 相同。文件用例
+均属于消息 `deca0bb4-67eb-4a4f-a1b8-87d44eebe001`，Native 于 11:55:59.119 接收。
+
+| 检查 | 调用 → 结果时间 | 调用 ID | 实际结果 |
+| --- | --- | --- | --- |
+| `Read` 工作区内标记 | 11:56:03.073 → .182 | `call_00_wAG18tSU2O445udKSTh06919` | 成功，返回自有标记 |
+| `Write` 新建 `outputs/new-dir/owned-result.txt` | 11:56:03.378 → .498 | `call_01_2dxKMWQesGXcX0cDcos91622` | 成功，核对落盘标记 |
+| `Read` 工作区外自有文件 | 11:56:03.715 → .807 | `call_02_oHGMuNZvOAU5GqPuKf2g2415` | 守卫拒绝，`is_error: true` |
+| `Write` 新建 `.bridge-uploads/denied-check.txt` | 11:56:03.925 → 11:56:04.010 | `call_03_xkxHF0xfkuYDz3VhqfoJ2461` | 守卫拒绝，文件不存在 |
+| `Glob` 不传 `path` | 11:56:04.106 → .192 | `call_04_lUD37HOz5sniWy4wwFcy9317` | 守卫拒绝，`is_error: true` |
+| `Grep` 指定无链接的 `fixtures` 子目录 | 11:56:04.422 → .543 | `call_05_nLsgompT7DxWE3INvJ6V7371` | 成功，找到自有标记 |
+
+在同一隔离会话分别冷启动，故障探针只替换隔离工作区的 hook 命令，保留 `onFailure: "block"`
+与 10 秒限制。下列三个 `Read` 都以正常可读的工作区内文件为目标；Native 均返回
+`is_error: true`，将拒绝归因于 `PreToolUse` 故障，而非模型口头拒绝。
+
+| 守卫故障 | 消息 UUID | 调用 → 拒绝时间 | 调用 ID |
+| --- | --- | --- | --- |
+| 脚本不存在 | `6aef80d5-a3c2-4af0-9f6e-b1caa7e34232` | 11:56:14.810 → .928 | `call_00_L4FN1rKv7TIqetP9wokz0942` |
+| 脚本抛异常 | `6090739e-25b3-46e1-b42e-4ffb5d0b1249` | 11:56:19.892 → 11:56:20.000 | `call_00_6cXsUm8qjw3UFKMA8KgY9327` |
+| 脚本超过 10 秒 | `538539a6-b24a-4e11-89d7-eab5e0afbccc` | 11:56:23.742 → 11:56:33.886 | `call_00_ET_D5cpN8zIJHhGV3ywnDhn3858` |
+
+消息 `df5b0917-2d9b-40f2-b53d-a8a7fa408f02` 请求启动前台 `assistant-helper`。
+实际观察到 `Agent` 调用 `call_00_JpOWJfEOqDTlhzxCHr4W0844` 于 11:56:09.615 发出、.727
+被守卫拒绝；未核实工具调用的最终参数。该次未启动子代理，不能判断是否拒绝了本应允许
+的调用，也不能证明获准子代理的权限或网关归因。
+
+#### 原生压缩
+
+带自定义指令的 `/compact` 消息 `c9d5c731-acb3-4229-a4eb-886d83a17e2e` 于
+11:56:37.327 接收。隔离工作区的 `PreCompact`（11:56:37.420，`trigger: manual`，有
+`custom_instructions`）、`SessionStart`（11:56:48.792，`source: compact`）、
+`PostCompact`（11:56:48.891，`trigger: manual`）顺序触发，hook 输入的 `session_id`
+均等于上述 CLI 会话 ID，不是 Desktop `local_…` ID。Native `compact_boundary` UUID
+为 `886e7028-2b19-4f73-ae64-248a7c5d03c0`（11:56:48.684）。压缩后的无工具消息
+`e4ed37f4-c856-473f-9cc0-642a09d98e55` 回复同时复述了仅来自 `PreCompact` stdout
+与 `SessionStart` 注入的两个标记。未独立读取汇总正文，不能只凭回复定位标记的储存位置。
+
+#### 实体 Android 后台投递
+
+用户确认已配对手机安装 `Bridge-Android-07de59dd35e6-debug.apk`；APK 与 Mac `.diag` 包
+使用同一基准提交，不据此推断两者构建时的源码一致。APK 构建产物的 SHA-256 为
+`f616a7be538ae382dbd715ff3a9000cda36c732d36a739cd088aeffd3f77505c`，手机设置显示 manifest
+版本 `1.3.7`。使用独立 Native 会话 `local_9d6a63ae-94df-4e09-b2d2-9a86795693d2`
+（CLI `e2ee0e68-5ef9-4f77-8be8-83e34b63b12d`），不是业务会话。下表时间均为 UTC；
+Mac 观察器记录窗口和锁屏状态，Bridge `message.delivery`（`origin: mobile`）记录首收，
+Native transcript 用同一 UUID 核对接收和完成。未独立记录手机点击发送的时刻，结论仅限于
+相应 Mac 状态下接收、完成，不推断客户端的提交时序。
+
+普通关窗的实时观察只记录到窗口隐藏及进程状态。首收时间事后从 Bridge 事件日志按本轮
+命令 `330113cb-d5b0-4cd9-9da8-2dffdbea1c84` 和下表原消息 UUID 查得，接收与完成时间从
+同一原 UUID 的 Native transcript 补取；另用 SQLite 持久收据确认该命令为 `completed`。
+
+| Mac 状态 | 状态变化 → Bridge 首收 → Native 接收 | 原消息 UUID | 结果 |
+| --- | --- | --- | --- |
+| 普通关闭主窗口 | 12:39:14.280 → 12:39:25.137 → 12:39:25.162 | `b17757fa-a531-47d7-868a-e28704535a6f` | 窗口隐藏，UI PID `96777`、服务 PID `96791` 保持；Native 12:39:26.393 完成，手机收到回复 |
+| 托盘「退出窗口（任务继续）」 | 12:42:02.552 → 12:42:07.868 → 12:42:07.905 | `916f10f7-1312-40df-b6da-75922b7df153` | UI PID `96777` 退出、服务 PID `96791` 保持；Native 12:42:09.065 完成，手机收到回复 |
+| 真实锁屏、窗口进程仍退出 | 12:43:55.546 → 12:44:04.120 → 12:44:04.158 | `dadb4263-de4c-43ce-8350-f25fa91d33f0` | 服务 PID `96791` 保持；Native 12:44:05.131 完成，用户确认手机在 Mac 12:44:13.417 解锁前收到回复 |
+
+三条消息的持久收据均为 `completed`，未重发。锁屏用例由 macOS 会话的锁定标志确认，
+期间服务仍持 `NoIdleSleepAssertion`（`Electron`），电源日志未见这段时间发生系统睡眠。
+因此是锁屏期间即时接收，不是睡眠或解锁后的补扫。
+
+#### 尚未验收
+
+| 项目 | 本轮证据与缺口 |
+| --- | --- |
+| 一键初始化与子代理归因 | [早期安装包观察](https://github.com/Lycidas97/claude-desktop-bridge/issues/222#issuecomment-7000436347)记录过初始化和空页往返；本轮未重新初始化已绑定工作区。新版已验证真实邮件只读往返和主会话归因；子代理和其他绑定的拒绝未验证 |
+| 工具边界 | 隔离会话目录未见白名单外项；没有终端、浏览器预览、定时任务、Shell、外网、继承 MCP 或跨会话工具实际拒绝回执。最终合并配置、获准子代理、原生 `@`、配置及规则写入、符号链接祖先、无路径 `Grep` 以及 `Glob` / `Grep` 的递归结果集尚未验证 |
+| 项目规则与自动记忆 | 阶段 0 仅在临时配置上验证了项目规则加载、自动记忆开关及显式读取。本轮未在目标托管配置上验证项目规则加载或实际自动记忆策略；规则文件写入限制不是加载证据 |
+| 系统强制睡眠和生产断线对账 | 已核对关窗及锁屏期间接收、完成与原 UUID，但没有强制睡眠／唤醒或故意造成生产投递不确定；不能从三条正常收据推断睡眠后补扫或断线时按原 UUID 对账 |
+| 自动压缩和故障 | 上述探针只触发手动压缩；自动压缩的 `trigger`、压缩 hook 异常和超时是否影响完成未验证 |
+| EventKit | 独立探针初版已用 dogfood 同一证书签名并通过 `codesign --verify --strict`。加入结果记录后重签阻塞，专用签名钥匙串解锁返回 51（密码不被接受）；未改钥匙串设置，也未启动 TCC 请求、读取条目或实测 `EKEventStoreChanged` |
+
 ## Cleanup boundary
 
 The runners append the checkout's `scripts/recycle-cleanup.cjs` to `NODE_OPTIONS`,

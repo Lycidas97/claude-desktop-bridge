@@ -838,7 +838,9 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
         socket.ack([encrypted.id]);
         return;
       }
+      const mailPageGate = message.payload.method === "plugin.assistant-mail.list" && host.mailPageGate;
       const { response, afterAck } = await host.handleRequest(message.payload);
+      if (mailPageGate && !(await mailPageGate)) return; // The fixture dropped this response on disconnect.
       await host.send(response);
       socket.ack([encrypted.id]);
       await afterAck();

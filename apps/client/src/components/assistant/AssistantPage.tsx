@@ -1,5 +1,5 @@
 import { MAIL_POLL_INTERVALS, type BridgeDirectoryListing, type BridgeHostSnapshot, type BridgeMailAccount, type BridgeMethod, type BridgeSessionInfo } from "@bridge/protocol";
-import { ChevronRight, ListChecks, RefreshCw, Settings } from "lucide-react";
+import { Check, ChevronRight, ListChecks, LoaderCircle, RefreshCw, Settings } from "lucide-react";
 import { useEffect, useId, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { formatSessionModelLabel } from "../../lib/conversation-timeline.js";
 import { IconButton } from "../common/IconButton.js";
@@ -78,7 +78,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
       setConfiguring(false);
       setConfirmWorkspace(false);
       setView("conversation");
-      mail!.refresh();
+      mail!.reload();
       return true;
     } catch (reason) {
       setBindingError(reason instanceof Error ? reason.message : "助理会话设置失败");
@@ -86,7 +86,9 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
     } finally { setBindingBusy(false); }
   }
 
-  const refresh = mail && displayedView !== "agenda" && displayedView !== "proposals" && <IconButton label="刷新邮件" disabled={!mail.online || mail.loading} onClick={mail.refresh}><RefreshCw size={16} /></IconButton>;
+  const refreshing = mail?.refreshStatus === "refreshing";
+  const refreshed = mail?.refreshStatus === "refreshed";
+  const showMailFeedback = displayedView !== "agenda" && displayedView !== "proposals";
   const viewTabs = (
     <nav className="assistant-view-tabs" aria-label="助理工作台">
       <div className="assistant-view-switch">
@@ -95,8 +97,15 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
         {agenda && <button type="button" aria-pressed={displayedView === "agenda"} onClick={() => setView("agenda")}>议程</button>}
       </div>
       {!mobile && proposals && <IconButton label="待确认提案" aria-pressed={displayedView === "proposals"} onClick={openProposals}><ListChecks size={16} /></IconButton>}
+      {mail && <IconButton label={refreshing ? "正在刷新邮件列表" : refreshed ? "刷新邮件列表（已刷新）" : "刷新邮件列表"}
+        className={showMailFeedback ? "" : "assistant-mail-refresh-hidden"}
+        disabled={!mail.online || mail.loading || refreshing} aria-busy={refreshing} onClick={mail.refresh}>
+        {refreshing ? <LoaderCircle className="is-spinning" size={16} /> : refreshed ? <Check size={16} /> : <RefreshCw size={16} />}
+      </IconButton>}
+      {mail && showMailFeedback && <span className="assistant-mail-refresh-status" role="status">
+        {refreshing ? "正在刷新邮件列表…" : refreshed ? "邮件列表已刷新" : ""}
+      </span>}
       <IconButton label="助理设置" aria-pressed={displayedView === "settings"} onClick={() => setView("settings")}><Settings size={16} /></IconButton>
-      {refresh}
     </nav>
   );
   const bindingControls = mail && displayedView !== "agenda" && (displayedView === "settings" || !binding?.nativeSessionId || state === "needs-rebind" || state === "missing") && (
@@ -160,7 +169,6 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
     {state === "unavailable" && !workspace?.repairFailed && <p role="status">原生会话暂不可用。</p>}
     {!mail.online && <p role="status">电脑离线，显示已缓存邮件。</p>}
     {!snapshot && binding?.nativeSessionId && <p>绑定会话：{binding.nativeSessionId}</p>}
-    {mail.error && <p role="alert">{mail.error}</p>}
     {displayedView === "mail" && mail.online && mail.assistant?.history?.failed && <p role="alert">更早邮件读取失败。</p>}
   </>;
   const stage = (openConfiguration?: () => void) => displayedView === "proposals" ? <div className="assistant-page-content"><ProposalPanel mobile={mobile} /></div> : <div className="assistant-page-content">
@@ -191,7 +199,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
     {displayedView === "mail" && mail && <>
       {!session && binding?.nativeSessionId && <MailReference sessionId={binding.nativeSessionId} />}
       <div className="assistant-mail-list" aria-label="邮件输入">{mail.cache.cards.map(card => <MailCard key={card.mailRefId} card={card} onDiscuss={() => setView("conversation")} />)}</div>
-      {!mail.cache.cards.length && <p className="assistant-mail-empty" role="status">{mail.loading ? "正在同步邮件…" : "暂无已记录邮件"}</p>}
+      {!mail.cache.cards.length && <p className="assistant-mail-empty" role="status">{mail.loading ? "正在读取邮件…" : "暂无已记录邮件"}</p>}
       {mail.hasOlderMail && <button type="button" className="secondary-button assistant-mail-older" disabled={!mail.online || mail.loading} onClick={() => void mail.loadOlder()}>{mail.loading ? "正在读取…" : "更早邮件"}</button>}
     </>}
   </div>;
@@ -203,6 +211,9 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
       <div className="assistant-page-header-inner">
         <header className="desktop-page-heading"><h1>助理</h1>{viewTabs}</header>
       </div>
+    </div>}
+    {mail?.error && showMailFeedback && <div className="assistant-page-content assistant-mail-feedback">
+      <p role="alert">{mail.error}</p>
     </div>}
     {proposals && displayedView !== "proposals" && (mobile || pendingCount > 0) && <div className="assistant-proposal-dock">
       <button type="button" className="permission-dock" data-empty={!pendingCount} onClick={openProposals}>

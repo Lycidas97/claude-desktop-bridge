@@ -189,6 +189,10 @@
   background: var(--surface-2);
   color: var(--text);
 }
+.assistant-mail-refresh-hidden { visibility: hidden; }
+.assistant-mail-refresh-status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.assistant-page .assistant-mail-feedback { padding-block: 0; }
+.assistant-mail-feedback > p { margin: 0 0 6px; }
 @media (prefers-reduced-motion: reduce) {
   .assistant-view-switch > button { transition: none; }
 }

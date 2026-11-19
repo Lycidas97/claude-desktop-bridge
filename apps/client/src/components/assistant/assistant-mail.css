@@ -185,12 +185,27 @@
 .assistant-conversation { flex: 1; min-height: 0; min-width: 0; }
 .assistant-conversation > .mobile-workspace,
 .assistant-conversation > .desktop-conversation { height: 100%; }
-.assistant-mail-reference { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 6px 16px; padding: 10px 12px; border-left: 3px solid var(--accent-ink); background: var(--surface); color: var(--text); }
-.assistant-mail-reference > div { flex: 1; min-width: 0; display: grid; gap: 3px; }
-.assistant-mail-reference span, .assistant-mail-reference code { color: var(--muted); font-size: calc(11px * var(--font-scale)); }
-.assistant-mail-reference strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(13px * var(--font-scale)); }
-.assistant-mail-reference code { overflow-wrap: anywhere; }
-.assistant-mail-reference p { flex-basis: 100%; margin: 0; color: var(--danger-ink); font-size: calc(12px * var(--font-scale)); }
+.assistant-mail-reference {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) 44px;
+  align-items: center;
+  column-gap: 8px;
+  margin: 6px max(12px, env(safe-area-inset-right)) 6px max(12px, env(safe-area-inset-left));
+  padding-inline-start: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-input);
+  background: var(--surface);
+  color: var(--text);
+}
+.desktop-conversation .assistant-mail-reference { width: min(740px, calc(100% - 48px)); margin-inline: auto; }
+.assistant-mail-reference > svg { color: var(--accent-ink); }
+.assistant-mail-reference-summary { display: flex; align-items: baseline; gap: 8px; }
+.assistant-mail-reference-summary > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.assistant-mail-reference-summary strong { font-size: calc(13px * var(--font-scale)); font-weight: 600; }
+.assistant-mail-reference-summary span { flex: none; max-width: 32%; color: var(--muted); font-size: calc(12px * var(--font-scale)); }
+.assistant-mail-reference > .icon-button { width: 44px; height: 44px; color: var(--muted); }
+.assistant-mail-reference > .icon-button:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: -3px; }
+.assistant-mail-reference p { grid-column: 1 / -1; margin: 0 8px 8px 0; color: var(--danger-ink); font-size: calc(12px * var(--font-scale)); }
 
 .assistant-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; }
 .assistant-workspace-confirm, .assistant-account-confirm { margin: 12px 0; }

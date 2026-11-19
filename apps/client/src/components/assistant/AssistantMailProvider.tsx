@@ -26,7 +26,9 @@ interface AssistantMailState {
   error: string;
   online: boolean;
   loadOlder(): Promise<void>;
+  reload(): void;
   refresh(): void;
+  refreshStatus: "refreshing" | "refreshed" | undefined;
   read(mailRefId: string): Promise<BridgeMailDetail>;
   request: AssistantRequest;
 }
@@ -51,6 +53,13 @@ export function AssistantMailProvider({ hostId, snapshot, online, request, loadC
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
+  const [refreshStatus, setRefreshStatus] = useState<AssistantMailState["refreshStatus"]>();
+  const reload = () => setRefreshKey(value => value + 1);
+  useEffect(() => {
+    if (refreshStatus !== "refreshed") return;
+    const timer = setTimeout(() => setRefreshStatus(undefined), 2_400);
+    return () => clearTimeout(timer);
+  }, [refreshStatus]);
   const [selection, setSelection] = useState<{ sessionId: string; mailRefId: string }>();
   const storageKey = hostId ? viewedMailStorageKey(hostId) : undefined;
   const [readState, setReadState] = useState<{ baselineSeq: number; viewed: Set<string> } | undefined>(() => {
@@ -118,7 +127,12 @@ export function AssistantMailProvider({ hostId, snapshot, online, request, loadC
     "plugin.assistant-mail.list", { ...(cursor ? { cursor } : {}), ...(supportsHistory ? { includeHistory: true } : {}) },
   )).mailPage, [request, supportsHistory]);
   useEffect(() => {
-    if (!enabled || !online || !cacheReady) return;
+    if (!online) {
+      setLoading(false);
+      setRefreshStatus(undefined);
+      return;
+    }
+    if (!enabled || !cacheReady) return;
     let active = true;
     setLoading(true);
     setError("");
@@ -127,8 +141,13 @@ export function AssistantMailProvider({ hostId, snapshot, online, request, loadC
         if (!active) return;
         initializeUnreadBaseline(next.cards[0]?.seq ?? 0);
         setCache(next);
+        setRefreshStatus(status => status === "refreshing" ? "refreshed" : undefined);
       })
-      .catch(reason => { if (active) setError(reason instanceof Error ? reason.message : "邮件同步失败"); })
+      .catch(reason => {
+        if (!active) return;
+        setError(reason instanceof Error ? reason.message : "邮件读取失败");
+        setRefreshStatus(undefined);
+      })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [enabled, online, cacheReady, changeToken, refreshKey, loadPage]);
@@ -192,8 +211,8 @@ export function AssistantMailProvider({ hostId, snapshot, online, request, loadC
       onDiscuss?.();
     },
     clearReference: () => setSelection(undefined),
-    loading: loading || historyLoading, hasOlderMail, error, online, request, loadOlder,
-    refresh: () => setRefreshKey(value => value + 1),
+    loading: loading || historyLoading, hasOlderMail, error, online, request, loadOlder, reload, refreshStatus,
+    refresh: () => { setRefreshStatus("refreshing"); reload(); },
     read: async mailRefId => mailResult<{ mailDetail: BridgeMailDetail }>(await request("plugin.assistant-mail.read", { mailRefId })).mailDetail,
   } : undefined}>{children}</AssistantMailContext.Provider>;
 }

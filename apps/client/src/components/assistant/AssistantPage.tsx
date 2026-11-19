@@ -6,6 +6,9 @@ import { SelectMenu } from "../common/SelectMenu.js";
 import { MobilePageHeader } from "../mobile/MobilePageHeader.js";
 import { SessionCreateDialog } from "../session/SessionCreateDialog.js";
 import { mailResult, useAssistantMail, type AssistantRequest } from "./AssistantMailProvider.js";
+import { AgendaSources } from "./AgendaSources.js";
+import { AgendaView } from "./AgendaView.js";
+import { useAssistantAgenda } from "./AssistantAgendaProvider.js";
 import { MailCard } from "./MailCard.js";
 import { MailReference } from "./MailReference.js";
 import "./assistant-mail.css";
@@ -19,7 +22,9 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
   renderConversation(sessionId: string, stage: { alternateStage?: ReactNode | undefined; hideComposer?: boolean | undefined }): ReactNode;
 }) {
   const mail = useAssistantMail();
-  const [view, setView] = useState<"conversation" | "mail" | "settings">("conversation");
+  const agenda = useAssistantAgenda();
+  const [view, setView] = useState<"conversation" | "mail" | "agenda" | "settings">("conversation");
+  const [agendaTab, setAgendaTab] = useState<"todos" | "calendar">("todos");
   const [configuring, setConfiguring] = useState(false);
   const [selectedId, setSelectedId] = useState("");
   const [creating, setCreating] = useState(false);
@@ -38,17 +43,18 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
   );
   useEffect(() => { if (active) setView("conversation"); }, [active]);
   if (!active) return null;
-  if (!mail) return null;
-  const binding = mail.assistant?.binding;
-  const workspace = mail.assistant?.workspace;
-  const capabilities = snapshot?.host.capabilities ?? mail.cache.workspace?.capabilities ?? [];
+  if (!mail && !agenda) return null;
+  const binding = mail?.assistant?.binding;
+  const workspace = mail?.assistant?.workspace;
+  const capabilities = snapshot?.host.capabilities ?? mail?.cache.workspace?.capabilities ?? [];
   const supportsWorkspace = capabilities.includes("plugin.assistant-mail.workspace.v1") && Boolean(workspace);
   const session = snapshot?.sessions.find(candidate => candidate.sessionId === binding?.nativeSessionId && !candidate.archivedAt);
   const managedProjectId = snapshot?.projects.find(project => project.managedAssistant)?.projectId;
   const bindableSessions = snapshot?.sessions.filter(candidate => candidate.transport === "claude-desktop-native" && !candidate.archivedAt
     && (candidate.sessionId === binding?.nativeSessionId || candidate.projectId !== managedProjectId)) ?? [];
-  const state = mail.assistant?.bindingState;
-  const displayedView = view === "conversation" && !session ? "mail" : view;
+  const state = mail?.assistant?.bindingState;
+  const fallbackView = session ? "conversation" : mail ? "mail" : "agenda";
+  const displayedView = (view === "conversation" && !session) || (view === "mail" && !mail) || (view === "agenda" && !agenda) ? fallbackView : view;
 
   async function configureBinding(method: "plugin.assistant-mail.bind" | "plugin.assistant-mail.workspace.initialize", params: Record<string, string>): Promise<boolean> {
     setBindingBusy(true); setBindingError("");
@@ -65,18 +71,19 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
     } finally { setBindingBusy(false); }
   }
 
-  const refresh = <IconButton label="刷新邮件" disabled={!mail.online || mail.loading} onClick={mail.refresh}><RefreshCw size={16} /></IconButton>;
+  const refresh = mail && displayedView !== "agenda" && <IconButton label="刷新邮件" disabled={!mail.online || mail.loading} onClick={mail.refresh}><RefreshCw size={16} /></IconButton>;
   const viewTabs = (
     <nav className="assistant-view-tabs" aria-label="助理工作台">
       <div className="assistant-view-switch">
-        <button type="button" aria-pressed={displayedView === "conversation"} disabled={!session} onClick={() => setView("conversation")}>对话</button>
-        <button type="button" aria-pressed={displayedView === "mail"} onClick={() => setView("mail")}>收件</button>
+        {mail && <button type="button" aria-pressed={displayedView === "conversation"} disabled={!session} onClick={() => setView("conversation")}>对话</button>}
+        {mail && <button type="button" aria-pressed={displayedView === "mail"} onClick={() => setView("mail")}>收件</button>}
+        {agenda && <button type="button" aria-pressed={displayedView === "agenda"} onClick={() => setView("agenda")}>议程</button>}
       </div>
       <IconButton label="助理设置" aria-pressed={displayedView === "settings"} onClick={() => setView("settings")}><Settings size={16} /></IconButton>
       {refresh}
     </nav>
   );
-  const bindingControls = (displayedView === "settings" || !binding?.nativeSessionId || state === "needs-rebind" || state === "missing") && (
+  const bindingControls = mail && displayedView !== "agenda" && (displayedView === "settings" || !binding?.nativeSessionId || state === "needs-rebind" || state === "missing") && (
     <section className="assistant-binding" aria-label="助理会话绑定">
       <div className="assistant-binding-current">
         {binding?.nativeSessionId ? <button type="button" className="assistant-session-link" onClick={() => setView("conversation")}>{session?.title || binding.nativeSessionId}</button> : <strong>{binding?.previousSessionIds.length ? "重新绑定会话" : "选择助理会话"}</strong>}
@@ -122,7 +129,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
       })}</ul></details> : null}
     </section>
   );
-  const notices = <>
+  const notices = mail && displayedView !== "agenda" && <>
     {workspace?.repairFailed && workspace.nativeSessionId && <p role="alert">托管工作区配置无法恢复。请重新初始化或更换会话。</p>}
     {workspace?.toolIsolation === "warning" && <p role="alert">检测到托管助理的工具隔离异常{workspace.unexpectedTools?.length ? `：${workspace.unexpectedTools.join("、")}` : "。"}</p>}
     {state === "unavailable" && !workspace?.repairFailed && <p role="status">原生会话暂不可用。</p>}
@@ -133,14 +140,16 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
   const stage = <div className="assistant-page-content">
     {bindingControls}
     {notices}
-    {displayedView === "settings" && capabilities.includes("plugin.assistant-mail.account.v1") && <MailAccounts
+    {displayedView === "settings" && mail && capabilities.includes("plugin.assistant-mail.account.v1") && <MailAccounts
       accounts={mail.assistant?.accounts ?? []}
       configUnavailable={mail.assistant?.accountConfigError === "mail_account_config_unavailable"}
       credentialsSupported={mail.assistant?.credentialsSupported === true}
       online={mail.online}
       request={mail.request}
     />}
-    {displayedView === "mail" && <>
+    {displayedView === "settings" && agenda && <AgendaSources />}
+    {displayedView === "agenda" && agenda && <AgendaView tab={agendaTab} onTabChange={setAgendaTab} />}
+    {displayedView === "mail" && mail && <>
       {!session && binding?.nativeSessionId && <MailReference sessionId={binding.nativeSessionId} />}
       <div className="assistant-mail-list" aria-label="邮件输入">{mail.cache.cards.map(card => <MailCard key={card.mailRefId} card={card} onDiscuss={() => setView("conversation")} />)}</div>
       {!mail.cache.cards.length && <p className="assistant-mail-empty" role="status">{mail.loading ? "正在同步邮件…" : "暂无已记录邮件"}</p>}
@@ -159,10 +168,10 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
       {displayedView === "conversation" && <div className="assistant-page-content">{bindingControls}{notices}</div>}
       <div className="assistant-conversation">{renderConversation(session.sessionId, {
         alternateStage: displayedView === "conversation" ? undefined : stage,
-        hideComposer: displayedView === "settings" || workspace?.repairFailed === true,
+        hideComposer: displayedView === "settings" || displayedView === "agenda" || workspace?.repairFailed === true,
       })}</div>
     </> : stage}
-    {creating && snapshot && <SessionCreateDialog snapshot={snapshot} connected={mail.online}
+    {creating && snapshot && mail && <SessionCreateDialog snapshot={snapshot} connected={mail.online}
       {...(snapshot.host.capabilities.includes("directory.browse.v1") ? { onBrowseDirectory: browseDirectory } : {})}
       {...(snapshot.host.capabilities.includes("directory.mkdir.v1") ? { onCreateDirectory: createDirectory } : {})}
       {...(!mobile && window.bridgeDesktop?.chooseDirectory

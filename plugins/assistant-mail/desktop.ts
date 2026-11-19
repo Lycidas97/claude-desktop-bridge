@@ -60,8 +60,8 @@ export class AssistantMailService extends EventEmitter {
     this.createClient = options.createClient ?? ((config) => new ImapFlow(config));
   }
 
-  async initialize(): Promise<void> {
-    await this.store.initialize();
+  async initialize(extendStore?: (database: import("node:sqlite").DatabaseSync) => void): Promise<void> {
+    await this.store.initialize(extendStore);
     this.mimeBackfill = this.store.backfillMimeProjections(this.mimeBackfillAbort.signal)
       .then(updated => { if (updated) this.emit("changed", true); })
       .catch(error => { this.emit("error", error); });

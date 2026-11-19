@@ -33,6 +33,8 @@ import type { LoadedDesktopConfig } from "../transport/config.js";
 import type { ConversationStateStore } from "./conversation-state-store.js";
 import type { SessionEventLog } from "./session-event-log.js";
 import type { DesktopUpdater } from "../updater/desktop-updater.js";
+import type { AssistantAgendaService } from "../../../../plugins/assistant-mail/agenda.js";
+import { handleAssistantAgenda } from "./assistant-agenda.js";
 import type { AssistantMailCoordinator } from "./assistant-mail.js";
 import {
   closeArtifactTransfer, getEvidence, getEvidenceDetails, handleFileUpload, listEvidence,
@@ -145,6 +147,7 @@ export interface ControllerRpcHost {
   readonly magpieQuota: ReturnType<typeof createMagpieQuotaPlugin>;
   readonly updater?: DesktopUpdater;
   readonly assistantMailCoordinator?: AssistantMailCoordinator;
+  readonly assistantAgenda?: AssistantAgendaService;
   snapshot(): Promise<DesktopControlSnapshot>;
   publish(): Promise<DesktopControlSnapshot>;
   claudeDesktopStatus?(force?: boolean): Promise<DesktopControlSnapshot["claudeDesktop"]>;
@@ -180,6 +183,11 @@ async function dispatchControllerRequestInner(
   sourceDeviceId?: string,
 ): Promise<unknown> {
   const params = request.params;
+  if (request.method.startsWith("plugin.assistant-agenda.")) {
+    if (!host.assistantAgenda) throw new BridgeRequestError("UNSUPPORTED", "当前电脑不支持日程。");
+    const { client: _client, ...agendaParams } = params;
+    return handleAssistantAgenda(host.assistantAgenda, request.method, agendaParams);
+  }
   if (request.method.startsWith("plugin.assistant-mail.")) {
     const coordinator = host.assistantMailCoordinator;
     if (!coordinator) throw new BridgeRequestError("UNSUPPORTED", "当前电脑不支持邮件助理。");

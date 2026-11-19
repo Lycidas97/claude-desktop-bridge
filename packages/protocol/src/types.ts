@@ -1,4 +1,5 @@
 import type { BridgeUpdaterSnapshot } from "./updater.js";
+import type { BridgeAgendaSnapshot } from "./assistant-agenda.js";
 import type { BridgeAssistantMailSnapshot } from "./assistant-mail.js";
 
 export const PROTOCOL_VERSION = 3 as const;
@@ -223,6 +224,7 @@ export type BridgeCapability =
   | "turn.queue.cancel.v1"
   | "transcript.toolDetail.v1"
   | "plugin.magpie-quota.v1"
+  | "plugin.assistant-agenda.v1"
   | "plugin.assistant-mail.v1"
   | "plugin.assistant-mail.manual-reference.v1"
   | "plugin.assistant-mail.workspace.v1"
@@ -1236,6 +1238,7 @@ export interface BridgeHostSnapshot {
   providers?: BridgeProviderProfile[];
   updater?: BridgeUpdaterSnapshot;
   assistantMail?: BridgeAssistantMailSnapshot;
+  assistantAgenda?: BridgeAgendaSnapshot;
   latestSeq: number;
 }
 
@@ -1374,6 +1377,16 @@ export type BridgeMethod =
   | "device.revoke"
   // Compile-time plugins/magpie-quota; its payload types stay in the plugin.
   | "plugin.magpie-quota.list"
+  | "plugin.assistant-agenda.todo.list"
+  | "plugin.assistant-agenda.event.list"
+  | "plugin.assistant-agenda.todo.save"
+  | "plugin.assistant-agenda.event.save"
+  | "plugin.assistant-agenda.todo.complete"
+  | "plugin.assistant-agenda.source.add"
+  | "plugin.assistant-agenda.source.credential"
+  | "plugin.assistant-agenda.source.enable"
+  | "plugin.assistant-agenda.source.refresh"
+  | "plugin.assistant-agenda.source.remove"
   | "plugin.assistant-mail.list"
   | "plugin.assistant-mail.read"
   | "plugin.assistant-mail.bind"
@@ -1407,6 +1420,7 @@ export interface BridgeResponse {
 export type BridgeEventType =
   | "host.presence"
   | "snapshot.updated"
+  | "plugin.assistant-agenda.changed"
   | "plugin.assistant-mail.changed"
   | "plugin.assistant-mail.tool-invoked"
   | "session.created"

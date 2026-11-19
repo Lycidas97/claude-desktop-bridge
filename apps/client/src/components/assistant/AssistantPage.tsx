@@ -19,6 +19,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
   renderConversation(sessionId: string, stage: { alternateStage?: ReactNode | undefined; hideComposer?: boolean | undefined }): ReactNode;
 }) {
   const mail = useAssistantMail();
+  const toolWarningId = useId();
   const [view, setView] = useState<"conversation" | "mail" | "settings">("conversation");
   const [configuring, setConfiguring] = useState(false);
   const [selectedId, setSelectedId] = useState("");
@@ -126,7 +127,9 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
     {workspace?.repairFailed && workspace.nativeSessionId && <p role="alert">托管工作区配置无法恢复。请重新初始化或更换会话。</p>}
     {workspace?.toolIsolation === "warning" && (workspace.unexpectedTools?.length ? (
       <details className="assistant-tool-warning">
-        <summary><span role="alert">工具目录超出托管白名单（{workspace.unexpectedTools.length} 项）</span></summary>
+        <summary aria-labelledby={toolWarningId}>
+          <span id={toolWarningId} role="alert">工具目录超出托管白名单（{workspace.unexpectedTools.length} 项）</span>
+        </summary>
         <ul tabIndex={0} aria-label="白名单外工具">
           {workspace.unexpectedTools.map(tool => <li key={tool}><code>{tool}</code></li>)}
         </ul>

@@ -391,11 +391,19 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   const warningHeight = (await catalogWarning.boundingBox()).height;
   await capture("mobile-managed-tool-catalog");
   assert.ok(warningHeight < 64, `The collapsed catalog notice should fit above the conversation, got ${warningHeight}px`);
-  assert.equal(await catalogWarning.innerText(), `工具目录超出托管白名单（${unexpectedTools.length} 项）`);
-  const catalogDetails = page.locator(".assistant-page details").filter({ has: page.getByRole("alert") });
+  const catalogLabel = `工具目录超出托管白名单（${unexpectedTools.length} 项）`;
+  assert.equal(await catalogWarning.innerText(), catalogLabel);
+  const accessibility = await page.context().newCDPSession(page);
+  const { root } = await accessibility.send("DOM.getDocument");
+  const { nodeId } = await accessibility.send("DOM.querySelector", { nodeId: root.nodeId, selector: ".assistant-tool-warning summary" });
+  const { nodes } = await accessibility.send("Accessibility.getPartialAXTree", { nodeId });
+  await accessibility.detach();
+  assert.equal(nodes.find(node => node.role?.value === "DisclosureTriangle")?.name?.value, catalogLabel,
+    "Chromium announces the disclosure with the catalog warning text");
+  const catalogDetails = page.locator(".assistant-tool-warning");
   const terminalTool = catalogDetails.getByText(unexpectedTools[0], { exact: true });
   assert.equal(await terminalTool.isVisible(), false);
-  await catalogWarning.click();
+  await catalogDetails.locator("summary").press("Enter");
   await terminalTool.waitFor();
   assert.deepEqual(await catalogDetails.locator("li").allTextContents(), unexpectedTools);
   const managedComposer = page.locator(".assistant-conversation textarea");

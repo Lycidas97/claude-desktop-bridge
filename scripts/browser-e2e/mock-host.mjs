@@ -466,6 +466,7 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
         case "plugin.assistant-mail.account.add":
         case "plugin.assistant-mail.account.update-credential":
         case "plugin.assistant-mail.account.set-enabled":
+        case "plugin.assistant-mail.account.set-poll-interval":
         case "plugin.assistant-mail.account.remove":
           try {
             if (request.method === "plugin.assistant-mail.list" && host.mailPageFailure) throw new Error("隔离邮件列表读取失败");

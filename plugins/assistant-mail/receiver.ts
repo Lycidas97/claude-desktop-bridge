@@ -2,8 +2,9 @@ import type { ImapFlow, ImapFlowOptions } from "imapflow";
 import { hasCapability } from "imapflow/lib/tools.js";
 import type { MailCredentials } from "./credentials.js";
 import type { AssistantMailStore, MailEvent } from "./store.js";
+import type { MailPollInterval } from "../../packages/protocol/src/assistant-mail.js";
 
-export type MailState = "disabled" | "connecting" | "connected" | "reconnecting" | "unsupported" | "error" | "closed";
+export type MailState = "disabled" | "connecting" | "connected" | "polling" | "reconnecting" | "unsupported" | "error" | "closed";
 
 export class MailReceiver {
   state: MailState = "disabled";
@@ -16,7 +17,8 @@ export class MailReceiver {
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(
-    private readonly account: { accountKey: string; host: string; port: number; user: string },
+    private readonly accountKey: string,
+    private readonly account: { host: string; port: number; user: string; pollIntervalSeconds: MailPollInterval },
     private readonly store: AssistantMailStore,
     private readonly credentials: MailCredentials,
     private readonly createClient: (options: ImapFlowOptions) => ImapFlow,
@@ -51,7 +53,7 @@ export class MailReceiver {
   }
 
   private async receive(): Promise<void> {
-    const { accountKey, host, port, user } = this.account;
+    const { accountKey, account: { host, port, user } } = this;
     this.setState("connecting");
     const password = await this.credentials.get(accountKey).catch(() => undefined);
     if (this.stopped) return;
@@ -65,9 +67,10 @@ export class MailReceiver {
       this.client = client;
       let ended = false;
       let changed = false;
+      let useIdle = false;
       const notify = () => { changed = true; this.wake(); };
       this.requestScan = notify;
-      client.on("exists", notify);
+      client.on("exists", () => { if (useIdle) notify(); });
       client.on("error", () => { ended = true; notify(); client.close(); });
       client.on("close", () => { ended = true; notify(); });
       let storageFailure = false;
@@ -75,16 +78,28 @@ export class MailReceiver {
       try {
         await client.connect();
         if (this.stopped) break;
-        if (!hasCapability(client, "IDLE")) { this.setState("unsupported", "mail_idle_unsupported"); return; }
-        const mailbox = await client.mailboxOpen("INBOX", { readOnly: true });
-        if (this.stopped) break;
-        const uidValidity = mailbox.uidValidity.toString();
-        storageFailure = true;
-        let lastUid = this.store.openMailbox(accountKey, uidValidity, mailbox.uidNext);
-        storageFailure = false;
-        this.setState("connected");
+        useIdle = hasCapability(client, "IDLE");
+        let uidValidity: string | undefined;
+        let lastUid = 0;
         while (!this.stopped && !ended) {
           changed = false;
+          if (!useIdle && this.account.pollIntervalSeconds === null) {
+            this.setState("unsupported", "mail_idle_unsupported");
+            return;
+          }
+          if (uidValidity === undefined || !useIdle) {
+            // EXAMINE refreshes UIDVALIDITY before each polling scan without changing flags.
+            const mailbox = await client.mailboxOpen("INBOX", { readOnly: true });
+            if (this.stopped || ended) break;
+            const generation = mailbox.uidValidity.toString();
+            if (uidValidity !== generation) {
+              uidValidity = generation;
+              storageFailure = true;
+              lastUid = this.store.openMailbox(accountKey, uidValidity, mailbox.uidNext);
+              storageFailure = false;
+            }
+            if (useIdle) this.setState("connected");
+          }
           // FETCH responses may arrive out of UID order. Enumerate IDs first so each commit covers every earlier new UID.
           const uids: number[] = [];
           for await (const message of client.fetch(`${lastUid + 1}:*`, { uid: true }, { uid: true })) uids.push(message.uid);
@@ -105,16 +120,27 @@ export class MailReceiver {
             if (event) this.events.mail(event);
           }
           if (this.stopped || ended) break;
-          if (changed) continue;
-          // Install the wakeup before entering IDLE. EXISTS during a fetch is consumed by the next scan.
-          const notified = new Promise<void>((resolve) => { this.wake = resolve; });
-          const idling = client.idle();
-          void idling.then(notify, notify);
-          await notified;
-          if (this.stopped || ended) { await idling; break; }
-          // Any command breaks IDLE. This is event-driven, never an IDLE-less polling fallback.
-          await client.noop();
-          if (await idling === false) { this.setState("unsupported", "mail_idle_unsupported"); return; }
+          if (useIdle) {
+            if (changed) continue;
+            // Install the wakeup before IDLE. EXISTS during a fetch is consumed by the next scan.
+            const notified = new Promise<void>(resolve => { this.wake = resolve; });
+            const idling = client.idle();
+            void idling.then(notify, notify);
+            await notified;
+            if (this.stopped || ended) { await idling; break; }
+            await client.noop(); // An IMAP command breaks IDLE and checks the connection is still usable.
+            if (await idling !== false) continue;
+            if (this.stopped || ended) break;
+            useIdle = false;
+          }
+          const seconds = this.account.pollIntervalSeconds;
+          if (seconds === null) continue;
+          const timer = setTimeout(() => this.wake(), seconds * 1_000);
+          timer.unref();
+          const poll = new Promise<void>(resolve => { this.wake = resolve; });
+          if (this.state !== "polling") this.setState("polling");
+          await poll;
+          clearTimeout(timer);
         }
       } catch (error) {
         if (this.stopped) return;

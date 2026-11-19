@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
-import { EventEmitter } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { FetchMessageObject, ImapFlow } from "imapflow";
+import { createInterface } from "node:readline";
+import { ImapFlow, type FetchMessageObject } from "imapflow";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { AssistantMailService } from "./desktop.js";
 import { AssistantMailStore } from "./store.js";
@@ -206,25 +208,146 @@ it("rebases UIDVALIDITY without confusing new and old identities", async () => {
   await vi.waitFor(() => expect(service.page().events.map(event => event.uidValidity)).toEqual(["2", "1"]));
 });
 
-it("refuses IDLE-less servers without a polling fallback", async () => {
+async function waitForMailState(service: AssistantMailService, state: ReturnType<AssistantMailService["status"]>["state"]) {
+  while (service.status().state !== state) await once(service, "changed");
+}
+
+it("polls for new mail by default when the server does not advertise IDLE", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const inbox = new Inbox();
+  const recovered = new Inbox();
   inbox.capabilities.clear();
-  const { service } = await createService([inbox]);
+  recovered.capabilities.clear();
+  inbox.deliver(4);
+  const { service, createClient } = await createService([inbox, recovered]);
   await service.enable(account);
-  await vi.waitFor(() => expect(service.status()).toMatchObject({ state: "unsupported", errorCode: "mail_idle_unsupported" }));
-  expect(inbox.mailboxOpen).not.toHaveBeenCalled();
+  await waitForMailState(service, "polling");
+  inbox.deliver(5);
+  await vi.advanceTimersByTimeAsync(59_999);
+  expect(inbox.scans).toEqual(["5:*"]);
+  expect(service.page().events).toEqual([]);
+  await vi.advanceTimersByTimeAsync(1);
+  await vi.waitFor(() => expect(service.page().events.map(event => event.uid)).toEqual([5]));
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(service.page().events.map(event => event.uid)).toEqual([5]);
+  expect(inbox.fetchOne).toHaveBeenCalledOnce();
+
+  inbox.uidValidity = 2n;
+  inbox.messages = [];
+  inbox.deliver(4);
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(service.page().events.map(event => event.uidValidity)).toEqual(["1"]);
+  inbox.deliver(5);
+  await vi.advanceTimersByTimeAsync(60_000);
+  await vi.waitFor(() => expect(service.page().events.map(event => [event.uidValidity, event.uid])).toEqual([["2", 5], ["1", 5]]));
+  expect(inbox.mailboxOpen).toHaveBeenLastCalledWith("INBOX", { readOnly: true });
   expect(inbox.idle).not.toHaveBeenCalled();
-  expect(inbox.noop).not.toHaveBeenCalled();
+  expect(createClient).toHaveBeenCalledOnce();
+
+  recovered.uidValidity = 2n;
+  recovered.deliver(5);
+  recovered.deliver(6);
+  inbox.close();
+  await waitForMailState(service, "reconnecting");
+  expect(service.status().errorCode).toBe("mail_connection_failed");
+  await vi.advanceTimersByTimeAsync(4_999);
+  expect(createClient).toHaveBeenCalledOnce();
+  await vi.advanceTimersByTimeAsync(1);
+  await vi.waitFor(() => expect(service.page().events.map(event => event.uid)).toEqual([6, 5, 5]));
+  expect(service.status().state).toBe("polling");
 });
 
-it("stops when an advertised IDLE command is refused", async () => {
+it("saves separate polling intervals, applies them to active receivers and restores them after restart", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const inbox = new Inbox();
-  inbox.idle.mockImplementationOnce(() => Promise.resolve(false) as unknown as Promise<void>);
-  const { service, createClient } = await createService([inbox]);
+  const peer = new Inbox();
+  inbox.capabilities.clear();
+  peer.capabilities.clear();
+  const { service, createClient, credentials } = await createService([inbox, peer]);
   await service.enable(account);
-  await vi.waitFor(() => expect(service.status()).toMatchObject({ state: "unsupported", errorCode: "mail_idle_unsupported" }));
-  expect(createClient).toHaveBeenCalledOnce();
-  expect(inbox.idle).toHaveBeenCalledOnce();
+  await service.enable({ ...account, user: "peer@example.test" });
+  await vi.waitFor(() => expect(service.status().accounts.map(account => account.state)).toEqual(["polling", "polling"]));
+  const [first, second] = service.status().accounts;
+  await service.setAccountPollInterval(first!.accountKey, 30);
+  await service.setAccountPollInterval(second!.accountKey, null);
+  await vi.waitFor(() => expect(service.status().accounts).toMatchObject([
+    { state: "polling", pollIntervalSeconds: 30 },
+    { state: "unsupported", errorCode: "mail_idle_unsupported", pollIntervalSeconds: null },
+  ]));
+  expect(createClient).toHaveBeenCalledTimes(2);
+  expect(credentials.set).toHaveBeenCalledTimes(2);
+  await service.close();
+  services.splice(services.indexOf(service), 1);
+
+  const resumed = new Inbox();
+  const paused = new Inbox();
+  resumed.capabilities.clear();
+  paused.capabilities.clear();
+  const reenabled = new Inbox();
+  reenabled.capabilities.clear();
+  const { service: restarted } = await createService([resumed, paused, reenabled]);
+  await waitForMailState(restarted, "polling");
+  expect(restarted.status().accounts).toMatchObject([
+    { accountKey: first!.accountKey, state: "polling", pollIntervalSeconds: 30 },
+    { accountKey: second!.accountKey, state: "unsupported", pollIntervalSeconds: null },
+  ]);
+  resumed.deliver(5);
+  await vi.advanceTimersByTimeAsync(29_999);
+  expect(restarted.page().events).toEqual([]);
+  await vi.advanceTimersByTimeAsync(1);
+  await vi.waitFor(() => expect(restarted.page().events.map(event => event.uid)).toEqual([5]));
+  expect(paused.mailboxOpen).not.toHaveBeenCalled();
+  await restarted.setAccountPollInterval(second!.accountKey, 120);
+  await vi.waitFor(() => expect(restarted.status().accounts[1]).toMatchObject({ state: "polling", pollIntervalSeconds: 120 }));
+});
+
+it("receives new mail after a real tagged NO from an IMAP server advertising IDLE", async () => {
+  const commands: string[] = [];
+  let delivered = false;
+  const source = "Subject: mail after IDLE refusal\r\n\r\nbody\r\n";
+  const server = createServer(socket => {
+    socket.write("* PREAUTH test mailbox\r\n");
+    createInterface({ input: socket }).on("line", line => {
+      const [tag, command] = line.split(" ");
+      commands.push(line.slice(tag!.length + 1));
+      const ok = `${tag} OK done\r\n`;
+      switch (command) {
+        case "CAPABILITY": socket.write(`* CAPABILITY IMAP4rev1 IDLE\r\n${ok}`); break;
+        case "LIST": socket.write(`* LIST () "/" INBOX\r\n${ok}`); break;
+        case "EXAMINE":
+          socket.write(`* ${delivered ? 1 : 0} EXISTS\r\n* OK [UIDVALIDITY 1] valid\r\n* OK [UIDNEXT ${delivered ? 6 : 5}] next\r\n${tag} OK [READ-ONLY] examined\r\n`);
+          break;
+        case "UID":
+          socket.write((!delivered ? "" : line.includes("BODY.PEEK[]")
+            ? `* 1 FETCH (UID 5 BODY[] {${Buffer.byteLength(source)}}\r\n${source})\r\n`
+            : "* 1 FETCH (UID 5)\r\n") + ok);
+          break;
+        case "NOOP": socket.write(ok); break;
+        case "IDLE": socket.write(`${tag} NO IDLE disabled\r\n`); break;
+        default: socket.write(`${tag} BAD unexpected command\r\n`);
+      }
+    });
+  }).listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const { port } = server.address() as { port: number };
+  const service = new AssistantMailService({ userDataPath: root,
+    createClient: options => new ImapFlow({ ...options, secure: false, doSTARTTLS: false }),
+    credentials: { supported: true, get: async () => "fixture", set: async () => {}, delete: async () => {} },
+  });
+  try {
+    await service.initialize();
+    await service.enable({ ...account, host: "127.0.0.1", port });
+    await vi.waitFor(() => expect(service.status()).toMatchObject({ state: "polling" }));
+    delivered = true;
+    service.resume();
+    await vi.waitFor(() => expect(service.page().events.map(event => event.uid)).toEqual([5]));
+    expect(commands.filter(command => command === "IDLE")).toHaveLength(1);
+    expect(commands).toContain("EXAMINE INBOX");
+    expect(commands.some(command => command.includes("BODY.PEEK[]"))).toBe(true);
+  } finally {
+    await service.close();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
 });
 
 it("reports a storage failure once and allows explicit disable and re-enable after storage recovers", async () => {
@@ -301,10 +424,10 @@ it("receives the same UID independently and manages one account without interrup
   const firstKey = firstStatus!.accountKey;
   const secondKey = secondStatus!.accountKey;
   expect(firstKey).not.toBe(secondKey);
-  expect(secondStatus).toEqual({ accountKey: secondKey, host: second.host, port: second.port, user: second.user, enabled: true, state: "connected" });
+  expect(secondStatus).toEqual({ accountKey: secondKey, host: second.host, port: second.port, user: second.user, enabled: true, pollIntervalSeconds: 60, state: "connected" });
   expect(JSON.parse(await readFile(join(root, "private", "assistant", "accounts.json"), "utf8"))).toEqual([
-    { host: account.host, port: 993, user: account.user, enabled: true },
-    { host: second.host, port: second.port, user: second.user, enabled: true },
+    { host: account.host, port: 993, user: account.user, enabled: true, pollIntervalSeconds: 60 },
+    { host: second.host, port: second.port, user: second.user, enabled: true, pollIntervalSeconds: 60 },
   ]);
   first.deliver(5); peer.deliver(5);
   await vi.waitFor(() => expect(service.page().events).toHaveLength(2));
@@ -341,7 +464,7 @@ it("receives the same UID independently and manages one account without interrup
   expect(secrets.get(secondKey)).toBe(second.password);
   expect(service.status().accounts).toEqual([secondStatus]);
   expect(JSON.parse(await readFile(join(root, "private", "assistant", "accounts.json"), "utf8"))).toEqual([
-    { host: second.host, port: second.port, user: second.user, enabled: true },
+    { host: second.host, port: second.port, user: second.user, enabled: true, pollIntervalSeconds: 60 },
   ]);
   expect((await service.read(historical.mailRefId))?.source).toEqual(first.messages[0]!.source);
   expect(peer.close).not.toHaveBeenCalled();
@@ -375,12 +498,12 @@ it("rolls back a new account if Keychain rejects its credential and preserves pe
   });
   await expect(service.enable(account)).rejects.toThrow(/^mail_credentials_unavailable$/);
   expect(savedDuringSet).toEqual([
-    { host: peer.host, port: 993, user: peer.user, enabled: false },
-    { host: account.host, port: 993, user: account.user, enabled: true },
+    { host: peer.host, port: 993, user: peer.user, enabled: false, pollIntervalSeconds: 60 },
+    { host: account.host, port: 993, user: account.user, enabled: true, pollIntervalSeconds: 60 },
   ]);
   expect(service.status().accounts).toMatchObject([{ accountKey: configured!.accountKey, enabled: false }]);
   expect(secrets.size).toBe(1);
-  expect(JSON.parse(await readFile(path, "utf8"))).toEqual([{ host: peer.host, port: 993, user: peer.user, enabled: false }]);
+  expect(JSON.parse(await readFile(path, "utf8"))).toEqual([{ host: peer.host, port: 993, user: peer.user, enabled: false, pollIntervalSeconds: 60 }]);
 });
 
 it("keeps a failed add manageable when updating the account file also fails during rollback", async () => {
@@ -436,7 +559,7 @@ it("removes the credential after an overlapping update while an unrelated accoun
   expect(secrets.has(second!.accountKey)).toBe(true);
   expect(service.status().accounts).toMatchObject([{ accountKey: second!.accountKey, enabled: false }]);
   expect(JSON.parse(await readFile(join(root, "private", "assistant", "accounts.json"), "utf8"))).toEqual([
-    { host: second!.host, port: second!.port, user: second!.user, enabled: false },
+    { host: second!.host, port: second!.port, user: second!.user, enabled: false, pollIntervalSeconds: 60 },
   ]);
 });
 

@@ -1,11 +1,11 @@
 import type { BridgeHostSnapshot, BridgeSessionInfo } from "@bridge/protocol";
-import { LoaderCircle, MessageSquare, Monitor } from "lucide-react";
+import { ChevronRight, LoaderCircle, MessageSquare, Monitor } from "lucide-react";
 import { Fragment, useEffect, useState, type ReactNode, type RefObject } from "react";
 import type { useMobileBridge } from "../../hooks/useMobileBridge.js";
-import { canSendSession, relativeTime } from "../../lib/conversation-timeline.js";
+import { canSendSession, forkGroupToggleLabel, relativeTime } from "../../lib/conversation-timeline.js";
 import { discardIncomingFile, observeIncomingFiles, readIncomingFile } from "../../lib/incoming-file.js";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
-import { groupProjectSessionFamilies, type SessionFamily } from "../../lib/project-groups.js";
+import { groupProjectSessionFamilies, orderProjects, readStoredProjectOrder, type SessionFamily } from "../../lib/project-groups.js";
 import { Sheet, SheetAction } from "../common/Sheet.js";
 import { useConversationDrafts } from "../conversation/ConversationDraftsProvider.js";
 import "./IncomingFilePicker.css";
@@ -65,13 +65,37 @@ export function IncomingFilePicker({ mobile, snapshot, dismissMediaPreview, onOp
   const canUpload = ready && !switchingHost;
   const file = "file" in incoming ? incoming.file : undefined;
   const projects = new Map<string, BridgeSessionInfo[]>();
+  const archived = new Map<string, BridgeSessionInfo[]>();
   if (file && activeHost && canUpload && !choosingHost) {
     for (const session of snapshot?.sessions ?? []) {
-      if (session.archivedAt || !canSendSession(session, snapshot)) continue;
-      const project = projects.get(session.projectId);
+      if (!canSendSession(session, snapshot)) continue;
+      const groups = session.archivedAt ? archived : projects;
+      const project = groups.get(session.projectId);
       if (project) project.push(session);
-      else projects.set(session.projectId, [session]);
+      else groups.set(session.projectId, [session]);
     }
+  }
+  const projectOrder = readStoredProjectOrder(`bridge-project-order:${activeHostId}`);
+  const managedProjectId = snapshot?.projects.find(project => project.managedAssistant)?.projectId;
+
+  function selectSession(roomId: string, file: File, sessionId: string) {
+    void drafts.session(roomId, sessionId, (target, file, progress, signal) => (
+      mobile.uploadFile(target, file, progress, signal, roomId)
+    )).fileUploads.add([file]);
+    setIncoming(undefined);
+    onOpenSession(roomId, sessionId);
+  }
+
+  function renderProjects(groups: Map<string, BridgeSessionInfo[]>, onSelect: (sessionId: string) => void) {
+    return orderProjects([...groups.keys()], projectOrder, managedProjectId).map((projectId) => {
+      const sessions = groups.get(projectId)!;
+      return (
+        <section key={projectId} aria-label={sessions[0]!.projectName}>
+          <h3 className="incoming-file-project">{sessions[0]!.projectName}</h3>
+          <div className="m-group">{renderFamilies(groupProjectSessionFamilies(sessions), sessions, onSelect)}</div>
+        </section>
+      );
+    });
   }
   return (
     <Sheet manageFocus title="上传到会话" closeLabel="取消导入" onClose={close}>
@@ -110,21 +134,16 @@ export function IncomingFilePicker({ mobile, snapshot, dismissMediaPreview, onOp
             ) : <p className="m-sheet-note">{activeHost.desktopName}</p>}
             {!canUpload ? (
               <p className="m-sheet-note" role="status">{switchingHost || connection === "connecting" || connection === "reconnecting" ? "正在连接电脑…" : "电脑未连接，连接后即可上传"}</p>
-            ) : projects.size === 0 ? <p className="m-sheet-note" role="status">这台电脑没有可上传的会话</p> : (
-              [...projects.entries()].map(([projectId, sessions]) => (
-                <section key={projectId} aria-label={sessions[0]!.projectName}>
-                  <h3 className="incoming-file-project">{sessions[0]!.projectName}</h3>
-                  <div className="m-group">
-                    {renderFamilies(groupProjectSessionFamilies(sessions), sessions, (sessionId) => {
-                      void drafts.session(activeHost.roomId, sessionId, (sessionId, file, progress, signal) => (
-                        mobile.uploadFile(sessionId, file, progress, signal, activeHost.roomId)
-                      )).fileUploads.add([file]);
-                      setIncoming(undefined);
-                      onOpenSession(activeHost.roomId, sessionId);
-                    })}
-                  </div>
-                </section>
-              ))
+            ) : projects.size === 0 && archived.size === 0 ? <p className="m-sheet-note" role="status">这台电脑没有可上传的会话</p> : (
+              <>
+                {renderProjects(projects, selectSession.bind(null, activeHost.roomId, file))}
+                {archived.size > 0 && (
+                  <details className="incoming-file-archived" key={activeHost.roomId}>
+                    <summary><ChevronRight size={16} aria-hidden="true" />已归档会话</summary>
+                    {renderProjects(archived, selectSession.bind(null, activeHost.roomId, file))}
+                  </details>
+                )}
+              </>
             )}
           </>
         )}
@@ -146,7 +165,7 @@ function renderFamilies(
         onClick={() => onSelect(primary.sessionId)} />
       {forks.length > 0 && (
         <details className="incoming-file-forks">
-          <summary aria-label={`${primary.title}的分支会话`}>分支会话</summary>
+          <summary><ChevronRight size={16} aria-hidden="true" />{forkGroupToggleLabel(forks)}</summary>
           {renderFamilies(forks, projectSessions, onSelect)}
         </details>
       )}

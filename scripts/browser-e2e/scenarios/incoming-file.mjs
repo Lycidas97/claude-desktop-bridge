@@ -82,8 +82,12 @@ export async function verifyIncomingFile(page, startingHost, host, steps, direct
     assert.ok(!computer.requests.some(request => request.method.startsWith("file.upload.")));
   }
   await sheet.screenshot({ path: resolve(directory, "incoming-file-picker.png"), animations: "disabled" });
-  await sheet.locator("summary").click();
+  await sheet.getByText("1 个 /btw 侧聊", { exact: true }).click();
   await sheet.getByRole("button", { name: "侧聊导入目标", exact: true }).waitFor();
+  const archivedTargets = sheet.getByText("已归档会话", { exact: true });
+  assert.ok(await archivedTargets.isVisible(), "Archived upload targets have a collapsed group");
+  await archivedTargets.click();
+  assert.ok(await sheet.getByRole("button", { name: "已归档的导入目标", exact: true }).isEnabled());
   await invoiceTarget.click();
   await page.getByRole("list", { name: "待发送文件" }).getByText("已上传，发送时附上路径", { exact: false }).waitFor();
   await eventually(() => host.requests.filter(request => request.method === "file.upload.cancel").length, 1, "Release the upload lease");

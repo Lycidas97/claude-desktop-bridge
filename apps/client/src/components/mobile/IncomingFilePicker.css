@@ -1,3 +1,5 @@
+.m-sheet-backdrop:has(.incoming-file-picker) { z-index: 101; }
+
 .incoming-file-picker {
   display: grid;
   gap: 12px;
@@ -25,12 +27,19 @@
 
 .incoming-file-forks:last-child { border-bottom: 0; }
 
-.incoming-file-forks > summary {
+.incoming-file-picker summary {
+  display: flex;
   min-height: 44px;
-  padding: 12px 16px;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
   color: var(--muted);
   font-size: var(--m-fs-body);
   cursor: pointer;
 }
+
+.incoming-file-picker summary::-webkit-details-marker { display: none; }
+.incoming-file-picker details[open] > summary > svg { transform: rotate(90deg); }
+.incoming-file-archived > section + section { margin-top: 12px; }
 
 .incoming-file-picker .m-sheet-action-copy { overflow-wrap: anywhere; }

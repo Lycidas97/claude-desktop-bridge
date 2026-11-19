@@ -687,6 +687,7 @@ export class DesktopController extends EventEmitter {
       state === "waiting" ? 3 : state === "running" ? 2 : state === "queued" ? 1 : 0
     );
     return this.broker.listSessions()
+      .filter(session => this.assistantMailCoordinator?.sessionAccess(session) !== "hidden")
       .sort((left, right) => (
         priority(right.turnState) - priority(left.turnState)
         || right.lastActivityAt - left.lastActivityAt

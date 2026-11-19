@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { join } from "node:path";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { BridgeInspectorAlert, BridgeInspectorStatus } from "@bridge/protocol";
+import { WorkspaceProvisioner } from "../controller/assistant-workspace.js";
 
 const resources = await vi.hoisted(async () => {
   const { EventEmitter } = await import("node:events");
@@ -10,7 +11,7 @@ const resources = await vi.hoisted(async () => {
     eventLog: resource(), state: resource(),
     evidence: resource(),
     assistantMail: Object.assign(new EventEmitter(), resource(), {
-      binding: vi.fn<() => { nativeSessionId: string } | undefined>(),
+      binding: vi.fn<() => { nativeSessionId: string; managed?: { path: string; token: string } } | undefined>(),
       status: vi.fn<() => { accounts: { enabled: boolean }[] }>(), resume: vi.fn(),
     }),
     powerSaveBlocker: { start: vi.fn(() => 4), stop: vi.fn() }, mailOptions: vi.fn(), controllerOptions: vi.fn(),
@@ -243,6 +244,28 @@ it("assembles the native facade", async () => {
     eventLog: resources.eventLog, conversationState: resources.state, evidence: resources.evidence,
   }));
   await runtime.close();
+});
+
+it("starts ordinary sessions and mail when a saved managed workspace cannot be repaired", async () => {
+  resources.assistantMail.binding.mockReturnValue({ nativeSessionId: "local-mail", managed: { path: "/test/bridge/private/assistant/workspace", token: "fixture-managed-token" } });
+  resources.assistantMail.status.mockReturnValue({ accounts: [{ enabled: true }] });
+  const prepare = vi.spyOn(WorkspaceProvisioner.prototype, "prepare").mockRejectedValueOnce(Object.assign(new Error("Fixture workspace is unwritable"), { code: "EACCES" }));
+  try {
+    const { createServiceRuntime } = await import("./service-runtime.js");
+    const runtime = await createServiceRuntime({ userDataPath: "/test/bridge" });
+    try {
+      expect(resources.controller.initialize).toHaveBeenCalledOnce();
+      expect(resources.assistantMail.initialize).toHaveBeenCalledOnce();
+      expect(resources.assistantMail.close).not.toHaveBeenCalled();
+      expect(resources.powerSaveBlocker.start).toHaveBeenCalledWith("prevent-app-suspension");
+      const { authorizeManagedToken } = resources.serveMailTools.mock.calls[0]![0];
+      expect(authorizeManagedToken("fixture-managed-token")).toBeUndefined();
+    } finally {
+      await runtime.close();
+    }
+  } finally {
+    prepare.mockRestore();
+  }
 });
 
 it("holds one suspension blocker while receiving or bound, wakes on resume, and releases on close", async () => {

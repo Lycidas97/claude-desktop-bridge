@@ -153,12 +153,12 @@ export async function createServiceRuntime(options: {
     await assistantMail.initialize();
     const workspace = new WorkspaceProvisioner({ userDataPath, appPath: app.getAppPath(), execPath: process.execPath });
     const managed = assistantMail.binding()?.managed;
-    const assistantWorkspacePath = managed ? await workspace.prepare(managed.token) : workspace.path;
+    const assistantWorkspacePath = managed ? await workspace.restore(managed.token, managed.path) : workspace.path;
     const mailTools = await serveAssistantMailTools({
       userDataPath, service: assistantMail,
       authorizeManagedToken: token => {
         const binding = assistantMail.binding();
-        return binding?.managed?.token === token ? binding.nativeSessionId ?? undefined : undefined;
+        return !workspace.repairFailed && binding?.managed?.token === token ? binding.nativeSessionId ?? undefined : undefined;
       },
       onManagedCall: (sessionId, tool) => {
         void eventLog.append({ sessionId, origin: "system", type: "plugin.assistant-mail.tool-invoked", data: { tool } });

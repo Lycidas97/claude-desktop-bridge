@@ -37,6 +37,7 @@ export class AssistantMailService extends EventEmitter {
   private readonly credentials: MailCredentials;
   private readonly createClient: (options: ImapFlowOptions) => ImapFlow;
   private readonly accounts = new Map<string, { config: SavedAccount; receiver: MailReceiver }>();
+  private readonly removingAccounts = new Map<string, MailReceiver>();
   private closed = false;
 
   constructor(options: {
@@ -52,17 +53,20 @@ export class AssistantMailService extends EventEmitter {
 
   async initialize(): Promise<void> {
     await this.store.initialize();
-    const saved = await readFile(join(this.store.directory, "account.json"), "utf8").catch((error: NodeJS.ErrnoException) => {
-      if (error.code !== "ENOENT") throw error;
-      return undefined;
-    });
+    let saved: string | undefined;
+    for (const name of ["accounts.json", "account.json"]) {
+      saved = await readFile(join(this.store.directory, name), "utf8").catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT") throw error;
+        return undefined;
+      });
+      if (saved !== undefined) break;
+    }
     if (saved === undefined) return;
     const value = JSON.parse(saved) as SavedAccount | SavedAccount[];
     const configs = (Array.isArray(value) ? value : [value]).map(config => {
       if (typeof config?.enabled !== "boolean") throw new Error("Invalid saved IMAP account");
       return { ...parseAccount(config), enabled: config.enabled };
     });
-    if (!Array.isArray(value)) this.saveAccounts(configs);
     for (const config of configs) this.addAccount(accountKey(config), config);
     for (const { config, receiver } of this.accounts.values()) if (config.enabled) receiver.start();
   }
@@ -92,6 +96,7 @@ export class AssistantMailService extends EventEmitter {
     if (!this.credentials.supported) throw new Error("mail_credentials_unsupported");
     const config = { ...parseAccount({ host: input.host, port: input.port ?? 993, user: input.user }), enabled: true };
     const key = accountKey(config);
+    if (this.removingAccounts.has(key)) throw new Error("mail_account_removing");
     await this.savePassword(key, input.password);
     const existing = this.accounts.get(key);
     if (existing?.config.enabled) {
@@ -128,12 +133,24 @@ export class AssistantMailService extends EventEmitter {
   async removeAccount(accountKey: string): Promise<void> {
     const account = this.requireAccount(accountKey);
     if (!this.credentials.supported) throw new Error("mail_credentials_unsupported");
-    await this.credentials.delete(accountKey).catch(() => { throw new Error("mail_credentials_unavailable"); });
     this.saveAccounts(Array.from(this.accounts.values()).filter(entry => entry !== account).map(entry => entry.config));
     this.accounts.delete(accountKey);
-    const stopping = account.receiver.stop();
-    this.emit("changed");
-    await stopping;
+    this.removingAccounts.set(accountKey, account.receiver);
+    try {
+      await this.credentials.delete(accountKey);
+    } catch {
+      this.saveAccounts([...Array.from(this.accounts.values(), entry => entry.config), account.config]);
+      this.accounts.set(accountKey, account);
+      this.emit("changed");
+      throw new Error("mail_credentials_unavailable");
+    } finally {
+      this.removingAccounts.delete(accountKey);
+      if (!this.accounts.has(accountKey)) {
+        const stopping = account.receiver.stop();
+        this.emit("changed");
+        await stopping;
+      }
+    }
   }
 
   async disable(): Promise<void> {
@@ -154,12 +171,12 @@ export class AssistantMailService extends EventEmitter {
   }
   updateAnalysis(mailRefId: string, analysis: MailAnalysis) {
     const event = this.store.updateAnalysis(mailRefId, analysis);
-    if (event) this.emit("changed");
+    if (event) this.emit("changed", true);
     return event;
   }
   setProcessingStatus(mailRefId: string, status: MailProcessingStatus) {
     const event = this.store.setProcessingStatus(mailRefId, status);
-    if (event) this.emit("changed");
+    if (event) this.emit("changed", true);
     return event;
   }
 
@@ -186,7 +203,7 @@ export class AssistantMailService extends EventEmitter {
   }
 
   private saveAccounts(configs: SavedAccount[]): void {
-    const path = join(this.store.directory, "account.json");
+    const path = join(this.store.directory, "accounts.json");
     const content = JSON.stringify(configs);
     // The whole account list is one file. Replace it before publishing the in-memory change.
     try {
@@ -208,7 +225,7 @@ export class AssistantMailService extends EventEmitter {
 
   async close(): Promise<void> {
     try {
-      await Promise.all(Array.from(this.accounts.values(), ({ receiver }) => receiver.stop()));
+      await Promise.all([...Array.from(this.accounts.values(), ({ receiver }) => receiver), ...this.removingAccounts.values()].map(receiver => receiver.stop()));
     } finally {
       this.store.close();
       this.closed = true;

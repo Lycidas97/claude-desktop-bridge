@@ -28,6 +28,7 @@ export interface BridgeAssistantWorkspace {
   nativeSessionId?: string;
   toolIsolation: "unobserved" | "compatible" | "warning";
   unexpectedTools?: string[];
+  repairFailed?: true;
 }
 
 export interface BridgeAssistantMailSnapshot {

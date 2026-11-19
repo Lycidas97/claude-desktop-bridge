@@ -192,6 +192,7 @@ async function dispatchControllerRequestInner(
   ) {
     throw new BridgeRequestError("UNSUPPORTED", "当前仅支持 Claude Desktop，其他 Agent 适配已停用。");
   }
+  if (typeof params.sessionId === "string") host.assistantMailCoordinator?.assertSessionRequest(params.sessionId, request.method);
   if (request.method === "claude.desktop.status") {
     return {
       claudeDesktop: host.claudeDesktopStatus

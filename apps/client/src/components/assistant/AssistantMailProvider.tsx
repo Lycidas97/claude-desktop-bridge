@@ -110,19 +110,27 @@ export function AssistantMailProvider({ snapshot, online, request, loadCache, sa
 
   const unreadCount = cache.cards.reduce((count, card) => count + (card.processingStatus === "pending" ? 1 : 0), 0);
   const accounts = assistant?.accounts;
-  const { accountUsers, showAccount } = useMemo(() => {
-    const accountUsers = new Map(accounts?.map(account => [account.accountKey, account.user]));
-    const accountKeys = new Set(accountUsers.keys());
+  const { accountLabels, showAccount } = useMemo(() => {
+    const seenUsers = new Set<string>();
+    const duplicateUsers = new Set<string>();
+    for (const { user } of accounts ?? []) {
+      if (seenUsers.has(user)) duplicateUsers.add(user);
+      seenUsers.add(user);
+    }
+    const accountLabels = new Map(accounts?.map(({ accountKey, user, host, port }) => [
+      accountKey, duplicateUsers.has(user) ? `${user} (${host}:${port})` : user,
+    ]));
+    const accountKeys = new Set(accountLabels.keys());
     for (const card of cache.cards) accountKeys.add(card.accountKey);
-    return { accountUsers, showAccount: accountKeys.size > 1 };
+    return { accountLabels, showAccount: accountKeys.size > 1 };
   }, [accounts, cache.cards]);
   const selectedMail = selection?.sessionId === assistant?.binding?.nativeSessionId ? cache.cards.find(card => card.mailRefId === selection?.mailRefId) : undefined;
   return <AssistantMailContext.Provider value={enabled ? {
     cache, unreadCount, assistant, canReference, selectedMail,
     accountLabel: accountKey => {
-      const user = accountUsers.get(accountKey);
-      if (accounts && !user) return "已移除的邮箱";
-      return showAccount ? user ?? accountKey.slice(0, 8) : "邮件插件";
+      const label = accountLabels.get(accountKey);
+      if (accounts && !label) return "已移除的邮箱";
+      return showAccount ? label ?? accountKey.slice(0, 8) : "邮件插件";
     },
     referenceFor: sessionId => {
       if (!selectedMail || assistant?.binding?.nativeSessionId !== sessionId) return undefined;

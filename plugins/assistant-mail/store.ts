@@ -92,6 +92,15 @@ export class AssistantMailStore {
         section_id TEXT,
         previous_session_ids TEXT NOT NULL
       ) STRICT;
+      CREATE TABLE IF NOT EXISTS assistant_managed_binding (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        managed_json TEXT NOT NULL
+      ) STRICT;
+      CREATE TRIGGER IF NOT EXISTS revoke_assistant_managed_binding
+      AFTER UPDATE ON assistant_binding
+      BEGIN
+        DELETE FROM assistant_managed_binding WHERE singleton = NEW.singleton;
+      END;
       CREATE TABLE IF NOT EXISTS imap_watermarks (
         account_key TEXT NOT NULL,
         mailbox TEXT NOT NULL,
@@ -116,9 +125,6 @@ export class AssistantMailStore {
         UNIQUE (account_key, mailbox, uid_validity, uid)
       ) STRICT;
     `);
-    if (!this.database.prepare("PRAGMA table_info(assistant_binding)").all().some(column => column.name === "managed_json")) {
-      this.database.exec("ALTER TABLE assistant_binding ADD COLUMN managed_json TEXT");
-    }
     if (!this.database.prepare("PRAGMA table_info(mail_events)").all().some(column => column.name === "analysis_json")) {
       this.database.exec("ALTER TABLE mail_events ADD COLUMN analysis_json TEXT");
     }
@@ -130,7 +136,11 @@ export class AssistantMailStore {
   }
 
   binding(): AssistantBinding | undefined {
-    const row = this.db().prepare("SELECT * FROM assistant_binding WHERE singleton = 1").get() as {
+    const row = this.db().prepare(`
+      SELECT binding.*, managed.managed_json FROM assistant_binding binding
+      LEFT JOIN assistant_managed_binding managed USING (singleton)
+      WHERE binding.singleton = 1
+    `).get() as {
       assistant_id: string; native_session_id: string | null; section_id: string | null;
       previous_session_ids: string; managed_json: string | null;
     } | undefined;
@@ -142,14 +152,23 @@ export class AssistantMailStore {
   }
 
   setBinding(binding: AssistantBinding): void {
-    this.db().prepare(`
-      INSERT INTO assistant_binding (singleton, assistant_id, native_session_id, section_id, previous_session_ids, managed_json)
-      VALUES (1, ?, ?, ?, ?, ?)
-      ON CONFLICT(singleton) DO UPDATE SET assistant_id = excluded.assistant_id,
-        native_session_id = excluded.native_session_id, section_id = excluded.section_id,
-        previous_session_ids = excluded.previous_session_ids, managed_json = excluded.managed_json
-    `).run(binding.assistantId, binding.nativeSessionId, binding.sectionId, JSON.stringify(binding.previousSessionIds),
-      binding.managed ? JSON.stringify(binding.managed) : null);
+    const db = this.db();
+    db.exec("BEGIN");
+    try {
+      db.prepare(`
+        INSERT INTO assistant_binding VALUES (1, ?, ?, ?, ?)
+        ON CONFLICT(singleton) DO UPDATE SET assistant_id = excluded.assistant_id,
+          native_session_id = excluded.native_session_id, section_id = excluded.section_id,
+          previous_session_ids = excluded.previous_session_ids
+      `).run(binding.assistantId, binding.nativeSessionId, binding.sectionId, JSON.stringify(binding.previousSessionIds));
+      if (binding.managed) {
+        db.prepare("INSERT INTO assistant_managed_binding VALUES (1, ?)").run(JSON.stringify(binding.managed));
+      }
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   /** A new mailbox generation starts at enable time; an existing one resumes its committed UID. */

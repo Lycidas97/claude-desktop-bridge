@@ -103,7 +103,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
           {!supportsWorkspace && <button type="button" className="secondary-button" disabled={!mail.online || bindingBusy} onClick={() => setCreating(true)}>新建会话</button>}
         </div>
       </div>}
-      {supportsWorkspace && workspace && (!workspace.nativeSessionId || state === "needs-rebind" || state === "missing") && (
+      {supportsWorkspace && workspace && (!workspace.nativeSessionId || workspace.repairFailed || state === "needs-rebind" || state === "missing") && (
         confirmWorkspace ? <div className="assistant-workspace-confirm">
           <p>确认信任此工作区并创建托管助理会话？</p>
           <code>{workspace.path}</code>
@@ -122,8 +122,9 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
     </section>
   );
   const notices = <>
+    {workspace?.repairFailed && workspace.nativeSessionId && <p role="alert">托管工作区配置无法恢复。请重新初始化或更换会话。</p>}
     {workspace?.toolIsolation === "warning" && <p role="alert">检测到托管助理的工具隔离异常{workspace.unexpectedTools?.length ? `：${workspace.unexpectedTools.join("、")}` : "。"}</p>}
-    {state === "unavailable" && <p role="status">原生会话暂不可用。</p>}
+    {state === "unavailable" && !workspace?.repairFailed && <p role="status">原生会话暂不可用。</p>}
     {!mail.online && <p role="status">电脑离线，显示已缓存邮件。</p>}
     {!snapshot && binding?.nativeSessionId && <p>绑定会话：{binding.nativeSessionId}</p>}
     {mail.error && <p role="alert">{mail.error}</p>}
@@ -156,7 +157,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
       {displayedView === "conversation" && <div className="assistant-page-content">{bindingControls}{notices}</div>}
       <div className="assistant-conversation">{renderConversation(session.sessionId, {
         alternateStage: displayedView === "conversation" ? undefined : stage,
-        hideComposer: displayedView === "settings",
+        hideComposer: displayedView === "settings" || workspace?.repairFailed === true,
       })}</div>
     </> : stage}
     {creating && snapshot && <SessionCreateDialog snapshot={snapshot} connected={mail.online}

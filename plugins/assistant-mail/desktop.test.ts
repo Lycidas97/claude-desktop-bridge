@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FetchMessageObject, ImapFlow } from "imapflow";
@@ -88,9 +88,9 @@ it("keeps one background receiver independent of readers, skips old tail UIDs an
   expect(inbox.mailboxOpen).toHaveBeenCalledExactlyOnceWith("INBOX", { readOnly: true });
   expect((await service.read(event.mailRefId))?.source).toEqual(inbox.messages[1]!.source);
   expect(JSON.stringify(service.status())).not.toContain(account.password);
-  const config = await readFile(join(root, "private", "assistant", "account.json"), "utf8");
+  const config = await readFile(join(root, "private", "assistant", "accounts.json"), "utf8");
   expect(config).not.toContain(account.password);
-  if (process.platform !== "win32") expect((await stat(join(root, "private", "assistant", "account.json"))).mode & 0o777).toBe(0o600);
+  if (process.platform !== "win32") expect((await stat(join(root, "private", "assistant", "accounts.json"))).mode & 0o777).toBe(0o600);
 });
 
 it("persists all new UIDs even when FETCH responses arrive out of order", async () => {
@@ -285,7 +285,7 @@ it("rejects unsupported platform credentials before connecting or writing accoun
   const { service, createClient } = await createService([], false);
   await expect(service.enable(account)).rejects.toThrow("mail_credentials_unsupported");
   expect(createClient).not.toHaveBeenCalled();
-  await expect(readFile(join(root, "private", "assistant", "account.json"))).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(readFile(join(root, "private", "assistant", "accounts.json"))).rejects.toMatchObject({ code: "ENOENT" });
 });
 
 it("receives the same UID independently and manages one account without interrupting its peer", async () => {
@@ -302,7 +302,7 @@ it("receives the same UID independently and manages one account without interrup
   const secondKey = secondStatus!.accountKey;
   expect(firstKey).not.toBe(secondKey);
   expect(secondStatus).toEqual({ accountKey: secondKey, host: second.host, port: second.port, user: second.user, enabled: true, state: "connected" });
-  expect(JSON.parse(await readFile(join(root, "private", "assistant", "account.json"), "utf8"))).toEqual([
+  expect(JSON.parse(await readFile(join(root, "private", "assistant", "accounts.json"), "utf8"))).toEqual([
     { host: account.host, port: 993, user: account.user, enabled: true },
     { host: second.host, port: second.port, user: second.user, enabled: true },
   ]);
@@ -340,7 +340,7 @@ it("receives the same UID independently and manages one account without interrup
   expect(secrets.has(firstKey)).toBe(false);
   expect(secrets.get(secondKey)).toBe(second.password);
   expect(service.status().accounts).toEqual([secondStatus]);
-  expect(JSON.parse(await readFile(join(root, "private", "assistant", "account.json"), "utf8"))).toEqual([
+  expect(JSON.parse(await readFile(join(root, "private", "assistant", "accounts.json"), "utf8"))).toEqual([
     { host: second.host, port: second.port, user: second.user, enabled: true },
   ]);
   expect((await service.read(historical.mailRefId))?.source).toEqual(first.messages[0]!.source);
@@ -350,7 +350,27 @@ it("receives the same UID independently and manages one account without interrup
   await vi.waitFor(() => expect(service.page().events).toContainEqual(expect.objectContaining({ accountKey: secondKey, uid: 6 })));
 });
 
-it.each([true, false])("migrates the legacy account in place and preserves credentials and watermarks with enabled=%s", async enabled => {
+it.each(["write", "rename"])("keeps the running account and credential when removal cannot %s the config", async failure => {
+  const inbox = new Inbox();
+  const { service, credentials } = await createService([inbox]);
+  await service.enable(account);
+  await vi.waitFor(() => expect(inbox.idle).toHaveBeenCalledOnce());
+  const [configured] = service.status().accounts;
+  const path = join(root, "private", "assistant", "accounts.json");
+  if (failure === "rename") {
+    await rename(path, `${path}.before-test`);
+    await mkdir(path);
+  } else {
+    await mkdir(`${path}.tmp`);
+  }
+  await expect(service.removeAccount(configured!.accountKey)).rejects.toThrow(/^mail_storage_failed$/);
+  expect(credentials.delete).not.toHaveBeenCalled();
+  expect(secrets.has(configured!.accountKey)).toBe(true);
+  expect(service.status().accounts).toEqual([configured]);
+  expect(inbox.close).not.toHaveBeenCalled();
+});
+
+it.each([true, false])("reads the legacy account without modifying its format and preserves credentials and watermarks with enabled=%s", async enabled => {
   const store = new AssistantMailStore(root);
   await store.initialize();
   const key = createHash("sha256").update(JSON.stringify([account.host, 993, account.user])).digest("hex");
@@ -358,11 +378,12 @@ it.each([true, false])("migrates the legacy account in place and preserves crede
   store.close();
   secrets.set(key, account.password);
   const path = join(store.directory, "account.json");
-  await writeFile(path, JSON.stringify({ host: " IMAP.EXAMPLE.TEST ", port: 993, user: ` ${account.user} `, enabled }), { mode: 0o600 });
+  const legacy = JSON.stringify({ host: " IMAP.EXAMPLE.TEST ", port: 993, user: ` ${account.user} `, enabled });
+  await writeFile(path, legacy, { mode: 0o600 });
   const inbox = new Inbox();
   inbox.deliver(5); inbox.deliver(6);
   const { service, credentials, createClient } = await createService([inbox]);
-  expect(JSON.parse(await readFile(path, "utf8"))).toEqual([{ host: account.host, port: 993, user: account.user, enabled }]);
+  expect(await readFile(path, "utf8")).toBe(legacy);
   expect(service.status().accounts[0]).toMatchObject({ accountKey: key, enabled });
   if (!enabled) {
     service.resume();

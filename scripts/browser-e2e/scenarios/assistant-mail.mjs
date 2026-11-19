@@ -297,7 +297,16 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   const { accountKey: disabledAccountKey, enabled } = host.requests.findLast(request => request.method === "plugin.assistant-mail.account.set-enabled").params;
   assert.deepEqual({ accountKey: disabledAccountKey, enabled }, { accountKey, enabled: false });
   await capture("mobile-mail-accounts");
-  steps.push("mobile account settings add and disable a second synthetic inbox while keeping the credential out of snapshots");
+  const assistantMail = host.snapshot.assistantMail;
+  const originalAccount = assistantMail.accounts.find(account => account.accountKey === oldest.accountKey);
+  await host.send({ kind: "snapshot", snapshot: { ...host.snapshot, assistantMail: {
+    ...assistantMail, accounts: assistantMail.accounts.map(account => account.accountKey === accountKey ? { ...account, user: originalAccount.user } : account),
+  } } });
+  await page.getByRole("button", { name: "收件", exact: true }).click();
+  await original.locator("header").getByText(`${originalAccount.user} (${originalAccount.host}:${originalAccount.port})`, { exact: true }).waitFor();
+  await host.send({ kind: "snapshot", snapshot: host.snapshot });
+  await page.getByRole("button", { name: "助理设置", exact: true }).click();
+  steps.push("mobile account settings add and disable a second inbox, report account errors, and disambiguate the cards of same-name accounts");
 
   const workspacePath = host.snapshot.assistantMail.workspace.path;
   const startCount = host.nativeApproval.calls.filter(call => call.method === "start").length;
@@ -316,6 +325,15 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   assert.equal(managedSession.cwd, workspacePath);
   assert.equal(managedSession.nativePermissionMode, "dontAsk");
   assert.equal(host.snapshot.projects.find(project => project.projectId === managedSession.projectId).managedAssistant, true);
+  const managedMail = host.snapshot.assistantMail;
+  await host.send({ kind: "snapshot", snapshot: { ...host.snapshot, assistantMail: {
+    ...managedMail, bindingState: "unavailable", workspace: { ...managedMail.workspace, repairFailed: true },
+  } } });
+  await page.getByRole("alert").getByText("托管工作区配置无法恢复。请重新初始化或更换会话。", { exact: true }).waitFor();
+  assert.equal(await page.locator(".assistant-page textarea:visible").count(), 0);
+  await page.getByRole("button", { name: "助理设置", exact: true }).click();
+  await page.getByRole("button", { name: "初始化托管助理", exact: true }).waitFor();
+  await host.send({ kind: "snapshot", snapshot: host.snapshot });
   await openMobileDrawer(page);
   await page.locator(".mobile-home-catalog .project-groups > .project-group:not(.archived-group)").last()
     .locator(".project-group-header").getByText("助理", { exact: true }).waitFor();

@@ -20,6 +20,13 @@ export const ASSISTANT_MAIL_CAPABILITIES = [
   "plugin.assistant-mail.account.v1",
 ] as const;
 
+const managedHistoryMethods = new Set([
+  "session.open", "session.history", "session.tool.detail", "session.configuration", "session.permissions",
+  "session.archive", "session.delete", "turn.interrupt", "turn.queue.cancel", "prompt.list",
+  "artifact.preview", "artifact.transfer.open", "artifact.transfer.read", "artifact.transfer.close",
+  "file.stat", "file.transfer.open", "file.transfer.read", "file.transfer.close",
+]);
+
 export interface AssistantMailCoordinatorHost {
   broker?: Pick<ClaudeDesktopBridge, "canProvisionAssistantWorkspace" | "createSession" | "configureSession" | "session">;
   allSessions(): BridgeSessionInfo[];
@@ -96,11 +103,14 @@ export class AssistantMailCoordinator {
   static readonly CAPABILITIES = ASSISTANT_MAIL_CAPABILITIES;
   private changeToken = randomUUID();
   private started = false;
+  private initializingWorkspace = false;
   private toolCatalog: { sessionId: string; unexpectedTools: string[] } | undefined;
-  private readonly onServiceChanged = () => {
-    this.changeToken = randomUUID();
+  private readonly unconfirmedSessions = new Set<string>();
+  private readonly onServiceChanged = (mailDataChanged?: boolean) => {
+    if (mailDataChanged) this.changeToken = randomUUID();
     this.host.onChanged?.(this.snapshot());
   };
+  private readonly onMailRecorded = () => this.onServiceChanged(true);
 
   constructor(
     private readonly mail: AssistantMailService,
@@ -109,7 +119,7 @@ export class AssistantMailCoordinator {
   ) {}
 
   capabilities() {
-    return this.workspace && this.host.broker
+    return this.workspace && this.host.broker?.canProvisionAssistantWorkspace()
       ? [...ASSISTANT_MAIL_CAPABILITIES, "plugin.assistant-mail.workspace.v1" as const]
       : ASSISTANT_MAIL_CAPABILITIES;
   }
@@ -124,15 +134,35 @@ export class AssistantMailCoordinator {
   start(): void {
     if (this.started) return;
     this.started = true;
-    this.mail.on("mail", this.onServiceChanged);
+    this.mail.on("mail", this.onMailRecorded);
     this.mail.on("changed", this.onServiceChanged);
   }
 
   close(): void {
     if (!this.started) return;
     this.started = false;
-    this.mail.off("mail", this.onServiceChanged);
+    this.mail.off("mail", this.onMailRecorded);
     this.mail.off("changed", this.onServiceChanged);
+  }
+
+  sessionAccess(session: BridgeSessionInfo): "hidden" | "read-only" | undefined {
+    if (this.unconfirmedSessions.has(session.sessionId)) return "hidden";
+    if (!this.workspace?.matches(session.cwd)) return undefined;
+    const binding = this.mail.binding();
+    if (binding?.managed && binding.nativeSessionId === session.sessionId) {
+      return this.workspace.repairFailed ? "read-only" : undefined;
+    }
+    return binding?.previousSessionIds.includes(session.sessionId) ? "read-only" : "hidden";
+  }
+
+  assertSessionRequest(sessionId: string, method: string): void {
+    if (!this.workspace) return;
+    const session = this.host.broker?.session(sessionId);
+    if (!session) return;
+    const access = this.sessionAccess(session);
+    if (access === "hidden" || (access === "read-only" && !managedHistoryMethods.has(method))) {
+      throw new BridgeRequestError("INVALID_TARGET", "此会话没有可用的托管助理配置。");
+    }
   }
 
   snapshot(): BridgeAssistantMailSnapshot {
@@ -141,8 +171,10 @@ export class AssistantMailCoordinator {
     const binding = this.mail.binding();
     const nativeSessionId = binding?.managed?.policy === ASSISTANT_WORKSPACE_POLICY ? binding.nativeSessionId : null;
     const catalog = nativeSessionId && this.toolCatalog?.sessionId === nativeSessionId ? this.toolCatalog : undefined;
-    return { ...snapshot, workspace: {
+    const repairFailed = Boolean(nativeSessionId && this.workspace.repairFailed);
+    return { ...snapshot, ...(repairFailed ? { bindingState: "unavailable" as const } : {}), workspace: {
       path: this.workspace.path,
+      ...(repairFailed ? { repairFailed: true as const } : {}),
       policy: ASSISTANT_WORKSPACE_POLICY,
       ...(nativeSessionId ? { nativeSessionId } : {}),
       toolIsolation: !catalog ? "unobserved" : catalog.unexpectedTools.length ? "warning" : "compatible",
@@ -172,20 +204,29 @@ export class AssistantMailCoordinator {
       throw new BridgeRequestError("UNSUPPORTED", "当前 Claude Desktop 无法初始化托管助理。");
     }
     if (workspacePath !== workspace.path) throw new BridgeRequestError("INVALID_TARGET", "请重新确认托管工作区。");
+    if (this.initializingWorkspace) throw new BridgeRequestError("ASSISTANT_INITIALIZING", "托管助理正在初始化。");
     const previous = this.mail.binding()?.managed;
     const token = randomBytes(32).toString("hex");
+    this.initializingWorkspace = true;
     try {
       const path = await workspace.prepare(token);
       const session = await broker.createSession(path, "助理", undefined, true);
+      this.unconfirmedSessions.add(session.sessionId);
       const configured = await broker.configureSession({ sessionId: session.sessionId, permissionMode: "dontAsk" });
       const observed = broker.session(session.sessionId);
       if (configured.nativePermissionMode !== "dontAsk" || observed?.cwd !== path) {
         throw new BridgeRequestError("ASSISTANT_POLICY_UNCONFIRMED", "Claude Desktop 未确认托管工作区和会话权限。");
       }
+      this.unconfirmedSessions.delete(session.sessionId);
       this.bindSession(observed, { path, token, policy: ASSISTANT_WORKSPACE_POLICY });
     } catch (error) {
-      if (previous) await workspace.prepare(previous.token);
+      if (previous) {
+        await workspace.restore(previous.token, previous.path);
+        if (workspace.repairFailed) this.onServiceChanged();
+      }
       throw error;
+    } finally {
+      this.initializingWorkspace = false;
     }
   }
 
@@ -238,7 +279,7 @@ export class AssistantMailCoordinator {
       if (!session || session.archivedAt || session.transport !== "claude-desktop-native") {
         throw new BridgeRequestError("INVALID_SESSION", "请选择未归档的 Claude Desktop 原生会话。");
       }
-      this.bindSession(session);
+      if (this.mail.binding()?.nativeSessionId !== sessionId) this.bindSession(session);
     } else if (method === "plugin.assistant-mail.workspace.initialize") {
       await this.initializeWorkspace(stringParam(params, "workspacePath")!);
     } else if (method.startsWith("plugin.assistant-mail.account.")) {

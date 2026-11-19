@@ -436,13 +436,54 @@ it("binds the provisioned Native conversation only after checking the confirmed 
   expect(run.broker.forkSession).not.toHaveBeenCalled();
   run.broker.emit("system.init", "native-first", ["Bash"]);
   run.broker.emit("system.init", "local-managed", ["Read", "mcp__assistant-mail__mail_read_event", "Bash", "mcp__ccd_session__start_session"]);
-  expect((await run.publish()).assistantMail?.workspace).toMatchObject({
-    toolIsolation: "warning", unexpectedTools: ["Bash", "mcp__ccd_session__start_session"],
+  expect((await run.publish()).assistantMail).toMatchObject({
+    changeToken: initial.assistantMail?.changeToken,
+    workspace: { toolIsolation: "warning", unexpectedTools: ["Bash", "mcp__ccd_session__start_session"] },
   });
   await run.request("plugin.assistant-mail.bind", { sessionId: "native-second" });
   expect(store.binding()).toMatchObject({ nativeSessionId: "native-second", previousSessionIds: ["local-managed"] });
   expect(store.binding()).not.toHaveProperty("managed");
   expect((await run.publish()).assistantMail?.workspace).toMatchObject({ toolIsolation: "unobserved" });
+});
+
+it("preserves the managed binding and observed tools when the same session is selected", async () => {
+  await run.request("plugin.assistant-mail.workspace.initialize", { workspacePath: run.workspace.path });
+  const previous = store.binding();
+  run.broker.emit("system.init", "local-managed", ["Read"]);
+  await run.request("plugin.assistant-mail.bind", { sessionId: "local-managed" });
+  expect(store.binding()).toEqual(previous);
+  expect((await run.publish()).assistantMail?.workspace?.toolIsolation).toBe("compatible");
+});
+
+it("keeps the workspace token and binding consistent when two initializations overlap", async () => {
+  const prepare = vi.spyOn(run.workspace, "prepare");
+  let startReadback!: () => void;
+  let releaseReadback!: () => void;
+  const readbackStarted = new Promise<void>(resolve => { startReadback = resolve; });
+  const readbackReleased = new Promise<void>(resolve => { releaseReadback = resolve; });
+  run.broker.createSession.mockImplementation(async cwd => {
+    const created = nativeSession(`local-managed-${run.broker.createSession.mock.calls.length}`, { cwd });
+    run.sessions.push(created);
+    return created;
+  });
+  run.broker.configureSession.mockImplementationOnce(async () => {
+    startReadback();
+    await readbackReleased;
+    return { nativePermissionMode: "dontAsk" };
+  });
+  const params = { workspacePath: run.workspace.path };
+  const first = run.request("plugin.assistant-mail.workspace.initialize", params);
+  await readbackStarted;
+  try {
+    await expect(run.request("plugin.assistant-mail.workspace.initialize", params))
+      .rejects.toMatchObject({ code: "ASSISTANT_INITIALIZING" });
+  } finally {
+    releaseReadback();
+    await first;
+  }
+  expect(store.binding()?.managed?.token === prepare.mock.lastCall?.[0]).toBe(true);
+  expect(store.binding()?.nativeSessionId).toBe("local-managed-1");
+  expect(run.broker.createSession).toHaveBeenCalledOnce();
 });
 
 it("leaves the prior binding intact when Native does not confirm dontAsk", async () => {
@@ -452,4 +493,19 @@ it("leaves the prior binding intact when Native does not confirm dontAsk", async
     .rejects.toMatchObject({ code: "ASSISTANT_POLICY_UNCONFIRMED" });
   expect(store.binding()).toMatchObject({ nativeSessionId: "native-first" });
   expect(store.binding()).not.toHaveProperty("managed");
+  run.broker.startTurn.mockResolvedValue({ commandId: "unexpected-turn", state: "queued" });
+  await expect(run.request("turn.start", { sessionId: "local-managed", text: "candidate turn" }))
+    .rejects.toMatchObject({ code: "INVALID_TARGET" });
+  expect(run.broker.startTurn).not.toHaveBeenCalled();
+  expect((await run.publish()).sessions.some(session => session.sessionId === "local-managed")).toBe(false);
+  await expect(run.request("session.open", { sessionId: "local-managed" })).rejects.toMatchObject({ code: "INVALID_TARGET" });
+
+  run.broker.createSession.mockImplementationOnce(async cwd => {
+    const replacement = nativeSession("local-managed-retry", { cwd });
+    run.sessions.push(replacement);
+    return replacement;
+  });
+  await run.request("plugin.assistant-mail.workspace.initialize", { workspacePath: run.workspace.path });
+  expect(store.binding()?.nativeSessionId).toBe("local-managed-retry");
+  expect((await run.publish()).sessions.map(session => session.sessionId)).not.toContain("local-managed");
 });

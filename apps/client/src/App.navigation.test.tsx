@@ -24,6 +24,10 @@ vi.mock("react", async original => ({
     if (!(index in hooks.slots)) hooks.slots[index] = typeof initial === "function" ? initial() : initial;
     return [hooks.slots[index], (value: any) => { hooks.slots[index] = typeof value === "function" ? value(hooks.slots[index]) : value; }];
   },
+  useRef(current: unknown) {
+    const index = hooks.index++;
+    return hooks.slots[index] ??= { current };
+  },
   useMemo: (create: () => unknown) => create(),
   useCallback: (callback: unknown) => callback,
   useEffect(effect: () => (() => void) | void, deps?: unknown[]) {

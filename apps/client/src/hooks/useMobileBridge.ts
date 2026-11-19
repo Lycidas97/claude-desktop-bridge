@@ -824,7 +824,10 @@ export function useMobileBridge() {
     if (!response?.ok) throw new Error(response?.error?.message ?? "归档设置失败");
   }, [sendRequest]);
 
-  const uploadFile = useCallback<UploadFileHandler>(async (sessionId, file, onProgress, signal) => {
+  const uploadFile = useCallback<(...args: [...Parameters<UploadFileHandler>, expectedRoomId?: string]) => ReturnType<UploadFileHandler>>(async (sessionId, file, onProgress, signal, expectedRoomId) => {
+    if (expectedRoomId !== undefined && cryptoRef.current?.identity.roomId !== expectedRoomId) {
+      throw new Error("已切换电脑，上传已中断");
+    }
     transferGaugesRef.current.activeUploads += 1;
     try {
       return await uploadBridgeSessionFile(cryptoRef, sendRequest, sessionId, file, onProgress, signal);

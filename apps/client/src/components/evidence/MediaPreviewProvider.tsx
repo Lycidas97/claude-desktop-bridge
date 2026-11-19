@@ -1,5 +1,5 @@
 import { FILE_PREVIEW_CONFIRM_BYTES, type BridgeArtifactTransferMetadata } from "@bridge/protocol";
-import { createContext, lazy, Suspense, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, lazy, Suspense, useCallback, useContext, useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { formatBytes, mediaFileParams, type MediaRequest, type MediaTarget } from "../../lib/media-preview.js";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
 import { ConfirmationDialog } from "../common/ConfirmationDialog.js";
@@ -29,7 +29,12 @@ export function useFilePreviewConfirmation() {
   return useContext(FilePreviewConfirmationContext);
 }
 
-export function MediaPreviewProvider({ request, supportsFileStat = false, children }: { request: MediaRequest; supportsFileStat?: boolean; children: ReactNode }) {
+export function MediaPreviewProvider({ request, supportsFileStat = false, dismissRef, children }: {
+  request: MediaRequest;
+  supportsFileStat?: boolean;
+  dismissRef?: RefObject<(() => void) | undefined>;
+  children: ReactNode;
+}) {
   const [target, setTarget] = useState<MediaTarget>();
   const [pending, setPending] = useState<{
     target: FilePreviewTarget;
@@ -39,6 +44,11 @@ export function MediaPreviewProvider({ request, supportsFileStat = false, childr
   }>();
   const close = useCallback(() => setTarget(undefined), []);
   const cancel = useCallback(() => setPending(undefined), []);
+  useEffect(() => {
+    if (!dismissRef) return;
+    dismissRef.current = () => { close(); cancel(); };
+    return () => { dismissRef.current = undefined; };
+  }, [dismissRef, close, cancel]);
   const requestRef = useRef(request);
   requestRef.current = request;
   const confirmPreview = useCallback((target: FilePreviewTarget, open: () => void) => {

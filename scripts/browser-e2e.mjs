@@ -20,6 +20,7 @@ import { verifyDesktopDiagnostics, verifyDesktopQuota, verifyDesktopConversation
 import { verifyMobileSafeArea } from "./browser-e2e/scenarios/mobile-safe-area.mjs";
 import { verifyAssistantMail } from "./browser-e2e/scenarios/assistant-mail.mjs";
 import { scanDesktopPairingQr } from "./browser-e2e/scenarios/pairing-qr.mjs";
+import { incomingFileFixture, installIncomingFileFixture, verifyIncomingFile } from "./browser-e2e/scenarios/incoming-file.mjs";
 
 // This is an isolated host fixture, not a Desktop or model integration test.
 // Run via npm run test:browser after protocol/relay have been built. CHROME_PATH
@@ -41,7 +42,7 @@ let vite;
 let browser;
 let baseUrl;
 const nativeHosts = [];
-const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "round4-boundaries", "round5-ux", "desktop-diagnostics", "desktop-quota", "desktop-conversation", "mobile-safe-area", "assistant-mail", "pairing-qr"];
+const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "round4-boundaries", "round5-ux", "desktop-diagnostics", "desktop-quota", "desktop-conversation", "mobile-safe-area", "assistant-mail", "incoming-file", "pairing-qr"];
 const scenarios = process.env.BRIDGE_E2E_SCENARIOS ? process.env.BRIDGE_E2E_SCENARIOS.split(",") : allScenarios;
 assert.ok(scenarios.every(scenario => allScenarios.includes(scenario)), "BRIDGE_E2E_SCENARIOS must name existing scenarios");
 const themes = process.env.BRIDGE_QA_THEME ? [process.env.BRIDGE_QA_THEME] : ["light", "dark"];
@@ -63,9 +64,10 @@ async function runScenario(theme, scenario, mockHostRuntime) {
   let context;
   let page;
   let host;
+  let uploadHost;
   let failure;
   try {
-    host = await createMockHost(mockHostRuntime, !["delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "round4-boundaries", "round5-ux", "desktop-conversation", "assistant-mail"].includes(scenario), scenario !== "delivery-approval-reconnect", errors, ["native-approvals", "native-prompts-pr", "native-messages", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "round4-boundaries", "round5-ux", "desktop-conversation", "assistant-mail"].includes(scenario), ["native-queue-actions", "desktop-conversation"].includes(scenario), ["section-manage", "round4-boundaries", "round5-ux"].includes(scenario), ["assistant-mail", "round5-ux"].includes(scenario), scenario === "round5-ux" ? { desktopName: "LycidasdeMac-mini", initialMailCount: 0 } : {});
+    host = await createMockHost(mockHostRuntime, !["delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "round4-boundaries", "round5-ux", "desktop-conversation", "assistant-mail", "incoming-file"].includes(scenario), scenario !== "delivery-approval-reconnect", errors, ["native-approvals", "native-prompts-pr", "native-messages", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "round4-boundaries", "round5-ux", "desktop-conversation", "assistant-mail", "incoming-file"].includes(scenario), ["native-queue-actions", "desktop-conversation"].includes(scenario), ["section-manage", "round4-boundaries", "round5-ux"].includes(scenario), ["assistant-mail", "round5-ux"].includes(scenario), scenario === "round5-ux" ? { desktopName: "LycidasdeMac-mini", initialMailCount: 0 } : {});
     if (["native-queue-actions", "native-compaction"].includes(scenario)) host.queueSeed = await host.syncNativeQueue(await host.nativeApproval.enqueue("历史中的原生排队消息"), { pushEvents: false });
     if (["project-grouping", "session-catalog"].includes(scenario)) Object.assign(host.snapshot, await host.nativeApproval.projectCatalog());
     if (["section-manage", "round4-boundaries", "round5-ux"].includes(scenario)) await syncNativeSections(host);
@@ -86,6 +88,7 @@ async function runScenario(theme, scenario, mockHostRuntime) {
         if (!localStorage.getItem(key)) localStorage.setItem(key, JSON.stringify(projectIds));
       }, { hostId: host.pairing.roomId, projectIds: [...host.snapshot.projects].reverse().map(project => project.projectId) });
     }
+    if (scenario === "incoming-file") await context.addInitScript(installIncomingFileFixture, incomingFileFixture);
     const allowedOrigins = new Set([new URL(baseUrl).origin, new URL(relay.url.replace("ws:", "http:")).origin]);
     await context.route("**/*", async (route) => {
       const url = new URL(route.request().url());
@@ -117,7 +120,18 @@ async function runScenario(theme, scenario, mockHostRuntime) {
       errors.push(`browser runtime: ${error.stack}`);
     });
     if (enableTrace) await context.tracing.start({ screenshots: true, snapshots: true, sources: true });
-    if (scenario === "pairing-qr") await scanDesktopPairingQr(context, page, host, steps, baseUrl);
+    uploadHost = scenario === "incoming-file"
+      ? await createMockHost(mockHostRuntime, false, false, errors, true, false, false, false, { desktopName: "文件接收电脑" })
+      : undefined;
+    if (uploadHost) {
+      await page.goto(buildPairingUrl(baseUrl, uploadHost.pairing), { waitUntil: "domcontentloaded" });
+      await page.getByRole("button", { name: /当前电脑：文件接收电脑/ }).click();
+      await page.getByRole("button", { name: "扫码添加新电脑" }).click();
+      await page.getByRole("textbox", { name: "配对链接" }).fill(buildPairingUrl(baseUrl, host.pairing));
+      await page.getByRole("button", { name: "连接电脑", exact: true }).click();
+      await page.getByRole("button", { name: /当前电脑：Browser E2E 隔离电脑/ }).waitFor();
+      await page.goto(`${baseUrl}/?file-import`, { waitUntil: "domcontentloaded" });
+    } else if (scenario === "pairing-qr") await scanDesktopPairingQr(context, page, host, steps, baseUrl);
     else await page.goto(buildPairingUrl(baseUrl, host.pairing), { waitUntil: "domcontentloaded" });
     await page.locator(".mobile-home-catalog").waitFor();
     await page.locator(`.mobile-home-catalog [data-session-id="${sessionId}"]`).waitFor({ state: "attached" });
@@ -129,6 +143,7 @@ async function runScenario(theme, scenario, mockHostRuntime) {
     assert.equal(await page.evaluate(() => innerWidth), 375);
     steps.push("real App pairing and encrypted snapshot synchronize the session list at 375x812");
     if (scenario === "assistant-mail") await verifyAssistantMail(page, host, steps, directory, viewports, baseUrl);
+    else if (uploadHost) await verifyIncomingFile(page, host, uploadHost, steps, directory);
     else if (scenario === "mobile-safe-area") await verifyMobileSafeArea(page, steps, directory, viewports);
     else if (scenario === "session-catalog") await verifySessionCatalog(page, host, steps, directory, viewports, baseUrl);
     else if (scenario === "desktop-diagnostics") await verifyDesktopDiagnostics(page, host, steps, baseUrl);
@@ -171,6 +186,7 @@ async function runScenario(theme, scenario, mockHostRuntime) {
       try { await context.close(); } catch (error) { errors.push(`context cleanup: ${error.stack}`); }
     }
     host?.close();
+    uploadHost?.close();
     await writeFile(resolve(directory, "browser-errors.json"), JSON.stringify({ errors, console: browserLog }, null, 2));
     // No pairing secrets, tokens, or encrypted envelopes are written to reports.
     await writeFile(resolve(directory, "host-rpc.json"), JSON.stringify({
@@ -182,10 +198,11 @@ async function runScenario(theme, scenario, mockHostRuntime) {
       nativeTrace: host?.nativeTrace,
       ...(host?.nativeQueue ? { nativeCalls: host.nativeApproval.calls, receipts: host.nativeApproval.receipts(), queueEvents: host.events } : {}),
     }, null, 2));
-    if (host?.nativeApproval) {
-      const idx = nativeHosts.indexOf(host.nativeApproval);
+    for (const fixture of [host?.nativeApproval, uploadHost?.nativeApproval]) {
+      if (!fixture) continue;
+      const idx = nativeHosts.indexOf(fixture);
       if (idx !== -1) nativeHosts.splice(idx, 1);
-      await host.nativeApproval.close();
+      await fixture.close();
     }
   }
   const result = {

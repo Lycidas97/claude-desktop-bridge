@@ -1,5 +1,5 @@
 import type { BridgeHostSnapshot, BridgeSessionInfo, BridgeSystemUpdateParams, BridgeUpdaterSnapshot } from "@bridge/protocol";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { claudeSnapshot } from "./lib/claude-snapshot.js";
 import { useClientUpdater } from "./lib/client-updater.js";
 import { useTheme, type ThemeControl } from "./hooks/useTheme.js";
@@ -20,6 +20,7 @@ import { PairingScreen } from "./components/pairing/PairingScreen.js";
 import { PairingSyncScreen } from "./components/pairing/PairingSyncScreen.js";
 import { MediaPreviewProvider } from "./components/evidence/MediaPreviewProvider.js";
 import { MobileAppShell, type MobileTab } from "./components/mobile/MobileAppShell.js";
+import { IncomingFilePicker } from "./components/mobile/IncomingFilePicker.js";
 import { MobileHostDetails } from "./components/pairing/MobileHostDetails.js";
 import { MobilePageHeader } from "./components/mobile/MobilePageHeader.js";
 import {
@@ -199,6 +200,7 @@ function MobileApp({ themeControl }: { themeControl: ThemeControl }) {
   const [focusRequest, setFocusRequest] = useState<{ sessionId: string; key: number }>();
   const [directoryRequest, setDirectoryRequest] = useState(0);
   const [draftsHandle] = useState<ConversationDraftsHandle>(() => ({}));
+  const dismissMediaPreview = useRef<() => void>(undefined);
   const [autoQuotaRefreshPending] = useState(() => ({ current: false }));
   const markAutoQuotaRefresh = useCallback(() => {
     autoQuotaRefreshPending.current = true;
@@ -360,7 +362,7 @@ function MobileApp({ themeControl }: { themeControl: ThemeControl }) {
       {/* One quota snapshot per computer, shared by the session form and the settings dashboard. */}
       <MagpieQuotaProvider key={mobile.state.activeHostId ?? ""} loader={loadMagpieQuota} enabled={quotaEnabled} sourceKey={quotaSourceKey}>
       {mobile.state.activeHostId ? (
-        <MediaPreviewProvider key={mobile.state.activeHostId} request={mobile.requestMedia} supportsFileStat={snapshot?.host.capabilities.includes("artifact.transfer.stat.v1") ?? false}>
+        <MediaPreviewProvider key={mobile.state.activeHostId} request={mobile.requestMedia} dismissRef={dismissMediaPreview} supportsFileStat={snapshot?.host.capabilities.includes("artifact.transfer.stat.v1") ?? false}>
           <div className="mobile-tab-page" hidden={tab !== "sessions"}>
             <MobileWorkspace
               visible={tab === "sessions"}
@@ -577,6 +579,10 @@ function MobileApp({ themeControl }: { themeControl: ThemeControl }) {
     </AssistantAgendaProvider>
     </AssistantMailProvider>
       )}
+      <IncomingFilePicker mobile={mobile} snapshot={snapshot} dismissMediaPreview={dismissMediaPreview} onOpenSession={(hostId, sessionId) => {
+        setPairingOpen(false);
+        void openComputer(hostId, sessionId);
+      }} />
     </ConversationDraftsProvider>
   );
 }

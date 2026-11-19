@@ -1,0 +1,45 @@
+.m-sheet-backdrop:has(.incoming-file-picker) { z-index: 101; }
+
+.incoming-file-picker {
+  display: grid;
+  gap: 12px;
+}
+
+.incoming-file-name,
+.incoming-file-project {
+  margin: 0 4px;
+  overflow-wrap: anywhere;
+}
+
+.incoming-file-name { color: var(--text); font-size: var(--m-fs-body); }
+
+.incoming-file-project {
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: var(--m-fs-footnote);
+  font-weight: 600;
+}
+
+.incoming-file-forks {
+  border-bottom: 1px solid var(--line);
+  padding-inline-start: 16px;
+}
+
+.incoming-file-forks:last-child { border-bottom: 0; }
+
+.incoming-file-picker summary {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  color: var(--muted);
+  font-size: var(--m-fs-body);
+  cursor: pointer;
+}
+
+.incoming-file-picker summary::-webkit-details-marker { display: none; }
+.incoming-file-picker details[open] > summary > svg { transform: rotate(90deg); }
+.incoming-file-archived > section + section { margin-top: 12px; }
+
+.incoming-file-picker .m-sheet-action-copy { overflow-wrap: anywhere; }

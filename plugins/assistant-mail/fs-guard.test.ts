@@ -81,7 +81,7 @@ it("uses the exact mail tool names and limits delegation to the foreground proje
   expect(ASSISTANT_TOOLS.filter(name => name.startsWith("mcp__"))).toEqual(
     MAIL_TOOLS.map(tool => `mcp__assistant-mail__${tool.name.replaceAll(".", "_")}`),
   );
-  for (const name of ["mcp__assistant-mail__mail_read_event", "ToolSearch", "TodoWrite"]) {
+  for (const name of ["mcp__assistant-mail__mail_read_event", "mcp__assistant-mail__mail_mark_read", "ToolSearch", "TodoWrite"]) {
     await expect(check(name, {})).resolves.toBe(true);
   }
   for (const name of ["Bash", "PowerShell", "NotebookEdit", "WebFetch", "SendMessage", "mcp__ccd__query", "mcp__assistant-mail__mail_read_event_extra"]) {

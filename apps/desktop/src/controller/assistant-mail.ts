@@ -94,6 +94,7 @@ function projectMailCard(event: NonNullable<ReturnType<AssistantMailService["eve
     seq: event.seq, mailRefId: event.mailRefId, accountKey: event.accountKey, mailbox: event.mailbox,
     subject: event.subject, from: event.from, receivedAt: event.receivedAt, recordedAt: event.recordedAt,
     processingStatus: event.processingStatus, preview: event.preview,
+    ...(event.hostRead ? { hostRead: true as const } : {}),
     ...(event.analysis ? { analysis: event.analysis } : {}),
     ...(event.previewError ? { previewError: event.previewError } : {}),
     ...(event.attachmentCount ? { attachments: event.attachments.slice(0, 32), attachmentCount: event.attachmentCount } : {}),

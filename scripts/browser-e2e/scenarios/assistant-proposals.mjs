@@ -42,11 +42,65 @@ export async function seedMailProposal(host) {
     subject: mailSubject, to: mailTo, cc: mailCc, bodyText: "周一 14:00 开始评审。\n请带上最新议程。" })).result;
 }
 
+async function verifyMailMarkRead(phone, host, baseUrl, capture) {
+  const desktop = await phone.context().newPage();
+  desktop.setDefaultTimeout(15_000);
+  await openDesktopAssistant(desktop, host, baseUrl, []);
+  await openMobileDrawer(phone);
+  const mobileBadge = phone.locator(".drawer-assistant-capsule");
+  const mobileLabel = () => mobileBadge.getAttribute("aria-label");
+  const desktopCount = () => desktop.locator(".sidebar-assistant-row .desktop-nav-badge").textContent();
+  const publishDesktop = () => desktop.evaluate(assistantMail => window.assistantDesktopSnapshot({ assistantMail }), host.snapshot.assistantMail);
+  const card = (page, { mailRefId }) => page.locator(`.assistant-mail-list [data-mail-id="${mailRefId}"]`);
+  await mobileBadge.click();
+  for (const page of [phone, desktop]) {
+    await page.getByRole("button", { name: "收件", exact: true }).click();
+    await page.getByText("暂无已记录邮件", { exact: true }).waitFor();
+  }
+  await openMobileDrawer(phone);
+  const { deliver } = host.nativeApproval.assistantMail;
+  const viewed = await deliver(1);
+  const marked = await deliver(2);
+  await publishDesktop();
+  await eventually(mobileLabel, "助理，3 条未读", "Phone badges new arrivals above its baseline");
+  await eventually(desktopCount, "3", "Desktop badges the same arrivals");
+
+  await mobileBadge.click();
+  await phone.getByRole("button", { name: "收件", exact: true }).click();
+  await card(phone, viewed).getByText("原文", { exact: true }).click();
+  await card(phone, viewed).locator("details[open] pre").waitFor();
+  await openMobileDrawer(phone);
+  await eventually(mobileLabel, "助理，2 条未读", "Opening an original marks it only on this phone");
+  assert.equal(await desktopCount(), "3");
+
+  const { result } = await host.nativeApproval.callAssistantTool("mail.mark_read", { mailRefIds: [marked.mailRefId] });
+  assert.deepEqual(result, { changedCount: 1 });
+  await publishDesktop();
+  await eventually(mobileLabel, "助理，1 条未读", "Phone combines the host mark with its local view");
+  await eventually(desktopCount, "2", "Desktop removes only the host-marked mail");
+  await desktop.getByRole("button", { name: "刷新邮件列表", exact: true }).click();
+  await desktop.getByRole("button", { name: "刷新邮件列表（已刷新）", exact: true }).waitFor();
+  assert.equal(await desktopCount(), "2");
+  await card(desktop, marked).getByText("待处理", { exact: true }).waitFor();
+  await capture(desktop, "desktop-mail-host-read");
+
+  await phone.reload({ waitUntil: "domcontentloaded" });
+  await openMobileDrawer(phone);
+  await eventually(mobileLabel, "助理，1 条未读", "Reconnecting preserves the combined unread count");
+  await capture(phone, "mobile-mail-host-read");
+  await mobileBadge.click();
+  await phone.getByRole("button", { name: "收件", exact: true }).click();
+  await card(phone, marked).getByText("待处理", { exact: true }).waitFor();
+  await desktop.close();
+}
+
 export async function verifyAssistantProposals(page, host, steps, directory, viewports, baseUrl) {
   const capture = async (surface, name) => {
     await surface.screenshot({ path: resolve(directory, `${name}.png`) });
     viewports.push({ page: name, ...surface.viewportSize() });
   };
+  await verifyMailMarkRead(page, host, baseUrl, capture);
+  steps.push("Managed mail.mark_read reduces both badges, combines with phone-only views after reconnect, and leaves both business-status labels pending");
   const agenda = host.nativeApproval.assistantMail.agenda;
   const back = () => page.evaluate(async () => (await import("/src/lib/mobile-back-navigation.ts")).dispatchMobileBack());
   await openMobileDrawer(page);

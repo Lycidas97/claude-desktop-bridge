@@ -204,6 +204,22 @@ it("migrates an existing event and persists analysis/status on the same identity
   expect(store.openMailbox("test-account", "1", 100)).toBe(5);
 });
 
+it("migrates legacy mail as unmarked and retains host read marks after reopening", async () => {
+  store.openMailbox("test-account", "1", 5);
+  const event = (await store.record(message()))!;
+  store.close();
+  const legacy = new DatabaseSync(join(store.directory, "assistant.sqlite"));
+  try { legacy.exec("ALTER TABLE mail_events DROP COLUMN host_read"); }
+  finally { legacy.close(); }
+  await store.initialize();
+  expect(store.event(event.mailRefId)).toEqual(event);
+  expect(store.markRead([event.mailRefId])).toBe(1);
+  store.close();
+  await store.initialize();
+  expect(await store.read(event.mailRefId)).toEqual({ event: { ...event, hostRead: true }, source: message().source });
+  expect(store.openMailbox("test-account", "1", 100)).toBe(5);
+});
+
 it("creates the assistant business tables and private POSIX files including WAL/SHM", async () => {
   store.openMailbox("test-account", "1", 5);
   await store.record(message());

@@ -174,7 +174,7 @@ export function AssistantMailProvider({ hostId, snapshot, online, request, loadC
     finally { if (mounted.current) setLoading(false); }
   }
 
-  const unreadCount = readState ? cache.cards.filter(card => card.seq > readState.baselineSeq && !readState.viewed.has(card.mailRefId)).length : 0;
+  const unreadCount = readState ? cache.cards.filter(card => card.seq > readState.baselineSeq && !card.hostRead && !readState.viewed.has(card.mailRefId)).length : 0;
   const accounts = assistant?.accounts;
   const { accountLabels, showAccount } = useMemo(() => {
     const seenUsers = new Set<string>();

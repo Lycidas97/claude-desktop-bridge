@@ -8,10 +8,12 @@ export const ASSISTANT_MCP = "assistant-mail";
 export const ASSISTANT_TOKEN_ENV = "BRIDGE_ASSISTANT_SESSION_TOKEN";
 export const AGENDA_TOOLS = ["todo_list", "calendar_list_events", "calendar_find_free_slots"].map(name => `mcp__${ASSISTANT_MCP}__${name}`);
 export const PROPOSAL_NATIVE_TOOLS = PROPOSAL_TOOLS.map(name => `mcp__${ASSISTANT_MCP}__${name.replace(".", "_")}`);
+export const ASSISTANT_MARK_READ_TOOL = `mcp__${ASSISTANT_MCP}__mail_mark_read`;
 export const ASSISTANT_TOOLS = [
   ...AGENDA_TOOLS, ...PROPOSAL_NATIVE_TOOLS,
   ...fileTools, "Agent", "ToolSearch", "TodoWrite",
   ...["list_events", "list_unfinished_triggers", "read_event", "read_attachment", "update_analysis", "set_processing_status"].map(name => `mcp__${ASSISTANT_MCP}__mail_${name}`),
+  ASSISTANT_MARK_READ_TOOL,
 ];
 
 export function isAssistantTool(name: string): boolean {

@@ -25,6 +25,7 @@ it("writes the exact project policy and bundled MCP launch, preserving templates
   const runner = join(workspace, ".claude", "agents", "assistant-runner.md");
   expect(await readFile(projectRules, "utf8")).toContain("outputs/");
   expect(await readFile(helper, "utf8")).toContain("name: assistant-helper");
+  expect(await readFile(helper, "utf8")).not.toContain("mcp__assistant-mail__mail_mark_read");
   await writeFile(projectRules, "existing rules");
   await writeFile(helper, "existing helper");
   await writeFile(settings, "{}");

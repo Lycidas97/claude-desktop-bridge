@@ -13,7 +13,7 @@ import { CompactHookRequest } from "./compact-hook.js";
 import type { ProposalExecutor } from "./proposal-executor.js";
 import { isProposalTool, MAIL_SOURCE, MANAGED_MAIL_TOOLS, MailToolRequest } from "./tool-contract.js";
 
-type MailTools = Pick<AssistantMailService, "page" | "readEvent" | "readAttachment" | "updateAnalysis" | "setProcessingStatus" | "triggers">;
+type MailTools = Pick<AssistantMailService, "page" | "readEvent" | "readAttachment" | "updateAnalysis" | "setProcessingStatus" | "markRead" | "triggers">;
 class ManagedMailTokenRevoked extends Error {}
 
 /** The only listener given to mail tools; no management controller or broker is reachable here. */
@@ -103,6 +103,7 @@ export async function serveAssistantMailTools(options: {
           break;
         }
         case "mail.set_processing_status": result = options.service.setProcessingStatus(input.arguments.mailRefId, input.arguments.status); break;
+        case "mail.mark_read": result = options.service.markRead(input.arguments.mailRefIds); break;
       }
       if (result === undefined) { reply(response, 404, { error: "MAIL_NOT_FOUND" }); return; }
       reply(response, 200, { source: input.name.startsWith("mail.") ? MAIL_SOURCE : {

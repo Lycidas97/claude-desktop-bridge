@@ -177,6 +177,11 @@ const RECEIVER_LABELS: Record<BridgeMailAccount["state"], string> = {
   disabled: "已停用", connecting: "连接中", connected: "已连接", reconnecting: "重连中",
   unsupported: "不支持", error: "连接失败", closed: "未连接",
 };
+const RECEIVER_ERRORS = new Map([
+  ["mail_authentication_failed", { label: "密码错误", state: "error" }],
+  ["mail_credentials_unavailable", { label: "凭据不可用", state: "error" }],
+  ["mail_idle_unsupported", { label: "不支持持续收件", state: "unsupported" }],
+]);
 
 function MailAccounts({ accounts, credentialsSupported, online, request }: {
   accounts: BridgeMailAccount[];
@@ -228,18 +233,22 @@ function MailAccounts({ accounts, credentialsSupported, online, request }: {
     </div>
     {!credentialsSupported && <p role="status">当前电脑不支持存储邮箱凭据。</p>}
     {credentialsSupported && !accounts.length && !action && <p>尚未添加邮箱。</p>}
-    {accounts.map(account => <div className="assistant-account-row" key={account.accountKey}>
-      <div className="assistant-account-identity">
-        <strong>{account.user}</strong>
-        <span>{account.host}:{account.port}</span>
-      </div>
-      <span className="assistant-account-state" data-state={account.enabled ? account.state : "disabled"}>{account.enabled ? RECEIVER_LABELS[account.state] : "已停用"}</span>
-      <div className="assistant-actions assistant-account-actions">
-        <button type="button" className="assistant-session-link" aria-label={`更新密码：${account.user}`} disabled={disabled} onClick={() => { setError(""); setAction({ kind: "edit", accountKey: account.accountKey }); }}>更新密码</button>
-        <button type="button" className="assistant-session-link" aria-label={`${account.enabled ? "停用" : "启用"}：${account.user}`} disabled={disabled} onClick={() => { void update("plugin.assistant-mail.account.set-enabled", { accountKey: account.accountKey, enabled: !account.enabled }); }}>{account.enabled ? "停用" : "启用"}</button>
-        <button type="button" className="assistant-session-link assistant-remove" aria-label={`移除：${account.user}`} disabled={disabled} onClick={() => { setError(""); setAction({ kind: "remove", accountKey: account.accountKey }); }}>移除</button>
-      </div>
-    </div>)}
+    {accounts.map(account => {
+      const state = account.enabled ? account.state : "disabled";
+      const failure = account.enabled && account.errorCode ? RECEIVER_ERRORS.get(account.errorCode) : undefined;
+      return <div className="assistant-account-row" key={account.accountKey}>
+        <div className="assistant-account-identity">
+          <strong>{account.user}</strong>
+          <span>{account.host}:{account.port}</span>
+        </div>
+        <span className="assistant-account-state" data-state={failure?.state ?? state}>{failure?.label ?? RECEIVER_LABELS[state]}</span>
+        <div className="assistant-actions assistant-account-actions">
+          <button type="button" className="assistant-session-link" aria-label={`更新密码：${account.user}`} disabled={disabled} onClick={() => { setError(""); setAction({ kind: "edit", accountKey: account.accountKey }); }}>更新密码</button>
+          <button type="button" className="assistant-session-link" aria-label={`${account.enabled ? "停用" : "启用"}：${account.user}`} disabled={disabled} onClick={() => { void update("plugin.assistant-mail.account.set-enabled", { accountKey: account.accountKey, enabled: !account.enabled }); }}>{account.enabled ? "停用" : "启用"}</button>
+          <button type="button" className="assistant-session-link assistant-remove" aria-label={`移除：${account.user}`} disabled={disabled} onClick={() => { setError(""); setAction({ kind: "remove", accountKey: account.accountKey }); }}>移除</button>
+        </div>
+      </div>;
+    })}
     {(action?.kind === "add" || editedAccount) && <form key={editedAccount?.accountKey ?? "add"} onSubmit={save} autoComplete="off">
       <fieldset className="assistant-account-form" disabled={disabled}>
         <legend>{editedAccount ? `更新 ${editedAccount.user} 的密码` : "添加邮箱"}</legend>

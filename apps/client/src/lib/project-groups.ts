@@ -48,10 +48,6 @@ export function orderProjects(projectIds: readonly string[], placed: readonly st
   ];
 }
 
-export function isAssistantWorkspacePath(path: string, workspacePath?: string): boolean {
-  return Boolean(workspacePath && (path === workspacePath || path.startsWith(`${workspacePath}/`) || path.startsWith(`${workspacePath}\\`)));
-}
-
 export function readStoredProjectOrder(storageKey: string): string[] {
   try {
     if (typeof localStorage === "undefined" || typeof localStorage.getItem !== "function") {

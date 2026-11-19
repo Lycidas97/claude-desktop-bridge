@@ -11,10 +11,7 @@ const PROCESSING_LABELS = { pending: "待处理", processing: "处理中", proce
 
 export function MailCard({ card, nativeMessage, onDiscuss }: { card: BridgeMailCard; nativeMessage?: BridgeHistoryItem; onDiscuss?(): void }) {
   const mail = useAssistantMail();
-  const accounts = mail?.assistant?.accounts;
-  const showAccount = accounts?.some(account => account.accountKey !== card.accountKey)
-    || mail?.cache.cards.some(cached => cached.accountKey !== card.accountKey);
-  const accountLabel = showAccount ? accounts?.find(account => account.accountKey === card.accountKey)?.user ?? card.accountKey.slice(0, 8) : "邮件插件";
+  const accountLabel = mail?.accountLabel(card.accountKey) ?? "邮件插件";
   const [detail, setDetail] = useState<BridgeMailDetail>();
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);

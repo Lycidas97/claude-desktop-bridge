@@ -1,5 +1,5 @@
 import type { BridgeAssistantMailSnapshot, BridgeHostSnapshot, BridgeMailCache, BridgeMailCard, BridgeMailDetail, BridgeMailPage, BridgeMethod, BridgeResponse } from "@bridge/protocol";
-import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { mergeMailCards, refreshMailPages } from "../../lib/assistant-mail.js";
 
 export type AssistantRequest = (method: BridgeMethod, params: Record<string, unknown>) => Promise<BridgeResponse | undefined>;
@@ -12,6 +12,7 @@ export function mailResult<T>(response: BridgeResponse | undefined): T {
 interface AssistantMailState {
   cache: BridgeMailCache;
   unreadCount: number;
+  accountLabel(accountKey: string): string;
   assistant: BridgeAssistantMailSnapshot | undefined;
   selectedMail: BridgeMailCard | undefined;
   canReference: boolean;
@@ -108,9 +109,21 @@ export function AssistantMailProvider({ snapshot, online, request, loadCache, sa
   }
 
   const unreadCount = cache.cards.reduce((count, card) => count + (card.processingStatus === "pending" ? 1 : 0), 0);
+  const accounts = assistant?.accounts;
+  const { accountUsers, showAccount } = useMemo(() => {
+    const accountUsers = new Map(accounts?.map(account => [account.accountKey, account.user]));
+    const accountKeys = new Set(accountUsers.keys());
+    for (const card of cache.cards) accountKeys.add(card.accountKey);
+    return { accountUsers, showAccount: accountKeys.size > 1 };
+  }, [accounts, cache.cards]);
   const selectedMail = selection?.sessionId === assistant?.binding?.nativeSessionId ? cache.cards.find(card => card.mailRefId === selection?.mailRefId) : undefined;
   return <AssistantMailContext.Provider value={enabled ? {
     cache, unreadCount, assistant, canReference, selectedMail,
+    accountLabel: accountKey => {
+      const user = accountUsers.get(accountKey);
+      if (accounts && !user) return "已移除的邮箱";
+      return showAccount ? user ?? accountKey.slice(0, 8) : "邮件插件";
+    },
     referenceFor: sessionId => {
       if (!selectedMail || assistant?.binding?.nativeSessionId !== sessionId) return undefined;
       if (!canReference) throw new Error("当前电脑不支持邮件引用，请先清除引用。");

@@ -1064,10 +1064,10 @@ export class ClaudeDesktopBridge extends EventEmitter {
       return { name: String(value.name ?? value.command ?? ""), description: String(value.description ?? ""), ...(typeof value.argumentHint === "string" ? { argumentHint: value.argumentHint } : {}) };
     }).filter(command => command.name) };
     if (this.isAssistantWorkspace(this.session(sessionId)!.cwd)) {
-      catalog.commands = catalog.commands.filter(command => command.name !== "btw" && command.name !== "rewind");
-      return catalog;
+      catalog.commands = catalog.commands.filter(command => command.name !== "btw");
+    } else if (!catalog.commands.some(command => command.name === "btw")) {
+      catalog.commands.push({ name: "btw", description: "Ask a question in a side chat", argumentHint: "<question>" });
     }
-    if (!catalog.commands.some(command => command.name === "btw")) catalog.commands.push({ name: "btw", description: "Ask a question in a side chat", argumentHint: "<question>" });
     catalog.commands = catalog.commands.filter(command => command.name !== "rewind");
     if (this.capabilities().includes("session.rewind")) catalog.commands.push({ name: "rewind", description: "Rewind conversation or file changes", action: "rewind" });
     return catalog;
@@ -1075,8 +1075,8 @@ export class ClaudeDesktopBridge extends EventEmitter {
 
   async runCommand(input: NativeInput): Promise<BridgeSessionCommandResult> {
     const session = this.session(input.sessionId);
-    if (session && this.isAssistantWorkspace(session.cwd) && /^\/(?:btw|rewind)(?:\s|$)/u.test(input.text.trim())) {
-      throw new NativeCallError("托管助理工作区不支持派生会话或回退。");
+    if (session && this.isAssistantWorkspace(session.cwd) && /^\/btw(?:\s|$)/u.test(input.text.trim())) {
+      throw new NativeCallError("托管助理工作区不支持派生会话。");
     }
     if (input.text.trim() === "/rewind") {
       this.desktopId(input.sessionId);

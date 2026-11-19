@@ -265,6 +265,7 @@ export function ConversationView({
   );
 
   const [internalSessionView, setInternalSessionView] = useState<"conversation" | "evidence">("conversation");
+  if (hasAlternateStage && internalSessionView === "evidence") setInternalSessionView("conversation");
   const [internalForkChainOpen, setInternalForkChainOpen] = useState(
     () => Boolean(session.parentSessionId),
   );

@@ -18,7 +18,6 @@ import { useOptionalMagpieQuota } from "../../../../../plugins/magpie-quota/clie
 import { modelQuotaLabel } from "../../../../../plugins/magpie-quota/presentation.js";
 import { sanitizeModelDisplayName } from "../../lib/conversation-timeline.js";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
-import { isAssistantWorkspacePath } from "../../lib/project-groups.js";
 import { desktopRuntimeName } from "../../lib/runtime-labels.js";
 import { ConfirmationDialog } from "../common/ConfirmationDialog.js";
 import { IconButton } from "../common/IconButton.js";
@@ -139,7 +138,6 @@ export function NewChatCanvas({
   const [sectionCreate, setSectionCreate] = useState<SectionCreateState>();
 
   const managedProjectId = snapshot?.projects.find(project => project.managedAssistant)?.projectId;
-  const assistantWorkspacePath = snapshot?.assistantMail?.workspace?.path;
   const projects: readonly BridgeProjectInfo[] = (snapshot?.projects ?? []).filter(
     (project) => !project.managedAssistant && (project.runtimeId ?? runtimeId) === runtimeId,
   );
@@ -449,10 +447,6 @@ export function NewChatCanvas({
   function applyChosenDirectory(rawPath: string, overrideProjectId?: string): void {
     const nextCwd = rawPath.trim();
     if (!nextCwd) return;
-    if (isAssistantWorkspacePath(nextCwd, assistantWorkspacePath)) {
-      setError("请从助理页面初始化托管会话。");
-      return;
-    }
     userTouchedRef.current.cwd = true;
     setSelectedCwd(nextCwd);
     setTrustState(undefined);

@@ -279,6 +279,19 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await extraAccount.getByText("已连接", { exact: true }).waitFor();
   const { accountKey } = host.snapshot.assistantMail.accounts.find(account => account.user === extraUser);
   assert.equal(JSON.stringify(host.snapshot).includes("fixture-credential-add"), false);
+  for (const [state, errorCode, label, tone] of [
+    ["reconnecting", "mail_authentication_failed", "密码错误", "error"],
+    ["error", "mail_credentials_unavailable", "凭据不可用", "error"],
+    ["unsupported", "mail_idle_unsupported", "不支持持续收件", "unsupported"],
+  ]) {
+    const assistantMail = host.snapshot.assistantMail;
+    await host.send({ kind: "snapshot", snapshot: { ...host.snapshot, assistantMail: {
+      ...assistantMail, accounts: assistantMail.accounts.map(account => account.accountKey === accountKey ? { ...account, state, errorCode } : account),
+    } } });
+    const status = extraAccount.getByText(label, { exact: true });
+    await status.waitFor({ timeout: 5000 });
+    assert.equal(await status.getAttribute("data-state"), tone);
+  }
   await accounts.getByRole("button", { name: `停用：${extraUser}`, exact: true }).click();
   await extraAccount.getByText("已停用", { exact: true }).waitFor();
   const { accountKey: disabledAccountKey, enabled } = host.requests.findLast(request => request.method === "plugin.assistant-mail.account.set-enabled").params;

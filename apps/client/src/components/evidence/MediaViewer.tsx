@@ -1,5 +1,5 @@
 import { AlertTriangle, ChevronLeft, ChevronRight, Download, LoaderCircle, Maximize, RotateCw, X, ZoomIn, ZoomOut } from "lucide-react";
-import { useEffect, useRef, useState, type CSSProperties, type TouchEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type TouchEvent } from "react";
 import { flushSync } from "react-dom";
 import type { BridgeArtifactPreview } from "@bridge/protocol";
 import type { PDFDocumentProxy, PDFDocumentLoadingTask } from "pdfjs-dist";
@@ -39,16 +39,22 @@ export default function MediaViewer({ target, request, onClose }: { target: Medi
   const [{ width, height }, setViewportSize] = useState<Size>({ width: 0, height: 0 });
   const [busy, setBusy] = useState(!target.dataUrl);
   const [error, setError] = useState("");
+  const [previewSha256, setPreviewSha256] = useState<string>();
   const [saveProgress, setSaveProgress] = useState<number>();
   const [saveError, setSaveError] = useState("");
   const [attempt, setAttempt] = useState(0);
   const requestRef = useRef(request);
   requestRef.current = request;
 
+  const close = useCallback(() => {
+    // Let the dialog restore its opener's focus before React removes it.
+    dialogRef.current?.close();
+    onClose();
+  }, [onClose]);
   useEffect(() => {
     dialogRef.current?.showModal();
-    return registerMobileBackHandler(() => { onClose(); return true; }, 300);
-  }, [onClose]);
+    return registerMobileBackHandler(() => { close(); return true; }, 300);
+  }, [close]);
 
   useEffect(() => {
     if (target.kind === "text") return;
@@ -69,6 +75,7 @@ export default function MediaViewer({ target, request, onClose }: { target: Medi
     let loadingTask: PDFDocumentLoadingTask | undefined;
     let objectUrl: string | undefined;
     setError("");
+    setPreviewSha256(undefined);
     setBusy(!target.dataUrl);
     setPdfProgress(undefined);
     async function load() {
@@ -85,6 +92,7 @@ export default function MediaViewer({ target, request, onClose }: { target: Medi
       } : undefined);
       if (disposed) { await transfer.close(); transfer = undefined; return; }
       const source = transfer;
+      setPreviewSha256(source.transfer.sha256);
       if (target.kind === "text") {
         const content = await readTextPreview(source, target.charset);
         if (!disposed) { setText(content); setBusy(false); }
@@ -176,7 +184,7 @@ export default function MediaViewer({ target, request, onClose }: { target: Medi
     setSaveProgress(0);
     setSaveError("");
     try {
-      await saveMediaTarget(target, request, setSaveProgress);
+      await saveMediaTarget(target, request, setSaveProgress, previewSha256);
     } catch (failure) {
       setSaveError(failure instanceof Error ? failure.message : "文件保存失败");
     } finally {
@@ -281,21 +289,22 @@ export default function MediaViewer({ target, request, onClose }: { target: Medi
     const fit = Math.min(1, width / imageSize.width, height / imageSize.height);
     fittedSize = { width: imageSize.width * fit, height: imageSize.height * fit };
   }
+  const waitingForPreviewVersion = Boolean(target.path && !target.artifactId && !previewSha256);
   const stageStyle = fittedSize && {
     "--media-width": `${fittedSize.width * zoom}px`,
     "--media-height": `${fittedSize.height * zoom}px`,
   } as CSSProperties;
 
   return (
-    <dialog ref={dialogRef} className="media-viewer" aria-labelledby="media-viewer-title" onCancel={(event) => { event.preventDefault(); onClose(); }} onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+    <dialog ref={dialogRef} className="media-viewer" aria-labelledby="media-viewer-title" onCancel={(event) => { event.preventDefault(); close(); }} onClick={(event) => { if (event.target === event.currentTarget) close(); }}>
       <div className="media-viewer-shell">
         <header>
           <div><span>{target.kind === "pdf" ? "PDF" : target.kind === "text" ? (markdown ? "Markdown" : "文本") : "图片"}</span><h2 id="media-viewer-title">{target.name}</h2></div>
           <div className="media-viewer-actions">
-            {target.kind !== "text" && target.downloadAllowed !== false && <IconButton label="保存到本地" disabled={saveProgress !== undefined} onClick={() => void save()}>
+            {target.kind !== "text" && target.downloadAllowed !== false && <IconButton label="保存到本地" disabled={waitingForPreviewVersion || saveProgress !== undefined} onClick={() => void save()}>
               {saveProgress !== undefined ? <LoaderCircle className="is-spinning" size={20} /> : <Download size={20} />}
             </IconButton>}
-            <IconButton label="关闭查看器" onClick={onClose}><X size={21} /></IconButton>
+            <IconButton label="关闭查看器" onClick={close}><X size={21} /></IconButton>
           </div>
         </header>
         <div className="media-viewer-toolbar">

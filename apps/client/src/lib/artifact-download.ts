@@ -108,6 +108,7 @@ async function runArtifactTransfer(
   request: MediaRequest,
   mode: "open" | "save",
   onProgress: (progress: number) => void,
+  expectedSha256?: string,
 ): Promise<void> {
   const opened = unwrap<{ transfer: BridgeArtifactTransferInfo }>(await request(
     "artifact.transfer.open",
@@ -126,6 +127,9 @@ async function runArtifactTransfer(
   let bufferedBytes = 0;
   activeDownloadsCount += 1;
   try {
+    if (expectedSha256 !== undefined && transfer.sha256 !== expectedSha256) {
+      throw new Error("文件已更改，请重新打开预览后再保存");
+    }
     for (let index = 0; index < transfer.totalChunks; index += 1) {
       const chunk = await readChunkWithResume(request, transfer, index);
       if (chunk.transferId !== transfer.transferId || chunk.index !== index) {
@@ -202,8 +206,13 @@ export async function downloadMailAttachment(mailAttachment: BridgeMailAttachmen
   await runArtifactTransfer({ mailAttachment }, request, "save", onProgress);
 }
 
-export async function saveMediaTarget(target: MediaTarget, request: MediaRequest, onProgress: (progress: number) => void): Promise<void> {
-  if (target.dataUrl?.startsWith("data:") && !target.artifactId && !target.mailAttachment && !target.path && !target.nativeImage) {
+export async function saveMediaTarget(
+  target: MediaTarget,
+  request: MediaRequest,
+  onProgress: (progress: number) => void,
+  expectedSha256?: string,
+): Promise<void> {
+  if (target.dataUrl?.startsWith("data:") && !target.artifactId && !target.mailAttachment && !target.path) {
     // Inline conversation attachments already carry their original Base64 bytes.
     const data = target.dataUrl.slice(target.dataUrl.indexOf(",") + 1);
     const name = safeFilename(target.name);
@@ -212,5 +221,5 @@ export async function saveMediaTarget(target: MediaTarget, request: MediaRequest
     else downloadInBrowser(name, [base64Bytes(data)], "application/octet-stream");
     return;
   }
-  await runArtifactTransfer(mediaFileParams(target), request, "save", onProgress);
+  await runArtifactTransfer(mediaFileParams(target), request, "save", onProgress, expectedSha256);
 }

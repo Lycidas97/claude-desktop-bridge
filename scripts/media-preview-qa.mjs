@@ -54,7 +54,7 @@ const history = {
   ].map((item) => ({ ...item, sessionId: session.sessionId, turnId: "media-turn", origin: "claude-desktop" })),
   hasMore: false,
 };
-const snapshot = { host: { hostId: "qa", pairingEpoch: 1, name: "Preview Mac", relayUrl: "ws://127.0.0.1:8788/ws", online: true, lastSeenAt: now, version: "1.0.2", capabilities: ["evidence.v1", "artifact.preview.v1", "artifact.transfer.v1", "artifact.transfer.stat.v1"] }, projects: [{ projectId: session.projectId, name: "Reports", cwd: session.cwd, sessionCount: 1, runningCount: 0, pendingCount: 0, lastActivityAt: now }], sessions: [session], devices: [], permissions: [], providers: [], runtime: { state: "ready", detail: "Ready", activeTurns: 0, pendingTurns: 0 }, latestSeq: 0, connection: "connected", launchAtLogin: false, managedDesktopEnabled: false, claudeDesktop: { state: "running", canLaunch: false, canQuit: true, detail: "Running" } };
+const snapshot = { host: { hostId: "qa", pairingEpoch: 1, name: "Preview Mac", relayUrl: "ws://127.0.0.1:8788/ws", online: true, lastSeenAt: now, version: "1.0.2", capabilities: ["evidence.v1", "artifact.preview.v1", "artifact.transfer.v1", "artifact.transfer.stat.v1"] }, projects: [{ projectId: session.projectId, name: "Reports", cwd: session.cwd, sessionCount: 1, runningCount: 0, pendingCount: 0, lastActivityAt: now }], sessions: [session], devices: [], permissions: [], providers: [], runtime: { state: "ready", detail: "Ready", activeTurns: 0, maxParallelTurns: 1, desktopIntegration: { state: "ready", detail: "Ready", enabled: false, canRestart: false } }, latestSeq: 0, connection: "connected", launchAtLogin: false, managedDesktopEnabled: false, claudeDesktop: { state: "running", canLaunch: false, canQuit: true, detail: "Running" } };
 const packaged = process.argv.includes("--electron");
 const mobile = process.argv.includes("--mobile");
 const clientUrl = "http://127.0.0.1:5188";
@@ -148,10 +148,16 @@ try {
     if ((packaged && viewport.width === 375) || (mobile && viewport.width !== 375)) continue;
     const page = packaged ? await browser.firstWindow() : await browser.newPage({ viewport, serviceWorkers: "block", isMobile: mobile, hasTouch: mobile });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", (error) => errors.push(error.stack ?? error.message));
     page.on("console", (message) => { if (message.type() === "error") errors.push(message.text()); });
     await page.addInitScript(({ snapshot, history, evidence, pdf, png }) => {
-      const bytes = Uint8Array.from(atob(pdf), (char) => char.charCodeAt(0));
+      let bytes = Uint8Array.from(atob(pdf), (char) => char.charCodeAt(0));
+      window.__replaceMediaPdf = () => {
+        const updated = new Uint8Array(bytes.length + 1);
+        updated.set(bytes);
+        updated[bytes.length] = 10;
+        bytes = updated;
+      };
       const originalImage = Uint8Array.from(atob(png), (char) => char.charCodeAt(0));
       // Keep the unrelated connectivity probe from leaving this local fixture.
       const fetchOriginal = window.fetch;
@@ -171,6 +177,7 @@ try {
           window.__mediaRequests.push({ method, params });
           if (method === "session.open") return response({ session: snapshot.sessions[0], history });
           if (method === "evidence.list") return response({ evidence });
+          if (method === "evidence.get") return response({ evidence: evidence.items[0] });
           if (method === "artifact.preview") return response({ preview: { artifactId: "image", mode: "image", mimeType: "image/svg+xml", encoding: "base64", data: btoa('<svg xmlns="http://www.w3.org/2000/svg" width="800" height="1000"><rect width="800" height="1000" fill="#dce8ef"/><circle cx="400" cy="210" r="100" fill="#245778"/><text x="270" y="410" font-size="32">Research figure</text></svg>'), truncated: false, generatedAt: Date.now() } });
           if (method === "artifact.transfer.open" && params.purpose === "stat") {
             const isSvg = params.artifactId === "svg" || params.path?.endsWith(".svg");
@@ -185,7 +192,7 @@ try {
             const id = params.artifactId ?? (params.path?.endsWith(".svg") ? "svg" : params.path?.endsWith(".png") ? "image" : "pdf");
             const { name, mimeType } = evidence.items[0].artifacts.find((artifact) => artifact.id === id);
             const data = id === "svg" ? svg : id === "image" ? originalImage : bytes;
-            const transferId = `qa-${++lease}`;
+            const transferId = window.__lastMediaTransferId = `qa-${++lease}`;
             transfers.set(transferId, data);
             const sha256 = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", data)), (byte) => byte.toString(16).padStart(2, "0")).join("");
             return response({ transfer: { transferId, artifactId: id, name, mimeType, size: data.length, chunkBytes: 262144, totalChunks: Math.ceil(data.length / 262144), sha256, expiresAt: Date.now() + 600000 } });
@@ -227,7 +234,9 @@ try {
           activeHostId: "qa", desktopName: "Preview Mac", connection: "connected", desktopOnline: true,
           focusSessionId: "media-session",
           snapshot, permissions: [], histories: { "media-session": { ...history, status: "ready" } },
-          evidence: { "media-session": { ...evidence, status: "ready" } }, artifactPreviews: {}, artifactTransfers: {},
+          evidence: { "media-session": { ...evidence, status: "ready" } },
+          artifactPreviews: { image: { artifactId: "image", mode: "image", mimeType: "image/png", encoding: "base64", data: ${JSON.stringify(png)}, truncated: false, generatedAt: 1 } },
+          artifactTransfers: {},
           events: [], localTurns: [], pendingOutbound: 0,
           themeControl: { theme: "dark", family: "sunstone", setTheme: noop, setFamily: noop, toggleTheme: noop },
           onOpenSession: noop, onLoadOlderHistory: noop, onLoadOlderEvidence: noop, onDownloadSessionFile: noop,
@@ -240,18 +249,22 @@ try {
     }
     if (packaged) await page.reload();
     else await page.goto(clientUrl);
-    await page.locator(".media-file.pdf").first().waitFor({ timeout: 15_000 }).catch(async (error) => {
+    if (!mobile) await page.getByRole("button", { name: /^成果/u }).click();
+    const openPreview = (name) => (!mobile
+      ? page.locator(".evidence-file-row").filter({ hasText: name }).getByRole("button", { name: `预览 ${name}`, exact: true })
+      : page.locator(".media-file").filter({ hasText: name })).first();
+    await openPreview("Research report.pdf").waitFor({ timeout: 15_000 }).catch(async (error) => {
       await page.screenshot({ path: `${output}/media-failure.png` });
       console.error(JSON.stringify({ errors, body: await page.locator("body").innerText() }));
       throw error;
     });
     const before = await page.evaluate(() => window.__mediaRequests.filter((r) => r.method.startsWith("artifact.")).length);
     if (before !== 0) throw new Error("Media bodies were loaded before user interaction");
-    await page.locator(".media-file.pdf").first().click();
+    await openPreview("Research report.pdf").click();
     await page.getByRole("alertdialog").waitFor();
     if (await page.evaluate(() => window.__mediaRequests.some((r) => r.method === "artifact.transfer.read" || (r.method === "artifact.transfer.open" && r.params.purpose !== "stat")))) throw new Error("PDF content opened before confirmation");
     await page.getByRole("button", { name: "取消", exact: true }).click();
-    await page.locator(".media-file.pdf").first().click();
+    await openPreview("Research report.pdf").click();
     await page.getByRole("button", { name: "下载并预览", exact: true }).click();
     await page.locator(".media-viewer canvas:visible").waitFor({ timeout: 15_000 }).catch(async (error) => {
       await page.screenshot({ path: `${output}/media-failure.png` });
@@ -265,7 +278,8 @@ try {
     if (mobile) await verifyMediaGestures(page, page.locator(".media-viewer canvas"));
     await page.getByRole("button", { name: "下一页", exact: true }).click();
     await page.waitForFunction(() => !document.querySelector(".media-viewer-status") && document.querySelector('[aria-label="页码"]').value === "2");
-    await verifyDownload(page, "Research report.pdf", pdf);
+    // Playwright's Electron context doesn't emit download events for the native download path.
+    if (!packaged) await verifyDownload(page, "Research report.pdf", pdf);
     assert.equal(await page.getByRole("spinbutton", { name: "页码" }).inputValue(), "2");
     await page.getByRole("button", { name: "放大", exact: true }).click();
     await page.waitForFunction(() => !document.querySelector(".media-viewer-status"));
@@ -276,48 +290,73 @@ try {
     await page.getByRole("alert").waitFor();
     await page.getByRole("button", { name: "重新加载", exact: true }).click();
     await page.waitForFunction(() => !document.querySelector(".media-viewer-status") && document.querySelector('[aria-label="页码"]').value === "8" && document.querySelector("canvas")?.width > 0);
+    const previewLease = await page.evaluate(() => window.__lastMediaTransferId);
     if (mobile) {
       if (!await page.evaluate(() => window.__mobileBack())) throw new Error("Mobile back was not handled");
       await page.locator(".media-viewer").waitFor({ state: "detached" });
       await page.locator(".markdown-file-link").filter({ hasText: "Research report" }).waitFor();
     } else await page.getByRole("button", { name: "关闭查看器" }).click();
-    await page.waitForFunction(() => window.__mediaRequests.some((r) => r.method === "artifact.transfer.close"));
-    await page.locator(".media-file.image").first().click();
+    await page.waitForFunction((transferId) => window.__mediaRequests.some((r) => r.method === "artifact.transfer.close" && r.params.transferId === transferId), previewLease);
+    await openPreview("Figure.png").click();
     await page.locator(".media-viewer img").waitFor();
     await page.waitForFunction(() => document.querySelector(".media-viewer img")?.naturalWidth > 0);
     await page.screenshot({ path: `${output}/${packaged ? "electron-" : mobile ? "mobile-" : ""}media-image-${viewport.width}.png` });
     if (mobile) await verifyMediaGestures(page, page.locator(".media-viewer img"));
-    await page.evaluate(() => { window.__rejectNextMediaTransfer = true; });
-    await page.getByRole("button", { name: "保存到本地", exact: true }).click();
-    await page.getByRole("alert").filter({ hasText: "保存失败：文件不可读取" }).waitFor();
-    assert.ok(await page.locator(".media-viewer img").isVisible(), "A save failure does not hide the preview");
-    await page.screenshot({ path: `${output}/${packaged ? "electron-" : mobile ? "mobile-" : ""}media-save-error-${viewport.width}.png` });
-    await verifyDownload(page, "Figure.png", png);
-    assert.equal(await page.getByRole("alert").count(), 0, "Retry clears the save error");
+    if (!packaged) {
+      await page.evaluate(() => { window.__rejectNextMediaTransfer = true; });
+      await page.getByRole("button", { name: "保存到本地", exact: true }).click();
+      await page.getByRole("alert").filter({ hasText: "保存失败：文件不可读取" }).waitFor();
+      assert.ok(await page.locator(".media-viewer img").isVisible(), "A save failure does not hide the preview");
+      await page.screenshot({ path: `${output}/${mobile ? "mobile-" : ""}media-save-error-${viewport.width}.png` });
+      await verifyDownload(page, "Figure.png", png);
+      assert.equal(await page.getByRole("alert").count(), 0, "Retry clears the save error");
+    }
     await page.getByRole("button", { name: "关闭查看器" }).click();
-    await page.locator(".media-file.image").filter({ hasText: "Diagram.svg" }).first().click();
+    await openPreview("Diagram.svg").click();
     await page.waitForFunction(() => document.querySelector(".media-viewer img")?.naturalWidth > 0 || document.querySelector('.media-viewer [role="alert"]'));
     if (await page.getByRole("alert").count()) throw new Error("SVG transfer preview failed to render");
     if (mobile) await verifyMediaGestures(page, page.locator(".media-viewer img"), true);
     await page.getByRole("button", { name: "关闭查看器" }).click();
+    if (!mobile) await page.getByRole("button", { name: "对话", exact: true }).click();
     const beforeMarkdown = await page.evaluate(() => window.__mediaRequests.length);
     await page.locator(".markdown-file-link").filter({ hasText: "Research report" }).click();
     await page.getByRole("button", { name: "下载并预览", exact: true }).click();
     await page.waitForFunction(() => !document.querySelector(".media-viewer-status") && document.querySelector(".media-viewer canvas")?.width > 0);
-    await verifyDownload(page, "Research report.pdf", pdf);
+    const scope = { sessionId: session.sessionId, path: artifacts[0].relativePath };
     const markdownOpens = await page.evaluate((offset) => window.__mediaRequests.slice(offset)
       .filter(({ method }) => method === "artifact.transfer.open").map(({ params }) => params), beforeMarkdown);
-    assert.deepEqual(markdownOpens, [
-      { sessionId: session.sessionId, path: artifacts[0].relativePath, purpose: "stat" },
-      { sessionId: session.sessionId, path: artifacts[0].relativePath },
-      { sessionId: session.sessionId, path: artifacts[0].relativePath },
-    ], "Markdown PDF stat, preview and save must use the conversation's session and path");
+    const [stat, ...previewOpens] = markdownOpens;
+    assert.deepEqual(stat, { ...scope, purpose: "stat" });
+    assert.ok(previewOpens.length > 0);
+    // The dev shell may replay a mount effect under React StrictMode.
+    for (const params of previewOpens) assert.deepEqual(params, scope);
+    if (!packaged) {
+      const beforeSave = await page.evaluate(() => window.__mediaRequests.length);
+      await verifyDownload(page, "Research report.pdf", pdf);
+      const saveOpens = await page.evaluate((offset) => window.__mediaRequests.slice(offset)
+        .filter(({ method }) => method === "artifact.transfer.open").map(({ params }) => params), beforeSave);
+      assert.deepEqual(saveOpens, [scope], "Markdown PDF save must use the conversation's session and path");
+      await page.evaluate(() => window.__replaceMediaPdf());
+      await page.getByRole("button", { name: "保存到本地", exact: true }).click();
+      await page.getByRole("alert").filter({ hasText: "文件已更改" }).waitFor({ timeout: 5_000 });
+      const changedLease = await page.evaluate(() => window.__lastMediaTransferId);
+      const changedCalls = await page.evaluate((transferId) => window.__mediaRequests.filter((r) => r.params.transferId === transferId), changedLease);
+      assert.deepEqual(changedCalls.map((r) => r.method), ["artifact.transfer.close"], "A different file version is closed without fetching its bytes");
+      assert.ok(await page.locator(".media-viewer canvas").isVisible(), "Revision mismatch keeps the current PDF visible");
+    }
     await page.keyboard.press("Escape");
     await page.locator(".media-viewer").waitFor({ state: "detached" });
     if (mobile) {
       await page.getByRole("button", { name: /^成果/u }).click();
       await page.locator(".mobile-evidence-view .evidence-panel").waitFor();
       await page.screenshot({ path: `${output}/mobile-media-gallery.png` });
+      const openCached = page.getByRole("button", { name: "打开 Figure.png 的缓存预览" });
+      await openCached.focus();
+      await page.keyboard.press("Enter");
+      await page.locator(".media-viewer img").waitFor();
+      await page.keyboard.press("Escape");
+      await page.locator(".media-viewer").waitFor({ state: "detached" });
+      assert.ok(await openCached.evaluate((button) => document.activeElement === button), "Closing a cached image restores focus to the evidence row");
       await page.locator(".mobile-evidence-view .evidence-file-row").filter({ hasText: "Research report.pdf" }).getByRole("button", { name: /预览/u }).click();
       await page.getByRole("button", { name: "下载并预览", exact: true }).click();
       await page.waitForFunction(() => !document.querySelector(".media-viewer-status") && document.querySelector(".media-viewer canvas")?.width > 0);
@@ -325,7 +364,7 @@ try {
       await page.locator(".media-viewer").waitFor({ state: "detached" });
       await page.locator(".mobile-evidence-view").waitFor();
     }
-    results.push({ viewport, mobileWorkspace: mobile, lazyBeforeOpen: before, pageOne, errors });
+    results.push({ viewport, mobileWorkspace: mobile, browserDownloadsVerified: !packaged, lazyBeforeOpen: before, pageOne, errors });
     await page.close();
   }
 } finally { await browser.close(); }

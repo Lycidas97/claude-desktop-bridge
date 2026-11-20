@@ -114,10 +114,10 @@ it.each<{ target: MediaTarget; params: Record<string, unknown> }>([
   expect(request).toHaveBeenLastCalledWith("artifact.transfer.close", { transferId: "lease" }, expect.anything());
 });
 
-it("saves a local inline attachment without requesting it from the host", async () => {
+it("saves an inline original after Native reconciliation without requesting it from the offline host", async () => {
   native.platform = "android";
-  const request = vi.fn();
-  await saveMediaTarget({ name: "photo.png", kind: "image", sessionId: "session", dataUrl: "data:image/png;base64,YWJj" }, request, vi.fn());
+  const request = vi.fn(async () => { throw new Error("电脑当前离线"); });
+  await saveMediaTarget({ name: "photo.png", kind: "image", sessionId: "session", nativeImage: { messageUuid: "message", imageIndex: 1 }, dataUrl: "data:image/png;base64,YWJj" }, request, vi.fn());
   expect(request).not.toHaveBeenCalled();
   expect(native.saveFile).toHaveBeenCalledExactlyOnceWith({ name: "photo.png", chunks: ["YWJj"] });
 });

@@ -471,7 +471,11 @@ export async function verifyAssistantMailReference(page, host, steps, directory,
   await page.getByRole("button", { name: "清除邮件引用", exact: true }).click();
   assert.equal(await sentReference.getByText(mail.subject, { exact: true }).isVisible(), true, "The sent card retains the searched mail subject after clearing the composer reference");
   assert.equal(await sentReference.getByText(mail.from[0].name, { exact: true }).isVisible(), true);
-  assert.equal(await sentReference.locator("time").getAttribute("datetime"), mail.receivedAt);
+  const time = sentReference.locator("time");
+  assert.equal(await time.getAttribute("datetime"), mail.receivedAt);
+  const timeBox = await time.boundingBox();
+  const chevronBox = await sentReference.locator(":scope > svg").last().boundingBox();
+  assert.ok(timeBox.x + timeBox.width <= chevronBox.x, "A long sender leaves room for the time and the chevron at 375px");
   assert.ok((await sentReference.boundingBox()).height >= 44);
   assert.equal(originalReads().length, 0, "Rendering the reference does not read the original");
   viewports.push({ page: "sent-mail-reference", ...page.viewportSize() });

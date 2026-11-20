@@ -303,7 +303,7 @@ body:has(.assistant-mail-category-options) .diagnostic-floating-entry { display:
 .sent-mail-reference:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 2px; }
 .sent-mail-reference > svg { flex: none; color: var(--muted); }
 .sent-mail-reference > svg:first-child { color: var(--accent-ink); }
-.sent-mail-reference-summary { display: grid; flex: 1; min-width: 0; gap: 2px; }
+.sent-mail-reference-summary { display: grid; grid-template-columns: minmax(0, 1fr); flex: 1; min-width: 0; gap: 2px; }
 .sent-mail-reference-summary > strong, .sent-mail-reference-summary > span > span {
   overflow: hidden;
   text-overflow: ellipsis;

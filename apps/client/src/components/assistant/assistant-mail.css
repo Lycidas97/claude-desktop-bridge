@@ -43,6 +43,7 @@
 .assistant-mail-category-form input { min-width: 0; min-height: 44px; padding: 8px 12px; border: 1px solid var(--line-strong); border-radius: var(--r-input); background: var(--surface); color: var(--text); font: inherit; }
 .assistant-mail-category-form :is([role="alert"], .assistant-mail-category-delete) { color: var(--danger-ink); }
 .assistant-mail-category-delete { justify-self: start; min-height: 44px; }
+.m-sheet-backdrop[aria-hidden="true"]:has(.assistant-mail-category-form) + .confirm-backdrop .confirm-dialog > h2 { overflow-wrap: anywhere; }
 .assistant-binding {
   padding: 14px 0 16px;
   margin-bottom: 18px;
@@ -105,7 +106,7 @@
 .assistant-mail-search button { min-width: 44px; display: grid; place-items: center; }
 body:has(.assistant-mail-category-options) .diagnostic-floating-entry { display: none; }
 .assistant-mail-folder-label { margin: 8px 0 0; color: var(--muted); font-size: calc(11px * var(--font-scale)); }
-.assistant-mail-close-folder { justify-self: start; }
+.assistant-mail-close-folder { justify-self: start; overflow-wrap: anywhere; }
 .assistant-mail-junk-action { color: var(--muted); }
 .assistant-mail-junk-feedback {
   position: sticky;

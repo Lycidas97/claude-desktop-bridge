@@ -5,7 +5,7 @@ import { eventually } from "../helpers.mjs";
 
 export async function verifyAssistantMailCategories(page, host, steps, directory, viewports, baseUrl) {
   const { service } = host.nativeApproval.assistantMail;
-  const { mailRefId } = service.page({ limit: 1 }).events[0];
+  const [{ mailRefId }, secondMail] = service.page({ limit: 2 }).events;
   service.setBinding({ assistantId: "category-fixture", nativeSessionId: host.session.sessionId, sectionId: null, previousSessionIds: [] });
   await eventually(() => host.snapshot.assistantMail.binding?.nativeSessionId, host.session.sessionId, "Both clients use the same bound fixture conversation");
   const card = scope => scope.locator(`[data-mail-id="${mailRefId}"]`);
@@ -57,18 +57,33 @@ export async function verifyAssistantMailCategories(page, host, steps, directory
   await page.getByRole("button", { name: "搜索", exact: true }).click();
   await card(page.locator('[aria-label="搜索结果"]')).getByText("采购记录", { exact: true }).waitFor();
   await page.getByRole("button", { name: "清除搜索" }).click();
+  await fileMailInCategory(page, page.locator(`[aria-label="邮件输入"] [data-mail-id="${secondMail.mailRefId}"]`), "采购记录");
 
-  await filed.click();
+  await page.getByRole("button", { name: "已收纳 2 封" }).click();
   await manage(page).click();
   await edit(page, "采购记录").click();
+  const longLabel = "W".repeat(60);
+  await page.getByRole("textbox", { name: "分类名称" }).fill(longLabel);
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await edit(page, longLabel).waitFor();
+  const closeManager = page.getByRole("dialog", { name: "管理分类" }).getByRole("button", { name: "关闭" });
+  await closeManager.click();
+  const collapse = page.getByRole("button", { name: `收起「${longLabel}」` });
+  const collapseOverflow = await collapse.evaluate(button => Math.max(0, button.scrollWidth - button.clientWidth,
+    Math.ceil(button.getBoundingClientRect().right - window.innerWidth)));
+  await manage(page).click();
+  await edit(page, longLabel).click();
   await page.getByRole("button", { name: "删除分类" }).click();
-  const confirm = page.getByRole("alertdialog", { name: "删除「采购记录」？" });
+  const confirm = page.getByRole("alertdialog", { name: `删除「${longLabel}」？` });
   await confirm.getByText("分类里的邮件会移回收件箱，原信不会删除。", { exact: true }).waitFor();
+  const titleOverflow = await confirm.getByRole("heading").evaluate(title => title.scrollWidth - title.clientWidth);
+  assert.deepEqual({ titleOverflow, collapseOverflow }, { titleOverflow: 0, collapseOverflow: 0 },
+    "A maximum-length category name fits in the mobile confirmation and collapse button");
   await page.screenshot({ path: resolve(directory, "mobile-mail-category-delete.png") });
   viewports.push({ page: "mobile-mail-category-delete", ...page.viewportSize() });
   await confirm.getByRole("button", { name: "删除分类" }).click();
-  await page.getByRole("dialog", { name: "管理分类" }).getByRole("button", { name: "关闭" }).click();
-  await group(page, "采购记录").waitFor({ state: "detached" });
+  await closeManager.click();
+  await group(page, longLabel).waitFor({ state: "detached" });
   assert.equal(await page.getByRole("button", { name: "撤销", exact: true }).count(), 0);
   await page.getByRole("button", { name: "返回收件" }).click();
   await page.getByRole("button", { name: "已收纳 0 封" }).waitFor();

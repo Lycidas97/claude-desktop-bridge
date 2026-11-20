@@ -109,6 +109,9 @@ export interface BridgeMailAttachment {
   size: number;
 }
 
+export const MAIL_CATEGORIES = ["marketing", "verification", "account", "other"] as const;
+export type BridgeMailCategory = typeof MAIL_CATEGORIES[number];
+
 export interface BridgeMailCard {
   /** Descending list order: positive for live arrivals, negative for historical imports. */
   seq: number;
@@ -126,7 +129,7 @@ export interface BridgeMailCard {
   processingStatus: "pending" | "processing" | "processed";
   /** Read on the Bridge host, independent of IMAP Seen and business processing. */
   hostRead?: true;
-  analysis?: { summary?: string; suggestions?: string[]; questions?: string[]; attention?: MailAttentionLevel | undefined };
+  analysis?: { summary?: string; suggestions?: string[]; questions?: string[]; category?: BridgeMailCategory | undefined; attention?: MailAttentionLevel | undefined };
   /** Correlation supplied by the host, never inferred from mail or transcript text. */
   nativeDelivery: {
     state: "not-submitted" | "pending" | "paused" | "submitting" | "submitted" | "queued" | "observed" | "uncertain" | "failed" | "cancelled";

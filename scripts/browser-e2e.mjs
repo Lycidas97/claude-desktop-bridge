@@ -440,6 +440,13 @@ try {
       undefined, assistantMailPreview, proposalPreview ? { initialMailCount: 0, proposals: true }
         : assistantMailPreview && process.env.BRIDGE_E2E_SCENARIOS === "assistant-mail-history"
         ? { initialMailCount: 0, initialMailHistory: 25 } : {});
+    if (assistantMailPreview && process.env.BRIDGE_E2E_SCENARIOS === "assistant-mail") {
+      const { service } = host.nativeApproval.assistantMail;
+      const [, ...events] = service.page({ limit: 5 }).events;
+      ["marketing", "verification", "account", "marketing"].forEach((category, index) => {
+        service.updateAnalysis(events[index].mailRefId, { summary: "已分析", suggestions: [], questions: [], category });
+      });
+    }
     previewHost = host;
     if (proposalPreview) {
       await seedAssistantProposals(host);

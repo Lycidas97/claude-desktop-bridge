@@ -1,4 +1,4 @@
-import { ASSISTANT_MAIL_SHARED_AUTH_CAPABILITY, ASSISTANT_SMTP_CAPABILITY, MAIL_POLL_INTERVALS, type BridgeActionProposal, type BridgeDirectoryListing, type BridgeHostSnapshot, type BridgeMailAccount, type BridgeMethod, type BridgeSessionInfo } from "@bridge/protocol";
+import { ASSISTANT_MAIL_SHARED_AUTH_CAPABILITY, ASSISTANT_SMTP_CAPABILITY, MAIL_POLL_INTERVALS, type BridgeActionProposal, type BridgeDirectoryListing, type BridgeHostSnapshot, type BridgeMailAccount, type BridgeMailCard, type BridgeMailCategory, type BridgeMethod, type BridgeSessionInfo } from "@bridge/protocol";
 import { Check, ChevronRight, ListChecks, LoaderCircle, RefreshCw, Settings } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
@@ -253,7 +253,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
     {displayedView === "agenda" && agenda && <AgendaView />}
     {displayedView === "mail" && mail && <>
       {!session && binding?.nativeSessionId && <MailReference sessionId={binding.nativeSessionId} />}
-      <div className="assistant-mail-list" aria-label="邮件输入">{mail.cache.cards.map(card => <MailCard key={card.mailRefId} card={card} onDiscuss={() => setView("conversation")} />)}</div>
+      <InboxMailList cards={mail.cache.cards} onDiscuss={() => setView("conversation")} />
       {!mail.cache.cards.length && <p className="assistant-mail-empty" role="status">{mail.loading ? "正在读取邮件…" : "暂无已记录邮件"}</p>}
       {mail.hasOlderMail && <button type="button" className="secondary-button assistant-mail-older" disabled={!mail.online || mail.loading} onClick={() => void mail.loadOlder()}>{mail.loading ? "正在读取…" : "更早邮件"}</button>}
     </>}
@@ -298,6 +298,27 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
         return created;
       }} onCreated={() => {}} onClose={() => setCreating(false)} />}
   </section>;
+}
+
+function InboxMailList({ cards, onDiscuss }: { cards: BridgeMailCard[]; onDiscuss(): void }) {
+  const groups = new Map<BridgeMailCategory, { label: string; cards: BridgeMailCard[] }>([
+    ["marketing", { label: "营销与垃圾邮件", cards: [] }],
+    ["verification", { label: "验证码", cards: [] }],
+    ["account", { label: "账号注册", cards: [] }],
+  ]);
+  const regular: BridgeMailCard[] = [];
+  for (const card of cards) (groups.get(card.analysis?.category ?? "other")?.cards ?? regular).push(card);
+  const renderCard = (card: BridgeMailCard) => <MailCard key={card.mailRefId} card={card} onDiscuss={onDiscuss} />;
+
+  return <div className="assistant-mail-list" aria-label="邮件输入">
+    {regular.length < cards.length && <div className="assistant-mail-groups">
+      {[...groups].map(([category, group]) => group.cards.length > 0 && <details className="assistant-mail-group" key={category}>
+        <summary><span>{group.label}</span><small>{group.cards.length} 封</small><ChevronRight size={16} aria-hidden="true" /></summary>
+        <div className="assistant-mail-group-cards">{group.cards.map(renderCard)}</div>
+      </details>)}
+    </div>}
+    {regular.map(renderCard)}
+  </div>;
 }
 
 const RECEIVER_LABELS: Record<BridgeMailAccount["state"], string> = {

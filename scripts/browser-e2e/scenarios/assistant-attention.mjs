@@ -13,19 +13,21 @@ export async function verifyAssistantAttention(page, host, steps, directory, vie
   const lit = "助理，有事项待关注";
   const back = () => page.locator(".assistant-page").getByRole("button", { name: "返回", exact: true }).click();
   const dismiss = () => page.getByRole("dialog").getByRole("button", { name: "关闭", exact: true }).click();
-  const analyze = (event, level) => native.callAssistantTool("mail.update_analysis", {
-    mailRefId: event.mailRefId, attention: level, summary: "隔离筛选", suggestions: [], questions: [],
+  const analyze = (event, level, category = "other") => native.callAssistantTool("mail.update_analysis", {
+    mailRefId: event.mailRefId, attention: level, category, summary: "隔离筛选", suggestions: [], questions: [],
   });
   await openMobileDrawer(page);
   assert.equal(await label(), "助理");
   service.setAutomaticDelivery(true);
   const ads = await deliver(1);
   assert.deepEqual(host.snapshot.assistantMail.attention, []);
-  await analyze(ads, "ignore");
+  await analyze(ads, "ignore", "marketing");
   assert.deepEqual(host.snapshot.assistantMail.attention, []);
   const worth = await deliver(1);
   assert.deepEqual(host.snapshot.assistantMail.attention, []);
-  await analyze(worth, "read");
+  await analyze(worth, "read", "account");
+  assert.equal(service.event(worth.mailRefId).analysis.category, "account");
+  assert.equal(service.event(worth.mailRefId).analysis.attention, "read");
   await eventually(label, lit, "Classified mail lights the entry; routine marketing does not");
   assert.equal(await entry.locator(".desktop-nav-badge").count(), 0, "The new entry is a dot, not an unread count");
   await entry.click();

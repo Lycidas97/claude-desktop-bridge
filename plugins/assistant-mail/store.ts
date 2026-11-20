@@ -3,7 +3,7 @@ import { createReadStream } from "node:fs";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { AssistantAttentionAcknowledgment, AssistantAttentionItem, BridgeMailAttachment, MailAttentionLevel } from "../../packages/protocol/src/assistant-mail.js";
+import type { AssistantAttentionAcknowledgment, AssistantAttentionItem, BridgeMailAttachment, BridgeMailCategory, MailAttentionLevel } from "../../packages/protocol/src/assistant-mail.js";
 import { MailBodyParseError, parseMail } from "./mime.js";
 import { MailPageParameters } from "./tool-contract.js";
 import { AssistantTriggerStore } from "./trigger-store.js";
@@ -30,6 +30,7 @@ export interface MailAnalysis {
   suggestions: string[];
   questions: string[];
   attention?: MailAttentionLevel | undefined;
+  category?: BridgeMailCategory | undefined;
 }
 
 interface MailProjection {
@@ -388,6 +389,7 @@ export class AssistantMailStore {
   }
 
   updateAnalysis(mailRefId: string, analysis: MailAnalysis): MailEvent | undefined {
+    // The three text fields are replaced; omitted category and attention survive legacy analysis writes.
     const row = this.db().prepare("UPDATE mail_events SET analysis_json = json_patch(COALESCE(analysis_json, '{}'), ?) WHERE mail_ref_id = ? RETURNING *")
       .get(JSON.stringify(analysis), mailRefId) as EventRow | undefined;
     return row ? eventFromRow(row) : undefined;

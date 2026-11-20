@@ -56,7 +56,7 @@ it("projects the original screening deadline and separates user attention from r
   store.setProcessingStatus(id, "processed");
   store.markRead([id]);
   expect(store.attention(true, deadline).items).toMatchObject([{ id, reason: "unscreened" }]);
-  store.updateAnalysis(id, { ...analysis, attention: "read" });
+  store.updateAnalysis(id, { ...analysis, attention: "read", category: "account" });
   expect(store.attention(true, deadline).items).toMatchObject([{ id, reason: "read" }]);
   store.acknowledgeAttention("mail", id);
   expect(store.attention(false, deadline).items).toEqual([]);
@@ -69,7 +69,7 @@ it("projects the original screening deadline and separates user attention from r
   store = new AssistantMailStore(root);
   await store.initialize();
   expect(store.attention(true, deadline).items).toEqual([]);
-  expect(store.page().events[0]).toMatchObject({ processingStatus: "processed", hostRead: true });
+  expect(store.page().events[0]).toMatchObject({ processingStatus: "processed", hostRead: true, analysis: { attention: "action", category: "account" } });
 });
 
 it("remembers separately acknowledged replies only for the current binding", () => {
@@ -227,7 +227,7 @@ it("migrates an existing event and persists analysis/status on the same identity
   await store.initialize();
   await store.backfillMimeProjections(new AbortController().signal);
   expect(store.page().events[0]?.analysis).toBeNull();
-  const analysis = { summary: "External email asks for a payment", suggestions: ["Check with the user"], questions: ["Is this expected?"] };
+  const analysis = { summary: "External email asks for a payment", suggestions: ["Check with the user"], questions: ["Is this expected?"], category: "marketing" as const };
   expect(store.updateAnalysis(event.mailRefId, analysis)).toEqual({ ...event, analysis });
   expect(store.setProcessingStatus(event.mailRefId, "processed")).toEqual({ ...event, analysis, processingStatus: "processed" });
   expect(store.updateAnalysis("missing", analysis)).toBeUndefined();

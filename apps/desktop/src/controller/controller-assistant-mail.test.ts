@@ -310,7 +310,7 @@ describe("assistant mail mobile RPC projections", () => {
       cards: [
         { seq: fourth.seq, mailRefId: fourth.mailRefId, accountKey: fourth.accountKey, mailbox: "INBOX",
           subject: fourth.subject, from: fourth.from, receivedAt: fourth.receivedAt, recordedAt: fourth.recordedAt,
-          processingStatus: "processed", analysis, preview: body.slice(0, 240), nativeDelivery: { state: "not-submitted" } },
+          processingStatus: "processed", analysis, preview: body.trim(), nativeDelivery: { state: "not-submitted" } },
         { seq: third.seq, mailRefId: third.mailRefId, accountKey: third.accountKey, mailbox: "INBOX",
           subject: third.subject, from: third.from, receivedAt: third.receivedAt, recordedAt: third.recordedAt,
           processingStatus: "pending", preview: "Body 3", nativeDelivery: { state: "not-submitted" } },

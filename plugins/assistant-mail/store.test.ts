@@ -355,11 +355,32 @@ it("keeps paginated previews and attachment metadata when the original is unavai
     attachments: [{ attachmentId: "0", filename: "notes.txt", mimeType: "text/plain", size: 12 }] });
 });
 
-it("bounds the preview on Unicode code-point boundaries", async () => {
+it("removes malformed template residue from new and saved previews without changing the original", async () => {
   store.openMailbox("test-account", "1", 5);
-  const source = Buffer.from(`Content-Type: text/plain; charset=utf-8\r\n\r\n${"📬🧪".repeat(130)}`);
-  const event = await store.record({ ...message(), source });
-  expect(event?.preview).toBe("📬🧪".repeat(120));
+  const text = `Prize draw opens\r\nSee the rules.\r\n${" \r\n".repeat(34)}  96\r\na.footer-link,a.footer-link:link{color:#2F2F2F!important;}\r\nPrize draw opens`;
+  const source = Buffer.from([
+    'Content-Type: multipart/alternative; boundary="excerpt"', "", "--excerpt", "Content-Type: text/plain; charset=utf-8", "", text,
+    "--excerpt", "Content-Type: text/html", "", "<p>HTML alternative is not the original text.</p>", "--excerpt--", "",
+  ].join("\r\n"));
+  const event = (await store.record({ ...message(), source }))!;
+  expect(event.preview).toBe("Prize draw opens\nSee the rules.");
+  expect((await store.read(event.mailRefId))?.source).toEqual(source);
+  const db = new DatabaseSync(join(root, "private", "assistant", "assistant.sqlite"));
+  openDatabases.push(db);
+  db.prepare("UPDATE mail_events SET mime_projection = json_set(mime_projection, '$.preview', ?) WHERE mail_ref_id = ?")
+    .run(text, event.mailRefId);
+  expect(store.page({}, true, { query: "footer-link" }).events).toEqual([]);
+  expect(store.page({}, true, { query: "Prize draw" }).events[0]?.preview).toBe(event.preview);
+  expect(store.page().events[0]?.preview).toBe(event.preview);
+});
+
+it("keeps text after formatting whitespace and bounds long previews on code-point boundaries", async () => {
+  store.openMailbox("test-account", "1", 5);
+  const formatted = await store.record({ ...message(), source: Buffer.from("Content-Type: text/plain\r\n\r\nFirst line\r\n\r\n\r\nNext paragraph") });
+  expect(formatted?.preview).toBe("First line\nNext paragraph");
+  const source = Buffer.from(`Content-Type: text/plain; charset=utf-8\r\n\r\n${"📬🧪".repeat(800)}`);
+  const event = await store.record({ ...message(6), source });
+  expect(event?.preview).toBe("📬🧪".repeat(512));
 });
 
 it("opens and pages a legacy store while a historical MIME stream is still pending", async () => {

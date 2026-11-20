@@ -296,38 +296,36 @@ function InboxMailList({ mail, canMarkJunk, onDiscuss }: { mail: NonNullable<Ret
   const [searchText, setSearchText] = useState("");
   const [query, setQuery] = useState("");
   const [openedFolders, setOpenedFolders] = useState<ReadonlySet<BridgeMailCategory>>(new Set());
-  const [lastMarked, setLastMarked] = useState<{ mailRefId: string; subject: string; focusUndo: boolean }>();
+  type Placement = { junk: boolean } | { folder: BridgeMailFolder };
+  const [receipt, setReceipt] = useState<{ mailRefId: string; subject: string; message: string; previous: Placement; focusUndo: boolean }>();
   const undoButton = useRef<HTMLButtonElement>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const disabled = !mail.online || busy;
   useEffect(() => {
-    if (lastMarked?.focusUndo) undoButton.current?.focus();
-  }, [lastMarked]);
+    if (receipt?.focusUndo) undoButton.current?.focus({ preventScroll: true });
+  }, [receipt]);
 
-  async function setJunk({ mailRefId, subject }: Pick<BridgeMailCard, "mailRefId" | "subject">, junk: boolean, keyboardButton?: HTMLButtonElement) {
+  async function move({ mailRefId, subject }: Pick<BridgeMailCard, "mailRefId" | "subject">, placement: Placement, previous?: Placement, control?: HTMLElement) {
     setBusy(true);
     setError("");
     try {
-      mailResult(await mail.request("plugin.assistant-mail.junk.set", { mailRefId, junk }));
-      setLastMarked(junk ? { mailRefId, subject: subject || "无主题", focusUndo: Boolean(keyboardButton &&
-        (document.activeElement === keyboardButton || document.activeElement === document.body)) } : undefined);
+      mailResult(await mail.request("junk" in placement ? "plugin.assistant-mail.junk.set" : "plugin.assistant-mail.filing.set", { mailRefId, ...placement }));
+      setReceipt(previous ? { mailRefId, subject: subject || "无主题", previous,
+        message: "junk" in placement ? "已在 Bridge 标为垃圾邮件" : placement.folder === "inbox"
+          ? "已收回收件" : `已收入「${MAIL_FOLDER_LABELS[placement.folder]}」`,
+        focusUndo: Boolean(control && (document.activeElement === control || document.activeElement === document.body)),
+      } : undefined);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "垃圾邮件标记更新失败。");
+      setError(reason instanceof Error ? reason.message : "无法更新邮件收纳位置。");
     } finally { setBusy(false); }
   }
 
-  async function move(mailRefId: string, folder: BridgeMailFolder) {
-    setBusy(true);
-    setError("");
-    try { mailResult(await mail.request("plugin.assistant-mail.filing.set", { mailRefId, folder })); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : "无法更新邮件收纳位置。"); }
-    finally { setBusy(false); }
-  }
-
   const renderCard = (card: BridgeMailCard) => <MailCard key={card.mailRefId} card={card} onDiscuss={onDiscuss}
-    junkAction={canMarkJunk ? { disabled, onMark: event => { void setJunk(card, true, event.detail === 0 ? event.currentTarget : undefined); } } : undefined}
-    filing={mail.supportsFiling ? { disabled, showFolder: Boolean(query), move: folder => { void move(card.mailRefId, folder); } } : undefined} />;
+    junkAction={canMarkJunk ? { disabled, onMark: event => { void move(card, { junk: true }, { junk: false }, event.detail === 0 ? event.currentTarget : undefined); } } : undefined}
+    filing={mail.supportsFiling ? { disabled, showFolder: Boolean(query), move: (folder, control) => {
+      void move(card, { folder }, { folder: card.folder ?? "inbox" }, control);
+    } } : undefined} />;
   const folders = mail.supportsFiling ? MAIL_CATEGORIES : MAIL_CATEGORIES.filter(category => category !== "other");
   const counts = mail.cache.folderCounts;
 
@@ -345,7 +343,6 @@ function InboxMailList({ mail, canMarkJunk, onDiscuss }: { mail: NonNullable<Ret
       }}><X size={16} aria-hidden="true" /></button>}
       <button type="submit" className="assistant-session-link" disabled={!mail.online}>搜索</button>
     </form>}
-    {mail.supportsFiling && error && <p className="assistant-mail-empty" role="alert">{error}</p>}
     {mail.supportsFiling && query ? <div className="assistant-mail-list" aria-label="搜索结果">
       <ScopedMailList key={query} mail={mail} query={query} renderCard={renderCard} />
     </div> : <>
@@ -362,23 +359,32 @@ function InboxMailList({ mail, canMarkJunk, onDiscuss }: { mail: NonNullable<Ret
             } : undefined}>
               <summary><span>{MAIL_FOLDER_LABELS[category]}</span><small>{count} 封</small><ChevronRight size={16} aria-hidden="true" /></summary>
               <div className="assistant-mail-group-cards">
-                {mail.supportsFiling ? openedFolders.has(category) && <ScopedMailList mail={mail} folder={category} renderCard={renderCard} /> : grouped.map(renderCard)}
+                {mail.supportsFiling ? openedFolders.has(category) && <>
+                  <ScopedMailList mail={mail} folder={category} renderCard={renderCard} />
+                  {count > 1 && <button type="button" className="assistant-session-link assistant-mail-close-folder" onClick={event => {
+                    const details = event.currentTarget.closest("details")!;
+                    details.open = false;
+                    details.querySelector("summary")?.focus();
+                  }}>收起「{MAIL_FOLDER_LABELS[category]}」</button>}
+                </> : grouped.map(renderCard)}
               </div>
             </details>;
           })}
         </div>}
       {(mail.supportsFiling ? cards.filter(card => !card.folder) : cards.filter(card => !card.analysis?.category || card.analysis.category === "other")).map(renderCard)}
-    {canMarkJunk && (lastMarked || error) && <div className="assistant-mail-junk-feedback">
-      {error && <span role="alert">{error}</span>}
-      {lastMarked && <>
-        <span role="status" title={lastMarked.subject}>已在 Bridge 标为垃圾邮件：{lastMarked.subject}</span>
-        <button ref={undoButton} type="button" className="assistant-session-link" disabled={disabled} onClick={() => { void setJunk(lastMarked, false); }}>撤销</button>
-      </>}
-    </div>}
     </div>
     {!cards.length && !Object.keys(counts ?? {}).length && <p className="assistant-mail-empty" role="status">{mail.loading ? "正在读取邮件…" : "暂无已记录邮件"}</p>}
     {mail.hasOlderMail && <button type="button" className="secondary-button assistant-mail-older" disabled={!mail.online || mail.loading} onClick={() => void mail.loadOlder()}>{mail.loading ? "正在读取…" : "更早邮件"}</button>}
     </>}
+    {(receipt || error) && <div className="assistant-mail-junk-feedback">
+      {error && <span role="alert">{error}</span>}
+      {receipt && <>
+        <span role="status" title={receipt.subject}>{receipt.message}：{receipt.subject}</span>
+        <button ref={undoButton} type="button" className="assistant-session-link" disabled={disabled} onClick={() => {
+          void move(receipt, receipt.previous);
+        }}>撤销</button>
+      </>}
+    </div>}
   </>;
 }
 

@@ -50,7 +50,7 @@ function MailAttachmentRow({ attachment, mailRefId, enabled }: { attachment: Bri
 export function MailCard({ card, nativeMessage, onDiscuss, showBatchDelivery = true, junkAction, filing }: {
   card: BridgeMailCard; nativeMessage?: BridgeHistoryItem; onDiscuss?(): void; showBatchDelivery?: boolean;
   junkAction?: { disabled: boolean; onMark(event: MouseEvent<HTMLButtonElement>): void } | undefined;
-  filing?: { disabled: boolean; showFolder: boolean; move(folder: BridgeMailFolder): void } | undefined;
+  filing?: { disabled: boolean; showFolder: boolean; move(folder: BridgeMailFolder, control: HTMLElement): void } | undefined;
 }) {
   const mail = useAssistantMail();
   const accountLabel = mail?.accountLabel(card.accountKey) ?? "邮件插件";
@@ -68,6 +68,7 @@ export function MailCard({ card, nativeMessage, onDiscuss, showBatchDelivery = t
   const links = detail ? [...new Set(detail.bodyText.match(/https?:\/\/[^\s<>"']+/gu) ?? [])].filter(href => URL.canParse(href)).map(href => new URL(href)) : [];
   return <article className="assistant-mail-card" data-mail-id={card.mailRefId} data-stream-key={`mail:${card.mailRefId}`} aria-label={`邮件：${card.subject || "无主题"}`}>
     <header><span><Mail size={15} aria-hidden="true" />{accountLabel}</span><time dateTime={card.receivedAt}>{new Date(card.receivedAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</time></header>
+    {filing?.showFolder && card.folder && <p className="assistant-mail-folder-label">{MAIL_FOLDER_LABELS[card.folder]}</p>}
     <h3>{card.subject || "无主题"}</h3>
     <p className="assistant-mail-from">{card.from.map(sender => [sender.name, sender.address].filter(Boolean).join(" ")).join("，") || "未知发件人"}</p>
     {card.preview && <p className="assistant-mail-preview">{card.preview}</p>}
@@ -105,11 +106,10 @@ export function MailCard({ card, nativeMessage, onDiscuss, showBatchDelivery = t
     {mail && <div className="assistant-actions">
       <button type="button" className="assistant-session-link" disabled={!mail.canReference} onClick={() => { mail.selectMail(card); onDiscuss?.(); }}>讨论此邮件</button>
       {filing && <>
-        {filing.showFolder && card.folder && <small className="assistant-mail-folder-label">{MAIL_FOLDER_LABELS[card.folder]}</small>}
         {card.folder
-          ? <button type="button" className="assistant-session-link" disabled={filing.disabled} onClick={() => filing.move("inbox")}>收回收件</button>
+          ? <button type="button" className="assistant-session-link" disabled={filing.disabled} onClick={event => filing.move("inbox", event.currentTarget)}>收回收件</button>
           : <select className="assistant-mail-file-select" aria-label="收入分类" value="" disabled={filing.disabled}
-              onChange={event => { if (event.target.value) filing.move(event.target.value as BridgeMailCategory); }}>
+              onChange={event => { if (event.target.value) filing.move(event.target.value as BridgeMailCategory, event.currentTarget); }}>
               <option value="">收入分类</option>
               {MAIL_CATEGORIES.map(category => <option key={category} value={category}>{MAIL_FOLDER_LABELS[category]}</option>)}
             </select>}

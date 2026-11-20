@@ -47,8 +47,24 @@ const mailFolder = `CASE WHEN user_junk = 1 THEN 'marketing'
   WHEN json_extract(analysis_json, '$.category') = 'marketing' THEN 'marketing' ELSE 'inbox' END`;
 export type MailPageScope = "all" | "legacy" | BridgeMailFolder | { query: string };
 
+function mailPreview(text: string): string {
+  const lines = text.trimStart().slice(0, 4096).replace(/[\uD800-\uDBFF]$/u, "").split(/\r?\n/u);
+  const excerpt: string[] = [];
+  let emptyLines = 0;
+  for (const [index, line] of lines.entries()) {
+    const content = line.trim();
+    if (!content) { emptyLines++; continue; }
+    // A broken plaintext alternative can append a template counter and CSS after a blank block.
+    if (emptyLines >= 3 && /^\d+$/u.test(content) && /^[^{}]+\{\s*[-\w]+\s*:/u.test(lines[index + 1] ?? "")) break;
+    excerpt.push(content);
+    emptyLines = 0;
+  }
+  // This bounds the stored payload; the UI clips to rendered lines.
+  return Array.from(excerpt.join("\n")).slice(0, 1024).join("");
+}
+
 function mailProjection({ bodyText, bodyError, attachments, attachmentCount }: Awaited<ReturnType<typeof parseMail>>): MailProjection {
-  return { preview: bodyError ? "" : Array.from(bodyText.slice(0, 480)).slice(0, 240).join(""),
+  return { preview: bodyError ? "" : mailPreview(bodyText),
     ...(bodyError ? { previewError: unavailablePreview } : {}), attachments, attachmentCount };
 }
 
@@ -97,6 +113,7 @@ type EventRow = {
 
 function eventFromRow(row: EventRow): MailEvent {
   const analysis = row.analysis_json ? JSON.parse(row.analysis_json) as MailAnalysis : null;
+  const projection = row.mime_projection ? JSON.parse(row.mime_projection) as MailProjection : undefined;
   const folder = row.user_junk === 1 ? "marketing" : row.filing
     ? row.filing.replace(/^user:/u, "") as BridgeMailFolder : analysis?.category === "marketing" ? "marketing" : "inbox";
   return {
@@ -108,7 +125,7 @@ function eventFromRow(row: EventRow): MailEvent {
     ...(row.host_read === 1 ? { hostRead: true as const } : {}),
     ...(folder !== "inbox" ? { folder } : {}),
     analysis,
-    ...(row.mime_projection ? JSON.parse(row.mime_projection) as MailProjection : { preview: "", attachments: [], attachmentCount: 0 }),
+    ...(projection ? { ...projection, preview: mailPreview(projection.preview) } : { preview: "", attachments: [], attachmentCount: 0 }),
   };
 }
 
@@ -130,6 +147,7 @@ export class AssistantMailStore {
     await writeFile(path, "", { flag: "a", mode: 0o600 });
     await chmod(path, 0o600);
     this.database = new DatabaseSync(path);
+    this.database.function("mail_excerpt", { deterministic: true }, value => typeof value === "string" ? mailPreview(value) : null);
     this.database.exec(`
       PRAGMA journal_mode = WAL;
       PRAGMA synchronous = FULL;
@@ -346,7 +364,7 @@ export class AssistantMailStore {
     const order = includeHistory ? mailOrder : "seq";
     const scopeValue = typeof scope === "object" ? scope.query : scope === "legacy" || scope === "all" ? undefined : scope;
     const filter = typeof scope === "object" ? `AND (
-      instr(lower(subject), lower($scope)) > 0 OR instr(lower(json_extract(mime_projection, '$.preview')), lower($scope)) > 0 OR
+      instr(lower(subject), lower($scope)) > 0 OR instr(lower(mail_excerpt(json_extract(mime_projection, '$.preview'))), lower($scope)) > 0 OR
       EXISTS (SELECT 1 FROM json_each(from_json) WHERE instr(lower(json_extract(value, '$.name')), lower($scope)) > 0
         OR instr(lower(json_extract(value, '$.address')), lower($scope)) > 0)
     )` : scope === "legacy" ? "AND user_junk = 0" : scope === "all" ? "" : `AND (${mailFolder}) = $scope`;

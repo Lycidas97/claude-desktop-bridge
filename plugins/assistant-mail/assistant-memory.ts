@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { closeSync, fsyncSync, lstatSync, openSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import type { MemoryRuleProposalAction } from "../../packages/protocol/src/assistant-proposal.js";
-import { AgendaEditError } from "./agenda-store.js";
+import { AssistantError } from "./assistant-error.js";
 import { ASSISTANT_MEMORY_ROOTS } from "./fs-guard.js";
 
 const sha256 = (data: string | Buffer) => createHash("sha256").update(data).digest("hex");
@@ -18,7 +18,7 @@ export interface ProfileIntent {
 function regularFile(path: string, allowMissing = false): void {
   const info = lstatSync(path, { throwIfNoEntry: !allowMissing });
   if (info && (!info.isFile() || info.nlink !== 1)) {
-    throw new AgendaEditError("CONFLICT", "宿主管理的记忆文件不是普通文件。");
+    throw new AssistantError("CONFLICT", "宿主管理的记忆文件不是普通文件。");
   }
 }
 
@@ -45,7 +45,7 @@ export class AssistantMemory {
     const profile = this.profile();
     const baseProfileSha256 = sha256(profile);
     if (requireOwnedProfile && !this.ownsProfileHash(baseProfileSha256)) {
-      throw new AgendaEditError("CONFLICT", "PROFILE.md 不匹配已确认的规则版本。");
+      throw new AssistantError("CONFLICT", "PROFILE.md 不匹配已确认的规则版本。");
     }
     const source = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(profile);
     const heading = `<!-- bridge-rule ${action.category}/${action.ruleId} -->`;
@@ -56,7 +56,7 @@ export class AssistantMemory {
     const stop = lines.indexOf(end, start + 1);
     if ((action.operation === "add") !== (start < 0) || (start >= 0 && (stop < 0 ||
       lines.indexOf(heading, start + 1) >= 0 || lines.slice(start + 1, stop).some(line => !line.startsWith("> "))))) {
-      throw new AgendaEditError("CONFLICT", "规则已变更，请重新核对 PROFILE.md。");
+      throw new AssistantError("CONFLICT", "规则已变更，请重新核对 PROFILE.md。");
     }
     const before = start < 0 ? null : lines.slice(start + 1, stop).map(line => line.slice(2)).join("\n")
       .replaceAll("&#64;", "@").replaceAll("&amp;", "&");
@@ -98,7 +98,7 @@ export class AssistantMemory {
   private profileSha256(): string | undefined {
     try { return sha256(this.profile()); }
     catch (error) {
-      if ((error instanceof AgendaEditError && error.code === "CONFLICT") || (error instanceof Error && "code" in error && error.code === "ENOENT")) return undefined;
+      if ((error instanceof AssistantError && error.code === "CONFLICT") || (error instanceof Error && "code" in error && error.code === "ENOENT")) return undefined;
       throw error;
     }
   }
@@ -106,7 +106,7 @@ export class AssistantMemory {
   private requireMemoryDirectory(): string {
     const parent = join(this.workspace, "memory");
     if (!lstatSync(parent, { throwIfNoEntry: false })?.isDirectory()) {
-      throw new AgendaEditError("CONFLICT", "宿主管理的记忆目录不可用。");
+      throw new AssistantError("CONFLICT", "宿主管理的记忆目录不可用。");
     }
     return parent;
   }

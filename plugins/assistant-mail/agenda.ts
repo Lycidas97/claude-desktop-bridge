@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import type { AgendaTodoInput, BridgeAgendaSnapshot } from "../../packages/protocol/src/assistant-agenda.js";
-import { AgendaCalendarDataError, AgendaEditError, AgendaStore } from "./agenda-store.js";
+import { AgendaCalendarDataError, AgendaStore } from "./agenda-store.js";
+import { AssistantError } from "./assistant-error.js";
 import { CalDavError, readCalDav } from "./caldav.js";
 import type { agendaRequests, freeSlotQuery } from "./agenda-contract.js";
 import type { z } from "zod";
@@ -62,7 +63,7 @@ export class AssistantAgendaService extends EventEmitter {
 
   async addSource(input: { url: string; label: string; user: string; credential: string }) {
     const url = new URL(input.url);
-    if (url.username || url.password || url.search || url.hash) throw new AgendaEditError("INVALID_PARAMS", "请输入不含账号、密码或查询参数的日历集合地址。");
+    if (url.username || url.password || url.search || url.hash) throw new AssistantError("INVALID_PARAMS", "请输入不含账号、密码或查询参数的日历集合地址。");
     if (!url.pathname.endsWith("/")) url.pathname += "/";
     const id = this.store.addSource({ url: url.href, label: input.label, user: input.user }, this.seal(input.credential));
     this.changed();
@@ -138,9 +139,9 @@ export class AssistantAgendaService extends EventEmitter {
   }
 
   private seal(credential: string): Uint8Array {
-    if (!this.credentials?.available()) throw new AgendaEditError("UNSUPPORTED", "此电脑没有可用的系统凭据库。");
+    if (!this.credentials?.available()) throw new AssistantError("UNSUPPORTED", "此电脑没有可用的系统凭据库。");
     try { return this.credentials.encrypt(credential); }
-    catch { throw new AgendaEditError("UNSUPPORTED", "系统凭据库暂不可用。"); }
+    catch { throw new AssistantError("UNSUPPORTED", "系统凭据库暂不可用。"); }
   }
 
   private changed() {

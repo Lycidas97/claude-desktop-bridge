@@ -2,7 +2,7 @@ import type { Readable } from "node:stream";
 import { domainToASCII } from "node:url";
 import { MailParser, type EmailAddress, type Headers, type HeaderValue } from "mailparser";
 import type { MailProposalAction, MailProposalDraft } from "../../packages/protocol/src/assistant-proposal.js";
-import { AgendaEditError } from "./agenda-store.js";
+import { AssistantError } from "./assistant-error.js";
 import type { AssistantMailService } from "./desktop.js";
 import { mailbox } from "./proposal-contract.js";
 import type { ProposalPayload } from "./proposal-store.js";
@@ -30,9 +30,9 @@ function readHeaders(source: Readable): Promise<Headers> {
     });
     parser.once("error", () => {
       source.destroy();
-      reject(new AgendaEditError("INVALID_PARAMS", "无法解析原邮件的邮件头。"));
+      reject(new AssistantError("INVALID_PARAMS", "无法解析原邮件的邮件头。"));
     });
-    parser.once("end", () => reject(new AgendaEditError("INVALID_PARAMS", "原邮件没有可用的邮件头。")));
+    parser.once("end", () => reject(new AssistantError("INVALID_PARAMS", "原邮件没有可用的邮件头。")));
     source.once("error", error => parser.destroy(error));
     source.pipe(parser);
     parser.resume();
@@ -45,12 +45,12 @@ export async function freezeMailDraft(mail: AssistantMailService, draft: MailPro
   const original = draft.kind === "mail.reply" ? mail.replySource(draft.accountKey, draft.mailRefId) : undefined;
   const headers = original && await readHeaders(original.source);
   const account = mail.smtpAccount(draft.accountKey);
-  if (!account) throw new AgendaEditError("INVALID_PARAMS", "请选择已启用且配置了 SMTP 的发件账号。");
+  if (!account) throw new AssistantError("INVALID_PARAMS", "请选择已启用且配置了 SMTP 的发件账号。");
 
   const originalFrom = headerAddresses(headers?.get("from"));
   const originalReplyTo = headerAddresses(headers?.get("reply-to"));
   const to = Array.from(new Set(draft.to ?? originalFrom));
-  if (!to.length) throw new AgendaEditError("INVALID_PARAMS", "原邮件没有可用的发件地址，请明确填写收件人。");
+  if (!to.length) throw new AssistantError("INVALID_PARAMS", "原邮件没有可用的发件地址，请明确填写收件人。");
   const message = {
     accountKey: draft.accountKey, from: account.smtp.from, to,
     cc: Array.from(new Set(draft.cc)).filter(address => !to.includes(address)),

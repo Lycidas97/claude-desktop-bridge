@@ -4981,7 +4981,7 @@ describe("manual session title persistence and automatic first-turn title genera
         return Response.json({ data: [{ id: "host-only-model" }] });
       }
       if (url === `${baseUrl}/v1/messages`) {
-        return Response.json({ content: [{ type: "text", text: "<title>Fix Desktop profile loading</title>" }] });
+        return Response.json({ stop_reason: "end_turn", content: [{ type: "text", text: "<title>Fix <Button> focus</title>" }] });
       }
       return new Response(null, { status: 503 });
     });
@@ -4999,8 +4999,8 @@ describe("manual session title persistence and automatic first-turn title genera
     async function expectTitleModel(requestId: string, model: string) {
       fetchImpl.mockClear();
       const session = await bridge.createSession("/new-project");
-      await bridge.startTurn({ ...input, sessionId: session.sessionId, text: "Investigate why the Desktop profile fails to load", requestId, idempotencyKey: requestId });
-      await vi.waitFor(() => expect(bridge.session(session.sessionId)?.title).toBe("Fix Desktop profile loading"));
+      await bridge.startTurn({ ...input, sessionId: session.sessionId, text: "Fix keyboard focus for the <Button> component", requestId, idempotencyKey: requestId });
+      await vi.waitFor(() => expect(bridge.session(session.sessionId)?.title).toBe("Fix <Button> focus"));
       expect(fetchImpl.mock.calls.filter(([, init]) => init?.method === "POST"), requestId).toEqual([
         [`${baseUrl}/v1/messages`, expect.objectContaining({
           headers: expect.objectContaining({ "x-api-key": source === "fixed" ? "desktop-key" : "host-key" }),
@@ -5094,8 +5094,7 @@ describe("manual session title persistence and automatic first-turn title genera
       expect(native.calls.some(call => call.method === "updateSession" && call.args[0] === s1.sessionId)).toBe(false);
       expect(bridge.session(s1.sessionId)?.title).toBe("原生自动生成标题");
 
-      // Case 2: Image-only fallback when no gateway is reachable.
-      fetchImpl.mockRejectedValueOnce(new Error("network offline"));
+      // Case 2: Image-only titles do not need a gateway request.
       const s2 = await bridge.createSession("/race-2");
       const changed = once(bridge, "changed");
       await bridge.startTurn({
@@ -5108,11 +5107,14 @@ describe("manual session title persistence and automatic first-turn title genera
       });
       await changed;
       expect(bridge.session(s2.sessionId)?.title).toBe("图片分析");
+      expect(fetchImpl).toHaveBeenCalledOnce();
 
       // Case 3: Concurrent rename() while autoTitleSession's final getSession read is already in flight.
-      fetchImpl.mockImplementationOnce(async () => new Response(JSON.stringify({
+      const titleResponse = vi.fn(async () => Response.json({
+        stop_reason: "end_turn",
         content: [{ type: "text", text: "<title>并发手动重命名</title>" }],
-      }), { status: 200 }));
+      }));
+      fetchImpl.mockImplementationOnce(titleResponse);
       const s3 = await bridge.createSession("/race-3");
       let getSessionCountForS3 = 0;
       let releaseFinalGetSession!: () => void;
@@ -5148,6 +5150,7 @@ describe("manual session title persistence and automatic first-turn title genera
       await new Promise(resolve => setTimeout(resolve, 25));
       native.call = originalCall;
 
+      expect(titleResponse).toHaveBeenCalledOnce();
       expect(native.calls.filter(call => call.method === "updateSession" && call.args[0] === s3.sessionId)).toEqual([
         { method: "updateSession", args: [s3.sessionId, { title: "用户并发手动改名" }] },
       ]);

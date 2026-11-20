@@ -171,8 +171,13 @@ describe("resolveActiveClaudeGateway and generateSessionTitle", () => {
     { name: "model self-description before an untagged title", texts: ["Request is to produce a title only.\n\n松港用户动线检查"] },
     { name: "extra text in another block", texts: ["<title>松港用户动线检查</title>", "Here is an explanation."] },
     { name: "a multiline tagged title", texts: ["<title>松港界面\n用户动线检查</title>"] },
+    { name: "a Unicode line separator", texts: [`<title>松港用户动线检查${String.fromCodePoint(0x2028)}这里是补充说明</title>`] },
+    { name: "a Unicode paragraph separator", texts: [`<title>松港用户动线检查${String.fromCodePoint(0x2029)}这里是补充说明</title>`] },
+    { name: "a code fence fragment", texts: ["<title>```json</title>"] },
+    { name: "duplicate title envelopes", texts: ["<title>松港界面检查</title><title>松港用户动线检查</title>"] },
     { name: "an overlong tagged title", texts: [`<title>${"字".repeat(41)}</title>`] },
-    { name: "a truncated response", texts: ["<title>松港用户动线检查</title>"], stopReason: "max_tokens" },
+    { name: "an output token limit", texts: ["<title>松港用户动线检查</title>"], stopReason: "max_tokens" },
+    { name: "a context window limit", texts: ["<title>松港用户动线检查</title>"], stopReason: "model_context_window_exceeded" },
     { name: "a refusal", texts: ["<title>松港用户动线检查</title>"], stopReason: "refusal" },
   ])("falls back to the first message for $name", async ({ texts, stopReason }) => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(Response.json({
@@ -190,6 +195,7 @@ describe("resolveActiveClaudeGateway and generateSessionTitle", () => {
 
   it("queries POST /v1/messages with bearer + x-api-key headers and falls back cleanly on HTTP/generic responses", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response(JSON.stringify({
+      stop_reason: "end_turn",
       content: [
         { type: "thinking", thinking: "internal" },
         { type: "text", text: '  <title>"远程开启 9229 调试端口。"</title>  ' },

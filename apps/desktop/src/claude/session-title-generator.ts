@@ -39,6 +39,7 @@ function trimCodePoints(value: string, limit: number): string {
 export function sanitizeGeneratedTitle(raw: string): string | undefined {
   let cleaned = stripLoneSurrogates(raw).trim()
     .replace(/^(?:title|session\s+title|标题|会话标题)\s*[:：-]\s*/iu, "");
+  if (cleaned.startsWith("```")) return undefined;
   for (let pass = 0; pass < 4; pass += 1) {
     const next = cleaned
       .replace(/^(?:[#>*`~-]+\s*)+/u, "")
@@ -293,15 +294,19 @@ export async function generateSessionTitle(options: {
     });
     if (!response.ok) return fallback;
     const payload = await response.json() as { content?: unknown; stop_reason?: unknown };
-    if (!Array.isArray(payload?.content) || payload.stop_reason === "max_tokens" || payload.stop_reason === "refusal") {
+    if (!Array.isArray(payload?.content)
+      || payload.stop_reason === "max_tokens"
+      || payload.stop_reason === "model_context_window_exceeded"
+      || payload.stop_reason === "refusal") {
       return fallback;
     }
     const reply = payload.content
       .filter((block): block is { type: "text"; text: string } => block?.type === "text" && typeof block.text === "string")
       .map(block => block.text)
       .join("\n");
-    const title = reply.trim().match(/^<title>([^<>\r\n]+)<\/title>$/u)?.[1];
-    return title === undefined ? fallback : sanitizeGeneratedTitle(title) ?? fallback;
+    const title = reply.trim().match(/^<title>([^\r\n\p{Zl}\p{Zp}]+)<\/title>$/u)?.[1];
+    if (title === undefined || /<\/?title>/u.test(title)) return fallback;
+    return sanitizeGeneratedTitle(title) ?? fallback;
   } catch {
     return fallback;
   }

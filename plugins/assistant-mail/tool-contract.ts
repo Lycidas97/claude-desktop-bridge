@@ -84,6 +84,7 @@ export const MailToolRequest = z.discriminatedUnion("name", [
   z.strictObject({ name: z.literal("mail.mark_read"), arguments: parameters["mail.mark_read"] }),
 ]);
 
+export const MAIL_TOOLS_STOP_SUFFIX = ".stop";
 export const MailToolConnection = z.object({ port: z.number().int().min(1).max(65535), token: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
 
 export const MAIL_SOURCE = {

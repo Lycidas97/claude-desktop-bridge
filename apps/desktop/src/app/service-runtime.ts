@@ -91,6 +91,7 @@ export async function createServiceRuntime(options: {
   userDataPath: string;
   onStage?(stage: string): void;
   hasConnectedUi?: () => boolean;
+  shouldStopManagedAdapters?: () => boolean;
   memoryRecorder?: Pick<MemoryRecorder, "diagnostics">;
 }): Promise<{
   controller: DesktopController;
@@ -204,7 +205,7 @@ export async function createServiceRuntime(options: {
         },
       },
     });
-    resources.defer("Assistant mail tools", () => mailTools.close());
+    resources.defer("Assistant mail tools", () => mailTools.close(options.shouldStopManagedAdapters?.()));
     const broker = new ClaudeDesktopBridge({
       settingsPath: connectorPaths().claudeSettings,
       eventLog,

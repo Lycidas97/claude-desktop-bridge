@@ -55,6 +55,7 @@ async function serviceMain(): Promise<void> {
   const memoryRecorder = new MemoryRecorder(join(serviceDirectory, "memory-v1.sqlite"), app.getVersion());
   resources.defer("Memory recorder", () => memoryRecorder.close());
   let stopping = false;
+  let stopManagedAdapters = false;
   let stopped = false;
   let shutdown: Promise<void> | undefined;
   let startup: Promise<void>;
@@ -98,12 +99,16 @@ async function serviceMain(): Promise<void> {
         userDataPath,
         onStage: reportStartup,
         hasConnectedUi: () => uiConnected(),
+        shouldStopManagedAdapters: () => stopManagedAdapters,
         memoryRecorder,
       });
       resources.defer("Service runtime", () => runtime.close());
       if (stopping) return;
       reportStartup("发布本机服务地址");
-      const server = await serveDesktopService({ addressPath, controller: runtime.controller, shutdown: () => app.quit() });
+      const server = await serveDesktopService({ addressPath, controller: runtime.controller, shutdown: reason => {
+        if (reason === "stop") stopManagedAdapters = true;
+        app.quit();
+      } });
       uiConnected = () => server.hasConnectedClients();
       resources.defer("Service listener", () => server.close());
       reportStartup("后台服务已就绪");

@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { chmod, writeFile } from "node:fs/promises";
+import { chmod, rename, writeFile } from "node:fs/promises";
 import { createServer, type ServerResponse } from "node:http";
 import { once } from "node:events";
 import { join } from "node:path";
@@ -11,7 +11,7 @@ import type { AssistantMailService } from "./desktop.js";
 import { MailAttachmentError } from "./mime.js";
 import { CompactHookRequest } from "./compact-hook.js";
 import type { ProposalExecutor } from "./proposal-executor.js";
-import { isProposalTool, MAIL_SOURCE, MANAGED_MAIL_TOOLS, MailToolRequest } from "./tool-contract.js";
+import { isProposalTool, MAIL_SOURCE, MAIL_TOOLS_STOP_SUFFIX, MANAGED_MAIL_TOOLS, MailToolRequest } from "./tool-contract.js";
 
 type MailTools = Pick<AssistantMailService, "page" | "readEvent" | "readAttachment" | "updateAnalysis" | "setProcessingStatus" | "markRead" | "triggers">;
 class ManagedMailTokenRevoked extends Error {}
@@ -133,17 +133,27 @@ export async function serveAssistantMailTools(options: {
   });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
+  const connectionPath = join(options.userDataPath, "private", "assistant", "mail-tools.json");
+  const marker = connectionPath + MAIL_TOOLS_STOP_SUFFIX;
+  const publishState = async (state: "running" | "stopped") => {
+    const pending = `${marker}.${process.pid}.tmp`;
+    await writeFile(pending, state, { mode: 0o600 });
+    await rename(pending, marker);
+  };
   try {
     const address = server.address() as { port: number };
-    const connectionPath = join(options.userDataPath, "private", "assistant", "mail-tools.json");
     await writeFile(connectionPath, JSON.stringify({ port: address.port, token }), { mode: 0o600 });
     await chmod(connectionPath, 0o600);
+    await publishState("running");
   } catch (error) {
     server.close();
     throw error;
   }
-  return { close: () => new Promise<void>((resolve, reject) => {
-    server.close(error => error ? reject(error) : resolve());
-    server.closeAllConnections();
-  }) };
+  return { async close(stopManagedAdapters = false) {
+    await new Promise<void>((resolve, reject) => {
+      server.close(error => error ? reject(error) : resolve());
+      server.closeAllConnections();
+    });
+    if (stopManagedAdapters) await publishState("stopped");
+  } };
 }

@@ -48,8 +48,8 @@ it("keeps the running task and pending approval alive across UI disconnect and r
     },
     diagnostics() { return { turns }; },
   });
-  let shutdown = false;
-  const server = await serveDesktopService({ addressPath, controller: controller as unknown as ServiceController, shutdown: () => { shutdown = true; } });
+  const shutdown = vi.fn();
+  const server = await serveDesktopService({ addressPath, controller: controller as unknown as ServiceController, shutdown });
   const first = new DesktopServiceClient(addressPath);
   const second = new DesktopServiceClient(addressPath);
   try {
@@ -61,7 +61,7 @@ it("keeps the running task and pending approval alive across UI disconnect and r
     await second.connect();
     expect(await second.call("snapshot")).toMatchObject({ running: true, turns: 1, permissions: [{ requestId }] });
     expect(second.servicePid).toBe(process.pid);
-    expect(shutdown).toBe(false);
+    expect(shutdown).not.toHaveBeenCalled();
     expect(await second.call("diagnostics")).toEqual({ turns: 1 });
     await second.call("dispatchLocal", { method: "permission.resolve", params: { requestId } });
     expect(await approval).toBe("once");
@@ -72,7 +72,10 @@ it("keeps the running task and pending approval alive across UI disconnect and r
     expect(await second.call("snapshot")).toMatchObject({ running: false, turns: 1, permissions: [] });
     await second.shutdown();
     await new Promise((resolve) => setImmediate(resolve));
-    expect(shutdown).toBe(true);
+    expect(shutdown).toHaveBeenCalledExactlyOnceWith("stop");
+    shutdown.mockClear();
+    controller.emit("quit-for-update");
+    await vi.waitFor(() => expect(shutdown).toHaveBeenCalledExactlyOnceWith("update"));
   } finally { first.close(); second.close(); await server.close(); }
 });
 

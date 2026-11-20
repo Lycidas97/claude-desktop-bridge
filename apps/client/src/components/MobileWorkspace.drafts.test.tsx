@@ -1517,6 +1517,18 @@ describe("mobile session renaming", () => {
     expect(renameAction()).toBeUndefined();
     expect(elements(tree).some(element => element.props.label === "同步此会话")).toBe(true);
   });
+
+  it("opens the rename dialog for a bare /rename only when the ⋯ menu can rename", async () => {
+    props = { ...props, onRenameSession: vi.fn().mockResolvedValue(undefined) };
+    draw(); text("/rename");
+    await form().props.onSubmit({ preventDefault() {} }); await settle();
+    expect(dialog()).toBeUndefined();
+    expect(JSON.stringify(elements(tree).map(element => element.props.children).filter(child => typeof child === "string"))).toContain("当前电脑版本不支持会话命令，请更新 Bridge");
+    enableRename(); text("/rename");
+    await form().props.onSubmit({ preventDefault() {} }); await settle();
+    expect(titleInput().props.value).toBe("Session A");
+    expect(props.onSendTurn).not.toHaveBeenCalled();
+  });
 });
 
 describe("session update timestamps", () => {

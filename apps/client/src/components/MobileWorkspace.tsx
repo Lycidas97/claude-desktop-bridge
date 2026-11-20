@@ -418,12 +418,11 @@ export function MobileWorkspace({
     && snapshot?.host.capabilities.includes("section.move.v1")
     && menuSession?.allowedActions?.canMoveSection,
   );
-  const menuSupportsRename = Boolean(
-    menuSession && (
-      (onRenameSession && snapshot?.host.capabilities.includes("session.rename.v1"))
-      || (onRunSessionCommand && snapshot?.host.capabilities.includes("session.command.v1") && desktopRuntimeId(menuSession) === "claude-desktop")
-    ),
+  const canRename = (session: BridgeSessionInfo) => Boolean(
+    (onRenameSession && snapshot?.host.capabilities.includes("session.rename.v1"))
+    || (onRunSessionCommand && snapshot?.host.capabilities.includes("session.command.v1") && desktopRuntimeId(session) === "claude-desktop"),
   );
+  const menuSupportsRename = Boolean(menuSession && canRename(menuSession));
   const renameCanSave = Boolean(renameTitle.trim() && renameTitle.trim() !== menuSession?.title && !sessionActionBusy);
   const menuSupportsFork = Boolean(menuSession && menuSession.projectId !== managedProjectId && onForkSession && desktopRuntimeId(menuSession) === "claude-desktop");
 
@@ -1073,12 +1072,12 @@ export function MobileWorkspace({
                 setMoveMenuSessionId(undefined);
                 setMenuSessionId(selectedSession.sessionId);
               },
-              requestRename(target) {
+              requestRename: canRename(selectedSession) ? (target) => {
                 setMenuSessionId(target.sessionId);
                 setRenameTitle(target.title);
                 setSessionActionError(undefined);
                 setRenameOpen(true);
-              },
+              } : undefined,
             }}
             refreshing={refreshing}
             onRefresh={runRefresh}

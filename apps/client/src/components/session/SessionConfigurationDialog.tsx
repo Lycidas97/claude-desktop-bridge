@@ -138,7 +138,9 @@ export function SessionConfigurationDialog({
   );
   const effortLevels = modelEffortLevels(selectedModel, configuration?.availableEffortLevels ?? []);
   const modelChanged = modelOptions.length > 0 && model !== (configuration?.model ?? modelOptions[0]?.value);
-  const configuredEffort = modelChanged ? undefined : configuration?.effort;
+  // A model change keeps the session's effort when the new model offers it; otherwise Desktop picks one.
+  const configuredEffort = configuration?.effort && (!modelChanged || effortLevels.includes(configuration.effort))
+    ? configuration.effort : undefined;
   const pickedEffort = effortDraft && effortLevels.includes(effortDraft) ? effortDraft : undefined;
   const shownEffort = effortDraft === null ? undefined : pickedEffort ?? configuredEffort;
 

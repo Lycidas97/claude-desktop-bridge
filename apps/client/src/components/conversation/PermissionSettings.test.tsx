@@ -200,6 +200,26 @@ describe("session effort", () => {
     expect(props.onSave).toHaveBeenCalledExactlyOnceWith({ model: "next-model", effort: null });
   });
 
+  it("keeps showing the session effort that a model-only save leaves in place", async () => {
+    const loaded: BridgeSessionConfiguration = {
+      ...configuration,
+      effort: "high",
+      availableModels: [
+        { value: "current-model", displayName: "Current" },
+        { value: "next-model", displayName: "Next", supportedEffortLevels: ["low", "medium", "high"] },
+      ],
+      availableEffortLevels: ["low", "medium", "high"],
+    };
+    const props = { session, onLoad: vi.fn().mockResolvedValue(loaded), onSave: vi.fn().mockResolvedValue({ ...loaded, model: "next-model" }), onClose: vi.fn() };
+    const draw = () => render(() => <SessionConfigurationDialog {...props} />);
+    draw(); await settle();
+    elements(draw()).find(element => element.type === SelectMenu && element.props.ariaLabel === "模型")!.props.onChange("next-model");
+    expect(button(draw(), "高").props["aria-pressed"]).toBe(true);
+    expect(button(draw(), "默认").props["aria-pressed"]).toBe(false);
+    button(draw(), "保存配置").props.onClick(); await settle();
+    expect(props.onSave).toHaveBeenCalledExactlyOnceWith({ model: "next-model" });
+  });
+
   it("starts unset and shows the effort Desktop returns after an explicit change", async () => {
     const loaded = { ...configuration, availableEffortLevels: ["low", "medium", "high"] };
     const props = {

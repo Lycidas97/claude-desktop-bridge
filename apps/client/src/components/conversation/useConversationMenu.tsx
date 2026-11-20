@@ -10,7 +10,8 @@ import { SessionPrActions } from "./SessionPrBar.js";
 
 export type ConversationMenuBindings = {
   open(): void;
-  requestRename(session: BridgeSessionInfo): void;
+  /** Present only when the computer can rename this session, so /rename follows the ⋯ menu. */
+  requestRename?: ((session: BridgeSessionInfo) => void) | undefined;
 } | {
   rename?: ((sessionId: string, title: string) => Promise<void>) | undefined;
   move?: ((sessionId: string, sectionId: string | null) => Promise<{ session?: BridgeSessionInfo; projects?: BridgeProjectInfo[] } | void>) | undefined;
@@ -245,7 +246,9 @@ export function useConversationMenu({ hostId, draftKey, previousDraftKeyRef, ses
       }
     },
     closeOnBack,
-    onRename: external ? () => external.requestRename(session) : (onRenameSession || onRunSessionCommand) ? startRename : undefined,
+    onRename: external
+      ? external.requestRename && (() => external.requestRename!(session))
+      : menuSupportsRename ? startRename : undefined,
     canSync: canSyncSession,
     refreshing: effectiveRefreshing,
     refresh: runInternalRefresh,

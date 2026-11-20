@@ -695,7 +695,7 @@ export function ConversationView({
   const { streamRef, onScroll } = useConversationScroll({
     sessionId: session.sessionId,
     sessionView: isAssistant ? "conversation" : effectiveSessionView,
-    streamVisible: !isAssistant || (visible && !transcriptHidden),
+    streamVisible: visible && !transcriptHidden,
     history,
     openedEvidenceIds,
     inlineProposalLayout: JSON.stringify([

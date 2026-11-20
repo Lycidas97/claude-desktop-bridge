@@ -315,10 +315,14 @@ export function EvidencePanel({
   }
 
   function retryFailedBundleLoads(): void {
+    // A failed later page retries from its saved cursor; a failed first page starts over.
+    for (const bundle of summaryBundles) {
+      if (detailPages[bundle.id]?.error && detailPages[bundle.id]?.nextCursor) loadMoreBundleArtifacts(bundle.id);
+    }
     setDetailPages((previous) => {
       const next = { ...previous };
       for (const bundle of summaryBundles) {
-        if (next[bundle.id]?.error) {
+        if (next[bundle.id]?.error && !next[bundle.id]?.nextCursor) {
           delete next[bundle.id];
         }
       }

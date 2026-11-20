@@ -267,6 +267,29 @@ describe("deduplicated chronological output-file evidence list", () => {
     expect(loadDetails.mock.calls.filter(([, , cursor]) => cursor === "second")).toHaveLength(1);
   });
 
+  it("retries a failed later page from its saved cursor and keeps the loaded pages", async () => {
+    loadDetails.mockImplementation(async (evidenceId, kind, cursor) => ({
+      evidenceId,
+      kind,
+      items: Array.from({ length: 30 }, (_, i) => artifact(`file-${cursor ?? "first"}-${i}`)),
+      ...(cursor === "third" ? { hasMore: false } : { nextCursor: cursor ? "third" : "second", hasMore: true }),
+    }) as BridgeEvidenceDetailPage);
+    draw();
+    await settle();
+    const more = () => elements().find((element) => element.type === "button" && text(element.props.children).includes("加载更多"))!;
+    more().props.onClick();
+    await settle();
+    loadDetails.mockRejectedValueOnce(new Error("third page unavailable"));
+    more().props.onClick();
+    await settle();
+    expect(text()).toContain("third page unavailable");
+    elements().find((element) => element.props["aria-label"] === "重试加载成果")!.props.onClick();
+    await settle();
+    expect(loadDetails.mock.calls.map(([, , cursor]) => cursor)).toEqual([undefined, "second", "third", "third"]);
+    expect(text()).toContain("共 90 个文件");
+    expect(text()).toContain("file-second-0.txt");
+  });
+
   it("deduplicates repeated edits across turns in latest-updated descending order while projecting latest snapshot", async () => {
     const turn2 = bundle({
       id: "turn-2",

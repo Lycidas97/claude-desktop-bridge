@@ -281,8 +281,19 @@ export async function verifyHistoryPagination(page, host, steps, directory) {
     const node = [...root.querySelectorAll("[data-stream-key]")].find(candidate => candidate.getBoundingClientRect().bottom > rect.top + 1);
     return { key: node.getAttribute("data-stream-key"), offset: node.getBoundingClientRect().top - rect.top };
   });
+  let releaseRetry;
+  host.historyGate = new Promise(resolve => { releaseRetry = resolve; });
   await page.getByRole("button", { name: "重试加载更早消息", exact: true }).click();
   await eventually(() => host.requests.filter(request => request.method === "session.history").length, 3, "The retry button explicitly retries the retained cursor");
+  // The retried page lands while a new chat opened from ⋯ covers the conversation.
+  const itemsBeforeRetry = await stream.locator("article.conversation-item").count();
+  await page.locator(".m-header:visible").getByRole("button", { name: "会话操作", exact: true }).click();
+  await page.locator(".m-sheet").getByRole("button", { name: "新建会话", exact: true }).click();
+  await page.locator(".new-chat-canvas").getByRole("heading", { name: "新建会话", exact: true }).waitFor();
+  host.historyGate = undefined;
+  releaseRetry();
+  await eventually(async () => await stream.locator("article.conversation-item").count() > itemsBeforeRetry, true, "The retried page is prepended while the conversation is hidden");
+  await page.locator(".m-header:visible").getByRole("button", { name: "返回会话", exact: true }).click();
   await stream.locator(".load-older-button").waitFor({ state: "hidden" });
   await assertAnchor(beforeRetry);
   const older = host.requests.filter(request => request.method === "session.history");
@@ -295,26 +306,7 @@ export async function verifyHistoryPagination(page, host, steps, directory) {
   assert.equal(new Set(keys).size, keys.length, "History pages do not duplicate visible message identities");
   assert.equal(host.requests.filter(request => request.method === "turn.start" || request.method === "turn.steer").length, 0);
   await page.screenshot({ path: resolve(directory, "history-pagination-complete.png"), fullPage: true });
-  steps.push("failed paging preserves data/cursor for manual retry; retry preserves the anchor, and the last page stops loading");
-
-  const opensBefore = host.requests.filter(request => request.method === "session.open").length;
-  const itemsBefore = await stream.locator("article.conversation-item").count();
-  const reading = await stream.evaluate(root => {
-    root.scrollTop = Math.floor(root.scrollHeight / 3);
-    root.dispatchEvent(new Event("scroll"));
-    const rect = root.getBoundingClientRect();
-    const node = [...root.querySelectorAll("[data-stream-key]")].find(candidate => candidate.getBoundingClientRect().bottom > rect.top + 1);
-    return { key: node.getAttribute("data-stream-key"), offset: node.getBoundingClientRect().top - rect.top };
-  });
-  await page.locator(".m-header:visible").getByRole("button", { name: "会话操作", exact: true }).click();
-  await page.locator(".m-sheet").getByRole("button", { name: "新建会话", exact: true }).click();
-  await page.locator(".new-chat-canvas").getByRole("heading", { name: "新建会话", exact: true }).waitFor();
-  await page.locator(".m-header:visible").getByRole("button", { name: "返回会话", exact: true }).click();
-  await page.getByRole("heading", { name: originalTitle, exact: true }).waitFor();
-  await assertAnchor(reading);
-  assert.equal(await stream.locator("article.conversation-item").count(), itemsBefore, "Returning from new chat keeps the loaded older pages");
-  assert.equal(host.requests.filter(request => request.method === "session.open").length, opensBefore, "Returning from new chat does not reopen the session");
-  steps.push("cancelling a new chat opened from the conversation ⋯ returns to the same loaded pages and reading position without session.open");
+  steps.push("failed paging preserves data/cursor for manual retry; a retried page that lands behind new chat preserves the anchor, and the last page stops loading");
 
   await stream.evaluate(root => { root.scrollTop = root.scrollHeight; root.dispatchEvent(new Event("scroll")); });
   const streaming = stream.locator("article.conversation-item.assistant").filter({ hasText: "流式滚动起始片段" });
@@ -341,6 +333,39 @@ export async function verifyHistoryPagination(page, host, steps, directory) {
     await eventually(() => stream.evaluate(root => root.scrollHeight - root.clientHeight - root.scrollTop < 4), true, "Returning to the bottom resumes streaming follow");
   }
   steps.push("streaming follows at the bottom, preserves the reader's position after 40/80/640px upward scrolling, and follows again only after returning to the bottom");
+
+  const opensBefore = host.requests.filter(request => request.method === "session.open").length;
+  const itemsBefore = await stream.locator("article.conversation-item").count();
+  const reading = await stream.evaluate(root => {
+    root.scrollTop = Math.floor(root.scrollHeight / 3);
+    root.dispatchEvent(new Event("scroll"));
+    const rect = root.getBoundingClientRect();
+    const node = [...root.querySelectorAll("[data-stream-key]")].find(candidate => candidate.getBoundingClientRect().bottom > rect.top + 1);
+    return { key: node.getAttribute("data-stream-key"), offset: node.getBoundingClientRect().top - rect.top };
+  });
+  await page.locator(".m-header:visible").getByRole("button", { name: "会话操作", exact: true }).click();
+  await page.locator(".m-sheet").getByRole("button", { name: "新建会话", exact: true }).click();
+  await page.locator(".new-chat-canvas").getByRole("heading", { name: "新建会话", exact: true }).waitFor();
+  // Streaming continues while the conversation is hidden underneath the new chat.
+  await host.emit("assistant.delta", { text: `\n\n新建页停留期间的流式片段。${"隐藏时的输出不应改动阅读位置。".repeat(6)}` }, { turnId: "scroll-follow-turn", itemId: "scroll-follow-message" });
+  await streaming.filter({ hasText: "新建页停留期间的流式片段" }).waitFor({ state: "attached" });
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  await page.locator(".m-header:visible").getByRole("button", { name: "返回会话", exact: true }).click();
+  await page.getByRole("heading", { name: originalTitle, exact: true }).waitFor();
+  await assertAnchor(reading);
+  assert.equal(await stream.locator("article.conversation-item").count(), itemsBefore, "Returning from new chat keeps the loaded older pages");
+  assert.equal(host.requests.filter(request => request.method === "session.open").length, opensBefore, "Returning from new chat does not reopen the session");
+  steps.push("cancelling a new chat opened from the conversation ⋯ returns to the same loaded pages and reading position without session.open, even after a streaming update arrived while hidden");
+
+  await stream.evaluate(root => { root.scrollTop = root.scrollHeight; root.dispatchEvent(new Event("scroll")); });
+  await page.locator(".m-header:visible").getByRole("button", { name: "会话操作", exact: true }).click();
+  await page.locator(".m-sheet").getByRole("button", { name: "新建会话", exact: true }).click();
+  await page.locator(".new-chat-canvas").getByRole("heading", { name: "新建会话", exact: true }).waitFor();
+  await host.emit("assistant.delta", { text: `\n\n新建页停留期间的跟随片段。${"跟随底部的读者回来后应看到最新输出。".repeat(6)}` }, { turnId: "scroll-follow-turn", itemId: "scroll-follow-message" });
+  await streaming.filter({ hasText: "新建页停留期间的跟随片段" }).waitFor({ state: "attached" });
+  await page.locator(".m-header:visible").getByRole("button", { name: "返回会话", exact: true }).click();
+  await eventually(() => stream.evaluate(root => root.scrollHeight - root.clientHeight - root.scrollTop < 4), true, "A reader following the bottom sees output that arrived while the new chat was open");
+  steps.push("a reader following the bottom returns from new chat to the output streamed while hidden");
 }
 
 export async function verifyNativeCompaction(page, host, steps, directory) {

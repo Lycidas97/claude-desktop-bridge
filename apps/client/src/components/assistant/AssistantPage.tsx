@@ -421,7 +421,7 @@ function InboxMailList({ mail, filed, canMarkJunk, onOpenFiled, onDiscuss }: {
 function ScopedMailList({ mail, folder, query, renderCard }: {
   mail: NonNullable<ReturnType<typeof useAssistantMail>>; folder?: BridgeMailCategory; query?: string; renderCard(card: BridgeMailCard): ReactNode;
 }) {
-  const { online, request, supportsCategories } = mail;
+  const { online, request, supportsCategories, order } = mail;
   const changeToken = mail.assistant?.changeToken ?? "";
   const [page, setPage] = useState<BridgeMailCache>({ cards: [], changeToken: "" });
   const pageRef = useRef(page);
@@ -430,8 +430,8 @@ function ScopedMailList({ mail, folder, query, renderCard }: {
   const [error, setError] = useState("");
   const loadPage = useCallback(async (cursor?: string) => mailResult<{ mailPage: BridgeMailPage }>(await request("plugin.assistant-mail.list", {
     includeHistory: true, ...(folder ? { folder } : { query }), ...(cursor ? { cursor } : {}),
-    ...(supportsCategories ? { includeCustomCategories: true } : {}),
-  })).mailPage, [request, folder, query, supportsCategories]);
+    ...(supportsCategories ? { includeCustomCategories: true } : {}), ...(order ? { order } : {}),
+  })).mailPage, [request, folder, query, supportsCategories, order]);
   useEffect(() => {
     if (!online) return;
     let current = true;
@@ -445,8 +445,9 @@ function ScopedMailList({ mail, folder, query, renderCard }: {
   async function loadMore() {
     setLoading(true); setError("");
     try {
-      const next = await loadPage(page.nextCursor);
-      setPage({ ...next, cards: mergeMailCards(page.cards, next.cards), changeToken });
+      const cursor = page.order === order ? page.nextCursor : undefined;
+      const next = await loadPage(cursor);
+      setPage({ ...next, cards: cursor ? mergeMailCards(page.cards, next.cards, next.order) : next.cards, changeToken });
     } catch (reason) { setError(reason instanceof Error ? reason.message : "邮件读取失败"); }
     finally { setLoading(false); }
   }

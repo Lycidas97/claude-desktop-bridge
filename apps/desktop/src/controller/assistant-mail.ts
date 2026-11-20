@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { ARTIFACT_MAX_BYTES, ASSISTANT_ATTENTION_CAPABILITY, ASSISTANT_MAIL_CATEGORIES_CAPABILITY, ASSISTANT_MAIL_FILING_CAPABILITY, ASSISTANT_MAIL_SHARED_AUTH_CAPABILITY, ASSISTANT_MEMORY_POLICY, ASSISTANT_SMTP_CAPABILITY, isAssistantWorkspacePolicy, isMailPollInterval, mailAttachmentPreviewKind } from "@bridge/protocol";
+import { ARTIFACT_MAX_BYTES, ASSISTANT_ATTENTION_CAPABILITY, ASSISTANT_MAIL_CATEGORIES_CAPABILITY, ASSISTANT_MAIL_FILING_CAPABILITY, ASSISTANT_MAIL_RECEIVED_ORDER_CAPABILITY, ASSISTANT_MAIL_SHARED_AUTH_CAPABILITY, ASSISTANT_MEMORY_POLICY, ASSISTANT_SMTP_CAPABILITY, isAssistantWorkspacePolicy, isMailPollInterval, mailAttachmentPreviewKind } from "@bridge/protocol";
 import { AgendaEditError } from "../../../../plugins/assistant-mail/agenda-store.js";
 import type { AssistantAgendaService } from "../../../../plugins/assistant-mail/agenda.js";
 import { configureSmtp, saveMailAccount } from "../../../../plugins/assistant-mail/proposal-contract.js";
@@ -35,6 +35,7 @@ export const ASSISTANT_MAIL_CAPABILITIES = [
   "plugin.assistant-mail.polling.v1",
   "plugin.assistant-mail.attachments.v1",
   "plugin.assistant-mail.history.v1",
+  ASSISTANT_MAIL_RECEIVED_ORDER_CAPABILITY,
   "plugin.assistant-mail.junk.v1",
   ASSISTANT_MAIL_FILING_CAPABILITY,
   ASSISTANT_MAIL_CATEGORIES_CAPABILITY,
@@ -116,16 +117,22 @@ function projectMailCard(event: NonNullable<ReturnType<AssistantMailService["eve
 }
 
 function assistantMailPage(mail: AssistantMailService, options: z.infer<typeof MailPageParameters>, includeHistory: boolean,
-  scope: MailPageScope, includeCustomCategories: boolean, delivery?: (mailRefId: string) => BridgeMailCard["nativeDelivery"] | undefined): BridgeMailPage {
-  const page = mail.page(options, includeHistory, scope, includeCustomCategories);
+  scope: MailPageScope, includeCustomCategories: boolean, delivery: ((mailRefId: string) => BridgeMailCard["nativeDelivery"] | undefined) | undefined,
+  receivedOrder: boolean): BridgeMailPage {
+  const page = mail.page(options, includeHistory, scope, includeCustomCategories, receivedOrder);
   const folderCounts = scope === "inbox" && !options.cursor ? mail.folderCounts(includeHistory, includeCustomCategories) : undefined;
-  const filedTimelineCards = folderCounts && Object.keys(folderCounts).length
-    ? mail.page({}, false, "legacy", includeCustomCategories).events.filter(event => event.folder).map(event => projectMailCard(event, delivery?.(event.mailRefId))) : [];
+  const timelineEvents = receivedOrder && !options.cursor && (scope === "inbox" || scope === "legacy")
+    ? mail.page({}, false, scope, includeCustomCategories).events.filter(event => !page.events.some(card => card.mailRefId === event.mailRefId)) : [];
+  if (folderCounts && Object.keys(folderCounts).length) {
+    timelineEvents.push(...mail.page({}, false, "legacy", includeCustomCategories).events.filter(event => event.folder));
+  }
+  const timelineCards = timelineEvents.map(event => projectMailCard(event, delivery?.(event.mailRefId)));
   return {
     cards: page.events.map(event => projectMailCard(event, delivery?.(event.mailRefId))),
     ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
+    ...(receivedOrder ? { order: "received" } : {}),
     ...(folderCounts ? { folderCounts } : {}),
-    ...(filedTimelineCards.length ? { filedTimelineCards } : {}),
+    ...(timelineCards.length ? receivedOrder ? { timelineCards } : { filedTimelineCards: timelineCards } : {}),
   };
 }
 
@@ -436,7 +443,8 @@ export class AssistantMailCoordinator {
     publish: () => Promise<DesktopControlSnapshot>,
   ): Promise<unknown> {
     if (method === "plugin.assistant-mail.list") {
-      const { client: _client, includeHistory, includeCustomCategories, folder, query, ...pageParams } = params;
+      const { client: _client, includeHistory, includeCustomCategories, folder, query, order, ...pageParams } = params;
+      if (order !== undefined && order !== "received") throw new BridgeRequestError("INVALID_PARAMS", "邮件排序无效。");
       const scope = MailFolderId.optional().safeParse(folder);
       const search = MailSearchQuery.optional().safeParse(query);
       if (!scope.success || !search.success || (scope.data && search.data) ||
@@ -451,7 +459,7 @@ export class AssistantMailCoordinator {
         search.data ? { query: search.data } : scope.data ?? "legacy", includeCustomCategories === true, this.dispatcher && (mailRefId => {
         const batch = this.mail.triggers.batchForEvent("mail.received", mailRefId);
         return batch ? this.dispatcher!.project(batch, enabledSessionId) : undefined;
-      })) };
+      }), order === "received") };
     }
     if (method === "plugin.assistant-mail.batch") {
       const sessionId = stringParam(params, "sessionId")!;

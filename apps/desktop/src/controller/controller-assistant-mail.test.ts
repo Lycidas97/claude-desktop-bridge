@@ -147,14 +147,51 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
-async function record(uid: number, source = `Content-Type: text/plain; charset=utf-8\r\n\r\nBody ${uid}`) {
+async function record(uid: number, source = `Content-Type: text/plain; charset=utf-8\r\n\r\nBody ${uid}`, receivedAt = "2026-11-14T12:00:00.000Z") {
   return (await store.record({
     accountKey: "synthetic-account", mailbox: "INBOX", uidValidity: "1", uid, source: Buffer.from(source),
-    subject: `Subject ${uid}`, from: [{ name: "Sender", address: "sender@example.test" }], receivedAt: "2026-11-14T12:00:00.000Z",
+    subject: `Subject ${uid}`, from: [{ name: "Sender", address: "sender@example.test" }], receivedAt,
   }))!;
 }
 
 describe("assistant mail mobile RPC projections", () => {
+  it("negotiates receipt order without reinterpreting cursors for older clients", async () => {
+    const newest = await record(1);
+    const late = await record(2, undefined, "2026-11-13T12:00:00.000Z");
+    expect((await run.publish()).host.capabilities).toContain("plugin.assistant-mail.received-order.v1");
+    const list = (params: Record<string, unknown>) => run.request<{ mailPage: BridgeMailPage }>("plugin.assistant-mail.list", { limit: 1, folder: "inbox", ...params });
+
+    const { mailPage: legacy } = await list({});
+    expect(legacy).toMatchObject({ cards: [{ mailRefId: late.mailRefId }], nextCursor: String(late.seq) });
+    expect(legacy).not.toHaveProperty("order");
+    expect(await list({ cursor: legacy.nextCursor })).toMatchObject({ mailPage: { cards: [{ mailRefId: newest.mailRefId }] } });
+
+    const { mailPage: received } = await list({ order: "received" });
+    expect(received).toMatchObject({ cards: [{ mailRefId: newest.mailRefId }], order: "received", nextCursor: String(newest.seq) });
+    expect(await list({ order: "received", cursor: received.nextCursor })).toMatchObject({ mailPage: { cards: [{ mailRefId: late.mailRefId }], order: "received" } });
+    await expect(list({ order: "recorded" })).rejects.toMatchObject({ code: "INVALID_PARAMS" });
+  });
+
+  it("keeps live inbox and filed conversation cards when newer history fills the first page", async () => {
+    const live = await record(1, undefined, "2026-11-13T12:00:00.000Z");
+    const filedIds = [];
+    for (let uid = 1; uid <= 50; uid++) {
+      const filed = await record(uid + 1);
+      store.setFolder(filed.mailRefId, "account", "user");
+      filedIds.push(filed.mailRefId);
+      await store.record({
+        accountKey: "synthetic-history", mailbox: "INBOX", uidValidity: "1", uid, source: Buffer.from("Subject: fixture\r\n\r\nHistorical body"),
+        subject: "History", from: [], receivedAt: "2026-11-14T12:00:00.000Z", historical: true,
+      });
+    }
+    const { mailPage } = await run.request<{ mailPage: BridgeMailPage }>("plugin.assistant-mail.list", { folder: "inbox", includeHistory: true, order: "received" });
+
+    expect(mailPage.cards).toHaveLength(50);
+    expect(mailPage.cards.every(card => card.seq < 0)).toBe(true);
+    expect(mailPage.timelineCards?.filter(card => !card.folder)).toMatchObject([{ mailRefId: live.mailRefId, seq: live.seq, nativeDelivery: { state: "not-submitted" } }]);
+    expect(mailPage.timelineCards?.filter(card => card.folder === "account").map(card => card.mailRefId)).toEqual(filedIds.reverse());
+  });
+
   it("projects a new arrival immediately and searches it after automatic filing", async () => {
     service.setBinding({ assistantId: "assistant", nativeSessionId: "native-first", sectionId: null, previousSessionIds: [],
       managed: { path: "/offline", policy: "stage1-fenced-workspace", token: "fixture", automaticDelivery: true } });

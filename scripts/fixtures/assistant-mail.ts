@@ -23,6 +23,8 @@ export async function startAssistantMailFixture(directory: string, historyCount 
     return last;
   }
   append(historyCount);
+  // The first UID outside the initial 20 has a date between the two newest cards.
+  if (historyCount > 20) messages[historyCount - 21].internalDate = new Date(Date.UTC(2026, 10, 12, 2, historyCount - 1, 30));
   const credentials = new Map<string, string>();
   const service = new AssistantMailService({ userDataPath: directory,
     createClient: ({ host, auth }) => {

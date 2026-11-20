@@ -53,6 +53,36 @@ describe("refreshMailPages", () => {
     expect(current).toEqual({ cards: [card(6), card(5), card(4)], nextCursor: "4", changeToken: "before" });
   });
 
+  it("starts from a single first page after a change of order, even when the old first page contains the oldest receipt", async () => {
+    const late = card(501, { receivedAt: "2026-11-13T00:00:00.000Z" });
+    const newer = Array.from({ length: 500 }, (_, index) => card(index - 500));
+    const all = [...newer, late];
+    const load = vi.fn(async (cursor?: string): Promise<BridgeMailPage> => {
+      const start = cursor ? all.findIndex(mail => String(mail.seq) === cursor) + 1 : 0;
+      const cards = all.slice(start, start + 50);
+      return { cards, order: "received", ...(start + 50 < all.length ? { nextCursor: String(cards.at(-1)!.seq) } : {}) };
+    });
+
+    const page = await refreshMailPages(load, { cards: [late, ...newer.slice(-49).reverse()], changeToken: "legacy", nextCursor: "-49" }, "received");
+    expect(load.mock.calls).toEqual([[undefined]]);
+    expect(page).toEqual({ cards: newer.slice(0, 50), nextCursor: "-451", order: "received", changeToken: "received" });
+  });
+
+  it("still refreshes through the loaded receipt range when the order is unchanged", async () => {
+    const late = card(7, { receivedAt: "2026-11-13T00:00:00.000Z" });
+    const live = card(5);
+    const history = card(-8);
+    const latest = card(-9, { receivedAt: "2026-11-15T00:00:00.000Z" });
+    const load = vi.fn<(cursor?: string) => Promise<BridgeMailPage>>()
+      .mockResolvedValueOnce({ cards: [latest, history], nextCursor: "-8", order: "received" })
+      .mockResolvedValueOnce({ cards: [live, late], nextCursor: "7", order: "received" });
+
+    expect(await refreshMailPages(load, { cards: [history, live, late], changeToken: "old", order: "received", nextCursor: "7" }, "updated")).toEqual({
+      cards: [latest, history, live, late], nextCursor: "7", order: "received", changeToken: "updated",
+    });
+    expect(load.mock.calls).toEqual([[undefined], ["-8"]]);
+  });
+
   it("re-reads older analysis and processing status even when no insertion sequence changes", async () => {
     const current: BridgeMailCache = { cards: [card(6), card(5), card(4), card(3)], nextCursor: "3", changeToken: "before" };
     const updated = card(3, {

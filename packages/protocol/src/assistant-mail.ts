@@ -24,6 +24,7 @@ export const MAIL_ATTENTION_LEVELS = ["ignore", "read", "action"] as const;
 export type MailAttentionLevel = (typeof MAIL_ATTENTION_LEVELS)[number];
 export const ASSISTANT_MAIL_FILING_CAPABILITY = "plugin.assistant-mail.filing.v1";
 export const ASSISTANT_MAIL_CATEGORIES_CAPABILITY = "plugin.assistant-mail.categories.v1";
+export const ASSISTANT_MAIL_RECEIVED_ORDER_CAPABILITY = "plugin.assistant-mail.received-order.v1";
 export const ASSISTANT_ATTENTION_CAPABILITY = "plugin.assistant-mail.attention.v1";
 
 export type AssistantAttentionItem = { id: string; title: string } & (
@@ -137,7 +138,7 @@ export type BridgeMailCategoryChange =
 
 
 export interface BridgeMailCard {
-  /** Descending list order: positive for live arrivals, negative for historical imports. */
+  /** Insertion sequence: positive for live arrivals, negative for historical imports. */
   seq: number;
   mailRefId: string;
   accountKey: string;
@@ -171,9 +172,13 @@ export interface BridgeMailCard {
 export interface BridgeMailPage {
   cards: BridgeMailCard[];
   nextCursor?: string;
+  /** Orders both cards and cursors. Omitted for legacy sequence order. */
+  order?: "received";
   folderCounts?: Partial<Record<BridgeMailCategory, number>>;
-  /** Recent live cards kept for the assistant conversation, never rendered in the inbox. */
+  /** Filed live cards for legacy sequence-order inboxes. */
   filedTimelineCards?: BridgeMailCard[];
+  /** Recent live cards absent from the receipt-order first page, for the assistant conversation. */
+  timelineCards?: BridgeMailCard[];
 }
 
 export interface BridgeMailDetail {

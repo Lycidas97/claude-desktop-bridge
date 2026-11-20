@@ -23,6 +23,7 @@ import {
   type PairingBundle,
   type StoredIdentity,
 } from "@bridge/protocol";
+import { mailCardOrder } from "./assistant-mail.js";
 
 const DATABASE_NAME = "claude-bridge";
 const DATABASE_VERSION = 5;
@@ -644,7 +645,7 @@ export class BridgeVault {
 
   async saveMailCache(crypto: BridgeCrypto, cache: BridgeMailCache): Promise<void> {
     const cards = cache.cards.length > MAIL_CACHE_LIMIT
-      ? [...cache.cards].sort((left, right) => right.seq - left.seq).slice(0, MAIL_CACHE_LIMIT)
+      ? [...cache.cards].sort(mailCardOrder(cache.order)).slice(0, MAIL_CACHE_LIMIT)
       : cache.cards;
     const envelope = await crypto.encrypt({
       kind: "response",

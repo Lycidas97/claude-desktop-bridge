@@ -226,22 +226,27 @@ export async function verifyAssistantMailHistory(page, host, steps, directory, v
   await older.waitFor({ state: "hidden" });
   assert.equal(new Set(await cards.evaluateAll(elements => elements.map(element => element.dataset.mailId))).size, 25);
   await cards.first().getByText("收件记录 25", { exact: true }).waitFor();
+  assert.equal(await cards.nth(1).getByText("收件记录 5", { exact: true }).count(), 1,
+    "A newly imported older UID belongs at its received time, even above the previous page boundary");
   await cards.last().getByText("原文", { exact: true }).click();
   await cards.last().locator("details[open] pre").waitFor();
   await page.screenshot({ path: resolve(directory, "assistant-mail-history.png"), fullPage: true });
   viewports.push({ page: "assistant-mail-history", ...page.viewportSize() });
   await back.click();
-  assert.equal(await assistant.getAttribute("aria-label"), "助理", "Backfill does not count as unread");
+  assert.equal(await assistant.getAttribute("aria-label"), "助理", "Backfill does not raise attention");
   await host.nativeApproval.assistantMail.deliver(1);
-  await eventually(() => assistant.getAttribute("aria-label"), "助理，1 条未读", "New mail after backfill is still unread");
+  await eventually(() => assistant.getAttribute("aria-label"), "助理，有事项待关注", "New mail after backfill still raises attention");
   await assistant.click();
   await inbox.click();
   const latest = cards.first();
   await latest.getByText("收件记录 26", { exact: true }).waitFor();
   // Retain coverage of the legacy action and its safe-area undo on older hosts.
   const capabilities = host.snapshot.host.capabilities;
-  host.snapshot.host.capabilities = capabilities.filter(value => value !== "plugin.assistant-mail.filing.v1");
+  const requestsBeforeLegacy = host.requests.length;
+  host.snapshot.host.capabilities = capabilities.filter(value => !["plugin.assistant-mail.filing.v1", "plugin.assistant-mail.received-order.v1"].includes(value));
   await host.send({ kind: "snapshot", snapshot: host.snapshot });
+  await eventually(() => host.requests.slice(requestsBeforeLegacy).some(({ method, params }) => method === "plugin.assistant-mail.list" && params.order === undefined),
+    true, "An older host receives the sequence-order request without the new parameter");
   const emulation = await page.context().newCDPSession(page);
   try {
     await emulation.send("Emulation.setSafeAreaInsetsOverride", { insets: { top: 0, right: 0, bottom: 48, left: 0 } });
@@ -260,6 +265,7 @@ export async function verifyAssistantMailHistory(page, host, steps, directory, v
   host.snapshot.host.capabilities = capabilities;
   await host.send({ kind: "snapshot", snapshot: host.snapshot });
   await page.getByRole("searchbox", { name: "搜索邮件" }).waitFor();
+  await cards.nth(2).getByText("收件记录 5", { exact: true }).waitFor();
 
   const deepId = await cards.nth(9).getAttribute("data-mail-id");
   const filedCard = page.locator(`.assistant-mail-list > [data-mail-id="${deepId}"]`);
@@ -529,7 +535,32 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await openAssistant();
   await eventually(() => cards().count(), 50, "Persisted mail appears before a native message or ACK");
   assert.equal(host.requests.some(request => request.method === "turn.start"), false);
-  await page.getByRole("button", { name: "更早邮件", exact: true }).click();
+  const older = page.getByRole("button", { name: "更早邮件", exact: true });
+  const { capabilities: legacyCapabilities } = host.snapshot.host;
+  const legacyMail = host.snapshot.assistantMail;
+  const mailError = page.getByRole("alert").filter({ hasText: "隔离邮件列表读取失败" });
+  host.mailPageFailure = true;
+  try {
+    host.snapshot.host.capabilities = [...legacyCapabilities, "plugin.assistant-mail.attention.v1", "plugin.assistant-mail.received-order.v1"];
+    host.snapshot.assistantMail = host.nativeApproval.mailSnapshot();
+    await host.send({ kind: "snapshot", snapshot: host.snapshot });
+    await mailError.waitFor();
+  } finally { host.mailPageFailure = false; }
+  const beforeRetry = host.requests.length;
+  await older.click();
+  await eventually(() => host.requests.slice(beforeRetry).find(({ method }) => method === "plugin.assistant-mail.list")?.params.order,
+    "received", "More retries the newly selected sort after its first page failed");
+  assert.equal(host.requests.slice(beforeRetry).find(({ method }) => method === "plugin.assistant-mail.list").params.cursor,
+    undefined, "More never sends the old sequence cursor under receipt order");
+  await mailError.waitFor({ state: "hidden" });
+  await eventually(() => older.isEnabled(), true, "Receipt-order first page finishes before switching back");
+  const beforeRollback = host.requests.length;
+  host.snapshot.host.capabilities = legacyCapabilities;
+  host.snapshot.assistantMail = legacyMail;
+  await host.send({ kind: "snapshot", snapshot: host.snapshot });
+  await eventually(() => host.requests.slice(beforeRollback).some(({ method, params }) => method === "plugin.assistant-mail.list" && params.order === undefined),
+    true, "Going back to a legacy host refreshes in sequence order");
+  await older.click();
   await eventually(() => cards().count(), 60, "Older mail pages remain visible");
   await openMobileDrawer(page);
   assert.equal(await page.locator(".drawer-assistant-capsule").getAttribute("aria-label"), "助理", "Initial history and older pages add no unread mail");

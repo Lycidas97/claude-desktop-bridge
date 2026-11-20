@@ -83,6 +83,30 @@ it("suppresses marked mail attention without acknowledging it", async () => {
   expect(store.attention(false, "current").map(item => item.id)).toEqual([mailRefId, "reply"]);
 });
 
+it("pages by receipt time across accounts and imports, with a stable anchor that can leave the folder", async () => {
+  store.openMailbox("test-account", "1", 1);
+  store.openMailbox("other-account", "1", 1);
+  const live = (await store.record(message(1)))!;
+  const late = (await store.record({ ...message(1), accountKey: "other-account", receivedAt: "2026-11-13T15:00:00.000Z" }))!;
+  const newest = (await store.record({ ...message(2), historical: true, receivedAt: "2026-11-15T19:00:00.000Z" }))!;
+  const tied = (await store.record({ ...message(2), accountKey: "other-account", historical: true, receivedAt: "2026-11-14T13:00:00+01:00" }))!;
+  const undated = (await store.record({ ...message(3), historical: true, receivedAt: "now" }))!;
+  const first = store.page({ limit: 2 }, true, "inbox", true, true);
+  expect(first).toEqual({ events: [newest, tied], nextCursor: String(tied.seq) });
+  store.changeCategory({ action: "add", label: "Project receipts" });
+  const category = store.categories().at(-1)!.id;
+  store.setFolder(tied.mailRefId, category, "user");
+  expect(store.page({ cursor: first.nextCursor }, true, "inbox", true, true).events).toEqual([live, late, undated]);
+  expect(store.page({}, false, "inbox", true, true).events).toEqual([live, late]);
+  store.setFolder(late.mailRefId, category, "user");
+  const folder = store.page({ limit: 1 }, true, category, true, true);
+  expect(folder.events.map(event => event.mailRefId)).toEqual([tied.mailRefId]);
+  expect(store.page({ cursor: folder.nextCursor }, true, category, true, true).events.map(event => event.mailRefId)).toEqual([late.mailRefId]);
+  expect(store.page({}, true, { query: "External sender" }, true, true).events.map(event => event.mailRefId))
+    .toEqual([newest, tied, live, late, undated].map(event => event.mailRefId));
+  expect(store.page({}, true, "inbox", false, true).events).toEqual([newest, tied, live, late, undated]);
+});
+
 it("pages and searches saved folders independently and keeps an explicit restore after restart", async () => {
   store.openMailbox("test-account", "1", 5);
   const old = (await store.record({ ...message(5), subject: "Test 5%" }))!;

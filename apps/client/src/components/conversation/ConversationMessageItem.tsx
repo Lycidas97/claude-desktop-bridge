@@ -61,18 +61,24 @@ export function ConversationMessageItem({
   useEffect(() => {
     const element = article.current;
     if (!unreadReply || !mail?.online || !element || typeof IntersectionObserver === "undefined") return;
+    const threshold = Math.min(0.95, 36 / Math.max(1, element.getBoundingClientRect().height));
     const observer = new IntersectionObserver(([entry]) => {
-      if (!entry?.isIntersecting || entry.intersectionRect.height < Math.min(36, entry.boundingClientRect.height) || document.hidden) return;
+      if (!entry?.isIntersecting || entry.intersectionRatio < threshold || document.hidden || covered()) return;
       observer.disconnect();
       void mail.acknowledge("reply", replyId).catch(() => { /* Leave the reminder in place if the host is unreachable. */ });
-    }, { threshold: [0, Math.min(1, 36 / Math.max(1, element.offsetHeight))] });
+    }, { threshold: [0, threshold] });
+    const covered = () => Boolean(document.body.querySelector(":scope > .m-sheet-backdrop"));
     const observeVisible = () => {
       observer.unobserve(element);
-      if (!document.hidden) observer.observe(element);
+      if (!document.hidden && !covered()) observer.observe(element);
     };
+    const sheets = new MutationObserver(records => {
+      if (records.some(({ addedNodes, removedNodes }) => [...addedNodes, ...removedNodes].some(node => node instanceof Element && node.classList.contains("m-sheet-backdrop")))) observeVisible();
+    });
+    sheets.observe(document.body, { childList: true });
     observeVisible();
     document.addEventListener("visibilitychange", observeVisible);
-    return () => { observer.disconnect(); document.removeEventListener("visibilitychange", observeVisible); };
+    return () => { sheets.disconnect(); observer.disconnect(); document.removeEventListener("visibilitychange", observeVisible); };
   }, [unreadReply, mail?.online, replyId]);
   const messageQueued = isQueuedConversationMessage(item, session);
   const delivery = item.delivery === "session-received" && item.queueSettled ? undefined : item.delivery;

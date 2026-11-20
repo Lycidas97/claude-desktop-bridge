@@ -186,8 +186,10 @@ export class AgendaStore {
     return this.saveLocal("todos", value, existing);
   }
 
-  saveEvent(value: AgendaEventInput, existing?: { id: string; revision: number }): BridgeAgendaEvent {
-    return this.saveLocal("calendar_events", { ...value, busy: true }, existing);
+  saveEvent(value: Omit<AgendaEventInput, "remindAt"> & { remindAt?: string | null | undefined }, existing?: { id: string; revision: number }): BridgeAgendaEvent {
+    const { remindAt, ...event } = value;
+    const previous = existing && remindAt === undefined ? JSON.parse(this.localRow("calendar_events", existing.id).value) as BridgeAgendaEvent : undefined;
+    return this.saveLocal("calendar_events", { ...event, remindAt: remindAt === null ? undefined : remindAt ?? previous?.remindAt, busy: true }, existing);
   }
 
   completeTodo(input: { id: string; revision: number; completed: boolean }): BridgeAgendaTodo {

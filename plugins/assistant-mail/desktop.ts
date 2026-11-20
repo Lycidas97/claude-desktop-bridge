@@ -404,6 +404,9 @@ export class AssistantMailService extends EventEmitter {
   recordReply(sessionId: string, id: string, title: string) {
     if (this.store.recordReply(sessionId, id, title)) this.emit("changed");
   }
+  removeReplies(sessionId: string, ids: string[]) {
+    if (this.store.removeReplies(sessionId, ids)) this.emit("changed");
+  }
   acknowledgeAttention(kind: AssistantAttentionAcknowledgment, id: string) {
     if (this.store.acknowledgeAttention(kind, id)) this.emit("changed");
   }

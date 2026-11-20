@@ -1,6 +1,6 @@
 import { ASSISTANT_MAIL_SHARED_AUTH_CAPABILITY, ASSISTANT_SMTP_CAPABILITY, MAIL_POLL_INTERVALS, type BridgeActionProposal, type BridgeDirectoryListing, type BridgeHostSnapshot, type BridgeMailAccount, type BridgeMailCard, type BridgeMailCategory, type BridgeMethod, type BridgeSessionInfo } from "@bridge/protocol";
 import { Check, ChevronRight, ListChecks, LoaderCircle, RefreshCw, Settings } from "lucide-react";
-import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
 import { formatSessionModelLabel } from "../../lib/conversation-timeline.js";
 import { IconButton } from "../common/IconButton.js";
@@ -27,7 +27,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
   active?: boolean;
   headerLeading?: ReactNode | undefined;
   onOpenSession(sessionId: string): void;
-  renderConversation(sessionId: string, stage: Pick<ConversationViewProps, "alternateStage" | "hideComposer">): ReactNode;
+  renderConversation(sessionId: string, stage: Pick<ConversationViewProps, "alternateStage" | "hideComposer" | "assistantReplyTarget">): ReactNode;
 }) {
   const mail = useAssistantMail();
   const agenda = useAssistantAgenda();
@@ -37,23 +37,8 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
   const [view, setView] = useState<"conversation" | "mail" | "agenda" | "settings" | "proposals">("conversation");
   const [proposalReturn, setProposalReturn] = useState<Exclude<typeof view, "proposals">>("conversation");
   const [selectedProposal, setSelectedProposal] = useState<BridgeActionProposal>();
-  const [replyTarget, setReplyTarget] = useState<string>();
-  const conversation = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const container = conversation.current;
-    if (view !== "conversation" || !replyTarget || !container) return;
-    const reveal = () => {
-      const element = container.querySelector(`article[data-stream-key="${CSS.escape(replyTarget)}"]`);
-      if (!element) return false;
-      element.scrollIntoView({ block: "start" });
-      setReplyTarget(undefined);
-      return true;
-    };
-    if (reveal()) return;
-    const observer = new MutationObserver(() => { if (reveal()) observer.disconnect(); });
-    observer.observe(container, { subtree: true, childList: true });
-    return () => observer.disconnect();
-  }, [view, replyTarget]);
+  const [replyTarget, setReplyTarget] = useState<ConversationViewProps["assistantReplyTarget"]>();
+  const [replyError, setReplyError] = useState("");
   const [configuring, setConfiguring] = useState(false);
   const [selectedId, setSelectedId] = useState("");
   const [creating, setCreating] = useState(false);
@@ -76,7 +61,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
     if (selectedProposal) setSelectedProposal(undefined);
     else setView(proposalReturn);
   }
-  useEffect(() => { if (active) { setView("conversation"); setSelectedProposal(undefined); } }, [active]);
+  useEffect(() => { if (active) { setView("conversation"); setSelectedProposal(undefined); setReplyTarget(undefined); setReplyError(""); } }, [active]);
   useEffect(() => {
     if (active && mobile && view === "proposals" && proposals) {
       return registerMobileBackHandler(() => { backFromProposals(); return true; }, 110);
@@ -277,12 +262,19 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
         <ChevronRight size={16} aria-hidden="true" />
       </button>
     </div>}
-    {displayedView !== "proposals" && <AssistantAttention onReply={itemId => { setView("conversation"); setReplyTarget(itemId); }}
+    {displayedView === "conversation" && (replyTarget || replyError) && <div className="assistant-page-content assistant-mail-feedback">
+      {replyError ? <p role="alert">{replyError}</p> : <p role="status">正在查找回复…</p>}
+    </div>}
+    {displayedView !== "proposals" && <AssistantAttention onReply={itemId => {
+      setView("conversation"); setReplyError("");
+      setReplyTarget({ itemId, done(error) { setReplyTarget(undefined); setReplyError(error ?? ""); } });
+    }}
       onTodo={() => { agenda?.setCalendarOnly(false); agenda?.setAllTodosOpen(true); setView("agenda"); }} />}
     {session ? <>
       {displayedView === "conversation" && <div className="assistant-page-content">{bindingControls}{notices}</div>}
-      <div className="assistant-conversation" ref={conversation}>{renderConversation(session.sessionId, {
+      <div className="assistant-conversation">{renderConversation(session.sessionId, {
         alternateStage: displayedView === "conversation" ? undefined : stage,
+        assistantReplyTarget: replyTarget,
         hideComposer: displayedView === "settings" || displayedView === "agenda" || displayedView === "proposals" || workspace?.repairFailed === true,
       })}</div>
     </> : stage()}

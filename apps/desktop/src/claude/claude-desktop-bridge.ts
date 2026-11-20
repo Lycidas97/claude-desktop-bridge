@@ -896,7 +896,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
     return run;
   }
 
-  private async rewindTarget(sessionId: string, messageId: string): Promise<string> {
+  private async rewindTarget(sessionId: string, messageId: string) {
     const id = this.desktopId(sessionId);
     if (!this.inspector.ready) throw new InspectorDisconnectedError("Claude Desktop rewind is unavailable while inspector is disconnected");
     if (!this.capabilities().includes("session.rewind")) throw new NativeCallError("Unsupported Claude Desktop rewind methods");
@@ -906,15 +906,16 @@ export class ClaudeDesktopBridge extends EventEmitter {
     const result = await this.inspector.call("getTranscript", [id]);
     const messages = Array.isArray(result) ? result : record(result).messages;
     if (!Array.isArray(messages)) throw new NativeCallError("Desktop returned an invalid transcript");
-    if (!messages.some(raw => {
+    const target = messages.findIndex(raw => {
       const message = record(raw);
       return message.uuid === messageId && message.type === "user" && message.isSidechain !== true && !message.parent_tool_use_id && visibleMessage(message)?.role === "user";
-    })) throw new NativeCallError("Rewind target must be a user message in this native session");
-    return id;
+    });
+    if (target === -1) throw new NativeCallError("Rewind target must be a user message in this native session");
+    return { id, messages, target };
   }
 
   async previewRewind(sessionId: string, messageId: string): Promise<BridgeSessionRewindPreview> {
-    const id = await this.rewindTarget(sessionId, messageId);
+    const { id } = await this.rewindTarget(sessionId, messageId);
     const canRewindConversation = await this.inspector.call("canRewindTo", [id, messageId]) === true;
     let files: Record<string, unknown>;
     try {
@@ -935,7 +936,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
   }
 
   async rewindSession(sessionId: string, messageId: string, scope: BridgeSessionRewindScope): Promise<BridgeSessionRewindResult> {
-    const id = await this.rewindTarget(sessionId, messageId);
+    const { id, messages, target } = await this.rewindTarget(sessionId, messageId);
     if (scope !== "files" && await this.inspector.call("canRewindTo", [id, messageId]) !== true) throw new NativeCallError("Desktop cannot rewind the conversation to this user message");
     if (scope !== "conversation") {
       const preview = record(await this.inspector.call("rewindFiles", [id, messageId, true]));
@@ -958,6 +959,16 @@ export class ClaudeDesktopBridge extends EventEmitter {
       this.lastCompletedTurns.delete(sessionId);
       this.messageProjection.delete(sessionId);
       this.replyTurns.delete(sessionId);
+      if (this.listenerCount("assistant.replies-rewound")) {
+        const removed = messages.slice(target + 1).flatMap(raw => {
+          const message = record(raw);
+          if (message.type !== "assistant") return [];
+          const body = record(message.message);
+          const itemId = typeof body.id === "string" ? body.id : message.uuid;
+          return typeof itemId === "string" ? [itemId] : [];
+        });
+        if (removed.length) this.emit("assistant.replies-rewound", sessionId, removed);
+      }
       this.contextStates.set(sessionId, createNativeContextState(this.contextStates.get(sessionId)?.maxTokensByModel));
       this.backgroundTasks.delete(sessionId);
       this.streams.delete(sessionId);

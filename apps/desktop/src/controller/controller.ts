@@ -212,6 +212,7 @@ export class DesktopController extends EventEmitter {
     if (this.assistantMailCoordinator) {
       this.assistantMailCoordinator.start();
       this.broker.on("assistant.user-reply", this.assistantMailCoordinator.replyReceived);
+      this.broker.on("assistant.replies-rewound", this.assistantMailCoordinator.repliesRewound);
     }
     this.assistantAgenda?.on("changed", this.onAgendaChanged);
     this.proposals?.on("changed", this.onProposalsChanged);
@@ -661,6 +662,7 @@ export class DesktopController extends EventEmitter {
   async close(): Promise<void> {
     if (this.assistantMailCoordinator) {
       this.broker.off("assistant.user-reply", this.assistantMailCoordinator.replyReceived);
+      this.broker.off("assistant.replies-rewound", this.assistantMailCoordinator.repliesRewound);
       this.assistantMailCoordinator.close();
     }
     this.assistantAgenda?.off("changed", this.onAgendaChanged);

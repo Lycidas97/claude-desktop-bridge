@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import { ASSISTANT_MEMORY_POLICY, ASSISTANT_WORKSPACE_POLICY, type AssistantWorkspacePolicy, type BridgeSmtpChannel } from "../../packages/protocol/src/assistant-mail.js";
 import type { AgendaProposalAction, BridgeActionProposal, BridgeProposalSnapshot, MemoryRuleProposalAction, ProposalDraftAction, ProposalRevisionRef } from "../../packages/protocol/src/assistant-proposal.js";
 import type { AgendaCredentials } from "./agenda.js";
+import { agendaInstant } from "./agenda-time.js";
 import type { AssistantMemory } from "./assistant-memory.js";
 import { AgendaEditError, type AgendaStore, LOCAL_AGENDA_ID } from "./agenda-store.js";
 import { CalDavError, requestCalDavMember } from "./caldav.js";
@@ -206,7 +207,10 @@ export class ProposalExecutor extends EventEmitter {
         case "calendar.create": this.agenda.saveEvent(action.value); break;
         case "calendar.reschedule": {
           const event = this.agenda.proposalRecord("calendar", action.recordId);
-          this.agenda.saveEvent({ ...action.value, remindAt: event.remindAt }, { id: action.recordId, revision: baseRevision! });
+          const value = action.value;
+          const remindAt = event.remindAt && "startAt" in event ? new Date(Date.parse(event.remindAt)
+            + agendaInstant(value.startAt, value.timeZone) - agendaInstant(event.startAt, event.timeZone)).toISOString() : undefined;
+          this.agenda.saveEvent({ ...value, remindAt }, { id: action.recordId, revision: baseRevision! });
           break;
         }
         case "calendar.delete": this.agenda.deleteLocalEvent(action.recordId, baseRevision!); break;

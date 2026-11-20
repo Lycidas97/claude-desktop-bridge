@@ -157,6 +157,10 @@ export class AssistantMailCoordinator {
     }
   };
 
+  readonly repliesRewound = (sessionId: string, itemIds: string[]) => {
+    this.mail.removeReplies(sessionId, itemIds.map(itemId => `${sessionId}:${itemId}`));
+  };
+
   capabilities() {
     return [
       ...ASSISTANT_MAIL_CAPABILITIES,

@@ -53,7 +53,7 @@ function AttentionDetail({ item, onClose }: { item: Extract<AssistantAttentionIt
 
   const confirm = item.kind === "event" ? "已看" : item.reason === "action" ? "标为已解决" : undefined;
   return <Sheet title={item.title || "无主题"} manageFocus busy={busy} onClose={onClose} footer={confirm && (
-    <button type="button" className="primary-button" disabled={!mail.online || busy || (item.kind === "mail" && !detail)} onClick={() => {
+    <button type="button" className="primary-button" disabled={!mail.online || busy} onClick={() => {
       setBusy(true); setError("");
       void mail.acknowledge(item.kind === "event" ? "event" : "mail-action", item.id).then(onClose)
         .catch(reason => setError(reason instanceof Error ? reason.message : "无法更新事项"))

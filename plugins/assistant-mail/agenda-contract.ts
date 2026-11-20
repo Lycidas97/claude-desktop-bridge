@@ -44,7 +44,7 @@ export const agendaRequests = {
   "plugin.assistant-agenda.event.list": eventPage.extend({ allDayOn: z.iso.date().optional() })
     .refine(query => query.allDayOn ? validDay(query, query.allDayOn) : validWindow(query)),
   "plugin.assistant-agenda.todo.save": z.strictObject({ existing: existing.optional(), value: todoInput }),
-  "plugin.assistant-agenda.event.save": z.strictObject({ existing: existing.optional(), value: z.strictObject({ ...eventFields, remindAt: instant.optional() }).refine(eventRange, eventRangeError) }),
+  "plugin.assistant-agenda.event.save": z.strictObject({ existing: existing.optional(), value: z.strictObject({ ...eventFields, remindAt: instant.nullable().optional() }).refine(eventRange, eventRangeError) }),
   "plugin.assistant-agenda.todo.complete": z.strictObject({ ...existing.shape, completed: z.boolean() }),
   "plugin.assistant-agenda.source.add": z.strictObject({ label: title, url: z.url({ protocol: /^https$/ }).max(1500), user: z.string().trim().min(1).max(320).refine(value => !value.includes(":")), credential: secret }),
   "plugin.assistant-agenda.source.credential": z.strictObject({ id, credential: secret }),

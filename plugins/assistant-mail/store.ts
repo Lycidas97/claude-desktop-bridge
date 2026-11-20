@@ -384,6 +384,11 @@ export class AssistantMailStore {
       SELECT ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM assistant_attention_ack WHERE kind = 'reply' AND id = ?)`).run(id, sessionId, title, id).changes);
   }
 
+  removeReplies(sessionId: string, ids: string[]): boolean {
+    return Boolean(this.db().prepare("DELETE FROM assistant_attention_replies WHERE session_id = ? AND id IN (SELECT value FROM json_each(?))")
+      .run(sessionId, JSON.stringify(ids)).changes);
+  }
+
   acknowledgeAttention(kind: AssistantAttentionAcknowledgment, id: string): boolean {
     return Boolean(this.db().prepare("INSERT OR IGNORE INTO assistant_attention_ack (kind, id) VALUES (?, ?)").run(kind, id).changes);
   }

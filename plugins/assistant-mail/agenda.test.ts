@@ -122,6 +122,43 @@ test("projects reminder-only tasks and events before their start, keeping action
   expect(store.attention(Date.parse("2027-03-14T08:00:00.000Z"), new Set()).items).toMatchObject([{ id: dateTask.id }]);
 });
 
+test("preserves reminders on legacy edits and lets current clients clear them", () => {
+  const store = testStore();
+  const value = { title: "Team sync", startAt: "2027-03-14T16:00:00.000Z", endAt: "2027-03-14T17:00:00.000Z", allDay: false, timeZone: "UTC" };
+  const remindAt = "2027-03-14T15:30:00.000Z";
+  const event = store.saveEvent({ ...value, remindAt });
+  const renamed = store.saveEvent({ ...value, title: "Team planning" }, event);
+  expect(renamed).toMatchObject({ title: "Team planning", remindAt });
+  store.saveEvent({ ...value, remindAt: null }, renamed);
+  expect(store.attention(Date.parse(remindAt), new Set()).items).toEqual([]);
+});
+
+test("ignores a malformed VEVENT alarm stored by older hosts without losing the event", () => {
+  const database = new DatabaseSync(":memory:");
+  closers.push(() => database.close());
+  const store = new AgendaStore(database, "UTC");
+  const id = store.addSource(source, Buffer.from("sealed"));
+  store.applySync(id, { removed: [], changed: [calendar] });
+  database.prepare("UPDATE agenda_caldav_objects SET data = ? WHERE source_id = ?").run(calendar.data.replace("TRIGGER:-PT15M", "TRIGGER:-PTM"), id);
+  const from = "2027-03-13T16:50:00.000Z";
+  expect(store.attention(Date.parse(from), new Set()).items).toEqual([]);
+  expect(store.listEvents({ from, to: "2027-03-13T19:00:00.000Z" }).records).toMatchObject([{ title: "Daily" }]);
+});
+
+test.each([
+  ["-P1D", "2027-03-13T17:00:00.000Z"],
+  ["-PT24H", "2027-03-13T16:00:00.000Z"],
+])("applies %s in the event time zone across the DST change", (trigger, remindAt) => {
+  const store = testStore();
+  const id = store.addSource(source, Buffer.from("sealed"));
+  store.applySync(id, { removed: [], changed: [object("dst", wrap("BEGIN:VEVENT", "UID:dst", "SUMMARY:DST",
+    "DTSTART;TZID=America/Los_Angeles:20270314T090000", "DTEND;TZID=America/Los_Angeles:20270314T100000",
+    "BEGIN:VALARM", `TRIGGER:${trigger}`, "ACTION:DISPLAY", "DESCRIPTION:Reminder", "END:VALARM", "END:VEVENT"))] });
+  const now = Date.parse(remindAt);
+  expect(store.attention(now - 1, new Set())).toEqual({ items: [], nextAt: now });
+  expect(store.attention(now, new Set()).items).toMatchObject([{ kind: "event", title: "DST" }]);
+});
+
 test("malformed remote data cannot advance the token or delete a previously committed object", () => {
   const store = testStore();
   const id = store.addSource(source, Buffer.from("sealed"));

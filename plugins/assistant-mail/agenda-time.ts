@@ -43,6 +43,11 @@ export function agendaInstant(value: string, zone: AgendaZone): number {
   return utc - offsetAt(utc - offsetAt(utc));
 }
 
+export function wallClock(instant: number, zone: AgendaZone): ICAL.Time {
+  if (typeof zone !== "string") return ICAL.Time.fromJSDate(new Date(instant), true).convertToZone(zone);
+  return ICAL.Time.fromDateTimeString(new Date(instant + zoneOffsets(zone)(instant)).toISOString().slice(0, 19));
+}
+
 export function timestamp(time: ICAL.Time, zone: AgendaZone): string {
   if (time.isDate) return time.toString();
   if (time.zone !== ICAL.Timezone.localTimezone) return time.toJSDate().toISOString();

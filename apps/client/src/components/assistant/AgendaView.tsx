@@ -213,8 +213,8 @@ function AgendaEditor({ editor, onClose }: { editor: Editor; onClose(): void }) 
         const location = String(form.get("location")).trim();
         const value: AgendaEventInput = { ...fields, startAt, endAt, timeZone: zone, allDay, ...(location ? { location } : {}) };
         const reminder = String(form.get("eventReminder") ?? "");
-        if (reminder) value.remindAt = agendaInstant(reminder, deviceZone, event?.remindAt);
-        await agenda.mutate("plugin.assistant-agenda.event.save", { existing, value });
+        await agenda.mutate("plugin.assistant-agenda.event.save", { existing, value: supportsReminder
+          ? { ...value, remindAt: reminder ? agendaInstant(reminder, deviceZone, event?.remindAt) : null } : value });
         agenda.selectDate(agendaCalendarDate(startAt, allDay));
       }
       onClose();

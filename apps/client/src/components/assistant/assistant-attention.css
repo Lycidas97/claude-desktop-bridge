@@ -6,11 +6,12 @@
   margin: 0 auto 6px;
   border-block-end: 1px solid var(--line);
 }
+.assistant-page.desktop-page > .assistant-attention { position: relative; inset-inline-start: 12px; width: min(calc(100% - 88px), 772px); }
 .assistant-attention > summary, .assistant-attention li > button {
   display: flex;
   align-items: center;
   gap: 10px;
-  min-height: 40px;
+  min-height: 44px;
   color: inherit;
   cursor: pointer;
   text-align: start;

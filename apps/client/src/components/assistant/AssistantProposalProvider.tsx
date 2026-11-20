@@ -29,7 +29,7 @@ export function useAssistantEntry() {
   const mail = useAssistantMail();
   const pending = pendingProposalCount(useAssistantProposals());
   const unread = mail?.attention === undefined ? mail?.unreadCount ?? 0 : 0;
-  const attention = pending > 0 || Boolean(mail?.attention?.length);
+  const attention = mail?.attention !== undefined && (pending > 0 || mail.attention.length > 0);
   return { unread, attention, label: attention ? "助理，有事项待关注" : unread ? `助理，${unread} 条未读` : "助理" };
 }
 

@@ -52,13 +52,14 @@ export async function verifyAssistantAttention(page, host, steps, directory, vie
   agenda.saveEvent({ value: { title: "团队同步", startAt: new Date(Date.now() + 60_000).toISOString(),
     endAt: new Date(Date.now() + 120_000).toISOString(), remindAt: new Date(Date.now() - 1000).toISOString(), allDay: false, timeZone: "UTC" } });
   const draft = (await native.draftProposal({ kind: "todo.create", sourceId: "local", value: { title: "提案核对", status: "pending" } })).result;
-  const events = [];
   for (const message of [
     { type: "user", uuid: "attention-user-input", message: { content: "请给我一条最新回复" } },
     { type: "assistant", uuid: "attention-user-reply", message: { id: "attention-reply-item", content: [{ type: "text", text: "预算已更新，可查看最新版本。" }] } },
     { type: "result", uuid: "attention-user-result", is_error: false, user_message_uuid: "attention-user-input" },
-  ]) events.push(...await native.message({ timestamp: Date.now(), ...message }));
-  await host.syncNativeQueue({ events, history: await native.history(), session: native.session() });
+  ]) await native.message({ timestamp: Date.now(), ...message });
+  native.appendHistory(Array.from({ length: 110 }, (_, index) => ({ type: "user", uuid: `after-reply-${index}`,
+    timestamp: Date.now() + index + 1, message: { content: `同步记录 ${index}` } })));
+  await host.syncNativeQueue({ events: [], history: await native.history(200), session: native.session() });
   await eventually(() => host.snapshot.assistantMail.attention.some(item => item.kind === "reply"), true, "Native final user reply is tracked before the conversation is viewed");
   service.setAutomaticDelivery(true);
 
@@ -72,18 +73,50 @@ export async function verifyAssistantAttention(page, host, steps, directory, vie
     viewports.push({ page: "desktop-assistant-attention", ...desktop.viewportSize() });
   } finally { await desktop.close(); }
 
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await openMobileDrawer(page);
   await entry.click();
-  await page.locator(".assistant-conversation [data-stream-key=attention-reply-item]").getByText("预算已更新，可查看最新版本。", { exact: true }).waitFor();
-  assert.equal(host.snapshot.assistantMail.attention.some(item => item.kind === "reply"), true, "Opening the Assistant with the reply offscreen does not acknowledge it");
+  await page.locator(".assistant-conversation [data-stream-key=after-reply-109]").waitFor();
+  const reply = page.locator(".assistant-conversation [data-stream-key=attention-reply-item]");
+  assert.equal(await reply.count(), 0, "The reply is beyond the first Native history page");
   await attention.locator("summary").click();
   await attention.getByRole("button", { name: /助理回复/u }).click();
+  await reply.getByText("预算已更新，可查看最新版本。", { exact: true }).waitFor();
+  assert.ok(host.requests.filter(request => request.method === "session.history").length >= 2, "Reply lookup loads older Native pages");
+  const visibility = await reply.evaluate(element => new Promise(resolve => {
+    const observer = new IntersectionObserver(([entry]) => {
+      observer.disconnect();
+      resolve({ hidden: document.hidden, covered: Boolean(document.body.querySelector(':scope > .m-sheet-backdrop')), height: entry.boundingClientRect.height, intersection: entry.intersectionRect.height });
+    });
+    observer.observe(element);
+  }));
+  assert.ok(!visibility.hidden && !visibility.covered && visibility.intersection >= Math.min(36, visibility.height * 0.95), JSON.stringify(visibility));
   await eventually(() => host.snapshot.assistantMail.attention.some(item => item.kind === "reply"), false, "A visible reply is acknowledged individually");
   await attention.getByRole("button", { name: /需要处理/u }).click();
   await page.locator(".assistant-attention-original").waitFor();
+  const coveredEvents = [];
+  for (const message of [
+    { type: "user", uuid: "covered-input", message: { content: "请检查提交状态" } },
+    { type: "assistant", uuid: "covered-response", message: { id: "covered-reply", content: [{ type: "text", text: "提交已完成。" }] } },
+    { type: "result", uuid: "covered-result", is_error: false, user_message_uuid: "covered-input" },
+  ]) coveredEvents.push(...await native.message({ timestamp: Date.now(), ...message }));
+  await host.syncNativeQueue({ events: coveredEvents, history: await native.history(200), session: native.session() });
+  const coveredReply = page.locator(".assistant-conversation [data-stream-key=covered-reply]");
+  await coveredReply.evaluate(element => element.scrollIntoView({ block: "center" }));
+  assert.equal(await coveredReply.evaluate(element => new Promise(resolve => {
+    const observer = new IntersectionObserver(([entry]) => { observer.disconnect(); resolve(entry.intersectionRect.height >= Math.min(36, entry.boundingClientRect.height * 0.95)); });
+    observer.observe(element);
+  })), true, "The reply intersects the conversation behind the modal sheet");
+  const pendingReply = () => host.snapshot.assistantMail.attention.some(item => item.kind === "reply" && item.id === `${sessionId}:covered-reply`);
+  assert.equal(pendingReply(), true, "The open original-mail sheet prevents the covered reply from being acknowledged");
   await dismiss();
+  await eventually(pendingReply, false, "Closing the sheet acknowledges the newly visible reply");
   await attention.getByText("需要处理", { exact: true }).waitFor();
+  host.mailReadFailure = true;
   await attention.getByRole("button", { name: /需要处理/u }).click();
+  await page.getByRole("dialog").getByRole("alert").getByText("隔离邮件原文读取失败").waitFor();
   await page.getByRole("button", { name: "标为已解决", exact: true }).click();
+  host.mailReadFailure = false;
   await attention.getByText("需要处理", { exact: true }).waitFor({ state: "hidden" });
   await attention.getByRole("button", { name: /日程提醒/u }).click();
   await page.getByRole("button", { name: "已看", exact: true }).click();
@@ -101,5 +134,23 @@ export async function verifyAssistantAttention(page, host, steps, directory, vie
   await native.controllerRequest(desktopFixtureRequest({ method: "assistant.proposal.dismiss", params: { proposalId, revision, payloadHash } }), "desktop");
   await eventually(label, "助理", "Only resolving the final pending item extinguishes the entry");
   assert.equal(host.requests.some(request => request.method === "plugin.assistant-mail.attention.ack" && request.params.kind === "mail"), true);
-  steps.push("Proactive mail screening, passive delivery, visible Native reply, read-only event, actionable mail, due task and independent pending proposal update the same attention dot on phone and desktop");
+
+  for (const turn of ["keep", "discard"]) {
+    const inputId = `rewind-${turn}-input`;
+    for (const message of [
+      { type: "user", uuid: inputId, message: { content: `Check ${turn}` } },
+      { type: "assistant", uuid: `rewind-${turn}-uuid`, message: { id: `rewind-${turn}-reply`, content: [{ type: "text", text: `Checked ${turn}` }] } },
+      { type: "result", uuid: `rewind-${turn}-result`, is_error: false, user_message_uuid: inputId },
+    ]) await native.message({ timestamp: Date.now(), ...message });
+  }
+  const replyIds = () => host.snapshot.assistantMail.attention.filter(item => item.kind === "reply").map(item => item.id).sort();
+  const bothReplies = [`${sessionId}:rewind-discard-reply`, `${sessionId}:rewind-keep-reply`];
+  await eventually(replyIds, bothReplies, "Both unread replies are pending before rewind");
+  const rewind = scope => native.controllerRequest(desktopFixtureRequest({ method: "session.rewind",
+    params: { sessionId, messageId: "rewind-discard-input", scope } }), "desktop");
+  await rewind("files");
+  assert.deepEqual(replyIds(), bothReplies, "Files-only rewind keeps both replies");
+  await rewind("conversation");
+  await eventually(replyIds, [`${sessionId}:rewind-keep-reply`], "Conversation rewind clears only the discarded reply");
+  steps.push("Mail, paginated Native replies, calendar events, due tasks and pending proposals update the attention dot. Replies behind sheets and discarded by rewind use their own visibility and removal rules.");
 }

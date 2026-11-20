@@ -145,7 +145,7 @@ export class AssistantMailService extends EventEmitter {
     return { configured: this.accounts.size > 0, unreadCount: this.store.unreadCount() };
   }
 
-  async enable(input: { host: string; port?: number | undefined; user: string; password: string; smtp?: SharedSmtpSettings | undefined }): Promise<void> {
+  async enable(input: { host: string; port?: number | undefined; user: string; password: string; smtp?: SharedSmtpSettings | undefined; createOnly?: true }): Promise<void> {
     if (!this.credentials.supported) throw new Error("mail_credentials_unsupported");
     const config: SavedAccount = { ...parseAccount({ host: input.host, port: input.port ?? 993, user: input.user }), enabled: true,
       pollIntervalSeconds: DEFAULT_MAIL_POLL_INTERVAL };
@@ -153,8 +153,10 @@ export class AssistantMailService extends EventEmitter {
     await this.mutateAccount(key, async () => {
       const existing = this.accounts.get(key);
       if (existing) {
-        if (input.smtp) await this.saveSharedSmtp(key, existing.config, input.smtp, input.password);
-        else await this.savePassword(key, input.password);
+        if (input.createOnly || input.smtp || existing.config.smtpSharedAuth) {
+          throw new AgendaEditError("CONFLICT", "此邮箱已添加。请在支持共用授权的 Bridge 客户端中打开账号设置。");
+        }
+        await this.savePassword(key, input.password);
         if (existing.config.enabled) await this.restartReceiver(key);
         else await this.updateEnabled(key, true);
         return;
@@ -184,7 +186,10 @@ export class AssistantMailService extends EventEmitter {
     return this.mutateAccount(accountKey, async () => {
       const { config } = this.requireAccount(accountKey);
       if (smtp) await this.saveSharedSmtp(accountKey, config, smtp, password);
-      else await this.savePassword(accountKey, password);
+      else {
+        if (config.smtpSharedAuth) throw new AgendaEditError("CONFLICT", "此邮箱收发信共用密码。请在新版 Bridge 的账号设置中更新。");
+        await this.savePassword(accountKey, password);
+      }
       await this.restartReceiver(accountKey);
     });
   }

@@ -22,7 +22,7 @@ export const smtpChannel = z.strictObject({ host: z.string().trim().toLowerCase(
   port: z.number().int().min(1).max(65535), security: z.enum(["tls", "starttls"]),
   user: z.string().trim().min(1).max(300), from: mailbox });
 export const sharedSmtpChannel = smtpChannel.omit({ user: true });
-const sharedMailSettings = { credential: z.string().min(1), smtp: sharedSmtpChannel.optional() };
+const sharedMailSettings = { credential: z.string().refine(value => value.trim() !== ""), smtp: sharedSmtpChannel.optional() };
 export const saveMailAccount = z.union([
   z.strictObject({ host: z.string().trim().min(1).regex(/^\S+$/u), port: z.number().int().min(1).max(65535).optional(),
     user: z.string().trim().min(1), ...sharedMailSettings }),

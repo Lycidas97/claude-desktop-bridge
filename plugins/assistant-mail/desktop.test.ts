@@ -107,6 +107,19 @@ it("uses one persisted credential for IMAP and SMTP, including after password re
   expect(secrets.size).toBe(0);
 });
 
+it.each(["update password", "add again"])("requires sending settings before changing a shared credential via %s", async method => {
+  const { service } = await createService([new Inbox(), new Inbox()]);
+  const smtp = { host: "smtp.example.test", port: 465, security: "tls", from: account.user } as const;
+  await service.enable({ ...account, smtp });
+  const { accountKey } = service.status().accounts[0]!;
+  await service.setAccountEnabled(accountKey, false);
+  const password = "receiving-only-fixture";
+  await expect(method === "update password" ? service.replacePassword(accountKey, password) : service.enable({ ...account, password }))
+    .rejects.toMatchObject({ code: "CONFLICT" });
+  expect(service.status().accounts[0]).toMatchObject({ enabled: false, smtpSharedAuth: true });
+  expect([...secrets]).toEqual([[accountKey, account.password]]);
+});
+
 it("never reads a replacement credential for the previous SMTP channel", async () => {
   const { service, credentials } = await createService([new Inbox(), new Inbox()]);
   const smtp = { host: "smtp.example.test", port: 465, security: "tls", from: account.user } as const;

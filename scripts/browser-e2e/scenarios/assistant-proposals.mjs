@@ -347,6 +347,18 @@ export async function verifyAssistantProposals(page, host, steps, directory, vie
   await desktop.getByRole("button", { name: "助理设置", exact: true }).click();
   const legacyAccount = desktop.locator(".assistant-account-row").filter({ hasText: "发信使用独立授权" });
   await legacyAccount.getByRole("button", { name: /^账号设置：/u }).click();
+  const form = desktop.locator(".assistant-accounts form");
+  const legacy = host.snapshot.assistantMail.accounts.find(account => account.smtp && !account.smtpSharedAuth);
+  assert.equal(await form.getByRole("button", { name: "保存收信密码", exact: true }).count(), 1, "Legacy accounts can change IMAP password without opting into shared authorization");
+  const imapOnly = "synthetic-imap-only-value";
+  await form.getByLabel("密码", { exact: true }).fill(imapOnly);
+  await form.getByRole("button", { name: "保存收信密码", exact: true }).click();
+  await form.waitFor({ state: "hidden" });
+  assert.deepEqual(desktopRequests.findLast(request => request.method === "plugin.assistant-mail.account.save").params,
+    { accountKey: legacy.accountKey, credential: imapOnly });
+  assert.deepEqual(host.snapshot.assistantMail.accounts.find(account => account.accountKey === legacy.accountKey)?.smtp, legacy.smtp);
+  await legacyAccount.getByRole("button", { name: /^账号设置：/u }).click();
+  await form.getByRole("button", { name: "改为共用授权", exact: true }).click();
   const smtpForm = desktop.getByRole("group", { name: "发信", exact: true });
   const port = smtpForm.getByLabel("SMTP 端口", { exact: true });
   const security = smtpForm.getByLabel("加密方式");
@@ -356,7 +368,6 @@ export async function verifyAssistantProposals(page, host, steps, directory, vie
   await port.fill("2525");
   await security.selectOption("tls");
   assert.equal(await port.inputValue(), "2525");
-  const form = desktop.locator(".assistant-accounts form");
   assert.equal(await form.locator('input[type="password"]').count(), 1);
   await form.getByLabel("密码", { exact: true }).fill("synthetic-shared-value");
   await form.getByRole("button", { name: "保存并共用授权", exact: true }).click();

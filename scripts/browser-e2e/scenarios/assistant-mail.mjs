@@ -596,7 +596,14 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   assert.equal(await accounts.locator('input[type="password"]').count(), 1, "The account form asks for one credential");
   await accounts.getByLabel("邮箱地址", { exact: true }).fill(extraUser);
   await accounts.getByLabel("IMAP 服务器", { exact: true }).fill("imap.second.example.test");
-  await accounts.getByLabel("SMTP 服务器", { exact: true }).fill("smtp.second.example.test");
+  const smtpHost = accounts.getByLabel("SMTP 服务器", { exact: true });
+  const smtpPort = accounts.getByLabel("SMTP 端口", { exact: true });
+  await smtpHost.fill("smtp.second.example.test");
+  await smtpPort.fill("");
+  await smtpHost.fill("");
+  assert.equal(await smtpPort.isDisabled(), true, "An empty optional SMTP host does not require an SMTP port");
+  await smtpHost.fill("smtp.second.example.test");
+  await smtpPort.fill("465");
   await accounts.getByLabel("密码", { exact: true }).fill("fixture-credential-add");
   await capture("mobile-mail-shared-auth");
   const beforeAccountSave = host.requests.length;
@@ -613,6 +620,11 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   const { client: _accountClient, ...accountParams } = accountRequests[0].params;
   assert.deepEqual(accountParams, { host: "imap.second.example.test", user: extraUser, credential: "fixture-credential-add",
     smtp: { host: "smtp.second.example.test", port: 465, security: "tls", from: extraUser } });
+  await extraAccount.getByRole("button", { name: `账号设置：${extraUser}`, exact: true }).click();
+  await accounts.getByRole("button", { name: "关闭发信", exact: true }).click();
+  await extraAccount.getByText("SMTP smtp.second.example.test:465", { exact: true }).waitFor({ state: "hidden" });
+  assert.equal(host.snapshot.assistantMail.accounts.find(account => account.accountKey === accountKey)?.enabled, true);
+  await extraAccount.getByText("轮询中", { exact: true }).waitFor();
   const pollInterval = extraAccount.getByRole("combobox", { name: /^备用轮询间隔/u });
   assert.equal(await pollInterval.inputValue(), "60");
   await accounts.getByRole("button", { name: "添加邮箱", exact: true }).click();
@@ -990,6 +1002,7 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await accounts.getByRole("button", { name: `账号设置：${extraUser}`, exact: true }).click();
   const credential = accounts.getByLabel("密码", { exact: true });
   assert.equal(await credential.inputValue(), "", "Stored credentials are never prefilled");
+  await smtpHost.fill(smtp.host);
   await credential.fill("fixture-credential-replacement");
   await accounts.getByRole("button", { name: "保存设置", exact: true }).click();
   await credential.waitFor({ state: "hidden" });

@@ -472,7 +472,7 @@ export class AssistantMailCoordinator {
         if ("accountKey" in account) {
           await this.mail.replacePassword(account.accountKey, credential, smtp);
         } else {
-          await this.mail.enable({ ...account, password: credential, smtp });
+          await this.mail.enable({ ...account, password: credential, smtp, createOnly: true });
         }
       } else if (method === "plugin.assistant-mail.account.add") {
         const { port } = params;

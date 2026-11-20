@@ -149,7 +149,7 @@ describe("assistant mail mobile RPC projections", () => {
     const account = { host: "imap.example.test", user: "test@example.test" };
     const smtp = { host: "smtp.example.test", port: 587, security: "starttls", from: account.user };
     const credential = "shared-fixture-value";
-    for (const params of [{ ...account, smtp }, { ...account, credential, smtp: { ...smtp, credential } },
+    for (const params of [{ ...account, smtp }, { ...account, smtp, credential: " \t" }, { ...account, credential, smtp: { ...smtp, credential } },
       { ...account, credential, smtp: { ...smtp, security: "plain" } }]) {
       await expect(run.request("plugin.assistant-mail.account.save", params)).rejects.toMatchObject({ code: "INVALID_PARAMS" });
     }
@@ -160,6 +160,10 @@ describe("assistant mail mobile RPC projections", () => {
     const { accountKey } = service.status().accounts[0]!;
     await expect(run.request("plugin.assistant-mail.account.save", { accountKey, smtp: { ...smtp, host: "unapproved.example.test" } }))
       .rejects.toMatchObject({ code: "INVALID_PARAMS" });
+    await expect(run.request("plugin.assistant-mail.account.update-credential", { accountKey, credential }))
+      .rejects.toMatchObject({ code: "CONFLICT" });
+    await expect(run.request("plugin.assistant-mail.account.save", { ...account, credential }))
+      .rejects.toMatchObject({ code: "CONFLICT" });
     expect(service.smtpAccount(accountKey)?.smtp.host).toBe(smtp.host);
   });
 

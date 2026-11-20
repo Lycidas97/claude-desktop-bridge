@@ -43,6 +43,7 @@ import {
   closeArtifactTransfer, getEvidence, getEvidenceDetails, handleFileUpload, listEvidence,
   openArtifactTransfer, previewArtifact, readArtifactTransfer,
 } from "./controller-evidence-rpc.js";
+import { AgendaEditError } from "../../../../plugins/assistant-mail/agenda-store.js";
 import { BridgeRequestError, integerParam, numberParam, stringParam } from "./request-error.js";
 
 export { stringParam };
@@ -213,7 +214,11 @@ async function dispatchControllerRequestInner(
   if (request.method.startsWith("plugin.assistant-mail.")) {
     const coordinator = host.assistantMailCoordinator;
     if (!coordinator) throw new BridgeRequestError("UNSUPPORTED", "当前电脑不支持邮件助理。");
-    return coordinator.handleRpc(request.method, params, () => host.publish());
+    try { return await coordinator.handleRpc(request.method, params, () => host.publish()); }
+    catch (error) {
+      if (error instanceof AgendaEditError) throw new BridgeRequestError(error.code, error.message);
+      throw error;
+    }
   }
   if (
     (typeof params.sessionId === "string" && /^(?:codex|hermes|dsh)-desktop:/u.test(params.sessionId)) ||

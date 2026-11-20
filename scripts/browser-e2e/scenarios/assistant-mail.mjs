@@ -243,7 +243,7 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
     const attachmentCard = card.getByRole("region", { name: "邮件附件" });
     await attachmentCard.getByText("6 个附件", { exact: true }).waitFor();
     await card.getByText("原文", { exact: true }).click();
-    await card.getByText("Fixture mail with attachments.", { exact: true }).last().waitFor();
+    await card.locator("details[open] pre").filter({ hasText: /^Fixture mail with attachments\.$/u }).waitFor();
     assert.equal(await card.locator("details[open] .assistant-attachments").count(), 0);
     const nextCard = card.locator("+ article[data-mail-id]");
     const expandedBounds = await card.boundingBox();

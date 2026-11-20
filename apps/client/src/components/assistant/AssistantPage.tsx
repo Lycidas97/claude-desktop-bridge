@@ -1,4 +1,4 @@
-import { ASSISTANT_MAIL_SHARED_AUTH_CAPABILITY, ASSISTANT_SMTP_CAPABILITY, MAIL_CATEGORIES, MAIL_POLL_INTERVALS, type BridgeActionProposal, type BridgeDirectoryListing, type BridgeHostSnapshot, type BridgeMailAccount, type BridgeMailCache, type BridgeMailCard, type BridgeMailCategory, type BridgeMailFolder, type BridgeMailPage, type BridgeMethod, type BridgeSessionInfo } from "@bridge/protocol";
+import { ASSISTANT_MAIL_SHARED_AUTH_CAPABILITY, ASSISTANT_SMTP_CAPABILITY, MAIL_POLL_INTERVALS, type BridgeActionProposal, type BridgeDirectoryListing, type BridgeHostSnapshot, type BridgeMailAccount, type BridgeMailCache, type BridgeMailCard, type BridgeMailCategory, type BridgeMailFolder, type BridgeMailPage, type BridgeMethod, type BridgeSessionInfo } from "@bridge/protocol";
 import { ArrowLeft, Check, ChevronRight, ListChecks, LoaderCircle, RefreshCw, Search, Settings, X } from "lucide-react";
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { mergeMailCards, refreshMailPages } from "../../lib/assistant-mail.js";
@@ -18,7 +18,8 @@ import { useAssistantAgenda } from "./AssistantAgendaProvider.js";
 import { pendingProposalCount, useAssistantProposals } from "./AssistantProposalProvider.js";
 import { AssistantAttention } from "./AssistantAttention.js";
 import { ProposalPanel } from "./ProposalPanel.js";
-import { MAIL_FOLDER_LABELS, MailCard } from "./MailCard.js";
+import { MailCard } from "./MailCard.js";
+import { MailCategoryManager } from "./MailCategoryManager.js";
 import { MailReference } from "./MailReference.js";
 import "./assistant-mail.css";
 
@@ -93,6 +94,8 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
   const filedBack = filed && <IconButton key="filed-back" label="返回收件" autoFocus onClick={backToInbox}>
     <ArrowLeft size={mobile ? 20 : 16} aria-hidden="true" />
   </IconButton>;
+  const filedActions = filed && mail?.supportsCategories && <MailCategoryManager categories={mail.categories}
+    mobile={mobile} online={mail.online} request={mail.request} />;
   const pendingCount = pendingProposalCount(proposals);
   function openProposals() {
     if (displayedView !== "proposals") { setProposalReturn(displayedView); setSelectedProposal(undefined); }
@@ -254,17 +257,17 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
     </>}
   </div>;
   return <section className={`assistant-page ${mobile ? "assistant-page-mobile" : "desktop-page"}${session ? " has-conversation" : ""}`}>
-    {mobile && (filed ? <MobilePageHeader title="已收纳" leading={filedBack} />
+    {mobile && (filed ? <MobilePageHeader title="已收纳" leading={filedBack} actions={filedActions || undefined} />
       : displayedView === "proposals" ? <MobilePageHeader title={selectedProposal ? "提案详情" : "待确认提案"} onBack={backFromProposals} />
       : <MobilePageHeader title="助理" {...(headerLeading ? { leading: headerLeading } : {})} actions={viewTabs} />)}
     {!mobile && <div className="assistant-desktop-header-band">
       {headerLeading && <div className="assistant-desktop-leading">{headerLeading}</div>}
       <div className="assistant-page-header-inner">
         <header className="desktop-page-heading">
-          {filed ? <div className="assistant-filed-heading">
+          {filed ? <><div className="assistant-filed-heading">
             {filedBack}
             <h1>已收纳</h1>
-          </div> : <><h1>助理</h1>{viewTabs}</>}
+          </div>{filedActions}</> : <><h1>助理</h1>{viewTabs}</>}
         </header>
       </div>
     </div>}
@@ -314,7 +317,7 @@ function InboxMailList({ mail, filed, canMarkJunk, onOpenFiled, onDiscuss }: {
 }) {
   const { cards, folderCounts } = mail.cache;
   const inboxCards = mail.supportsFiling ? cards.filter(card => !card.folder) : cards;
-  const filedCount = MAIL_CATEGORIES.reduce((total, category) => total + (folderCounts?.[category] ?? 0), 0);
+  const filedCount = mail.categories.reduce((total, { id }) => total + (folderCounts?.[id] ?? 0), 0);
   const filedEntry = useRef<HTMLButtonElement>(null);
   const wasFiled = useRef(filed);
   useEffect(() => {
@@ -325,7 +328,9 @@ function InboxMailList({ mail, filed, canMarkJunk, onOpenFiled, onDiscuss }: {
   const [query, setQuery] = useState("");
   const [openedFolders, setOpenedFolders] = useState<ReadonlySet<BridgeMailCategory>>(new Set());
   type Placement = { junk: boolean } | { folder: BridgeMailFolder };
-  const [receipt, setReceipt] = useState<{ mailRefId: string; subject: string; message: string; previous: Placement; focusUndo: boolean }>();
+  const [lastMove, setLastMove] = useState<{ mailRefId: string; subject: string; placement: Placement; previous: Placement; focusUndo: boolean }>();
+  const receipt = lastMove && [lastMove.placement, lastMove.previous].every(placement =>
+    "junk" in placement || placement.folder === "inbox" || mail.categories.some(({ id }) => id === placement.folder)) ? lastMove : undefined;
   const undoButton = useRef<HTMLButtonElement>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -339,9 +344,7 @@ function InboxMailList({ mail, filed, canMarkJunk, onOpenFiled, onDiscuss }: {
     setError("");
     try {
       mailResult(await mail.request("junk" in placement ? "plugin.assistant-mail.junk.set" : "plugin.assistant-mail.filing.set", { mailRefId, ...placement }));
-      setReceipt(previous ? { mailRefId, subject: subject || "无主题", previous,
-        message: "junk" in placement ? "已在 Bridge 标为垃圾邮件" : placement.folder === "inbox"
-          ? "已收回收件" : `已收入「${MAIL_FOLDER_LABELS[placement.folder]}」`,
+      setLastMove(previous ? { mailRefId, subject: subject || "无主题", previous, placement,
         focusUndo: Boolean(control && (document.activeElement === control || document.activeElement === document.body)),
       } : undefined);
     } catch (reason) {
@@ -372,21 +375,21 @@ function InboxMailList({ mail, filed, canMarkJunk, onOpenFiled, onDiscuss }: {
     {/* Keep expanded categories and their loaded pages mounted when returning to the inbox. */}
     {mail.supportsFiling && (filed || openedFolders.size > 0) && <section hidden={!filed} className="assistant-mail-list" aria-label="已收纳">
       {filedCount ? <div className="assistant-mail-groups">
-        {MAIL_CATEGORIES.map(category => {
+        {mail.categories.map(({ id: category, label }) => {
           const count = folderCounts?.[category] ?? 0;
           return count > 0 && <details className="assistant-mail-group" key={category} open={openedFolders.has(category)} onToggle={event => {
             const { open } = event.currentTarget;
             setOpenedFolders(current => current.has(category) === open ? current
               : open ? new Set(current).add(category) : new Set([...current].filter(folder => folder !== category)));
           }}>
-            <summary><span>{MAIL_FOLDER_LABELS[category]}</span><small>{count} 封</small><ChevronRight size={16} aria-hidden="true" /></summary>
+            <summary><span>{label}</span><small>{count} 封</small><ChevronRight size={16} aria-hidden="true" /></summary>
             {openedFolders.has(category) && <div className="assistant-mail-group-cards">
               <ScopedMailList mail={mail} folder={category} renderCard={renderCard} />
               {count > 1 && <button type="button" className="assistant-session-link assistant-mail-close-folder" onClick={event => {
                 const details = event.currentTarget.closest("details")!;
                 details.open = false;
                 details.querySelector("summary")?.focus();
-              }}>收起「{MAIL_FOLDER_LABELS[category]}」</button>}
+              }}>收起「{label}」</button>}
             </div>}
           </details>;
         })}
@@ -405,7 +408,8 @@ function InboxMailList({ mail, filed, canMarkJunk, onOpenFiled, onDiscuss }: {
     {(receipt || error) && <div className="assistant-mail-junk-feedback">
       {error && <span role="alert">{error}</span>}
       {receipt && <>
-        <span role="status" title={receipt.subject}>{receipt.message}：{receipt.subject}</span>
+        <span role="status" title={receipt.subject}>{"junk" in receipt.placement ? "已在 Bridge 标为垃圾邮件" : receipt.placement.folder === "inbox"
+          ? "已收回收件" : `已收入「${mail.categoryLabel(receipt.placement.folder)}」`}：{receipt.subject}</span>
         <button ref={undoButton} type="button" className="assistant-session-link" disabled={disabled} onClick={() => {
           void move(receipt, receipt.previous);
         }}>撤销</button>
@@ -417,7 +421,7 @@ function InboxMailList({ mail, filed, canMarkJunk, onOpenFiled, onDiscuss }: {
 function ScopedMailList({ mail, folder, query, renderCard }: {
   mail: NonNullable<ReturnType<typeof useAssistantMail>>; folder?: BridgeMailCategory; query?: string; renderCard(card: BridgeMailCard): ReactNode;
 }) {
-  const { online, request } = mail;
+  const { online, request, supportsCategories } = mail;
   const changeToken = mail.assistant?.changeToken ?? "";
   const [page, setPage] = useState<BridgeMailCache>({ cards: [], changeToken: "" });
   const pageRef = useRef(page);
@@ -426,7 +430,8 @@ function ScopedMailList({ mail, folder, query, renderCard }: {
   const [error, setError] = useState("");
   const loadPage = useCallback(async (cursor?: string) => mailResult<{ mailPage: BridgeMailPage }>(await request("plugin.assistant-mail.list", {
     includeHistory: true, ...(folder ? { folder } : { query }), ...(cursor ? { cursor } : {}),
-  })).mailPage, [request, folder, query]);
+    ...(supportsCategories ? { includeCustomCategories: true } : {}),
+  })).mailPage, [request, folder, query, supportsCategories]);
   useEffect(() => {
     if (!online) return;
     let current = true;

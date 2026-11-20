@@ -3,7 +3,7 @@ import { createReadStream } from "node:fs";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { AssistantAttentionAcknowledgment, AssistantAttentionItem, BridgeMailAttachment, BridgeMailCategory, BridgeMailFolder, MailAttentionLevel } from "../../packages/protocol/src/assistant-mail.js";
+import { DEFAULT_MAIL_CATEGORIES, MAIL_JUNK_CATEGORY_ID, type AssistantAttentionAcknowledgment, type AssistantAttentionItem, type BridgeMailAttachment, type BridgeMailCategory, type BridgeMailCategoryChange, type BridgeMailCategoryEntry, type BridgeMailFolder, type MailAttentionLevel } from "../../packages/protocol/src/assistant-mail.js";
 import { MailBodyParseError, parseMail } from "./mime.js";
 import { MailPageParameters } from "./tool-contract.js";
 import { AssistantTriggerStore } from "./trigger-store.js";
@@ -45,7 +45,12 @@ const mailOrder = "CASE WHEN historical = 1 THEN -seq ELSE seq END";
 const mailFolder = `CASE WHEN user_junk = 1 THEN 'marketing'
   WHEN filing IS NOT NULL THEN replace(filing, 'user:', '')
   WHEN json_extract(analysis_json, '$.category') = 'marketing' THEN 'marketing' ELSE 'inbox' END`;
+const legacyFolders = DEFAULT_MAIL_CATEGORIES.map(({ id }) => `'${id}'`).join(", ");
 export type MailPageScope = "all" | "legacy" | BridgeMailFolder | { query: string };
+
+export class MailCategoryError extends Error {
+  constructor(readonly code: "CONFLICT" | "INVALID_PARAMS", message: string) { super(message); }
+}
 
 function mailPreview(text: string): string {
   const lines = text.trimStart().slice(0, 4096).replace(/[\uD800-\uDBFF]$/u, "").split(/\r?\n/u);
@@ -208,6 +213,11 @@ export class AssistantMailStore {
     if (!columns.includes("filing")) this.database.exec("ALTER TABLE mail_events ADD COLUMN filing TEXT");
     this.database.exec(`
       CREATE INDEX IF NOT EXISTS mail_events_page_order ON mail_events (${mailOrder});
+      CREATE TABLE IF NOT EXISTS mail_categories (
+        position INTEGER PRIMARY KEY,
+        id TEXT NOT NULL UNIQUE,
+        label TEXT NOT NULL
+      ) STRICT;
       CREATE TABLE IF NOT EXISTS assistant_attention_ack (
         kind TEXT NOT NULL, id TEXT NOT NULL, PRIMARY KEY(kind, id)
       ) STRICT;
@@ -219,6 +229,10 @@ export class AssistantMailStore {
         id TEXT PRIMARY KEY, session_id TEXT NOT NULL, title TEXT NOT NULL
       ) STRICT;
     `);
+    // The protected junk category keeps the catalog nonempty after initial seeding.
+    this.database.prepare(`INSERT INTO mail_categories (id, label)
+      SELECT json_extract(value, '$.id'), json_extract(value, '$.label') FROM json_each(?)
+      WHERE NOT EXISTS (SELECT 1 FROM mail_categories) ORDER BY key`).run(JSON.stringify(DEFAULT_MAIL_CATEGORIES));
     this.triggers = new AssistantTriggerStore(this.database);
     extend?.(this.database);
   }
@@ -359,7 +373,52 @@ export class AssistantMailStore {
     }
   }
 
-  page(input: unknown = {}, includeHistory = true, scope: MailPageScope = "all"): { events: MailEvent[]; nextCursor?: string } {
+  categories(): BridgeMailCategoryEntry[] {
+    return this.db().prepare("SELECT id, label FROM mail_categories ORDER BY position").all() as unknown as BridgeMailCategoryEntry[];
+  }
+
+  private requireCategory(id: BridgeMailCategory): void {
+    if (!this.db().prepare("SELECT 1 FROM mail_categories WHERE id = ?").get(id)) {
+      throw new MailCategoryError("INVALID_PARAMS", "邮件分类不存在。");
+    }
+  }
+
+  requireFolder(folder: BridgeMailFolder): void {
+    if (folder !== "inbox") this.requireCategory(folder);
+  }
+
+  changeCategory(change: BridgeMailCategoryChange): boolean {
+    const db = this.db();
+    if (change.action !== "add") this.requireCategory(change.id);
+    if (change.action === "delete") {
+      if (change.id === MAIL_JUNK_CATEGORY_ID) throw new MailCategoryError("INVALID_PARAMS", "此分类用于垃圾邮件和自动收纳，不能删除。");
+      db.exec("BEGIN");
+      try {
+        db.prepare(`UPDATE mail_events SET filing = CASE filing WHEN ? THEN 'user:inbox' ELSE 'inbox' END
+          WHERE filing IN (?, ?)`).run(`user:${change.id}`, `user:${change.id}`, change.id);
+        db.prepare(`UPDATE mail_events SET filing = COALESCE(filing, 'inbox'), analysis_json = json_remove(analysis_json, '$.category')
+          WHERE json_extract(analysis_json, '$.category') = ?`).run(change.id);
+        db.prepare("DELETE FROM mail_categories WHERE id = ?").run(change.id);
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+      return true;
+    }
+    if (db.prepare("SELECT 1 FROM mail_categories WHERE label = ? COLLATE NOCASE AND id <> ?")
+      .get(change.label, change.action === "rename" ? change.id : "")) {
+      throw new MailCategoryError("CONFLICT", "已有同名邮件分类。");
+    }
+    if (change.action === "rename") {
+      return Boolean(db.prepare("UPDATE mail_categories SET label = ? WHERE id = ? AND label <> ?")
+        .run(change.label, change.id, change.label).changes);
+    }
+    db.prepare("INSERT INTO mail_categories (id, label) VALUES (?, ?)").run(`custom-${randomUUID()}`, change.label);
+    return true;
+  }
+
+  page(input: unknown = {}, includeHistory = true, scope: MailPageScope = "all", includeCustomCategories = true): { events: MailEvent[]; nextCursor?: string } {
     const { cursor, limit = 50, processingStatus } = MailPageParameters.parse(input);
     const order = includeHistory ? mailOrder : "seq";
     const scopeValue = typeof scope === "object" ? scope.query : scope === "legacy" || scope === "all" ? undefined : scope;
@@ -367,7 +426,9 @@ export class AssistantMailStore {
       instr(lower(subject), lower($scope)) > 0 OR instr(lower(mail_excerpt(json_extract(mime_projection, '$.preview'))), lower($scope)) > 0 OR
       EXISTS (SELECT 1 FROM json_each(from_json) WHERE instr(lower(json_extract(value, '$.name')), lower($scope)) > 0
         OR instr(lower(json_extract(value, '$.address')), lower($scope)) > 0)
-    )` : scope === "legacy" ? "AND user_junk = 0" : scope === "all" ? "" : `AND (${mailFolder}) = $scope`;
+    )` : scope === "legacy" ? "AND user_junk = 0" : scope === "all" ? ""
+      : scope === "inbox" && !includeCustomCategories ? `AND ((${mailFolder}) = $scope OR (${mailFolder}) NOT IN (${legacyFolders}))`
+      : `AND (${mailFolder}) = $scope`;
     const rows = this.db().prepare(`
       SELECT * FROM mail_events WHERE (${order}) < $cursor AND ($status IS NULL OR processing_status = $status)${includeHistory ? "" : " AND historical = 0"}
       ${filter} ORDER BY (${order}) DESC LIMIT $limit
@@ -375,14 +436,20 @@ export class AssistantMailStore {
       ...(scopeValue !== undefined ? { $scope: scopeValue } : {}) }) as EventRow[];
     const events = rows.slice(0, limit).map(row => {
       const event = eventFromRow(row);
+      if (!includeCustomCategories) {
+        // Older clients can browse only the original four folder IDs.
+        if (event.folder && !DEFAULT_MAIL_CATEGORIES.some(({ id }) => id === event.folder)) delete event.folder;
+        if (event.analysis?.category && !DEFAULT_MAIL_CATEGORIES.some(({ id }) => id === event.analysis?.category)) delete event.analysis.category;
+      }
       return { ...event, attachments: event.attachments.slice(0, 32) };
     });
     return { events, ...(rows.length > limit ? { nextCursor: String(events.at(-1)!.seq) } : {}) };
   }
 
-  folderCounts(includeHistory: boolean): Partial<Record<BridgeMailCategory, number>> {
+  folderCounts(includeHistory: boolean, includeCustomCategories = true): Partial<Record<BridgeMailCategory, number>> {
     return Object.fromEntries(this.db().prepare(`SELECT (${mailFolder}) AS folder, count(*) AS count FROM mail_events
-      WHERE (${mailFolder}) <> 'inbox' ${includeHistory ? "" : "AND historical = 0"} GROUP BY folder`)
+      WHERE (${mailFolder}) ${includeCustomCategories ? "<> 'inbox'" : `IN (${legacyFolders})`}
+      ${includeHistory ? "" : "AND historical = 0"} GROUP BY folder`)
       .all().map(({ folder, count }) => [folder, count]));
   }
 
@@ -432,6 +499,7 @@ export class AssistantMailStore {
   }
 
   updateAnalysis(mailRefId: string, analysis: MailAnalysis): MailEvent | undefined {
+    if (analysis.category !== undefined) this.requireCategory(analysis.category);
     // The three text fields are replaced; omitted category and attention survive legacy analysis writes.
     const row = this.db().prepare(`UPDATE mail_events SET
       filing = COALESCE(filing, CASE
@@ -459,6 +527,7 @@ export class AssistantMailStore {
   }
 
   setFolder(mailRefId: string, folder: BridgeMailFolder, source: "user" | "assistant"): boolean | undefined {
+    this.requireFolder(folder);
     const db = this.db();
     const row = db.prepare(`SELECT user_junk, filing, (${mailFolder}) AS folder FROM mail_events WHERE mail_ref_id = ?`)
       .get(mailRefId) as (Pick<EventRow, "user_junk" | "filing"> & { folder: BridgeMailFolder }) | undefined;

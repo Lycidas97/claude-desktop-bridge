@@ -1,4 +1,4 @@
-import { ARTIFACT_MAX_BYTES, MAIL_CATEGORIES, mailAttachmentPreviewKind, type BridgeMailCategory, type BridgeMailFolder, type BridgeHistoryItem, type BridgeMailAttachment, type BridgeMailCard, type BridgeMailDetail } from "@bridge/protocol";
+import { ARTIFACT_MAX_BYTES, mailAttachmentPreviewKind, type BridgeMailFolder, type BridgeHistoryItem, type BridgeMailAttachment, type BridgeMailCard, type BridgeMailDetail } from "@bridge/protocol";
 import { Download, Mail, Paperclip } from "lucide-react";
 import { useState, type MouseEvent } from "react";
 import { downloadMailAttachment } from "../../lib/artifact-download.js";
@@ -10,9 +10,6 @@ import "./assistant-mail.css";
 export const DELIVERY_LABELS: Record<BridgeMailCard["nativeDelivery"]["state"], string> = {
   "not-submitted": "未提交", pending: "待提交", paused: "已暂停", submitting: "提交中", submitted: "已提交", queued: "排队中",
   observed: "原生已观测", uncertain: "不确定", failed: "失败", cancelled: "已撤回",
-};
-export const MAIL_FOLDER_LABELS: Record<BridgeMailCategory, string> = {
-  marketing: "营销与垃圾邮件", verification: "验证码", account: "账号注册", other: "其他",
 };
 const PROCESSING_LABELS = { pending: "待处理", processing: "处理中", processed: "已处理" };
 
@@ -54,6 +51,7 @@ export function MailCard({ card, nativeMessage, onDiscuss, showBatchDelivery = t
 }) {
   const mail = useAssistantMail();
   const accountLabel = mail?.accountLabel(card.accountKey) ?? "邮件插件";
+  const folderLabel = filing?.showFolder && card.folder ? mail?.categoryLabel(card.folder) : undefined;
   const [detail, setDetail] = useState<BridgeMailDetail>();
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -68,7 +66,7 @@ export function MailCard({ card, nativeMessage, onDiscuss, showBatchDelivery = t
   const links = detail ? [...new Set(detail.bodyText.match(/https?:\/\/[^\s<>"']+/gu) ?? [])].filter(href => URL.canParse(href)).map(href => new URL(href)) : [];
   return <article className="assistant-mail-card" data-mail-id={card.mailRefId} data-stream-key={`mail:${card.mailRefId}`} aria-label={`邮件：${card.subject || "无主题"}`}>
     <header><span><Mail size={15} aria-hidden="true" />{accountLabel}</span><time dateTime={card.receivedAt}>{new Date(card.receivedAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</time></header>
-    {filing?.showFolder && card.folder && <p className="assistant-mail-folder-label">{MAIL_FOLDER_LABELS[card.folder]}</p>}
+    {folderLabel && <p className="assistant-mail-folder-label">{folderLabel}</p>}
     <h3>{card.subject || "无主题"}</h3>
     <p className="assistant-mail-from">{card.from.map(sender => [sender.name, sender.address].filter(Boolean).join(" ")).join("，") || "未知发件人"}</p>
     {card.preview && <p className="assistant-mail-preview">{card.preview}</p>}
@@ -109,9 +107,9 @@ export function MailCard({ card, nativeMessage, onDiscuss, showBatchDelivery = t
         {card.folder
           ? <button type="button" className="assistant-session-link" disabled={filing.disabled} onClick={event => filing.move("inbox", event.currentTarget)}>收回收件</button>
           : <select className="assistant-mail-file-select" aria-label="收入分类" value="" disabled={filing.disabled}
-              onChange={event => { if (event.target.value) filing.move(event.target.value as BridgeMailCategory, event.currentTarget); }}>
+              onChange={event => { if (event.target.value) filing.move(event.target.value, event.currentTarget); }}>
               <option value="">收入分类</option>
-              {MAIL_CATEGORIES.map(category => <option key={category} value={category}>{MAIL_FOLDER_LABELS[category]}</option>)}
+              {mail.categories.map(({ id, label }) => <option key={id} value={id}>{label}</option>)}
             </select>}
       </>}
       {junkAction && <button type="button" className="assistant-session-link assistant-mail-junk-action" disabled={junkAction.disabled} onClick={junkAction.onMark}>标为垃圾邮件</button>}

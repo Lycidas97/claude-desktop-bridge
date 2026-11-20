@@ -23,6 +23,7 @@ export const ASSISTANT_SMTP_CAPABILITY = "plugin.assistant-mail.smtp.v1";
 export const MAIL_ATTENTION_LEVELS = ["ignore", "read", "action"] as const;
 export type MailAttentionLevel = (typeof MAIL_ATTENTION_LEVELS)[number];
 export const ASSISTANT_MAIL_FILING_CAPABILITY = "plugin.assistant-mail.filing.v1";
+export const ASSISTANT_MAIL_CATEGORIES_CAPABILITY = "plugin.assistant-mail.categories.v1";
 export const ASSISTANT_ATTENTION_CAPABILITY = "plugin.assistant-mail.attention.v1";
 
 export type AssistantAttentionItem = { id: string; title: string } & (
@@ -77,6 +78,7 @@ export interface BridgeAssistantMailSnapshot {
   bindingState: "unbound" | "ready" | "unavailable" | "missing" | "needs-rebind";
   receiverState: BridgeMailReceiverState;
   accounts?: BridgeMailAccount[];
+  categories?: BridgeMailCategoryEntry[];
   accountConfigError?: "mail_account_config_unavailable";
   credentialsSupported?: boolean;
   workspace?: BridgeAssistantWorkspace;
@@ -110,10 +112,29 @@ export interface BridgeMailAttachment {
   size: number;
 }
 
-export const MAIL_CATEGORIES = ["marketing", "verification", "account", "other"] as const;
-export type BridgeMailCategory = typeof MAIL_CATEGORIES[number];
-export const MAIL_FOLDERS = ["inbox", ...MAIL_CATEGORIES] as const;
-export type BridgeMailFolder = typeof MAIL_FOLDERS[number];
+export const MAIL_JUNK_CATEGORY_ID = "marketing";
+export const MAIL_CATEGORY_LABEL_MAX = 60;
+export type BridgeMailCategory = string;
+export type BridgeMailFolder = string;
+
+export interface BridgeMailCategoryEntry {
+  id: BridgeMailCategory;
+  label: string;
+}
+
+/** Initial host catalog and the fixed vocabulary of older clients and hosts. */
+export const DEFAULT_MAIL_CATEGORIES: readonly BridgeMailCategoryEntry[] = [
+  { id: MAIL_JUNK_CATEGORY_ID, label: "营销与垃圾邮件" },
+  { id: "verification", label: "验证码" },
+  { id: "account", label: "账号注册" },
+  { id: "other", label: "其他" },
+];
+
+export type BridgeMailCategoryChange =
+  | { action: "add"; label: string }
+  | { action: "rename"; id: BridgeMailCategory; label: string }
+  | { action: "delete"; id: BridgeMailCategory };
+
 
 export interface BridgeMailCard {
   /** Descending list order: positive for live arrivals, negative for historical imports. */

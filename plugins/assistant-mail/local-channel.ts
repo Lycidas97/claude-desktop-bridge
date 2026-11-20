@@ -12,8 +12,9 @@ import { MailAttachmentError } from "./mime.js";
 import { CompactHookRequest } from "./compact-hook.js";
 import type { ProposalExecutor } from "./proposal-executor.js";
 import { isProposalTool, MAIL_SOURCE, MAIL_TOOLS_STOP_SUFFIX, MANAGED_MAIL_TOOLS, MailToolRequest } from "./tool-contract.js";
+import { MailCategoryError } from "./store.js";
 
-type MailTools = Pick<AssistantMailService, "page" | "readEvent" | "readAttachment" | "updateAnalysis" | "setProcessingStatus" | "setFolder" | "markRead" | "triggers">;
+type MailTools = Pick<AssistantMailService, "page" | "categories" | "readEvent" | "readAttachment" | "updateAnalysis" | "setProcessingStatus" | "setFolder" | "markRead" | "triggers">;
 class ManagedMailTokenRevoked extends Error {}
 
 /** The only listener given to mail tools; no management controller or broker is reachable here. */
@@ -95,7 +96,7 @@ export async function serveAssistantMailTools(options: {
           break;
         } else break;
         case "memory.lookup_entry": result = options.lookupMemory?.(sessionId!, input.arguments.entryId); break;
-        case "mail.list_events": result = options.service.page(input.arguments); break;
+        case "mail.list_events": result = { ...options.service.page(input.arguments), categories: options.service.categories() }; break;
         case "mail.list_unfinished_triggers": result = options.service.triggers.unfinished(sessionId!, input.arguments.cursor); break;
         case "mail.read_event": result = await options.service.readEvent(input.arguments.mailRefId); break;
         case "mail.read_attachment": result = await options.service.readAttachment(input.arguments); break;
@@ -125,6 +126,8 @@ export async function serveAssistantMailTools(options: {
         reply(response, 409, { error: "AGENDA_INCOMPLETE" });
       } else if (error instanceof AgendaEditError) {
         reply(response, { NOT_FOUND: 404, CONFLICT: 409, UNSUPPORTED: 422, INVALID_PARAMS: 400 }[error.code], { error: error.code, message: error.message });
+      } else if (error instanceof MailCategoryError) {
+        reply(response, 404, { error: "MAIL_CATEGORY_NOT_FOUND" });
       } else if (error instanceof MailAttachmentError) {
         const status = error.code === "MAIL_ATTACHMENT_NOT_FOUND" ? 404 : error.code === "MAIL_ATTACHMENT_TOO_LARGE" ? 413 : 422;
         reply(response, status, { error: error.code });

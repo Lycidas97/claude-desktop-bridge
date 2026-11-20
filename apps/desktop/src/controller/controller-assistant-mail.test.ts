@@ -172,6 +172,29 @@ describe("assistant mail mobile RPC projections", () => {
     service.updateAnalysis(mailRefId, analysis);
     expect(await run.request("plugin.assistant-mail.list", { folder: "inbox" })).toMatchObject({ mailPage: { cards: [{ mailRefId, analysis }], folderCounts: {} } });
   });
+  it("publishes the category catalog and keeps custom-filed mail visible to older clients", async () => {
+    const { mailRefId } = await record(1);
+    const before = (await run.publish()).assistantMail!;
+    expect((await run.publish()).host.capabilities).toContain("plugin.assistant-mail.categories.v1");
+    await expect(run.request("plugin.assistant-mail.category.change", { action: "add", label: "  " })).rejects.toMatchObject({ code: "INVALID_PARAMS" });
+    await expect(run.request("plugin.assistant-mail.category.change", { action: "add", label: "  订单  " })).resolves.toMatchObject({ assistantMail: { categories: expect.arrayContaining([{ id: expect.any(String), label: "订单" }]) } });
+    await expect(run.request("plugin.assistant-mail.category.change", { action: "add", label: "订单" })).rejects.toMatchObject({ code: "CONFLICT" });
+    const { id } = service.categories().at(-1)!;
+    const analysis = { summary: "物流", suggestions: [], questions: [] };
+    service.updateAnalysis(mailRefId, { ...analysis, category: id });
+    await run.request("plugin.assistant-mail.filing.set", { mailRefId, folder: id });
+    expect((await run.publish()).assistantMail?.changeToken).not.toBe(before.changeToken);
+    expect(await run.request("plugin.assistant-mail.list", { folder: "inbox" })).toMatchObject({ mailPage: { cards: [{ mailRefId, analysis }], folderCounts: {} } });
+    const legacy = await run.request<{ mailPage: BridgeMailPage }>("plugin.assistant-mail.list", { query: "Subject 1" });
+    expect(legacy.mailPage.cards[0]).not.toHaveProperty("folder");
+    expect(legacy.mailPage.cards[0]?.analysis).toEqual(analysis);
+    expect(await run.request("plugin.assistant-mail.list", { folder: "inbox", includeCustomCategories: true })).toMatchObject({ mailPage: { cards: [], folderCounts: { [id]: 1 } } });
+    expect(await run.request("plugin.assistant-mail.list", { folder: id, includeCustomCategories: true })).toMatchObject({ mailPage: { cards: [{ mailRefId, folder: id }] } });
+    await run.request("plugin.assistant-mail.category.change", { action: "delete", id });
+    await expect(run.request("plugin.assistant-mail.list", { folder: id, includeCustomCategories: true })).rejects.toMatchObject({ code: "INVALID_PARAMS" });
+    expect(await run.request("plugin.assistant-mail.list", { folder: "inbox", includeCustomCategories: true })).toMatchObject({ mailPage: { cards: [{ mailRefId, analysis }], folderCounts: {} } });
+  });
+
   it("requires an explicitly supplied shared credential and saves the complete mailbox in one request", async () => {
     const account = { host: "imap.example.test", user: "test@example.test" };
     const smtp = { host: "smtp.example.test", port: 587, security: "starttls", from: account.user };
@@ -540,7 +563,7 @@ describe("assistant native session binding", () => {
   });
 
   it("keeps automatic delivery disabled for every helper binding state", () => {
-    expect(assistantMailSnapshot(service, [], true, "unbound")).toEqual({
+    expect(assistantMailSnapshot(service, [], true, "unbound")).toMatchObject({
       bindingState: "unbound", receiverState: "disabled", accounts: [], credentialsSupported: true, automaticDelivery: false, changeToken: "unbound",
     });
     service.setBinding({ assistantId: "assistant", nativeSessionId: "native-first", sectionId: null, previousSessionIds: [] });
@@ -548,7 +571,7 @@ describe("assistant native session binding", () => {
       [run.sessions, true, "ready"], [run.sessions, false, "unavailable"], [[], true, "missing"],
       [[nativeSession("native-first", { archivedAt: 123 })], true, "needs-rebind"],
     ] as const) {
-      expect(assistantMailSnapshot(service, [...sessions], available, "marker")).toEqual({
+      expect(assistantMailSnapshot(service, [...sessions], available, "marker")).toMatchObject({
         binding: service.binding(), bindingState, receiverState: "disabled", accounts: [], credentialsSupported: true, automaticDelivery: false, changeToken: "marker",
       });
     }

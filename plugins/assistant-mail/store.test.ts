@@ -117,6 +117,45 @@ it("pages and searches saved folders independently and keeps an explicit restore
   expect(store.page({}, true, "legacy").events.map(event => event.mailRefId)).toContain(junk.mailRefId);
 });
 
+it("keeps category IDs across renames and returns mail from a deleted category without deleting the original", async () => {
+  store.openMailbox("test-account", "1", 5);
+  const userMail = (await store.record(message(5)))!;
+  const assistantMail = (await store.record(message(6)))!;
+  const promo = (await store.record(message(7)))!;
+  const junk = (await store.record(message(8)))!;
+  store.changeCategory({ action: "add", label: "订单" });
+  const { id } = store.categories().at(-1)!;
+  const analysis = { summary: "订单已发货", suggestions: ["查看物流"], questions: [], attention: "action" as const };
+  expect(store.updateAnalysis(userMail.mailRefId, { ...analysis, category: id })).not.toHaveProperty("folder");
+  store.setFolder(userMail.mailRefId, id, "user");
+  store.setFolder(assistantMail.mailRefId, id, "assistant");
+  store.markRead([userMail.mailRefId]);
+  store.setProcessingStatus(userMail.mailRefId, "processed");
+  store.changeCategory({ action: "rename", id, label: "采购记录" });
+  expect(store.categories().at(-1)).toEqual({ id, label: "采购记录" });
+  expect(store.page({}, true, id).events.map(event => event.mailRefId)).toEqual([assistantMail.mailRefId, userMail.mailRefId]);
+
+  store.changeCategory({ action: "rename", id: "marketing", label: "广告" });
+  expect(() => store.changeCategory({ action: "delete", id: "marketing" })).toThrow("此分类用于垃圾邮件和自动收纳，不能删除");
+  store.updateAnalysis(promo.mailRefId, { ...analysis, category: "marketing" });
+  store.setJunk(junk.mailRefId, true);
+  store.changeCategory({ action: "delete", id });
+  store.changeCategory({ action: "delete", id: "account" });
+  store.close();
+  store = new AssistantMailStore(root);
+  await store.initialize();
+
+  expect(store.categories()).toEqual([{ id: "marketing", label: "广告" }, { id: "verification", label: "验证码" }, { id: "other", label: "其他" }]);
+  expect(store.folderCounts(true)).toEqual({ marketing: 2 });
+  expect(store.page({}, true, "inbox").events.map(event => event.mailRefId)).toEqual([assistantMail.mailRefId, userMail.mailRefId]);
+  const original = (await store.read(userMail.mailRefId))!;
+  expect(original.source).toEqual(message(5).source);
+  expect(original.event).toMatchObject({ hostRead: true, processingStatus: "processed", analysis });
+  expect(original.event.analysis).not.toHaveProperty("category");
+  expect(store.setFolder(userMail.mailRefId, "verification", "assistant")).toBe(false);
+  expect(store.attention(false)).toContainEqual({ kind: "mail", id: userMail.mailRefId, title: userMail.subject, reason: "action" });
+});
+
 it("keeps mail already in the inbox eligible for its first classification", async () => {
   store.openMailbox("test-account", "1", 5);
   const { mailRefId } = (await store.record(message()))!;
@@ -343,7 +382,7 @@ it("creates the assistant business tables and private POSIX files including WAL/
   const database = new DatabaseSync(join(store.directory, "assistant.sqlite"));
   openDatabases.push(database);
   expect(database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all().map(row => row.name))
-    .toEqual(["assistant_attention_ack", "assistant_attention_baseline", "assistant_attention_replies", "assistant_binding", "assistant_managed_binding", "imap_history", "imap_watermarks", "mail_events", "trigger_batches", "trigger_deliveries"]);
+    .toEqual(["assistant_attention_ack", "assistant_attention_baseline", "assistant_attention_replies", "assistant_binding", "assistant_managed_binding", "imap_history", "imap_watermarks", "mail_categories", "mail_events", "trigger_batches", "trigger_deliveries"]);
   if (process.platform === "win32") return;
   for (const path of [join(root, "private"), store.directory, join(store.directory, "raw-mail")]) {
     expect((await fs.stat(path)).mode & 0o777).toBe(0o700);

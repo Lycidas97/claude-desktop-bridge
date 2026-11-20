@@ -46,56 +46,85 @@ it("ignores historical UIDs on enable and resumes the committed watermark after 
   expect(store.page().events).toEqual([event]);
 });
 
-it("projects the original screening deadline and separates user attention from read and processing state", async () => {
+it("shows new mail immediately and separates attention from read and processing state", async () => {
   store.openMailbox("test-account", "1", 5);
-  const { mailRefId: id, recordedAt } = (await store.record(message()))!;
-  const deadline = recordedAt + 600_000;
+  const { mailRefId: id } = (await store.record(message()))!;
   const analysis = { summary: "screened", suggestions: [], questions: [] };
-  expect(store.attention(false, recordedAt).items).toMatchObject([{ id, reason: "new" }]);
-  expect(store.attention(true, deadline - 1)).toEqual({ items: [], nextAt: deadline });
+  expect(store.attention(false)).toMatchObject([{ id, reason: "new" }]);
+  expect(store.attention(true)).toMatchObject([{ id, reason: "unscreened" }]);
   store.setProcessingStatus(id, "processed");
   store.markRead([id]);
-  expect(store.attention(true, deadline).items).toMatchObject([{ id, reason: "unscreened" }]);
+  expect(store.attention(true)).toMatchObject([{ id, reason: "unscreened" }]);
   store.updateAnalysis(id, { ...analysis, attention: "read", category: "account" });
-  expect(store.attention(true, deadline).items).toMatchObject([{ id, reason: "read" }]);
+  expect(store.attention(true)).toMatchObject([{ id, reason: "read" }]);
   store.acknowledgeAttention("mail", id);
-  expect(store.attention(false, deadline).items).toEqual([]);
+  expect(store.attention(false)).toEqual([]);
   store.updateAnalysis(id, { ...analysis, attention: "action" });
   store.updateAnalysis(id, { ...analysis, summary: "updated" });
-  expect(store.attention(false, deadline).items).toMatchObject([{ id, reason: "action" }]);
-  expect(store.attention(true, deadline).items).toMatchObject([{ id, reason: "action" }]);
+  expect(store.attention(true)).toMatchObject([{ id, reason: "action" }]);
   store.acknowledgeAttention("mail-action", id);
   store.close();
   store = new AssistantMailStore(root);
   await store.initialize();
-  expect(store.attention(true, deadline).items).toEqual([]);
+  expect(store.attention(true)).toEqual([]);
   expect(store.page().events[0]).toMatchObject({ processingStatus: "processed", hostRead: true, analysis: { attention: "action", category: "account" } });
 });
 
-it("suppresses marked mail attention and its screening deadline without acknowledging it", async () => {
+it("suppresses marked mail attention without acknowledging it", async () => {
   store.openMailbox("test-account", "1", 5);
-  const { mailRefId, recordedAt } = (await store.record(message()))!;
+  const { mailRefId } = (await store.record(message()))!;
   store.recordReply("current", "reply", "Separate reply");
-  expect(store.attention(true, recordedAt, "current").nextAt).toBe(recordedAt + 600_000);
-
+  expect(store.attention(true, "current").map(item => item.id)).toEqual([mailRefId, "reply"]);
   store.setJunk(mailRefId, true);
-  expect(store.attention(true, recordedAt, "current")).toEqual({
-    items: [{ kind: "reply", id: "reply", title: "Separate reply", sessionId: "current" }], nextAt: Infinity,
-  });
+  expect(store.attention(true, "current")).toEqual([{ kind: "reply", id: "reply", title: "Separate reply", sessionId: "current" }]);
   store.updateAnalysis(mailRefId, { summary: "Review", suggestions: [], questions: [], attention: "action" });
-  expect(store.attention(false, recordedAt, "current").items.map(item => item.id)).toEqual(["reply"]);
+  expect(store.attention(false, "current").map(item => item.id)).toEqual(["reply"]);
   store.setJunk(mailRefId, false);
-  expect(store.attention(false, recordedAt, "current").items.map(item => item.id)).toEqual([mailRefId, "reply"]);
+  expect(store.attention(false, "current").map(item => item.id)).toEqual([mailRefId, "reply"]);
+});
+
+it("pages and searches saved folders independently and keeps an explicit restore after restart", async () => {
+  store.openMailbox("test-account", "1", 5);
+  const old = (await store.record({ ...message(5), subject: "Test 5%" }))!;
+  const verification = (await store.record({ ...message(6), subject: "Test 6%" }))!;
+  const promo = (await store.record({ ...message(7), subject: "Test 7%" }))!;
+  const junk = (await store.record({ ...message(8), subject: "Test 8%" }))!;
+  const analysis = { summary: "screened", suggestions: [], questions: [] };
+  store.updateAnalysis(verification.mailRefId, { ...analysis, category: "verification" });
+  store.updateAnalysis(verification.mailRefId, { ...analysis, category: "marketing" });
+  store.updateAnalysis(promo.mailRefId, { ...analysis, category: "marketing", attention: "action" });
+  store.setJunk(junk.mailRefId, true);
+  expect(store.page({ limit: 2 }, true, "inbox").events.map(event => event.mailRefId)).toEqual([verification.mailRefId, old.mailRefId]);
+  expect(store.folderCounts(true)).toEqual({ marketing: 2 });
+  const first = store.page({ limit: 1 }, true, "marketing");
+  expect(first.events.map(event => event.mailRefId)).toEqual([junk.mailRefId]);
+  expect(store.page({ cursor: first.nextCursor }, true, "marketing").events.map(event => event.mailRefId)).toEqual([promo.mailRefId]);
+  expect(store.page({}, true, { query: "TEST 8%" }).events).toMatchObject([{ mailRefId: junk.mailRefId, folder: "marketing" }]);
+  expect(store.page({}, true, { query: "external sender" }).events).toHaveLength(4);
+  expect(store.page({}, true, { query: "Body" }).events).toHaveLength(4);
+  expect(store.attention(true).map(item => item.id)).toEqual([verification.mailRefId, old.mailRefId]);
+  expect(store.setFolder(verification.mailRefId, "verification", "assistant")).toBe(true);
+  expect(store.folderCounts(true)).toEqual({ marketing: 2, verification: 1 });
+  expect(store.setFolder(junk.mailRefId, "inbox", "user")).toBe(true);
+  expect(store.setFolder(promo.mailRefId, "inbox", "user")).toBe(true);
+  store.close();
+  store = new AssistantMailStore(root);
+  await store.initialize();
+  expect(store.setFolder(promo.mailRefId, "account", "assistant")).toBe(false);
+  expect(store.updateAnalysis(promo.mailRefId, { ...analysis, category: "marketing" })).not.toHaveProperty("folder");
+  expect(store.attention(true)).toContainEqual({ kind: "mail", id: promo.mailRefId, title: promo.subject, reason: "action" });
+  expect(store.page({}, true, "inbox").events.map(event => event.mailRefId)).toContain(junk.mailRefId);
+  expect(store.page({}, true, "legacy").events.map(event => event.mailRefId)).toContain(junk.mailRefId);
 });
 
 it("remembers separately acknowledged replies only for the current binding", () => {
   store.recordReply("current", "first", "First");
   store.recordReply("current", "second", "Second");
   store.recordReply("previous", "old", "Old");
-  expect(store.attention(false, 0, "current").items.map(item => item.id)).toEqual(["second", "first"]);
+  expect(store.attention(false, "current").map(item => item.id)).toEqual(["second", "first"]);
   store.acknowledgeAttention("reply", "second");
   expect(store.recordReply("current", "second", "Duplicate")).toBe(false);
-  expect(store.attention(false, 0, "current").items.map(item => item.id)).toEqual(["first"]);
+  expect(store.attention(false, "current").map(item => item.id)).toEqual(["first"]);
 });
 
 it("deduplicates the full IMAP identity without replacing committed raw content", async () => {
@@ -244,14 +273,14 @@ it("migrates an existing event and persists analysis/status on the same identity
   await store.backfillMimeProjections(new AbortController().signal);
   expect(store.page().events[0]?.analysis).toBeNull();
   const analysis = { summary: "External email asks for a payment", suggestions: ["Check with the user"], questions: ["Is this expected?"], category: "marketing" as const };
-  expect(store.updateAnalysis(event.mailRefId, analysis)).toEqual({ ...event, analysis });
-  expect(store.setProcessingStatus(event.mailRefId, "processed")).toEqual({ ...event, analysis, processingStatus: "processed" });
+  expect(store.updateAnalysis(event.mailRefId, analysis)).toEqual({ ...event, analysis, folder: "marketing" });
+  expect(store.setProcessingStatus(event.mailRefId, "processed")).toEqual({ ...event, analysis, processingStatus: "processed", folder: "marketing" });
   expect(store.updateAnalysis("missing", analysis)).toBeUndefined();
   expect(store.setProcessingStatus("missing", "pending")).toBeUndefined();
   store.close();
   store = new AssistantMailStore(root);
   await store.initialize();
-  expect(store.page().events).toEqual([{ ...event, analysis, processingStatus: "processed" }]);
+  expect(store.page().events).toEqual([{ ...event, analysis, processingStatus: "processed", folder: "marketing" }]);
   expect((await store.read(event.mailRefId))?.source).toEqual(message().source);
   expect(store.openMailbox("test-account", "1", 100)).toBe(5);
 });
@@ -293,9 +322,9 @@ it("migrates and keeps local junk marks across reopen without changing mail iden
 
   expect(store.page({ limit: 2 }, true, "inbox")).toEqual({ events: [latest, older] });
   expect(store.page({ cursor: String(target.seq) }, true, "inbox").events).toEqual([older]);
-  expect(store.page().events).toEqual([latest, target, older]);
+  expect(store.page().events).toEqual([latest, { ...target, folder: "marketing" }, older]);
   expect(await store.record(message(5))).toBeUndefined();
-  expect(await store.read(target.mailRefId)).toEqual({ event: target, source: message(5).source });
+  expect(await store.read(target.mailRefId)).toEqual({ event: { ...target, folder: "marketing" }, source: message(5).source });
   expect(store.setJunk(target.mailRefId, false)).toBe(true);
   expect(store.page({}, true, "inbox").events).toEqual([latest, target, older]);
 });
@@ -326,11 +355,32 @@ it("keeps paginated previews and attachment metadata when the original is unavai
     attachments: [{ attachmentId: "0", filename: "notes.txt", mimeType: "text/plain", size: 12 }] });
 });
 
-it("bounds the preview on Unicode code-point boundaries", async () => {
+it("removes malformed template residue from new and saved previews without changing the original", async () => {
   store.openMailbox("test-account", "1", 5);
-  const source = Buffer.from(`Content-Type: text/plain; charset=utf-8\r\n\r\n${"📬🧪".repeat(130)}`);
-  const event = await store.record({ ...message(), source });
-  expect(event?.preview).toBe("📬🧪".repeat(120));
+  const text = `Prize draw opens\r\nSee the rules.\r\n${" \r\n".repeat(34)}  96\r\na.footer-link,a.footer-link:link{color:#2F2F2F!important;}\r\nPrize draw opens`;
+  const source = Buffer.from([
+    'Content-Type: multipart/alternative; boundary="excerpt"', "", "--excerpt", "Content-Type: text/plain; charset=utf-8", "", text,
+    "--excerpt", "Content-Type: text/html", "", "<p>HTML alternative is not the original text.</p>", "--excerpt--", "",
+  ].join("\r\n"));
+  const event = (await store.record({ ...message(), source }))!;
+  expect(event.preview).toBe("Prize draw opens\nSee the rules.");
+  expect((await store.read(event.mailRefId))?.source).toEqual(source);
+  const db = new DatabaseSync(join(root, "private", "assistant", "assistant.sqlite"));
+  openDatabases.push(db);
+  db.prepare("UPDATE mail_events SET mime_projection = json_set(mime_projection, '$.preview', ?) WHERE mail_ref_id = ?")
+    .run(text, event.mailRefId);
+  expect(store.page({}, true, { query: "footer-link" }).events).toEqual([]);
+  expect(store.page({}, true, { query: "Prize draw" }).events[0]?.preview).toBe(event.preview);
+  expect(store.page().events[0]?.preview).toBe(event.preview);
+});
+
+it("keeps text after formatting whitespace and bounds long previews on code-point boundaries", async () => {
+  store.openMailbox("test-account", "1", 5);
+  const formatted = await store.record({ ...message(), source: Buffer.from("Content-Type: text/plain\r\n\r\nFirst line\r\n\r\n\r\nNext paragraph") });
+  expect(formatted?.preview).toBe("First line\nNext paragraph");
+  const source = Buffer.from(`Content-Type: text/plain; charset=utf-8\r\n\r\n${"📬🧪".repeat(800)}`);
+  const event = await store.record({ ...message(6), source });
+  expect(event?.preview).toBe("📬🧪".repeat(512));
 });
 
 it("opens and pages a legacy store while a historical MIME stream is still pending", async () => {

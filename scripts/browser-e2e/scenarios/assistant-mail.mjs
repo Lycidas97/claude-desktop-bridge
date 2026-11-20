@@ -208,6 +208,10 @@ export async function verifyAssistantMailHistory(page, host, steps, directory, v
   await inbox.click();
   const latest = cards.first();
   await latest.getByText("收件记录 26", { exact: true }).waitFor();
+  // Retain coverage of the legacy action and its safe-area undo on older hosts.
+  const capabilities = host.snapshot.host.capabilities;
+  host.snapshot.host.capabilities = capabilities.filter(value => value !== "plugin.assistant-mail.filing.v1");
+  await host.send({ kind: "snapshot", snapshot: host.snapshot });
   const emulation = await page.context().newCDPSession(page);
   try {
     await emulation.send("Emulation.setSafeAreaInsetsOverride", { insets: { top: 0, right: 0, bottom: 48, left: 0 } });
@@ -220,6 +224,77 @@ export async function verifyAssistantMailHistory(page, host, steps, directory, v
     await latest.getByText("收件记录 26", { exact: true }).waitFor();
   } finally { await emulation.detach(); }
   steps.push("The inbox backfills without a badge and keeps the latest live arrival reversible above a 48px system safe area");
+  host.snapshot.host.capabilities = capabilities;
+  await host.send({ kind: "snapshot", snapshot: host.snapshot });
+  await page.getByRole("searchbox", { name: "搜索邮件" }).waitFor();
+
+  const filing = cards.nth(9).getByRole("combobox", { name: "收入分类", exact: true });
+  const deepId = await cards.nth(9).getAttribute("data-mail-id");
+  const filedCard = page.locator(`.assistant-mail-list > [data-mail-id="${deepId}"]`);
+  const feedback = page.locator(".assistant-mail-junk-feedback");
+  const inViewport = locator => locator.evaluate(element => {
+    const bounds = element.getBoundingClientRect();
+    return bounds.top >= 0 && bounds.bottom <= innerHeight;
+  });
+  await filing.scrollIntoViewIfNeeded();
+  host.mailFilingFailure = true;
+  try {
+    await filing.selectOption("account");
+    const error = feedback.getByRole("alert").filter({ hasText: "隔离邮件收纳失败" });
+    await error.waitFor();
+    assert.ok(await inViewport(error), "A failed move is visible without scrolling back to search");
+    assert.ok(await filedCard.isVisible());
+  } finally { host.mailFilingFailure = false; }
+  await filing.focus();
+  await filing.selectOption("account");
+  await filedCard.waitFor({ state: "detached" });
+  const receipt = feedback.getByRole("status").filter({ hasText: "已收入「账号注册」" });
+  await receipt.waitFor();
+  const undo = feedback.getByRole("button", { name: "撤销", exact: true });
+  assert.ok(await inViewport(undo), "Filing a lower card keeps undo in the viewport");
+  await eventually(() => undo.evaluate(element => element === document.activeElement), true, "Focus follows the removed card to Undo");
+  await undo.press("Enter");
+  await filedCard.waitFor();
+  steps.push("Filing reports success and failure in the current viewport, moves keyboard focus to Undo, and undo restores the inbox card");
+
+  const brokenPreviewBody = `The synthetic prize draw begins\nToday. Read the instructions.\n${"\n".repeat(34)}  96\na.footer-link,a.footer-link:link{color:#2F2F2F!important;}\nThe synthetic prize draw begins`;
+  const brokenPreview = await host.nativeApproval.assistantMail.deliver(1, Buffer.from([
+    'Content-Type: multipart/alternative; boundary="preview"', "", "--preview", "Content-Type: text/plain; charset=utf-8", "",
+    brokenPreviewBody, "--preview", "Content-Type: text/html", "", "<p>The synthetic prize draw begins<br>Today. Read the instructions.</p>", "--preview--", "",
+  ].join("\r\n")));
+  const longPreview = await host.nativeApproval.assistantMail.deliver(1, Buffer.from(
+    `Content-Type: text/plain; charset=utf-8\r\n\r\n${"A real message with enough words to wrap naturally. ".repeat(48)}`,
+  ));
+  const inboxList = page.locator(".assistant-mail-list");
+  const brokenCard = inboxList.locator(`[data-mail-id="${brokenPreview.mailRefId}"]`);
+  const longCard = inboxList.locator(`[data-mail-id="${longPreview.mailRefId}"]`);
+  const compactPreview = async (card, long = false) => {
+    const preview = card.locator(".assistant-mail-preview");
+    await preview.waitFor();
+    assert.ok(await preview.evaluate((element, shouldClip) => {
+      const { lineHeight } = getComputedStyle(element);
+      return element.getBoundingClientRect().height <= 4 * parseFloat(lineHeight) + 1 &&
+        (!shouldClip || element.scrollHeight > element.clientHeight);
+    }, long), "The preview fits a fixed visual line budget; long text is clipped by the layout");
+    return preview.textContent();
+  };
+  assert.equal((await compactPreview(brokenCard)).replace(/\s+/gu, " ").trim(), "The synthetic prize draw begins Today. Read the instructions.");
+  await compactPreview(longCard, true);
+  const [shortBounds, longBounds] = await Promise.all([brokenCard.boundingBox(), longCard.boundingBox()]);
+  const lineHeight = await longCard.locator(".assistant-mail-preview").evaluate(element => parseFloat(getComputedStyle(element).lineHeight));
+  assert.ok(shortBounds && longBounds && longBounds.height - shortBounds.height <= lineHeight * 2 + 1,
+    "With identical controls, collapsed cards differ only by the remaining two preview lines");
+  await brokenCard.getByRole("combobox", { name: "收入分类", exact: true }).selectOption("other");
+  const other = page.locator(".assistant-mail-group > summary").filter({ hasText: "其他" });
+  await other.getByText("1 封", { exact: true }).waitFor();
+  await other.click();
+  await compactPreview(brokenCard);
+  const search = page.getByRole("searchbox", { name: "搜索邮件" });
+  await search.fill(brokenPreview.subject);
+  await search.press("Enter");
+  await compactPreview(page.getByLabel("搜索结果").locator(`[data-mail-id="${brokenPreview.mailRefId}"]`));
+  await page.screenshot({ path: resolve(directory, "mobile-mail-compact-preview.png"), fullPage: true });
+  steps.push("Synthetic malformed plaintext suppresses blank lines and email-template residue; long text clips at the rendered line budget in inbox, folder and search cards");
 }
 
 export async function verifyAssistantMail(page, host, steps, directory, viewports, baseUrl) {
@@ -800,8 +875,10 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
     service.updateAnalysis(mailRefId, { ...analysis, category });
   }
   await group("营销与垃圾邮件").getByText("2 封", { exact: true }).waitFor();
-  await group("验证码").getByText("1 封", { exact: true }).waitFor();
-  await group("账号注册").getByText("1 封", { exact: true }).waitFor();
+  await inbox.locator(`:scope > [data-mail-id="${batchMailIds[1]}"]`).waitFor({ timeout: 5000 });
+  await inbox.locator(`:scope > [data-mail-id="${accountMail.mailRefId}"]`).waitFor();
+  assert.equal(await group("验证码").count(), 0);
+  assert.equal(await group("账号注册").count(), 0);
   assert.equal(await inbox.locator(".assistant-mail-group[open]").count(), 0);
   assert.equal(await marketing.isVisible(), false);
   await inbox.locator(`[data-mail-id="${newest.mailRefId}"]`).waitFor();
@@ -811,14 +888,29 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await marketing.waitFor();
   assert.deepEqual(await inbox.locator(".assistant-mail-group[open] [data-mail-id]").evaluateAll(items => items.map(item => item.dataset.mailId)),
     [batchMailIds[0], secondPromotion.mailRefId], "Active and older mail share one category, newest first");
-  service.updateAnalysis(batchMailIds[1], { ...analysis, category: "other" });
-  await group("验证码").waitFor({ state: "detached" });
-  await inbox.locator(`:scope > [data-mail-id="${batchMailIds[1]}"]`).waitFor();
-  assert.equal(await marketing.isVisible(), true, "A live category update leaves a different expanded group open");
+  const verification = inbox.locator(`:scope > [data-mail-id="${batchMailIds[1]}"]`);
+  await verification.getByRole("combobox", { name: "收入分类", exact: true }).selectOption("verification");
+  await verification.waitFor({ state: "detached" });
+  await group("验证码").getByText("1 封", { exact: true }).waitFor();
+  assert.equal(await marketing.isVisible(), true, "Another folder stays open after filing a mail");
   await marketing.getByRole("button", { name: "讨论此邮件", exact: true }).click();
   await reference.waitFor();
   await reference.getByRole("button", { name: "清除邮件引用" }).click();
-  steps.push("Analysis changes group mail live, groups begin folded, keyboard expansion preserves order and discussion, and other mail returns to the main list");
+  await page.getByRole("button", { name: "收件", exact: true }).click();
+  const search = page.getByRole("searchbox", { name: "搜索邮件" });
+  await search.fill(secondPromotion.subject);
+  await search.press("Enter");
+  const found = page.getByLabel("搜索结果").locator(`[data-mail-id="${secondPromotion.mailRefId}"]`);
+  await found.getByText("营销与垃圾邮件", { exact: true }).waitFor();
+  await capture("mobile-filed-mail-search");
+  await found.getByRole("button", { name: "收回收件", exact: true }).click();
+  await found.getByRole("combobox", { name: "收入分类", exact: true }).waitFor();
+  service.updateAnalysis(secondPromotion.mailRefId, { ...analysis, category: "marketing" });
+  await page.getByRole("button", { name: "清除搜索", exact: true }).click();
+  await inbox.locator(`:scope > [data-mail-id="${secondPromotion.mailRefId}"]`).waitFor();
+  await group("营销与垃圾邮件").getByText("1 封", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "对话", exact: true }).click();
+  steps.push("Only marketing files automatically; manual filing, search across saved mail, and a durable restore keep the correct counts");
   const managedMail = host.snapshot.assistantMail;
   const unexpectedTools = [
     "mcp__terminal__run_in_terminal", "mcp__Claude_Browser__preview_start", "mcp__scheduled-tasks__list_scheduled_tasks",
@@ -1090,7 +1182,7 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
 
   const headingBounds = await page.locator(".assistant-page .desktop-page-heading h1").boundingBox();
   const mailBounds = await cards().filter({ visible: true }).first().boundingBox();
-  await group("营销与垃圾邮件").getByText("2 封", { exact: true }).waitFor();
+  await group("营销与垃圾邮件").getByText("1 封", { exact: true }).waitFor();
   assert.equal(await marketing.isVisible(), false, "Desktop also folds classified mail by default");
   await group("营销与垃圾邮件").click();
   await marketing.waitFor();

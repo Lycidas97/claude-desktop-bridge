@@ -223,6 +223,23 @@ it("marks single and batched saved mail via the managed gateway without changing
   expect(createClient).toHaveBeenCalledOnce();
 });
 
+it("allows only a managed assistant to move a mail without overriding the user's restore", async () => {
+  await channel!.close();
+  const managedToken = "managed-mail-move-fixture";
+  channel = await serveAssistantMailTools({ userDataPath: root, service,
+    authorizeManagedToken: token => token === managedToken ? "local_fixture" : undefined });
+  connection = MailToolConnection.parse(JSON.parse(await readFile(join(root, "private", "assistant", "mail-tools.json"), "utf8")));
+  const move = { name: "mail.move", arguments: { mailRefId: reference, folder: "verification" } };
+  expect((await post(move)).status).toBe(403);
+  expect((await post({ ...move, arguments: { mailRefId: randomUUID(), folder: "verification" } }, managedToken)).status).toBe(404);
+  expect(await (await post(move, managedToken)).json()).toMatchObject({ result: { changed: true } });
+  expect(service.event(reference)).toMatchObject({ folder: "verification", analysis: null, processingStatus: "pending" });
+  service.setFolder(reference, "inbox", "user");
+  expect(await (await post(move, managedToken)).json()).toMatchObject({ result: { changed: false } });
+  expect(service.event(reference)).not.toHaveProperty("folder");
+  expect(inbox.messageFlagsAdd).not.toHaveBeenCalled();
+});
+
 it("preserves a saved category on legacy analysis writes and replaces it only with a supported category", async () => {
   const name = "mail.update_analysis";
   const first = { mailRefId: reference, summary: "Promotion", suggestions: ["Review"], questions: ["Expected?"] };

@@ -495,6 +495,7 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
         case "plugin.assistant-mail.batch":
         case "plugin.assistant-mail.history":
         case "plugin.assistant-mail.read":
+        case "plugin.assistant-mail.filing.set":
         case "plugin.assistant-mail.junk.set":
         case "plugin.assistant-mail.attention.ack":
         case "plugin.assistant-mail.bind":
@@ -509,6 +510,7 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
         case "plugin.assistant-mail.account.remove":
           try {
             if (request.method === "plugin.assistant-mail.list" && host.mailPageFailure) throw new Error("隔离邮件列表读取失败");
+            if (request.method === "plugin.assistant-mail.filing.set" && host.mailFilingFailure) throw new Error("隔离邮件收纳失败");
             if (request.method === "plugin.assistant-mail.read" && host.mailReadFailure) throw new Error("隔离邮件原文读取失败");
             if (request.method === "plugin.assistant-mail.account.set-poll-interval" && host.pollIntervalGate) await host.pollIntervalGate;
             result = await host.nativeApproval.controllerRequest(request);

@@ -155,22 +155,22 @@ async function record(uid: number, source = `Content-Type: text/plain; charset=u
 }
 
 describe("assistant mail mobile RPC projections", () => {
-  it("publishes an unscreened reminder at the original ten-minute deadline without waking the phone", async () => {
-    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
-    try {
-      service.setBinding({ assistantId: "assistant", nativeSessionId: "native-first", sectionId: null, previousSessionIds: [],
-        managed: { path: "/offline", policy: "stage1-fenced-workspace", token: "fixture", automaticDelivery: true } });
-      const { mailRefId } = await record(1);
-      expect((await run.publish()).assistantMail?.attention).toEqual([]);
-      run.eventLog.append.mockClear();
-      await vi.advanceTimersByTimeAsync(599_999);
-      expect(run.eventLog.append).not.toHaveBeenCalled();
-      await vi.advanceTimersByTimeAsync(1);
-      expect(run.eventLog.append).toHaveBeenLastCalledWith({ origin: "system", type: "plugin.assistant-mail.changed",
-        data: { assistantMail: expect.objectContaining({ attention: [{ kind: "mail", id: mailRefId, title: "Subject 1", reason: "unscreened" }] }) } });
-      service.updateAnalysis(mailRefId, { summary: "nothing to read", suggestions: [], questions: [], attention: "ignore" });
-      expect((await run.publish()).assistantMail?.attention).toEqual([]);
-    } finally { vi.useRealTimers(); }
+  it("projects a new arrival immediately and searches it after automatic filing", async () => {
+    service.setBinding({ assistantId: "assistant", nativeSessionId: "native-first", sectionId: null, previousSessionIds: [],
+      managed: { path: "/offline", policy: "stage1-fenced-workspace", token: "fixture", automaticDelivery: true } });
+    const { mailRefId } = await record(1);
+    expect((await run.publish()).assistantMail?.attention).toMatchObject([{ id: mailRefId, reason: "unscreened" }]);
+    const analysis = { summary: "nothing to read", suggestions: [], questions: [], category: "marketing" as const, attention: "ignore" as const };
+    service.updateAnalysis(mailRefId, analysis);
+    expect((await run.publish()).assistantMail?.attention).toEqual([]);
+    expect(await run.request("plugin.assistant-mail.list", { folder: "inbox" })).toMatchObject({ mailPage: { cards: [], folderCounts: { marketing: 1 }, filedTimelineCards: [{ mailRefId, folder: "marketing" }] } });
+    expect(await run.request("plugin.assistant-mail.list", { query: "subject 1" })).toMatchObject({ mailPage: { cards: [{ mailRefId, folder: "marketing" }] } });
+    expect(await run.request("plugin.assistant-mail.list", {})).toMatchObject({ mailPage: { cards: [{ mailRefId }] } });
+    await expect(run.request("plugin.assistant-mail.list", { folder: "inbox", query: "Subject" })).rejects.toMatchObject({ code: "INVALID_PARAMS" });
+    await expect(run.request("plugin.assistant-mail.filing.set", { mailRefId, folder: "sent" })).rejects.toMatchObject({ code: "INVALID_PARAMS" });
+    await run.request("plugin.assistant-mail.filing.set", { mailRefId, folder: "inbox" });
+    service.updateAnalysis(mailRefId, analysis);
+    expect(await run.request("plugin.assistant-mail.list", { folder: "inbox" })).toMatchObject({ mailPage: { cards: [{ mailRefId, analysis }], folderCounts: {} } });
   });
   it("requires an explicitly supplied shared credential and saves the complete mailbox in one request", async () => {
     const account = { host: "imap.example.test", user: "test@example.test" };
@@ -310,7 +310,7 @@ describe("assistant mail mobile RPC projections", () => {
       cards: [
         { seq: fourth.seq, mailRefId: fourth.mailRefId, accountKey: fourth.accountKey, mailbox: "INBOX",
           subject: fourth.subject, from: fourth.from, receivedAt: fourth.receivedAt, recordedAt: fourth.recordedAt,
-          processingStatus: "processed", analysis, preview: body.slice(0, 240), nativeDelivery: { state: "not-submitted" } },
+          processingStatus: "processed", analysis, preview: body.trim(), nativeDelivery: { state: "not-submitted" } },
         { seq: third.seq, mailRefId: third.mailRefId, accountKey: third.accountKey, mailbox: "INBOX",
           subject: third.subject, from: third.from, receivedAt: third.receivedAt, recordedAt: third.recordedAt,
           processingStatus: "pending", preview: "Body 3", nativeDelivery: { state: "not-submitted" } },

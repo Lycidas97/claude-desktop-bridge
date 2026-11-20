@@ -3,7 +3,7 @@ import { createReadStream } from "node:fs";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { AssistantAttentionAcknowledgment, AssistantAttentionItem, BridgeMailAttachment, BridgeMailCategory, MailAttentionLevel } from "../../packages/protocol/src/assistant-mail.js";
+import type { AssistantAttentionAcknowledgment, AssistantAttentionItem, BridgeMailAttachment, BridgeMailCategory, BridgeMailFolder, MailAttentionLevel } from "../../packages/protocol/src/assistant-mail.js";
 import { MailBodyParseError, parseMail } from "./mime.js";
 import { MailPageParameters } from "./tool-contract.js";
 import { AssistantTriggerStore } from "./trigger-store.js";
@@ -42,9 +42,29 @@ interface MailProjection {
 
 const unavailablePreview = "原文无法解析，预览不可用。";
 const mailOrder = "CASE WHEN historical = 1 THEN -seq ELSE seq END";
+const mailFolder = `CASE WHEN user_junk = 1 THEN 'marketing'
+  WHEN filing IS NOT NULL THEN replace(filing, 'user:', '')
+  WHEN json_extract(analysis_json, '$.category') = 'marketing' THEN 'marketing' ELSE 'inbox' END`;
+export type MailPageScope = "all" | "legacy" | BridgeMailFolder | { query: string };
+
+function mailPreview(text: string): string {
+  const lines = text.trimStart().slice(0, 4096).replace(/[\uD800-\uDBFF]$/u, "").split(/\r?\n/u);
+  const excerpt: string[] = [];
+  let emptyLines = 0;
+  for (const [index, line] of lines.entries()) {
+    const content = line.trim();
+    if (!content) { emptyLines++; continue; }
+    // A broken plaintext alternative can append a template counter and CSS after a blank block.
+    if (emptyLines >= 3 && /^\d+$/u.test(content) && /^[^{}]+\{\s*[-\w]+\s*:/u.test(lines[index + 1] ?? "")) break;
+    excerpt.push(content);
+    emptyLines = 0;
+  }
+  // This bounds the stored payload; the UI clips to rendered lines.
+  return Array.from(excerpt.join("\n")).slice(0, 1024).join("");
+}
 
 function mailProjection({ bodyText, bodyError, attachments, attachmentCount }: Awaited<ReturnType<typeof parseMail>>): MailProjection {
-  return { preview: bodyError ? "" : Array.from(bodyText.slice(0, 480)).slice(0, 240).join(""),
+  return { preview: bodyError ? "" : mailPreview(bodyText),
     ...(bodyError ? { previewError: unavailablePreview } : {}), attachments, attachmentCount };
 }
 
@@ -66,6 +86,7 @@ export interface MailEvent extends MailIdentity, MailProjection {
   recordedAt: number;
   processingStatus: MailProcessingStatus;
   hostRead?: true;
+  folder?: BridgeMailCategory;
   analysis: MailAnalysis | null;
 }
 
@@ -82,6 +103,8 @@ type EventRow = {
   recorded_at: number;
   processing_status: MailProcessingStatus;
   host_read: number;
+  user_junk: number;
+  filing: BridgeMailFolder | `user:${BridgeMailFolder}` | null;
   analysis_json: string | null;
   raw_file: string;
   mime_projection: string | null;
@@ -89,6 +112,10 @@ type EventRow = {
 };
 
 function eventFromRow(row: EventRow): MailEvent {
+  const analysis = row.analysis_json ? JSON.parse(row.analysis_json) as MailAnalysis : null;
+  const projection = row.mime_projection ? JSON.parse(row.mime_projection) as MailProjection : undefined;
+  const folder = row.user_junk === 1 ? "marketing" : row.filing
+    ? row.filing.replace(/^user:/u, "") as BridgeMailFolder : analysis?.category === "marketing" ? "marketing" : "inbox";
   return {
     seq: row.historical === 1 ? -row.seq : row.seq, mailRefId: row.mail_ref_id, accountKey: row.account_key,
     mailbox: row.mailbox, uidValidity: row.uid_validity, uid: row.uid,
@@ -96,8 +123,9 @@ function eventFromRow(row: EventRow): MailEvent {
     receivedAt: row.received_at, recordedAt: row.recorded_at,
     processingStatus: row.processing_status,
     ...(row.host_read === 1 ? { hostRead: true as const } : {}),
-    analysis: row.analysis_json ? JSON.parse(row.analysis_json) as MailAnalysis : null,
-    ...(row.mime_projection ? JSON.parse(row.mime_projection) as MailProjection : { preview: "", attachments: [], attachmentCount: 0 }),
+    ...(folder !== "inbox" ? { folder } : {}),
+    analysis,
+    ...(projection ? { ...projection, preview: mailPreview(projection.preview) } : { preview: "", attachments: [], attachmentCount: 0 }),
   };
 }
 
@@ -119,6 +147,7 @@ export class AssistantMailStore {
     await writeFile(path, "", { flag: "a", mode: 0o600 });
     await chmod(path, 0o600);
     this.database = new DatabaseSync(path);
+    this.database.function("mail_excerpt", { deterministic: true }, value => typeof value === "string" ? mailPreview(value) : null);
     this.database.exec(`
       PRAGMA journal_mode = WAL;
       PRAGMA synchronous = FULL;
@@ -176,6 +205,7 @@ export class AssistantMailStore {
     if (!columns.includes("historical")) this.database.exec("ALTER TABLE mail_events ADD COLUMN historical INTEGER NOT NULL DEFAULT 0");
     if (!columns.includes("host_read")) this.database.exec("ALTER TABLE mail_events ADD COLUMN host_read INTEGER NOT NULL DEFAULT 0");
     if (!columns.includes("user_junk")) this.database.exec("ALTER TABLE mail_events ADD COLUMN user_junk INTEGER NOT NULL DEFAULT 0");
+    if (!columns.includes("filing")) this.database.exec("ALTER TABLE mail_events ADD COLUMN filing TEXT");
     this.database.exec(`
       CREATE INDEX IF NOT EXISTS mail_events_page_order ON mail_events (${mailOrder});
       CREATE TABLE IF NOT EXISTS assistant_attention_ack (
@@ -329,15 +359,20 @@ export class AssistantMailStore {
     }
   }
 
-  page(input: unknown = {}, includeHistory = true, scope: "all" | "inbox" = "all"): { events: MailEvent[]; nextCursor?: string } {
+  page(input: unknown = {}, includeHistory = true, scope: MailPageScope = "all"): { events: MailEvent[]; nextCursor?: string } {
     const { cursor, limit = 50, processingStatus } = MailPageParameters.parse(input);
     const order = includeHistory ? mailOrder : "seq";
+    const scopeValue = typeof scope === "object" ? scope.query : scope === "legacy" || scope === "all" ? undefined : scope;
+    const filter = typeof scope === "object" ? `AND (
+      instr(lower(subject), lower($scope)) > 0 OR instr(lower(mail_excerpt(json_extract(mime_projection, '$.preview'))), lower($scope)) > 0 OR
+      EXISTS (SELECT 1 FROM json_each(from_json) WHERE instr(lower(json_extract(value, '$.name')), lower($scope)) > 0
+        OR instr(lower(json_extract(value, '$.address')), lower($scope)) > 0)
+    )` : scope === "legacy" ? "AND user_junk = 0" : scope === "all" ? "" : `AND (${mailFolder}) = $scope`;
     const rows = this.db().prepare(`
-      SELECT * FROM mail_events WHERE (${order}) < ? AND (? IS NULL OR processing_status = ?)${includeHistory ? "" : " AND historical = 0"}
-      ${scope === "inbox" ? "AND user_junk = 0" : ""}
-      ORDER BY (${order}) DESC LIMIT ?
-    `).all(cursor ? Number(cursor) : Number.MAX_SAFE_INTEGER,
-      processingStatus ?? null, processingStatus ?? null, limit + 1) as EventRow[];
+      SELECT * FROM mail_events WHERE (${order}) < $cursor AND ($status IS NULL OR processing_status = $status)${includeHistory ? "" : " AND historical = 0"}
+      ${filter} ORDER BY (${order}) DESC LIMIT $limit
+    `).all({ $cursor: cursor ? Number(cursor) : Number.MAX_SAFE_INTEGER, $status: processingStatus ?? null, $limit: limit + 1,
+      ...(scopeValue !== undefined ? { $scope: scopeValue } : {}) }) as EventRow[];
     const events = rows.slice(0, limit).map(row => {
       const event = eventFromRow(row);
       return { ...event, attachments: event.attachments.slice(0, 32) };
@@ -345,11 +380,17 @@ export class AssistantMailStore {
     return { events, ...(rows.length > limit ? { nextCursor: String(events.at(-1)!.seq) } : {}) };
   }
 
-  attention(automatic: boolean, now: number, sessionId?: string) {
+  folderCounts(includeHistory: boolean): Partial<Record<BridgeMailCategory, number>> {
+    return Object.fromEntries(this.db().prepare(`SELECT (${mailFolder}) AS folder, count(*) AS count FROM mail_events
+      WHERE (${mailFolder}) <> 'inbox' ${includeHistory ? "" : "AND historical = 0"} GROUP BY folder`)
+      .all().map(({ folder, count }) => [folder, count]));
+  }
+
+  attention(automatic: boolean, sessionId?: string): AssistantAttentionItem[] {
     const db = this.db();
     const rows = db.prepare(`
       WITH candidates AS (
-        SELECT mail_ref_id AS id, subject AS title, recorded_at AS recordedAt, seq,
+        SELECT mail_ref_id AS id, subject AS title, seq,
           CASE json_extract(analysis_json, '$.attention')
             WHEN 'ignore' THEN NULL
             WHEN 'action' THEN CASE WHEN resolved.id IS NULL THEN 'action' END
@@ -358,24 +399,18 @@ export class AssistantMailStore {
         FROM mail_events
           LEFT JOIN assistant_attention_ack seen ON seen.kind = 'mail' AND seen.id = mail_ref_id
           LEFT JOIN assistant_attention_ack resolved ON resolved.kind = 'mail-action' AND resolved.id = mail_ref_id
-        WHERE historical = 0 AND user_junk = 0
+        WHERE historical = 0 AND (${mailFolder}) = 'inbox'
           AND (seq > (SELECT seq FROM assistant_attention_baseline) OR json_extract(analysis_json, '$.attention') IS NOT NULL)
-      ) SELECT id, title, reason, recordedAt FROM candidates WHERE reason IS NOT NULL ORDER BY seq DESC
-    `).all(automatic ? "unscreened" : "new") as Array<Omit<Extract<AssistantAttentionItem, { kind: "mail" }>, "kind"> & { recordedAt: number }>;
-    const items: AssistantAttentionItem[] = [];
-    let nextAt = Infinity;
-    for (const { recordedAt, ...row } of rows) {
-      const deadline = recordedAt + 600_000;
-      if (row.reason === "unscreened" && deadline > now) nextAt = Math.min(nextAt, deadline);
-      else if (items.length < 100) items.push({ kind: "mail", ...row });
-    }
+      ) SELECT id, title, reason FROM candidates WHERE reason IS NOT NULL ORDER BY seq DESC LIMIT 100
+    `).all(automatic ? "unscreened" : "new") as Omit<Extract<AssistantAttentionItem, { kind: "mail" }>, "kind">[];
+    const items: AssistantAttentionItem[] = rows.map(row => ({ kind: "mail", ...row }));
     if (sessionId) {
       const replies = db.prepare(`SELECT id, title, session_id AS sessionId FROM assistant_attention_replies
         WHERE session_id = ? AND NOT EXISTS (SELECT 1 FROM assistant_attention_ack WHERE kind = 'reply' AND id = assistant_attention_replies.id)
         ORDER BY rowid DESC LIMIT 100`).all(sessionId) as Omit<Extract<AssistantAttentionItem, { kind: "reply" }>, "kind">[];
       items.push(...replies.map(reply => ({ kind: "reply" as const, ...reply })));
     }
-    return { items, nextAt };
+    return items;
   }
 
   seenCalendarEvents(): Set<string> {
@@ -398,8 +433,12 @@ export class AssistantMailStore {
 
   updateAnalysis(mailRefId: string, analysis: MailAnalysis): MailEvent | undefined {
     // The three text fields are replaced; omitted category and attention survive legacy analysis writes.
-    const row = this.db().prepare("UPDATE mail_events SET analysis_json = json_patch(COALESCE(analysis_json, '{}'), ?) WHERE mail_ref_id = ? RETURNING *")
-      .get(JSON.stringify(analysis), mailRefId) as EventRow | undefined;
+    const row = this.db().prepare(`UPDATE mail_events SET
+      filing = COALESCE(filing, CASE
+        WHEN COALESCE(json_extract(analysis_json, '$.category'), $category) = 'marketing' THEN 'marketing'
+        WHEN COALESCE(json_extract(analysis_json, '$.category'), $category) IS NOT NULL THEN 'inbox' END),
+      analysis_json = json_patch(COALESCE(analysis_json, '{}'), $analysis) WHERE mail_ref_id = $id RETURNING *`)
+      .get({ $category: analysis.category ?? null, $analysis: JSON.stringify(analysis), $id: mailRefId }) as EventRow | undefined;
     return row ? eventFromRow(row) : undefined;
   }
 
@@ -414,7 +453,20 @@ export class AssistantMailStore {
     const row = db.prepare("SELECT user_junk FROM mail_events WHERE mail_ref_id = ?").get(mailRefId);
     if (!row) return undefined;
     if (row.user_junk === Number(junk)) return false;
-    db.prepare("UPDATE mail_events SET user_junk = ? WHERE mail_ref_id = ?").run(Number(junk), mailRefId);
+    db.prepare("UPDATE mail_events SET user_junk = ?, filing = ? WHERE mail_ref_id = ?")
+      .run(Number(junk), junk ? "user:marketing" : "user:inbox", mailRefId);
+    return true;
+  }
+
+  setFolder(mailRefId: string, folder: BridgeMailFolder, source: "user" | "assistant"): boolean | undefined {
+    const db = this.db();
+    const row = db.prepare("SELECT user_junk, filing FROM mail_events WHERE mail_ref_id = ?")
+      .get(mailRefId) as Pick<EventRow, "user_junk" | "filing"> | undefined;
+    if (!row) return undefined;
+    if (source === "assistant" && (row.user_junk === 1 || row.filing?.startsWith("user:"))) return false;
+    const filing = source === "user" ? `user:${folder}` : folder;
+    if (row.user_junk === 0 && row.filing === filing) return false;
+    db.prepare("UPDATE mail_events SET user_junk = 0, filing = ? WHERE mail_ref_id = ?").run(filing, mailRefId);
     return true;
   }
 
@@ -447,7 +499,7 @@ export class AssistantMailStore {
   unreadCount(): number {
     if (!this.database) return 0;
     const row = this.database
-      .prepare("SELECT COUNT(*) AS count FROM mail_events WHERE historical = 0 AND user_junk = 0 AND processing_status = 'pending'")
+      .prepare(`SELECT COUNT(*) AS count FROM mail_events WHERE historical = 0 AND (${mailFolder}) = 'inbox' AND processing_status = 'pending'`)
       .get() as { count: number | bigint } | undefined;
     return Number(row?.count ?? 0);
   }

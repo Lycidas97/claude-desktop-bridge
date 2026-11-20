@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { ARTIFACT_MAX_BYTES, ASSISTANT_ATTENTION_CAPABILITY, ASSISTANT_MAIL_SHARED_AUTH_CAPABILITY, ASSISTANT_MEMORY_POLICY, ASSISTANT_SMTP_CAPABILITY, isAssistantWorkspacePolicy, isMailPollInterval, mailAttachmentPreviewKind } from "@bridge/protocol";
+import { ARTIFACT_MAX_BYTES, ASSISTANT_ATTENTION_CAPABILITY, ASSISTANT_MAIL_FILING_CAPABILITY, MAIL_FOLDERS, ASSISTANT_MAIL_SHARED_AUTH_CAPABILITY, ASSISTANT_MEMORY_POLICY, ASSISTANT_SMTP_CAPABILITY, isAssistantWorkspacePolicy, isMailPollInterval, mailAttachmentPreviewKind } from "@bridge/protocol";
 import { AgendaEditError } from "../../../../plugins/assistant-mail/agenda-store.js";
 import type { AssistantAgendaService } from "../../../../plugins/assistant-mail/agenda.js";
 import { configureSmtp, saveMailAccount } from "../../../../plugins/assistant-mail/proposal-contract.js";
@@ -15,6 +15,9 @@ import type {
   BridgeSessionInfo,
   DesktopControlSnapshot,
 } from "@bridge/protocol";
+import { MailFolderParameters, MailPageParameters, MailSearchQuery } from "../../../../plugins/assistant-mail/tool-contract.js";
+import { z } from "zod";
+import type { MailPageScope } from "../../../../plugins/assistant-mail/store.js";
 import { MailAttachmentError, type AssistantMailService } from "../../../../plugins/assistant-mail/desktop.js";
 import type { EvidenceManager } from "../evidence/evidence-manager.js";
 import type { ClaudeDesktopBridge } from "../claude/claude-desktop-bridge.js";
@@ -33,6 +36,7 @@ export const ASSISTANT_MAIL_CAPABILITIES = [
   "plugin.assistant-mail.attachments.v1",
   "plugin.assistant-mail.history.v1",
   "plugin.assistant-mail.junk.v1",
+  ASSISTANT_MAIL_FILING_CAPABILITY,
   ASSISTANT_ATTENTION_CAPABILITY,
 ] as const;
 
@@ -101,6 +105,7 @@ function projectMailCard(event: NonNullable<ReturnType<AssistantMailService["eve
     subject: event.subject, from: event.from, receivedAt: event.receivedAt, recordedAt: event.recordedAt,
     processingStatus: event.processingStatus, preview: event.preview,
     ...(event.hostRead ? { hostRead: true as const } : {}),
+    ...(event.folder ? { folder: event.folder } : {}),
     ...(event.analysis ? { analysis: event.analysis } : {}),
     ...(event.previewError ? { previewError: event.previewError } : {}),
     ...(event.attachmentCount ? { attachments: event.attachments.slice(0, 32), attachmentCount: event.attachmentCount } : {}),
@@ -108,12 +113,17 @@ function projectMailCard(event: NonNullable<ReturnType<AssistantMailService["eve
   };
 }
 
-export function assistantMailPage(mail: AssistantMailService, options: Parameters<AssistantMailService["page"]>[0], includeHistory: boolean,
-  delivery?: (mailRefId: string) => BridgeMailCard["nativeDelivery"] | undefined): BridgeMailPage {
-  const page = mail.page(options, includeHistory, "inbox");
+export function assistantMailPage(mail: AssistantMailService, options: z.infer<typeof MailPageParameters>, includeHistory: boolean,
+  scope: MailPageScope, delivery?: (mailRefId: string) => BridgeMailCard["nativeDelivery"] | undefined): BridgeMailPage {
+  const page = mail.page(options, includeHistory, scope);
+  const folderCounts = scope === "inbox" && !options.cursor ? mail.folderCounts(includeHistory) : undefined;
+  const filedTimelineCards = folderCounts && Object.keys(folderCounts).length
+    ? mail.page({}, false, "legacy").events.filter(event => event.folder).map(event => projectMailCard(event, delivery?.(event.mailRefId))) : [];
   return {
     cards: page.events.map(event => projectMailCard(event, delivery?.(event.mailRefId))),
     ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
+    ...(folderCounts ? { folderCounts } : {}),
+    ...(filedTimelineCards.length ? { filedTimelineCards } : {}),
   };
 }
 
@@ -285,12 +295,12 @@ export class AssistantMailCoordinator {
   snapshot(): BridgeAssistantMailSnapshot {
     const snapshot = assistantMailSnapshot(this.mail, this.host.allSessions(), this.host.canStartTurn(), this.changeToken);
     const now = Date.now();
-    const { items, nextAt } = this.mail.attention(snapshot.automaticDelivery, now, snapshot.binding?.nativeSessionId ?? undefined);
+    const items = this.mail.attention(snapshot.automaticDelivery, snapshot.binding?.nativeSessionId ?? undefined);
     if (this.agenda && (!this.agendaAttention || now >= this.agendaAttention.nextAt)) {
       this.agendaAttention = this.agenda.attention(now, this.mail.seenCalendarEvents());
     }
     snapshot.attention = this.agendaAttention ? [...items, ...this.agendaAttention.items] : items;
-    const deadline = Math.min(nextAt, this.agendaAttention?.nextAt ?? Infinity);
+    const deadline = this.agendaAttention?.nextAt ?? Infinity;
     if (this.started && this.attentionAt !== deadline) {
       clearTimeout(this.attentionTimer);
       this.attentionAt = deadline;
@@ -424,13 +434,15 @@ export class AssistantMailCoordinator {
     publish: () => Promise<DesktopControlSnapshot>,
   ): Promise<unknown> {
     if (method === "plugin.assistant-mail.list") {
-      const { client: _client, includeHistory, ...pageParams } = params;
-      if (includeHistory !== undefined && typeof includeHistory !== "boolean") {
-        throw new BridgeRequestError("INVALID_PARAMS", "请选择是否包含历史邮件。");
+      const { client: _client, includeHistory, folder, query, ...pageParams } = params;
+      const scope = z.enum(MAIL_FOLDERS).optional().safeParse(folder);
+      const search = MailSearchQuery.optional().safeParse(query);
+      if (!scope.success || !search.success || (scope.data && search.data) || (includeHistory !== undefined && typeof includeHistory !== "boolean")) {
+        throw new BridgeRequestError("INVALID_PARAMS", "请选择邮件分类或输入搜索词。");
       }
       const binding = this.mail.binding();
       const enabledSessionId = binding?.managed?.automaticDelivery ? binding.nativeSessionId ?? undefined : undefined;
-      return { mailPage: assistantMailPage(this.mail, pageParams, includeHistory === true, this.dispatcher && (mailRefId => {
+      return { mailPage: assistantMailPage(this.mail, pageParams, includeHistory === true, search.data ? { query: search.data } : scope.data ?? "legacy", this.dispatcher && (mailRefId => {
         const batch = this.mail.triggers.batchForEvent("mail.received", mailRefId);
         return batch ? this.dispatcher!.project(batch, enabledSessionId) : undefined;
       })) };
@@ -493,7 +505,12 @@ export class AssistantMailCoordinator {
         } satisfies BridgeMailDetail,
       };
     }
-    if (method === "plugin.assistant-mail.junk.set") {
+    if (method === "plugin.assistant-mail.filing.set") {
+      const { client: _client, ...input } = params;
+      const parsed = MailFolderParameters.safeParse(input);
+      if (!parsed.success) throw new BridgeRequestError("INVALID_PARAMS", "请选择邮件和目标分类。");
+      if (this.mail.setFolder(parsed.data.mailRefId, parsed.data.folder, "user") === undefined) throw new BridgeRequestError("NOT_FOUND", "邮件不存在。");
+    } else if (method === "plugin.assistant-mail.junk.set") {
       const mailRefId = stringParam(params, "mailRefId", false);
       if (!mailRefId || typeof params.junk !== "boolean") throw new BridgeRequestError("INVALID_PARAMS", "请选择邮件和垃圾标记状态。");
       if (this.mail.setJunk(mailRefId, params.junk) === undefined) throw new BridgeRequestError("NOT_FOUND", "邮件不存在。");

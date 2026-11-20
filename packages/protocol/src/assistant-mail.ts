@@ -22,6 +22,7 @@ export const ASSISTANT_MAIL_SHARED_AUTH_CAPABILITY = "plugin.assistant-mail.shar
 export const ASSISTANT_SMTP_CAPABILITY = "plugin.assistant-mail.smtp.v1";
 export const MAIL_ATTENTION_LEVELS = ["ignore", "read", "action"] as const;
 export type MailAttentionLevel = (typeof MAIL_ATTENTION_LEVELS)[number];
+export const ASSISTANT_MAIL_FILING_CAPABILITY = "plugin.assistant-mail.filing.v1";
 export const ASSISTANT_ATTENTION_CAPABILITY = "plugin.assistant-mail.attention.v1";
 
 export type AssistantAttentionItem = { id: string; title: string } & (
@@ -111,6 +112,8 @@ export interface BridgeMailAttachment {
 
 export const MAIL_CATEGORIES = ["marketing", "verification", "account", "other"] as const;
 export type BridgeMailCategory = typeof MAIL_CATEGORIES[number];
+export const MAIL_FOLDERS = ["inbox", ...MAIL_CATEGORIES] as const;
+export type BridgeMailFolder = typeof MAIL_FOLDERS[number];
 
 export interface BridgeMailCard {
   /** Descending list order: positive for live arrivals, negative for historical imports. */
@@ -129,6 +132,7 @@ export interface BridgeMailCard {
   processingStatus: "pending" | "processing" | "processed";
   /** Read on the Bridge host, independent of IMAP Seen and business processing. */
   hostRead?: true;
+  folder?: BridgeMailCategory;
   analysis?: { summary?: string; suggestions?: string[]; questions?: string[]; category?: BridgeMailCategory | undefined; attention?: MailAttentionLevel | undefined };
   /** Correlation supplied by the host, never inferred from mail or transcript text. */
   nativeDelivery: {
@@ -146,6 +150,9 @@ export interface BridgeMailCard {
 export interface BridgeMailPage {
   cards: BridgeMailCard[];
   nextCursor?: string;
+  folderCounts?: Partial<Record<BridgeMailCategory, number>>;
+  /** Recent live cards kept for the assistant conversation, never rendered in the inbox. */
+  filedTimelineCards?: BridgeMailCard[];
 }
 
 export interface BridgeMailDetail {

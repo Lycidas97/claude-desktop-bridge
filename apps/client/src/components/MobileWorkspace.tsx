@@ -403,11 +403,11 @@ export function MobileWorkspace({
   }, [effectiveSelectedId, events, localTurns, menuSessionId, selectedHistory]);
   const mailCards = useMemo(() => (
     effectiveSelectedId
-      ? assistantMail?.cache.cards.filter((card) => (
+      ? assistantMail?.timelineCards.filter((card) => (
           (card.nativeDelivery.nativeSessionId ?? snapshot?.assistantMail?.binding?.nativeSessionId) === effectiveSelectedId
         )) ?? []
       : []
-  ), [assistantMail?.cache.cards, effectiveSelectedId, snapshot?.assistantMail?.binding?.nativeSessionId]);
+  ), [assistantMail?.timelineCards, effectiveSelectedId, snapshot?.assistantMail?.binding?.nativeSessionId]);
 
   const menuSession = menuSessionId ? sessions.find((session) => session.sessionId === menuSessionId) : undefined;
   const moveMenuOpen = Boolean(menuSession && moveMenuSessionId === menuSession.sessionId);

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import type { BridgeSmtpChannel } from "../../packages/protocol/src/assistant-mail.js";
+import { ASSISTANT_MEMORY_POLICY, ASSISTANT_WORKSPACE_POLICY, type AssistantWorkspacePolicy, type BridgeSmtpChannel } from "../../packages/protocol/src/assistant-mail.js";
 import type { AgendaProposalAction, BridgeActionProposal, BridgeProposalSnapshot, MemoryRuleProposalAction, ProposalDraftAction, ProposalRevisionRef } from "../../packages/protocol/src/assistant-proposal.js";
 import type { AgendaCredentials } from "./agenda.js";
 import type { AssistantMemory } from "./assistant-memory.js";
@@ -27,7 +27,7 @@ export class ProposalExecutor extends EventEmitter {
     private readonly memberRequest = requestCalDavMember,
     private readonly mail?: AssistantMailService,
     private readonly send = submitSmtp,
-    private readonly profile?: { memory: AssistantMemory; allowed(sessionId: string): boolean },
+    private readonly profile?: { memory: AssistantMemory; policy(sessionId: string): AssistantWorkspacePolicy | undefined },
   ) { super(); }
 
   snapshot(): BridgeProposalSnapshot {
@@ -70,7 +70,7 @@ export class ProposalExecutor extends EventEmitter {
   }
 
   page(query: Parameters<ProposalStore["page"]>[0], sessionId?: string) {
-    return this.store.page(sessionId === undefined ? query : { ...query, includeMemory: this.profile?.allowed(sessionId) }, sessionId);
+    return this.store.page(sessionId === undefined ? query : { ...query, includeMemory: this.profile?.policy(sessionId) === ASSISTANT_MEMORY_POLICY }, sessionId);
   }
   resolve(...params: Parameters<ProposalStore["resolve"]>) { return this.store.resolve(...params); }
   pending(ref: ProposalRevisionRef, sessionId?: string) { return publicProposal(this.store.requirePending(ref, sessionId)); }
@@ -119,7 +119,8 @@ export class ProposalExecutor extends EventEmitter {
     if (proposal.intent.backend === "profile") {
       // Claim and expected hash are durable before touching the file. Keep the local compare
       // and rename synchronous so two approvals in this process cannot share a baseline.
-      const state = this.profile?.allowed(proposal.sessionId) ? this.profile.memory.apply(proposal.intent) : "conflict";
+      const policy = this.profile?.policy(proposal.sessionId);
+      const state = policy ? this.profile!.memory.apply(proposal.intent, policy === ASSISTANT_WORKSPACE_POLICY) : "conflict";
       const result = this.store.finish(proposal, state);
       this.changed();
       return result;
@@ -158,8 +159,9 @@ export class ProposalExecutor extends EventEmitter {
 
   private freeze(action: AgendaProposalAction | MemoryRuleProposalAction, proposalId: string, sessionId: string, keepBase?: StoredProposal): ProposalPayload {
     if (action.kind === "memory.rule_upsert") {
-      if (!this.profile?.allowed(sessionId)) throw new AgendaEditError("UNSUPPORTED", "此会话未启用受控记忆。");
-      const frozen = this.profile.memory.freeze(action);
+      const policy = this.profile?.policy(sessionId);
+      if (!policy) throw new AgendaEditError("UNSUPPORTED", "当前托管会话的规则文件不可用。");
+      const frozen = this.profile!.memory.freeze(action, policy === ASSISTANT_WORKSPACE_POLICY);
       if (keepBase && frozen.intent.baseProfileSha256 !== keepBase.profile?.baseProfileSha256) {
         throw new AgendaEditError("CONFLICT", "PROFILE.md 已变更，请让助理重新核对。");
       }

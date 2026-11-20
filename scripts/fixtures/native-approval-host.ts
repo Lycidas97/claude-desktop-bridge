@@ -19,9 +19,9 @@ import { createNativeSectionFixture } from "./native-section-store.js";
 import { startAssistantMailFixture } from "./assistant-mail.js";
 import { AssistantMailCoordinator } from "../../apps/desktop/src/controller/assistant-mail.js";
 import { WorkspaceProvisioner } from "../../apps/desktop/src/controller/assistant-workspace.js";
-import { ASSISTANT_MEMORY_POLICY } from "../../packages/protocol/src/assistant-mail.js";
 import { serveAssistantMailTools } from "../../plugins/assistant-mail/local-channel.js";
 import type { ProposalDraftAction } from "../../packages/protocol/src/assistant-proposal.js";
+import type { AssistantWorkspacePolicy } from "../../packages/protocol/src/assistant-mail.js";
 
 interface NativeApprovalResult {
   requestId: string;
@@ -375,8 +375,8 @@ export async function startNativeApprovalHost(options: {
   const eventLog = new SessionEventLog(join(options.directory, "native-events.jsonl"));
   await eventLog.initialize();
   const mailRoot = options.assistantMail ? await realpath(await mkdtemp(join(tmpdir(), "bridge-assistant-mail-"))) : undefined;
-  const workspace = mailRoot && new WorkspaceProvisioner({ userDataPath: mailRoot, appPath: mailRoot, execPath: process.execPath,
-    ...(options.onProposalsChanged ? { policy: ASSISTANT_MEMORY_POLICY } : {}) });
+  const workspace = mailRoot ? new WorkspaceProvisioner({ userDataPath: mailRoot, appPath: mailRoot, execPath: process.execPath,
+    isApprovedProfile: (hash: string): boolean => assistantMail?.isApprovedProfile(hash) === true }) : undefined;
   const broker = new ClaudeDesktopBridge({ eventLog, conversationState: state, inspector, settingsPath,
     ...(workspace ? { assistantWorkspacePath: workspace.path } : {}),
     home: commandHome, environment: { ANTHROPIC_BASE_URL: "https://fixture.invalid", ANTHROPIC_AUTH_TOKEN: "synthetic" },
@@ -398,7 +398,10 @@ export async function startNativeApprovalHost(options: {
   } });
   await evidence.initialize();
   const assistantMail = mailRoot ? await startAssistantMailFixture(mailRoot, options.initialMailHistory,
-    options.onProposalsChanged ? { memory: workspace!.memory, allowed: sessionId => sessionId === options.sessionId } : undefined) : undefined;
+    options.onProposalsChanged ? {
+      memory: workspace!.memory,
+      policy: (sessionId: string): AssistantWorkspacePolicy | undefined => workspace!.ruleProposalPolicy(assistantMail?.service.binding(), sessionId),
+    } : undefined) : undefined;
   assistantMail?.agenda.on("changed", snapshot => options.onAgendaChanged?.(snapshot));
   const proposals = options.onProposalsChanged ? assistantMail!.proposals : undefined;
   proposals?.on("changed", options.onProposalsChanged!);
@@ -412,7 +415,7 @@ export async function startNativeApprovalHost(options: {
     },
   });
   if (proposalChannel) assistantMail!.service.setBinding({ assistantId: randomUUID(), nativeSessionId: options.sessionId, sectionId: null,
-    previousSessionIds: [], managed: { path: workspace!.path, policy: ASSISTANT_MEMORY_POLICY, token: toolToken } });
+    previousSessionIds: [], managed: { path: workspace!.path, policy: workspace!.policy, token: toolToken } });
   const proposalPort = proposalChannel && JSON.parse(await readFile(join(mailRoot!, "private", "assistant", "mail-tools.json"), "utf8")).port as number | undefined;
   const assistantMailCoordinator = assistantMail && workspace
     ? new AssistantMailCoordinator(assistantMail.service, {

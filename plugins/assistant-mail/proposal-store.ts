@@ -3,7 +3,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { BridgeActionProposal, BridgeProposalPage, ProposalRevisionRef, ProposalState } from "../../packages/protocol/src/assistant-proposal.js";
 import { AgendaEditError } from "./agenda-store.js";
 import type { CalDavWrite } from "./caldav.js";
-import type { ProfileIntent } from "./assistant-memory.js";
+import { ASSISTANT_PROFILE_TEMPLATE_HASH, type ProfileIntent } from "./assistant-memory.js";
 import type { SmtpResult } from "./smtp.js";
 
 type Intent = { backend: "local"; baseRevision?: number } |
@@ -100,6 +100,19 @@ export class ProposalStore {
     this.db.prepare("UPDATE proposal_executions SET state = ?, finished_at = ? WHERE id = ? AND revision = ?")
       .run(state, Date.now(), proposal.proposalId, proposal.revision);
     return publicProposal({ ...proposal, state });
+  }
+
+  isApprovedProfile(hash: string): boolean {
+    // Only completed approvals extend the chain. An in-flight result may already be on disk before startup reconciliation.
+    return this.db.prepare(`WITH RECURSIVE revisions(base_hash, result_hash, state) AS (
+      SELECT json_extract(p.payload, '$.intent.baseProfileSha256'), json_extract(p.payload, '$.intent.resultProfileSha256'), e.state
+      FROM action_proposals p JOIN proposal_executions e ON p.id = e.id AND p.revision = e.revision
+      WHERE ${isMemory} AND e.state IN ('applied', 'executing')
+    ), approved(hash) AS (
+      VALUES (?) UNION SELECT r.result_hash FROM revisions r JOIN approved a ON r.base_hash = a.hash WHERE r.state = 'applied'
+    ) SELECT 1 FROM approved WHERE hash = ? UNION ALL
+      SELECT 1 FROM revisions r JOIN approved a ON r.base_hash = a.hash WHERE r.state = 'executing' AND r.result_hash = ? LIMIT 1`)
+      .get(ASSISTANT_PROFILE_TEMPLATE_HASH, hash, hash) !== undefined;
   }
 
   interrupted(): StoredProposal[] {

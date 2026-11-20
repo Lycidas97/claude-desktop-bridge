@@ -5,8 +5,9 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { AgendaEventInput } from "../../packages/protocol/src/assistant-agenda.js";
+import { ASSISTANT_MEMORY_POLICY, ASSISTANT_WORKSPACE_POLICY, type AssistantWorkspacePolicy } from "../../packages/protocol/src/assistant-mail.js";
 import { AgendaStore } from "./agenda-store.js";
-import { AssistantMemory } from "./assistant-memory.js";
+import { ASSISTANT_PROFILE_TEMPLATE, AssistantMemory } from "./assistant-memory.js";
 import { requestCalDavMember } from "./caldav.js";
 import { proposalAction } from "./proposal-contract.js";
 import { ProposalExecutor } from "./proposal-executor.js";
@@ -37,8 +38,9 @@ function open() {
   agenda = new AgendaStore(db, "UTC");
   ledger = new ProposalStore(db);
   service = new ProposalExecutor(ledger, agenda, credentials, notifyAgenda, options => requestCalDavMember(options, fetchDav),
-    undefined, undefined, { memory: new AssistantMemory(directory), allowed: sessionId => sessionId === "bound-session" });
+    undefined, undefined, { memory: new AssistantMemory(directory, hash => ledger.isApprovedProfile(hash)), policy: sessionId => sessionId === "bound-session" ? policy : undefined });
 }
+let policy: AssistantWorkspacePolicy;
 function seedRemote(body = sourceBody) {
   const id = agenda.addSource({ label: "Work", url: collection, user: "owner" }, Buffer.from("fixture-credential"));
   agenda.applySync(id, { changed: [{ href, data: body, etag: '"version-one"' }], removed: [], proposalCreateKinds: ["calendar"] });
@@ -49,6 +51,7 @@ beforeEach(() => {
   fetchDav.mockReset();
   directory = mkdtempSync(join(tmpdir(), "bridge-proposal-"));
   file = join(directory, "assistant.sqlite");
+  policy = ASSISTANT_MEMORY_POLICY;
   open();
 });
 afterEach(async () => {
@@ -64,7 +67,7 @@ it("shows a frozen rule diff, applies only the confirmed revision, and rejects a
   const profile = join(directory, "PROFILE.md");
   const baseline = "# PROFILE\n\nKeep this existing rule.\n";
   writeFileSync(profile, baseline);
-  await expect(service.create("other-session", rule)).rejects.toThrow("未启用受控记忆");
+  await expect(service.create("other-session", rule)).rejects.toMatchObject({ code: "UNSUPPORTED" });
   expect(proposalAction.safeParse({ ...rule, baseProfileSha256: "a".repeat(64) }).success).toBe(false);
   expect(proposalAction.safeParse({ ...rule, operation: "delete" }).success).toBe(false);
   const original = await service.create("bound-session", rule);
@@ -140,25 +143,44 @@ it("handles CRLF rule markers and hashes the original bytes", async () => {
   expect(readFileSync(profile, "utf8")).toBe("# PROFILE\r\n\r\n");
 });
 
-it.each(["before-rename", "after-rename", "external-edit"] as const)("reconciles interrupted profile writes (%s) without replaying", async interruption => {
+it("does not adopt Stage 3 results or pending drafts based on a manually edited profile", async () => {
   const profile = join(directory, "PROFILE.md");
-  const baseline = "# PROFILE\n";
-  writeFileSync(profile, baseline);
+  writeFileSync(profile, ASSISTANT_PROFILE_TEMPLATE + "Unapproved text.\n");
+  const ref = await service.create("bound-session", rule);
+  await expect(service.commit({ ...ref, confirmMemory: true }, "phone")).resolves.toMatchObject({ state: "applied" });
+  const action = { ...rule, operation: "update", text: "Use bullet points." } as const;
+  const oldDraft = await service.create("bound-session", action);
+  const unowned = readFileSync(profile);
+
+  policy = ASSISTANT_WORKSPACE_POLICY;
+  await expect(service.create("bound-session", action)).rejects.toMatchObject({ code: "CONFLICT" });
+  await expect(service.commit({ ...oldDraft, confirmMemory: true }, "phone")).resolves.toMatchObject({ state: "conflict" });
+  expect(readFileSync(profile)).toEqual(unowned);
+});
+
+it.each(["before-rename", "after-rename", "external-edit"] as const)("reconciles interrupted Stage 1 profile writes (%s) without replaying", async interruption => {
+  const profile = join(directory, "PROFILE.md");
+  policy = ASSISTANT_WORKSPACE_POLICY;
+  writeFileSync(profile, ASSISTANT_PROFILE_TEMPLATE);
   const ref = await service.create("bound-session", rule);
   const persisted = ledger.requirePending(ref);
-  ledger.transaction(() => ledger.claim(persisted, "phone", "executing"));
   if (persisted.intent.backend !== "profile") throw Error("Expected a profile intent");
+  expect(ledger.isApprovedProfile(persisted.intent.resultProfileSha256)).toBe(false);
+  ledger.transaction(() => ledger.claim(persisted, "phone", "executing"));
   if (interruption === "before-rename") writeFileSync(join(directory, ".bridge-profile-interrupted.tmp"), persisted.intent.resultText);
-  if (interruption === "after-rename") new AssistantMemory(directory).apply(persisted.intent);
+  if (interruption === "after-rename") expect(new AssistantMemory(directory).apply(persisted.intent, true)).toBe("applied");
   if (interruption === "external-edit") writeFileSync(profile, "# External edit\n");
   const current = readFileSync(profile, "utf8");
   db.close();
   open();
+  const memory = new AssistantMemory(directory, hash => ledger.isApprovedProfile(hash));
+  expect(memory.ownsProfile(Buffer.from(current))).toBe(interruption !== "external-edit");
   service.start();
   await service.close();
   expect(service.resolve("bound-session", [ref], false, false, true)[0]?.state).toBe(
     interruption === "after-rename" ? "applied" : interruption === "before-rename" ? "failed" : "conflict");
   expect(readFileSync(profile, "utf8")).toBe(current);
+  expect(ledger.isApprovedProfile(persisted.intent.resultProfileSha256)).toBe(interruption === "after-rename");
   await expect(service.commit(ref, "desktop")).rejects.toMatchObject({ code: "CONFLICT" });
 });
 

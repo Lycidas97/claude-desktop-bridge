@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
-import { ASSISTANT_PROPOSAL_CAPABILITY, BridgeCrypto, BridgeSocket } from "../../packages/protocol/dist/index.js";
+import { ASSISTANT_MEMORY_PROPOSAL_CAPABILITY, ASSISTANT_PROPOSAL_CAPABILITY, BridgeCrypto, BridgeSocket } from "../../packages/protocol/dist/index.js";
 import { remotePreview, sectionCreatePreview, assistantMailPreview, nativePreview, sessionId, originalTitle, userText, replyText } from "./config.mjs";
 import { desktopFixtureRequest, syncNativeSections } from "./helpers.mjs";
 
@@ -401,7 +401,7 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
       snapshot.host.capabilities.push("plugin.assistant-agenda.v1", "plugin.assistant-agenda.day.v1");
       snapshot.assistantAgenda = host.nativeApproval.assistantMail.agenda.snapshot();
       if (options.proposals) {
-        snapshot.host.capabilities.push(ASSISTANT_PROPOSAL_CAPABILITY);
+        snapshot.host.capabilities.push(ASSISTANT_PROPOSAL_CAPABILITY, ASSISTANT_MEMORY_PROPOSAL_CAPABILITY);
         snapshot.assistantProposals = host.nativeApproval.assistantMail.proposals.snapshot();
       }
       const initialMailCount = options.initialMailCount ?? 60;

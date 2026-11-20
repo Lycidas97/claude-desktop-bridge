@@ -99,6 +99,16 @@ it("uses the exact mail tool names and limits delegation to the foreground proje
   await expect(allowAssistantTool(workspace, null)).resolves.toBe(false);
 });
 
+it.each(["proposal_create", "proposal_update_pending"])("limits Stage 1 %s rule drafts to the main session", async tool => {
+  const tool_name = `mcp__assistant-mail__${tool}`;
+  const draft = { action: { kind: "memory.rule_upsert" } };
+  await expect(check(tool_name, draft)).resolves.toBe(true);
+  const helper = { hook_event_name: "PreToolUse", cwd: workspace, tool_name, agent_id: "fixture-helper", agent_type: "assistant-helper" };
+  await expect(allowAssistantTool(workspace, { ...helper, tool_input: draft })).resolves.toBe(false);
+  await expect(allowAssistantTool(workspace, { ...helper, tool_input: { action: { kind: "todo.create" } } })).resolves.toBe(true);
+  await expect(check("Write", { file_path: "PROFILE.md" })).resolves.toBe(false);
+});
+
 it("fences Stage 3 child roles and keeps generated instructions out of writable roots", async () => {
   await mkdir(join(workspace, "memory/notes"), { recursive: true });
   await mkdir(join(workspace, "memory/threads"));

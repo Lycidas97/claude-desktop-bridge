@@ -943,7 +943,7 @@ export function ConversationView({
         }
         if (item.sentFiles?.length && item.toolUseId) {
           return <SessionSentFiles key={item.id} item={{ ...item, sentFiles: item.sentFiles }} hostId={hostId} toolUseId={item.toolUseId}
-            onOpenFile={onDownloadSessionFile ? files.openFile : undefined}
+            isMobile={isMobile} onOpenFile={onDownloadSessionFile ? files.openFile : undefined}
             supportsToolDetail={Boolean(snapshot?.host.capabilities.includes("transcript.toolDetail.v1"))} />;
         }
         if (item.sessionNotice) {

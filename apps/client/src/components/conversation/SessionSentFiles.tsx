@@ -4,10 +4,11 @@ import { useState } from "react";
 import { IconButton } from "../common/IconButton.js";
 import { ToolCallDetailSheet } from "./ToolCallDetailSheet.js";
 
-export function SessionSentFiles({ item, toolUseId, hostId, onOpenFile, supportsToolDetail }: {
+export function SessionSentFiles({ item, toolUseId, hostId, isMobile, onOpenFile, supportsToolDetail }: {
   item: BridgeHistoryItem & { sentFiles: NonNullable<BridgeHistoryItem["sentFiles"]> };
   toolUseId: string;
   hostId: string;
+  isMobile: boolean;
   onOpenFile?: ((path: string) => void) | undefined;
   supportsToolDetail: boolean;
 }) {
@@ -26,7 +27,7 @@ export function SessionSentFiles({ item, toolUseId, hostId, onOpenFile, supports
             ) : (
               <div>
                 <File size={16} aria-hidden="true" />
-                <span>{name}<small>请在电脑端打开</small></span>
+                <span>{name}<small>{isMobile ? "请在电脑端打开" : "无法从会话打开"}</small></span>
               </div>
             )}
           </li>

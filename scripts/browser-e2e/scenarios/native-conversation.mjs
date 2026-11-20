@@ -367,12 +367,13 @@ export async function verifyNativeBoundaries(page, host, steps, directory) {
   await writeFile(resolve(host.nativeApproval.harnessCwd, archiveName), archiveBytes);
   const outsideFile = resolve(host.nativeApproval.harnessCwd, "../../../../工作区外的文件.txt");
   await writeFile(outsideFile, "This file must stay on the host.");
+  await writeFile(resolve(host.nativeApproval.harnessCwd, ".env.example"), "EXAMPLE=fixture");
   const initial = [
-    tool("boundary-send-file", { files: ["说明 notes.md", archiveName, outsideFile, "未发送.bin"] }, "SendUserFile"),
+    tool("boundary-send-file", { files: ["说明 notes.md", archiveName, outsideFile, ".env.example", "未发送.bin"] }, "SendUserFile"),
     { type: "user", uuid: "boundary-send-file-result", timestamp: Date.now(), message: { content: [{
       type: "tool_result", tool_use_id: "boundary-send-file", content: [{ type: "text", text: "Files sent" }],
     }] }, toolUseResult: { attachments: [
-      ...["说明 notes.md", archiveName, outsideFile].map(path => ({ path, size: 32, isImage: false })),
+      ...["说明 notes.md", archiveName, outsideFile, ".env.example"].map(path => ({ path, size: 32, isImage: false })),
       { path: "未发送.bin", size: 12, isImage: false, upload_error: "Native delivery failed" },
     ] } },
     tool("boundary-plan", { scope: "first_task", items: planItems }),
@@ -453,8 +454,10 @@ export async function verifyNativeBoundaries(page, host, steps, directory) {
   await sentFiles.getByRole("button", { name: "说明 notes.md", exact: true }).click({ timeout: 5_000 });
   await page.locator(".media-viewer").getByRole("heading", { name: "Worktree preview", exact: true }).waitFor();
   await page.getByRole("button", { name: "关闭查看器", exact: true }).click();
-  assert.equal(await sentFiles.getByRole("button", { name: "工作区外的文件.txt", exact: true }).count(), 0);
-  assert.ok((await sentFiles.innerText()).includes("工作区外的文件.txt\n请在电脑端打开"));
+  for (const blockedName of ["工作区外的文件.txt", ".env.example"]) {
+    assert.equal(await sentFiles.getByRole("button", { name: blockedName, exact: true }).count(), 0);
+    assert.ok((await sentFiles.innerText()).includes(`${blockedName}\n请在电脑端打开`));
+  }
   assert.equal(await sentFiles.getByText("未发送.bin", { exact: true }).count(), 0);
   assert.equal((await sentFiles.innerText()).includes(outsideFile), false);
   await sentFiles.screenshot({ path: resolve(directory, "native-sent-files.png"), animations: "disabled" });

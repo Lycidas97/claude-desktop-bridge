@@ -20,7 +20,7 @@ import { readClaudeTranscriptBackgroundTasks, readClaudeTranscriptSubagents, vis
 import { extractToolCallDetailFromMessages, readSubagentToolCallDetail, summarizeNativeToolInput } from "../transcript/transcript-tool-detail.js";
 import { claudeRuntimePaths } from "../app/platform.js";
 import type { SessionEventLog, BridgeEventDraft } from "../controller/session-event-log.js";
-import type { EvidenceManager, ObservedDesktopTool } from "../evidence/evidence-manager.js";
+import { sessionFileLinkPath, workspaceTransferMetadata, type EvidenceManager, type ObservedDesktopTool } from "../evidence/evidence-manager.js";
 import { findClaudeSessionTranscript, oldestLiveProcessStart, projectIdForCwd, type ClaudeCatalogSnapshot } from "./claude-session-catalog.js";
 import {
   discoverClaudeGateway,
@@ -1019,21 +1019,24 @@ export class ClaudeDesktopBridge extends EventEmitter {
     }
     const sends = receipts.filter(({ toolUseId }) => names.get(toolUseId) === "SendUserFile");
     if (!sends.length) return;
-    const canonical = (path: string) => realpath(path).catch((error: NodeJS.ErrnoException) => {
+    const unavailable = (error: NodeJS.ErrnoException) => {
       if (["ENOENT", "ENOTDIR", "EACCES", "EPERM", "ELOOP"].includes(error.code ?? "")) return undefined;
       throw error;
-    });
-    const root = await canonical(cwd);
+    };
+    const root = await realpath(cwd).catch(unavailable);
+    const projectCwd = this.native.get(sessionId)!.cwd;
+    const projectRoot = projectCwd === cwd ? root : await realpath(projectCwd).catch(unavailable);
     const inside = (directory: string, path: string) => {
       const within = relative(directory, path);
       return within && within !== ".." && !within.startsWith(`..${sep}`) && !isAbsolute(within);
     };
     return new Map(await Promise.all(sends.map(async ({ toolUseId, paths }) => [toolUseId, await Promise.all(paths.map(async path => {
       const candidate = resolve(cwd, path);
-      const source = root && (inside(cwd, candidate) || inside(root, candidate)) ? await canonical(candidate) : undefined;
+      const source = root && (inside(cwd, candidate) || inside(root, candidate)) ? await realpath(candidate).catch(unavailable) : undefined;
       // Do not send a path that the Markdown link transport would reinterpret.
-      const available = source && root && inside(root, source) && source === source.trim() && !/:\d+(?::\d+)?$/u.test(source);
-      return { name: basename(path) || path, ...(available ? { path: source } : {}) };
+      const check = source && root && projectRoot && inside(root, source) && source === sessionFileLinkPath(source)
+        ? await workspaceTransferMetadata(projectRoot, source).catch(unavailable) : undefined;
+      return { name: basename(path) || path, ...(source && check && "metadata" in check ? { path: source } : {}) };
     }))] as const)));
   }
 

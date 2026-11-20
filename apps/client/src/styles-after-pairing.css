@@ -856,7 +856,7 @@
 .session-sent-files li > button:focus-visible { outline: 2px solid var(--accent); }
 .session-sent-files li svg { flex: none; color: var(--muted); }
 .session-sent-files li span { flex: 1; overflow-wrap: anywhere; }
-.session-sent-files li small { display: block; color: var(--muted); }
+.session-sent-files li small { display: block; color: var(--muted); font-size: calc(11px * var(--font-scale)); }
 .session-sent-files .session-sent-files-detail { width: 44px; height: 44px; }
 
 .session-proposal-card {

@@ -1,7 +1,7 @@
 import { once } from "node:events";
-import { appendFile, rm, mkdir, mkdtemp, readFile, readdir, realpath, symlink, writeFile } from "node:fs/promises";
+import { appendFile, rm, mkdir, mkdtemp, readFile, readdir, realpath, symlink, truncate, writeFile } from "node:fs/promises";
 import * as platform from "../app/platform.js";
-import { BridgeCrypto, isEncryptedEnvelope, type BridgeArtifactTransferInfo } from "@bridge/protocol";
+import { ARTIFACT_MAX_BYTES, BridgeCrypto, isEncryptedEnvelope, type BridgeArtifactTransferInfo } from "@bridge/protocol";
 import { EvidenceManager } from "../evidence/evidence-manager.js";
 import { EvidenceStore } from "../evidence/evidence-store.js";
 import { createControllerFixture } from "../controller/controller-fixture.js";
@@ -2718,7 +2718,12 @@ describe("Claude native relay", () => {
       await mkdir(harnessCwd, { recursive: true });
       const inside = join(harnessCwd, "报告.md");
       const outside = join(f.directory, "工作区外.md");
-      await Promise.all([writeFile(inside, "worktree"), writeFile(outside, "outside"), writeFile(join(cwd, "报告.md"), "namesake")]);
+      const large = join(harnessCwd, "large.apk");
+      await Promise.all([
+        writeFile(inside, "worktree"), writeFile(outside, "outside"), writeFile(join(cwd, "报告.md"), "namesake"),
+        writeFile(join(harnessCwd, ".env.example"), "EXAMPLE=fixture"), writeFile(large, ""),
+      ]);
+      await truncate(large, ARTIFACT_MAX_BYTES + 1);
       Object.assign(f.native.sessions[0]!, { cwd, harnessCwd });
       await f.bridge.refreshRuntime();
       const call = planMessage("send-call", { files: [outside, "unconfirmed.txt"] }, 10, "SendUserFile");
@@ -2728,9 +2733,12 @@ describe("Claude native relay", () => {
         { path: "报告.md", size: 8, isImage: false },
         { path: outside, size: 7, isImage: false },
         { path: join(cwd, "报告.md"), size: 8, isImage: false },
+        { path: ".env.example", size: 15, isImage: false },
+        { path: "large.apk", size: 20, isImage: false }, // Grew after being shared; the current size governs transport.
         { path: "upload-failed.md", size: 100, isImage: false, upload_error: "not delivered" },
       ] } };
-      const expected = [{ name: "报告.md", path: await realpath(inside) }, { name: "工作区外.md" }, { name: "报告.md" }];
+      const expected = [{ name: "报告.md", path: await realpath(inside) }, { name: "工作区外.md" }, { name: "报告.md" },
+        { name: ".env.example" }, { name: "large.apk" }];
       f.native.page.messages = [call, result];
       f.native.pages.set("", { messages: [result], hasMore: true });
       f.native.pages.set(result.uuid, { messages: [call], hasMore: false });

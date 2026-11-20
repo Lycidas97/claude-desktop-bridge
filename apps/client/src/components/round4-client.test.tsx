@@ -719,7 +719,7 @@ describe("Round 4 Client Deliverables", () => {
         createElement(MobileSessionCatalog, {
           open: true,
           assistantAvailable: true,
-          assistantUnreadCount: 3,
+          assistantEntry: { attention: true, unread: 0, label: "助理，有事项待关注" },
           onSelectTab,
           desktopName: "LycidasdeMac-mini",
           connection: "connected",
@@ -781,7 +781,7 @@ describe("Round 4 Client Deliverables", () => {
         }),
       );
       expect(catalogHtml).toContain('class="drawer-assistant-capsule"');
-      expect(catalogHtml).toContain('aria-label="助理，3 条未读"');
+      expect(catalogHtml).toContain('aria-label="助理，有事项待关注"');
       expect(catalogHtml).toContain('class="drawer-assistant-slot"');
       expect(catalogHtml).not.toContain("sidebar-assistant-row");
 

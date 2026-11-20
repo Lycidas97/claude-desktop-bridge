@@ -1,8 +1,10 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { ARTIFACT_MAX_BYTES, ASSISTANT_MAIL_SHARED_AUTH_CAPABILITY, ASSISTANT_MEMORY_POLICY, ASSISTANT_SMTP_CAPABILITY, isAssistantWorkspacePolicy, isMailPollInterval, mailAttachmentPreviewKind } from "@bridge/protocol";
+import { ARTIFACT_MAX_BYTES, ASSISTANT_ATTENTION_CAPABILITY, ASSISTANT_MAIL_SHARED_AUTH_CAPABILITY, ASSISTANT_MEMORY_POLICY, ASSISTANT_SMTP_CAPABILITY, isAssistantWorkspacePolicy, isMailPollInterval, mailAttachmentPreviewKind } from "@bridge/protocol";
 import { AgendaEditError } from "../../../../plugins/assistant-mail/agenda-store.js";
+import type { AssistantAgendaService } from "../../../../plugins/assistant-mail/agenda.js";
 import { configureSmtp, saveMailAccount } from "../../../../plugins/assistant-mail/proposal-contract.js";
 import type {
+  AssistantAttentionAcknowledgment,
   BridgeAssistantMailSnapshot,
   BridgeEvent,
   BridgeMailAttachmentRef,
@@ -31,6 +33,7 @@ export const ASSISTANT_MAIL_CAPABILITIES = [
   "plugin.assistant-mail.attachments.v1",
   "plugin.assistant-mail.history.v1",
   "plugin.assistant-mail.junk.v1",
+  ASSISTANT_ATTENTION_CAPABILITY,
 ] as const;
 
 const managedHistoryMethods = new Set([
@@ -124,6 +127,9 @@ export class AssistantMailCoordinator {
   private readonly unconfirmedSessions = new Set<string>();
   private dispatcher: EventTriggerDispatcher | undefined;
   private confirmReady = false;
+  private attentionTimer: ReturnType<typeof setTimeout> | undefined;
+  private attentionAt = Infinity;
+  private agendaAttention?: ReturnType<AssistantAgendaService["attention"]> | undefined;
   private readonly publishMailChange = (mailDataChanged = false, wakePhone = false) => {
     if (mailDataChanged) this.changeToken = randomUUID();
     this.host.onChanged?.(this.snapshot(), wakePhone);
@@ -138,7 +144,23 @@ export class AssistantMailCoordinator {
     private readonly mail: AssistantMailService,
     private readonly host: AssistantMailCoordinatorHost,
     readonly workspace?: WorkspaceProvisioner,
+    private readonly agenda?: AssistantAgendaService,
   ) {}
+
+  readonly agendaChanged = () => {
+    this.agendaAttention = undefined;
+    this.publishMailChange();
+  };
+
+  readonly replyReceived = (sessionId: string, itemId: string, text: string) => {
+    if (this.mail.binding()?.nativeSessionId === sessionId) {
+      this.mail.recordReply(sessionId, `${sessionId}:${itemId}`, Array.from(text.trim().split("\n", 1)[0]!).slice(0, 100).join(""));
+    }
+  };
+
+  readonly repliesRewound = (sessionId: string, itemIds: string[]) => {
+    this.mail.removeReplies(sessionId, itemIds.map(itemId => `${sessionId}:${itemId}`));
+  };
 
   capabilities() {
     return [
@@ -226,6 +248,7 @@ export class AssistantMailCoordinator {
     this.started = true;
     this.mail.on("mail", this.onMailRecorded);
     this.mail.on("changed", this.onServiceChanged);
+    this.agenda?.on("changed", this.agendaChanged);
   }
 
   close(): void {
@@ -235,6 +258,8 @@ export class AssistantMailCoordinator {
     this.dispatcher = undefined;
     this.mail.off("mail", this.onMailRecorded);
     this.mail.off("changed", this.onServiceChanged);
+    this.agenda?.off("changed", this.agendaChanged);
+    clearTimeout(this.attentionTimer);
   }
 
   sessionAccess(session: BridgeSessionInfo): "hidden" | "read-only" | undefined {
@@ -259,6 +284,24 @@ export class AssistantMailCoordinator {
 
   snapshot(): BridgeAssistantMailSnapshot {
     const snapshot = assistantMailSnapshot(this.mail, this.host.allSessions(), this.host.canStartTurn(), this.changeToken);
+    const now = Date.now();
+    const { items, nextAt } = this.mail.attention(snapshot.automaticDelivery, now, snapshot.binding?.nativeSessionId ?? undefined);
+    if (this.agenda && (!this.agendaAttention || now >= this.agendaAttention.nextAt)) {
+      this.agendaAttention = this.agenda.attention(now, this.mail.seenCalendarEvents());
+    }
+    snapshot.attention = this.agendaAttention ? [...items, ...this.agendaAttention.items] : items;
+    const deadline = Math.min(nextAt, this.agendaAttention?.nextAt ?? Infinity);
+    if (this.started && this.attentionAt !== deadline) {
+      clearTimeout(this.attentionTimer);
+      this.attentionAt = deadline;
+      if (Number.isFinite(deadline)) {
+        this.attentionTimer = setTimeout(() => {
+          this.attentionAt = Infinity;
+          this.publishMailChange();
+        }, deadline - now);
+        this.attentionTimer.unref();
+      }
+    }
     if (!this.workspace) return snapshot;
     const binding = this.mail.binding();
     const policy = binding?.managed?.policy;
@@ -422,6 +465,19 @@ export class AssistantMailCoordinator {
       const { client: _client, ...input } = params;
       if (Object.keys(input).length) throw new BridgeRequestError("INVALID_PARAMS", "更早邮件不接受参数。");
       this.mail.requestOlder();
+      return { assistantMail: this.snapshot() };
+    }
+    if (method === "plugin.assistant-mail.attention.ack") {
+      const kind = stringParam(params, "kind")!;
+      const id = stringParam(params, "id")!;
+      if (!["mail", "mail-action", "event", "reply"].includes(kind) || id.length > 1500) {
+        throw new BridgeRequestError("INVALID_PARAMS", "无效的助理事项。");
+      }
+      if ((kind === "mail" || kind === "mail-action") && !this.mail.event(id)) {
+        throw new BridgeRequestError("NOT_FOUND", "邮件不存在。");
+      }
+      if (kind === "event") this.agendaAttention = undefined;
+      this.mail.acknowledgeAttention(kind as AssistantAttentionAcknowledgment, id);
       return { assistantMail: this.snapshot() };
     }
     if (method === "plugin.assistant-mail.read") {

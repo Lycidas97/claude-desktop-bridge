@@ -72,7 +72,7 @@ export interface MobileSessionCatalogProps {
   activeTab?: MobileTab | undefined;
   onSelectTab?: ((tab: MobileTab) => void) | undefined;
   assistantAvailable?: boolean | undefined;
-  assistantUnreadCount?: number | undefined;
+  assistantEntry?: { attention: boolean; unread: number; label: string } | undefined;
   themeControl?: ThemeControl | undefined;
   onStartNewChat?: ((targetProjectId?: string, targetCwd?: string) => void) | undefined;
   selectedSessionId?: string | undefined;
@@ -135,7 +135,7 @@ export function MobileSessionCatalog({
   activeTab = "sessions",
   onSelectTab,
   assistantAvailable = false,
-  assistantUnreadCount = 0,
+  assistantEntry = { attention: false, unread: 0, label: "助理" },
   themeControl,
   onStartNewChat,
   selectedSessionId,
@@ -238,7 +238,7 @@ export function MobileSessionCatalog({
             <button
               type="button"
               className={`drawer-assistant-capsule${activeTab === "assistant" ? " active" : ""}`}
-              aria-label={assistantUnreadCount > 0 ? `助理，${assistantUnreadCount} 条未读` : "助理"}
+              aria-label={assistantEntry.label}
               aria-current={activeTab === "assistant" ? "page" : undefined}
               onClick={() => {
                 onSelectTab("assistant");
@@ -247,10 +247,10 @@ export function MobileSessionCatalog({
             >
               <Mail size={15} className="drawer-assistant-icon" aria-hidden="true" />
               <span className="drawer-assistant-title">助理</span>
-              {assistantUnreadCount > 0 && (
+              {(assistantEntry.attention || assistantEntry.unread > 0) && (
                 <span className="drawer-assistant-unread" aria-hidden="true">
                   <i className="sidebar-unread-dot" />
-                  <b className="desktop-nav-badge">{assistantUnreadCount > 99 ? "99+" : assistantUnreadCount}</b>
+                  {!assistantEntry.attention && <b className="desktop-nav-badge">{assistantEntry.unread > 99 ? "99+" : assistantEntry.unread}</b>}
                 </span>
               )}
               <span className="drawer-assistant-slot" aria-hidden="true" />

@@ -20,6 +20,17 @@ export function isMailPollInterval(value: unknown): value is MailPollInterval {
 
 export const ASSISTANT_MAIL_SHARED_AUTH_CAPABILITY = "plugin.assistant-mail.shared-auth.v1";
 export const ASSISTANT_SMTP_CAPABILITY = "plugin.assistant-mail.smtp.v1";
+export const MAIL_ATTENTION_LEVELS = ["ignore", "read", "action"] as const;
+export type MailAttentionLevel = (typeof MAIL_ATTENTION_LEVELS)[number];
+export const ASSISTANT_ATTENTION_CAPABILITY = "plugin.assistant-mail.attention.v1";
+
+export type AssistantAttentionItem = { id: string; title: string } & (
+  | { kind: "mail"; reason: "new" | "unscreened" | "read" | "action" }
+  | { kind: "event"; startAt: string }
+  | { kind: "todo" }
+  | { kind: "reply"; sessionId: string }
+);
+export type AssistantAttentionAcknowledgment = "mail" | "mail-action" | "event" | "reply";
 
 export interface BridgeSmtpChannel {
   host: string;
@@ -73,6 +84,7 @@ export interface BridgeAssistantMailSnapshot {
   /** User opt-in. A missing session or invalid policy can still pause submissions. */
   automaticDelivery: boolean;
   automaticDeliveryAvailable?: boolean;
+  attention?: AssistantAttentionItem[];
 }
 
 export type AssistantTriggerKind = "mail.received" | "todo.due" | "calendar.upcoming" | "schedule.tick";
@@ -117,7 +129,7 @@ export interface BridgeMailCard {
   processingStatus: "pending" | "processing" | "processed";
   /** Read on the Bridge host, independent of IMAP Seen and business processing. */
   hostRead?: true;
-  analysis?: { summary?: string; suggestions?: string[]; questions?: string[]; category?: BridgeMailCategory | undefined };
+  analysis?: { summary?: string; suggestions?: string[]; questions?: string[]; category?: BridgeMailCategory | undefined; attention?: MailAttentionLevel | undefined };
   /** Correlation supplied by the host, never inferred from mail or transcript text. */
   nativeDelivery: {
     state: "not-submitted" | "pending" | "paused" | "submitting" | "submitted" | "queued" | "observed" | "uncertain" | "failed" | "cancelled";

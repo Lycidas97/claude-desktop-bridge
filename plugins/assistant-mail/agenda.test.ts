@@ -28,7 +28,8 @@ const todo = object("todo", wrap("BEGIN:VTODO", "UID:todo1", "SUMMARY:外部待�
   "DUE:20270101T190000Z", "STATUS:IN-PROCESS", "PRIORITY:2", "BEGIN:VALARM", "TRIGGER;RELATED=END:-PT15M", "ACTION:DISPLAY", "DESCRIPTION:Reminder", "END:VALARM", "END:VTODO"));
 const calendar = object("event", wrap(
   "BEGIN:VEVENT", "UID:meeting", "SUMMARY:Daily", "DTSTART;TZID=America/Los_Angeles:20270313T090000", "DTEND;TZID=America/Los_Angeles:20270313T100000",
-  "RRULE:FREQ=DAILY;COUNT=4", "EXDATE;TZID=America/Los_Angeles:20270314T090000", "END:VEVENT",
+  "RRULE:FREQ=DAILY;COUNT=4", "EXDATE;TZID=America/Los_Angeles:20270314T090000",
+  "BEGIN:VALARM", "TRIGGER:-PT15M", "ACTION:DISPLAY", "DESCRIPTION:Reminder", "END:VALARM", "END:VEVENT",
   "BEGIN:VEVENT", "UID:meeting", "RECURRENCE-ID;TZID=America/Los_Angeles:20270315T090000", "SUMMARY:Moved",
   "DTSTART;TZID=America/Los_Angeles:20270315T110000", "DTEND;TZID=America/Los_Angeles:20270315T120000", "END:VEVENT"));
 
@@ -92,14 +93,94 @@ test("normalizes remote todo status and alarms, preserves identity, and computes
   expect(() => store.completeTodo({ id: record!.id, revision: 1, completed: true })).toThrow(expect.objectContaining({ code: "UNSUPPORTED" }));
   const range = { from: "2027-03-13T00:00:00.000Z", to: "2027-03-17T00:00:00.000Z" };
   expect(store.listEvents(range).records).toMatchObject([
-    { title: "Daily", startAt: "2027-03-13T17:00:00.000Z", recurrenceId: "2027-03-13T09:00:00" },
+    { title: "Daily", startAt: "2027-03-13T17:00:00.000Z", remindAt: "2027-03-13T16:45:00.000Z", recurrenceId: "2027-03-13T09:00:00" },
     { title: "Moved", startAt: "2027-03-15T18:00:00.000Z", recurrenceId: "2027-03-15T09:00:00" },
-    { title: "Daily", startAt: "2027-03-16T16:00:00.000Z", recurrenceId: "2027-03-16T09:00:00" },
+    { title: "Daily", startAt: "2027-03-16T16:00:00.000Z", remindAt: "2027-03-16T15:45:00.000Z", recurrenceId: "2027-03-16T09:00:00" },
   ]);
   const first = store.listEvents({ ...range, limit: 1 });
   expect(store.listEvents({ ...range, cursor: first.nextCursor }).records.map(record => record.title)).toEqual(["Moved", "Daily"]);
   expect(store.freeSlots({ from: "2027-03-15T17:00:00.000Z", to: "2027-03-15T20:00:00.000Z", durationMinutes: 60 }).slots)
     .toEqual([{ from: "2027-03-15T17:00:00.000Z", to: "2027-03-15T18:00:00.000Z" }, { from: "2027-03-15T19:00:00.000Z", to: "2027-03-15T20:00:00.000Z" }]);
+});
+
+test("projects reminder-only tasks and events before their start, keeping action until resolution", () => {
+  const store = testStore();
+  const now = Date.parse("2027-03-13T16:45:00.000Z");
+  const sourceId = store.addSource(source, Buffer.from("sealed"));
+  store.applySync(sourceId, { removed: [], changed: [calendar] });
+  const task = store.saveTodo({ title: "Follow up", status: "pending", remindAt: new Date(now).toISOString() });
+  const dateTask = store.saveTodo({ title: "Civil deadline", status: "pending", dueAt: "2027-03-14" });
+  store.saveTodo({ title: "No deadline", status: "pending" });
+  expect(store.attention(now - 1, new Set())).toEqual({ items: [], nextAt: now });
+  const { items, nextAt } = store.attention(now, new Set());
+  expect(items).toMatchObject([{ kind: "todo", id: task.id }, { kind: "event", title: "Daily" }]);
+  expect(nextAt).toBe(Date.parse("2027-03-13T18:00:00.000Z"));
+  expect(store.attention(now, new Set([items[1]!.id])).items).toMatchObject([{ kind: "todo", id: task.id }]);
+  store.completeTodo({ id: task.id, revision: task.revision, completed: true });
+  expect(store.attention(nextAt, new Set()).items).toEqual([]);
+  expect(store.attention(Date.parse("2027-03-14T07:59:59.999Z"), new Set()).items).toEqual([]);
+  expect(store.attention(Date.parse("2027-03-14T08:00:00.000Z"), new Set()).items).toMatchObject([{ id: dateTask.id }]);
+});
+
+test("preserves reminders on legacy edits and lets current clients clear them", () => {
+  const store = testStore();
+  const value = { title: "Team sync", startAt: "2027-03-14T16:00:00.000Z", endAt: "2027-03-14T17:00:00.000Z", allDay: false, timeZone: "UTC" };
+  const remindAt = "2027-03-14T15:30:00.000Z";
+  const event = store.saveEvent({ ...value, remindAt });
+  const renamed = store.saveEvent({ ...value, title: "Team planning" }, event);
+  expect(renamed).toMatchObject({ title: "Team planning", remindAt });
+  store.saveEvent({ ...value, remindAt: null }, renamed);
+  expect(store.attention(Date.parse(remindAt), new Set()).items).toEqual([]);
+});
+
+test.each([
+  "TRIGGER:-PTM",
+  "TRIGGER;VALUE=DATE-TIME:20270313",
+  "TRIGGER;VALUE=DATE-TIME:20270313TAB0000Z",
+  "TRIGGER:-PT2500000000H",
+  "TRIGGER:-P1DT2500000000H",
+])("ignores a malformed legacy VEVENT alarm %s without losing the event", malformed => {
+  const database = new DatabaseSync(":memory:");
+  closers.push(() => database.close());
+  const store = new AgendaStore(database, "UTC");
+  const id = store.addSource(source, Buffer.from("sealed"));
+  const other = object("other", calendar.data.replaceAll("UID:meeting", "UID:other").replace("SUMMARY:Daily", "SUMMARY:Other"));
+  store.applySync(id, { removed: [], changed: [calendar, other] });
+  database.prepare("UPDATE agenda_caldav_objects SET data = ? WHERE source_id = ? AND href = ?")
+    .run(calendar.data.replace("TRIGGER:-PT15M", malformed), id, calendar.href);
+  const from = "2027-03-13T16:50:00.000Z";
+  expect(store.attention(Date.parse(from), new Set()).items).toMatchObject([{ kind: "event", title: "Other" }]);
+  const events = store.listEvents({ from, to: "2027-03-13T19:00:00.000Z" }).records;
+  expect(events.map(event => [event.title, event.startAt, event.endAt, event.remindAt]).sort()).toEqual([
+    ["Daily", "2027-03-13T17:00:00.000Z", "2027-03-13T18:00:00.000Z", undefined],
+    ["Other", "2027-03-13T17:00:00.000Z", "2027-03-13T18:00:00.000Z", "2027-03-13T16:45:00.000Z"],
+  ]);
+});
+
+test.each([
+  ["-P1D", "2027-03-13T17:00:00.000Z"],
+  ["-P1DT2H", "2027-03-13T15:00:00.000Z"],
+  ["-PT24H", "2027-03-13T16:00:00.000Z"],
+])("applies %s in the event time zone across the DST change", (trigger, remindAt) => {
+  const store = testStore();
+  const id = store.addSource(source, Buffer.from("sealed"));
+  store.applySync(id, { removed: [], changed: [object("dst", wrap("BEGIN:VEVENT", "UID:dst", "SUMMARY:DST",
+    "DTSTART;TZID=America/Los_Angeles:20270314T090000", "DTEND;TZID=America/Los_Angeles:20270314T100000",
+    "BEGIN:VALARM", `TRIGGER:${trigger}`, "ACTION:DISPLAY", "DESCRIPTION:Reminder", "END:VALARM", "END:VEVENT"))] });
+  const now = Date.parse(remindAt);
+  expect(store.attention(now - 1, new Set())).toEqual({ items: [], nextAt: now });
+  expect(store.attention(now, new Set()).items).toMatchObject([{ kind: "event", title: "DST" }]);
+});
+
+test("projects the next alarm of a dense recurrence that exceeds the annual expansion budget", () => {
+  const store = testStore();
+  const id = store.addSource(source, Buffer.from("sealed"));
+  store.applySync(id, { removed: [], changed: [object("frequent", wrap("BEGIN:VEVENT", "UID:frequent", "SUMMARY:Frequent",
+    "DTSTART:20270314T090000Z", "DTEND:20270314T090300Z", "RRULE:FREQ=MINUTELY;INTERVAL=5",
+    "BEGIN:VALARM", "TRIGGER:-PT1M", "ACTION:DISPLAY", "DESCRIPTION:Reminder", "END:VALARM", "END:VEVENT"))] });
+  const alarm = Date.parse("2027-03-14T09:04:00.000Z");
+  expect(store.attention(alarm - 1, new Set())).toEqual({ items: [], nextAt: alarm });
+  expect(store.attention(alarm, new Set()).items).toMatchObject([{ kind: "event", title: "Frequent", startAt: "2027-03-14T09:05:00.000Z" }]);
 });
 
 test("malformed remote data cannot advance the token or delete a previously committed object", () => {

@@ -334,6 +334,7 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
     },
   };
   if (native) {
+    const mailSnapshot = ({ attention, ...snapshot }) => options.legacyAttention ? snapshot : { ...snapshot, attention };
     const directory = resolve(runDir, "native-fixtures", String(++nativeFixtureSequence));
     await mkdir(directory, { recursive: true });
     host.sectionsEnabled = sections;
@@ -354,7 +355,8 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
         events.push(event);
         if (!host.mailOffline) void host.send({ kind: "event", event }).catch(error => errors.push(`agenda event: ${error.stack}`));
       },
-      onMailChanged(assistantMail) {
+      onMailChanged(rawSnapshot) {
+        const assistantMail = mailSnapshot(rawSnapshot);
         snapshot.assistantMail = assistantMail;
         const event = { eventId: randomUUID(), seq: ++snapshot.latestSeq, timestamp: Date.now(), origin: "system",
           type: "plugin.assistant-mail.changed", data: { assistantMail } };
@@ -396,8 +398,8 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
     Object.assign(session, host.nativeApproval.profile());
     nativeHosts.push(host.nativeApproval);
     if (assistantMail) {
-      snapshot.host.capabilities.push(...host.nativeApproval.mailCapabilities(), "workspace.upload.v1");
-      snapshot.assistantMail = host.nativeApproval.mailSnapshot();
+      snapshot.host.capabilities.push(...host.nativeApproval.mailCapabilities().filter(capability => !options.legacyAttention || capability !== "plugin.assistant-mail.attention.v1"), "workspace.upload.v1");
+      snapshot.assistantMail = mailSnapshot(host.nativeApproval.mailSnapshot());
       snapshot.host.capabilities.push("plugin.assistant-agenda.v1", "plugin.assistant-agenda.day.v1");
       snapshot.assistantAgenda = host.nativeApproval.assistantMail.agenda.snapshot();
       if (options.proposals) {
@@ -487,6 +489,7 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
         case "plugin.assistant-mail.history":
         case "plugin.assistant-mail.read":
         case "plugin.assistant-mail.junk.set":
+        case "plugin.assistant-mail.attention.ack":
         case "plugin.assistant-mail.bind":
         case "plugin.assistant-mail.workspace.initialize":
         case "plugin.assistant-mail.automatic-delivery.set":

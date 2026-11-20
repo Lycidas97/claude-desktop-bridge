@@ -1,7 +1,7 @@
 import { ASSISTANT_MEMORY_PROPOSAL_CAPABILITY, ASSISTANT_PROPOSAL_CAPABILITY, ASSISTANT_SMTP_CAPABILITY, type BridgeActionProposal, type BridgeHostSnapshot, type BridgeProposalSnapshot, type ProposalRevisionRef } from "@bridge/protocol";
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { proposalAnchors } from "../../lib/conversation-timeline.js";
-import { mailResult, type AssistantRequest } from "./AssistantMailProvider.js";
+import { mailResult, useAssistantMail, type AssistantRequest } from "./AssistantMailProvider.js";
 
 type ProposalContext = { summary: BridgeProposalSnapshot; online: boolean; supportsMail: boolean; supportsMemory: boolean; request: AssistantRequest; refresh(): void; refreshKey: string };
 const Context = createContext<ProposalContext | undefined>(undefined);
@@ -19,6 +19,19 @@ export function AssistantProposalProvider({ snapshot, online, request, children 
 }
 
 export const useAssistantProposals = () => useContext(Context);
+export function pendingProposalCount(proposals: ProposalContext | undefined): number {
+  if (!proposals) return 0;
+  const { pendingCount, pendingMailCount, pendingMemoryCount } = proposals.summary;
+  return pendingCount + (pendingMailCount ?? 0) + (proposals.supportsMemory ? pendingMemoryCount ?? 0 : 0);
+}
+
+export function useAssistantEntry() {
+  const mail = useAssistantMail();
+  const pending = pendingProposalCount(useAssistantProposals());
+  const unread = mail?.attention === undefined ? mail?.unreadCount ?? 0 : 0;
+  const attention = mail?.attention !== undefined && (pending > 0 || mail.attention.length > 0);
+  return { unread, attention, label: attention ? "助理，有事项待关注" : unread ? `助理，${unread} 条未读` : "助理" };
+}
 
 export function useInlineProposals(sessionId: string, anchors: ReturnType<typeof proposalAnchors>) {
   const { request, refreshKey, online, supportsMail, supportsMemory } = useAssistantProposals() ?? {};

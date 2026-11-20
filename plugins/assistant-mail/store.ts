@@ -3,7 +3,7 @@ import { createReadStream } from "node:fs";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { BridgeMailAttachment, BridgeMailCategory } from "../../packages/protocol/src/assistant-mail.js";
+import type { AssistantAttentionAcknowledgment, AssistantAttentionItem, BridgeMailAttachment, BridgeMailCategory, MailAttentionLevel } from "../../packages/protocol/src/assistant-mail.js";
 import { MailBodyParseError, parseMail } from "./mime.js";
 import { MailPageParameters } from "./tool-contract.js";
 import { AssistantTriggerStore } from "./trigger-store.js";
@@ -29,6 +29,7 @@ export interface MailAnalysis {
   summary: string;
   suggestions: string[];
   questions: string[];
+  attention?: MailAttentionLevel | undefined;
   category?: BridgeMailCategory | undefined;
 }
 
@@ -175,7 +176,19 @@ export class AssistantMailStore {
     if (!columns.includes("historical")) this.database.exec("ALTER TABLE mail_events ADD COLUMN historical INTEGER NOT NULL DEFAULT 0");
     if (!columns.includes("host_read")) this.database.exec("ALTER TABLE mail_events ADD COLUMN host_read INTEGER NOT NULL DEFAULT 0");
     if (!columns.includes("user_junk")) this.database.exec("ALTER TABLE mail_events ADD COLUMN user_junk INTEGER NOT NULL DEFAULT 0");
-    this.database.exec(`CREATE INDEX IF NOT EXISTS mail_events_page_order ON mail_events (${mailOrder})`);
+    this.database.exec(`
+      CREATE INDEX IF NOT EXISTS mail_events_page_order ON mail_events (${mailOrder});
+      CREATE TABLE IF NOT EXISTS assistant_attention_ack (
+        kind TEXT NOT NULL, id TEXT NOT NULL, PRIMARY KEY(kind, id)
+      ) STRICT;
+      CREATE TABLE IF NOT EXISTS assistant_attention_baseline (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1), seq INTEGER NOT NULL
+      ) STRICT;
+      INSERT OR IGNORE INTO assistant_attention_baseline VALUES (1, (SELECT COALESCE(max(seq), 0) FROM mail_events));
+      CREATE TABLE IF NOT EXISTS assistant_attention_replies (
+        id TEXT PRIMARY KEY, session_id TEXT NOT NULL, title TEXT NOT NULL
+      ) STRICT;
+    `);
     this.triggers = new AssistantTriggerStore(this.database);
     extend?.(this.database);
   }
@@ -332,8 +345,59 @@ export class AssistantMailStore {
     return { events, ...(rows.length > limit ? { nextCursor: String(events.at(-1)!.seq) } : {}) };
   }
 
+  attention(automatic: boolean, now: number, sessionId?: string) {
+    const db = this.db();
+    const rows = db.prepare(`
+      WITH candidates AS (
+        SELECT mail_ref_id AS id, subject AS title, recorded_at AS recordedAt, seq,
+          CASE json_extract(analysis_json, '$.attention')
+            WHEN 'ignore' THEN NULL
+            WHEN 'action' THEN CASE WHEN resolved.id IS NULL THEN 'action' END
+            ELSE CASE WHEN seen.id IS NULL THEN COALESCE(json_extract(analysis_json, '$.attention'), ?) END
+          END AS reason
+        FROM mail_events
+          LEFT JOIN assistant_attention_ack seen ON seen.kind = 'mail' AND seen.id = mail_ref_id
+          LEFT JOIN assistant_attention_ack resolved ON resolved.kind = 'mail-action' AND resolved.id = mail_ref_id
+        WHERE historical = 0 AND user_junk = 0
+          AND (seq > (SELECT seq FROM assistant_attention_baseline) OR json_extract(analysis_json, '$.attention') IS NOT NULL)
+      ) SELECT id, title, reason, recordedAt FROM candidates WHERE reason IS NOT NULL ORDER BY seq DESC
+    `).all(automatic ? "unscreened" : "new") as Array<Omit<Extract<AssistantAttentionItem, { kind: "mail" }>, "kind"> & { recordedAt: number }>;
+    const items: AssistantAttentionItem[] = [];
+    let nextAt = Infinity;
+    for (const { recordedAt, ...row } of rows) {
+      const deadline = recordedAt + 600_000;
+      if (row.reason === "unscreened" && deadline > now) nextAt = Math.min(nextAt, deadline);
+      else if (items.length < 100) items.push({ kind: "mail", ...row });
+    }
+    if (sessionId) {
+      const replies = db.prepare(`SELECT id, title, session_id AS sessionId FROM assistant_attention_replies
+        WHERE session_id = ? AND NOT EXISTS (SELECT 1 FROM assistant_attention_ack WHERE kind = 'reply' AND id = assistant_attention_replies.id)
+        ORDER BY rowid DESC LIMIT 100`).all(sessionId) as Omit<Extract<AssistantAttentionItem, { kind: "reply" }>, "kind">[];
+      items.push(...replies.map(reply => ({ kind: "reply" as const, ...reply })));
+    }
+    return { items, nextAt };
+  }
+
+  seenCalendarEvents(): Set<string> {
+    return new Set(this.db().prepare("SELECT id FROM assistant_attention_ack WHERE kind = 'event'").all().map(row => row.id as string));
+  }
+
+  recordReply(sessionId: string, id: string, title: string): boolean {
+    return Boolean(this.db().prepare(`INSERT OR IGNORE INTO assistant_attention_replies (id, session_id, title)
+      SELECT ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM assistant_attention_ack WHERE kind = 'reply' AND id = ?)`).run(id, sessionId, title, id).changes);
+  }
+
+  removeReplies(sessionId: string, ids: string[]): boolean {
+    return Boolean(this.db().prepare("DELETE FROM assistant_attention_replies WHERE session_id = ? AND id IN (SELECT value FROM json_each(?))")
+      .run(sessionId, JSON.stringify(ids)).changes);
+  }
+
+  acknowledgeAttention(kind: AssistantAttentionAcknowledgment, id: string): boolean {
+    return Boolean(this.db().prepare("INSERT OR IGNORE INTO assistant_attention_ack (kind, id) VALUES (?, ?)").run(kind, id).changes);
+  }
+
   updateAnalysis(mailRefId: string, analysis: MailAnalysis): MailEvent | undefined {
-    // The three text fields are replaced; omitted category survives legacy analysis writes.
+    // The three text fields are replaced; omitted category and attention survive legacy analysis writes.
     const row = this.db().prepare("UPDATE mail_events SET analysis_json = json_patch(COALESCE(analysis_json, '{}'), ?) WHERE mail_ref_id = ? RETURNING *")
       .get(JSON.stringify(analysis), mailRefId) as EventRow | undefined;
     return row ? eventFromRow(row) : undefined;

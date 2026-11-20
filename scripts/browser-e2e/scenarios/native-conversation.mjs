@@ -481,7 +481,9 @@ export async function verifyNativeBoundaries(page, host, steps, directory) {
       type: "tool_result", tool_use_id: "live-send-file", content: "File sent",
     }] }, tool_use_result: { attachments: [{ path: "交付图片.png", size: image.length, isImage: true }] },
   }]) {
-    for (const event of await host.nativeApproval.message(message)) await host.emit(event.type, event.data, { itemId: event.itemId });
+    for (const event of await host.nativeApproval.message(message, message.type === "user" ? "live-send-file" : undefined)) {
+      await host.emit(event.type, event.data, { itemId: event.itemId });
+    }
   }
   await sentFiles.getByRole("button", { name: "交付图片.png", exact: true }).click();
   await page.waitForFunction(() => document.querySelector(".media-viewer img")?.naturalWidth === 1);

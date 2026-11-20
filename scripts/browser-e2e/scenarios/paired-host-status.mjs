@@ -55,7 +55,8 @@ export async function verifyPairedHostStatus(page, previousHost, host, steps, di
     const { collectRendererDiagnosticsSnapshot } = await import("/src/lib/diagnostics.ts");
     return (await collectRendererDiagnosticsSnapshot()).bridgeState.connection;
   }), "connected", "Relay accepted the connection before the clock advances");
-  await page.clock.fastForward(26_000);
+  // Run the heartbeat intervals in order; a single jump would make the Relay look stale.
+  await page.clock.runFor(26_000);
   const failure = switcher.getByRole("alert").filter({ hasText: "中继未发现电脑" });
   await failure.waitFor();
   assert.equal(await retry.isEnabled(), true, "An offline failure leaves the retry action available");

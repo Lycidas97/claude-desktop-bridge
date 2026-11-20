@@ -22,7 +22,7 @@ interface AssistantMailState {
   supportsAttachments: boolean;
   supportsBatches: boolean;
   supportsFiling: boolean;
-  receivedOrder: boolean;
+  order: BridgeMailPage["order"];
   markViewed(card: BridgeMailCard): void;
   selectMail(card: BridgeMailCard): void;
   clearReference(): void;
@@ -138,11 +138,11 @@ export function AssistantMailProvider({ hostId, snapshot, online, request, loadC
   const changeToken = assistant?.changeToken ?? "";
   const supportsFiling = capabilities.includes(ASSISTANT_MAIL_FILING_CAPABILITY);
   const supportsHistory = capabilities.includes("plugin.assistant-mail.history.v1");
-  const receivedOrder = capabilities.includes(ASSISTANT_MAIL_RECEIVED_ORDER_CAPABILITY);
+  const order = capabilities.includes(ASSISTANT_MAIL_RECEIVED_ORDER_CAPABILITY) ? "received" : undefined;
   const loadPage = useCallback(async (cursor?: string) => mailResult<{ mailPage: BridgeMailPage }>(await request(
     "plugin.assistant-mail.list", { ...(cursor ? { cursor } : {}), ...(supportsHistory ? { includeHistory: true } : {}),
-      ...(supportsFiling ? { folder: "inbox" } : {}), ...(receivedOrder ? { order: "received" } : {}) },
-  )).mailPage, [request, supportsHistory, supportsFiling, receivedOrder]);
+      ...(supportsFiling ? { folder: "inbox" } : {}), ...(order ? { order } : {}) },
+  )).mailPage, [request, supportsHistory, supportsFiling, order]);
   useEffect(() => {
     if (!online) {
       setLoading(false);
@@ -175,6 +175,7 @@ export function AssistantMailProvider({ hostId, snapshot, online, request, loadC
   const hasOlderMail = Boolean(cache.nextCursor || canFetchHistory);
   async function loadOlder(): Promise<void> {
     if (!online || loading || historyLoading || !hasOlderMail) return;
+    if (cache.order !== order) { reload(); return; }
     setLoading(true);
     setError("");
     try {
@@ -207,14 +208,15 @@ export function AssistantMailProvider({ hostId, snapshot, online, request, loadC
     for (const card of cache.cards) accountKeys.add(card.accountKey);
     return { accountLabels, showAccount: accountKeys.size > 1 };
   }, [accounts, cache.cards]);
-  const timelineCards = useMemo(() => cache.filedTimelineCards ? mergeMailCards(cache.cards, cache.filedTimelineCards) : cache.cards,
-    [cache.cards, cache.filedTimelineCards]);
+  const timelineSupplement = cache.timelineCards ?? cache.filedTimelineCards;
+  const timelineCards = useMemo(() => timelineSupplement ? mergeMailCards(cache.cards, timelineSupplement) : cache.cards,
+    [cache.cards, timelineSupplement]);
   const selectedMail = selection && selection.sessionId === assistant?.binding?.nativeSessionId
     ? cache.cards.find(card => card.mailRefId === selection.card.mailRefId) ?? selection.card : undefined;
   return <AssistantMailContext.Provider value={enabled ? {
     cache, timelineCards, unreadCount, attention: assistant?.attention, acknowledge, assistant, canReference, selectedMail,
     supportsAttachments: capabilities.includes("plugin.assistant-mail.attachments.v1"),
-    supportsFiling, receivedOrder,
+    supportsFiling, order,
     supportsBatches: capabilities.includes("plugin.assistant-mail.batches.v1"),
     accountLabel: accountKey => {
       const label = accountLabels.get(accountKey);

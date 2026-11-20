@@ -172,6 +172,19 @@ describe("assistant mail mobile RPC projections", () => {
     await expect(list({ order: "recorded" })).rejects.toMatchObject({ code: "INVALID_PARAMS" });
   });
 
+  it("keeps the recent live conversation card even when dates fill the first inbox page with history", async () => {
+    for (let uid = 1; uid <= 50; uid++) await store.record({
+      accountKey: "synthetic-history", mailbox: "INBOX", uidValidity: "1", uid, source: Buffer.from("Subject: fixture\r\n\r\nHistorical body"),
+      subject: "History", from: [], receivedAt: "2026-11-14T12:00:00.000Z", historical: true,
+    });
+    const live = await record(1, undefined, "2026-11-13T12:00:00.000Z");
+    const { mailPage } = await run.request<{ mailPage: BridgeMailPage }>("plugin.assistant-mail.list", { folder: "inbox", includeHistory: true, order: "received" });
+
+    expect(mailPage.cards).toHaveLength(50);
+    expect(mailPage.cards.every(card => card.seq < 0)).toBe(true);
+    expect(mailPage).toMatchObject({ timelineCards: [{ mailRefId: live.mailRefId, seq: live.seq, nativeDelivery: { state: "not-submitted" } }] });
+  });
+
   it("projects a new arrival immediately and searches it after automatic filing", async () => {
     service.setBinding({ assistantId: "assistant", nativeSessionId: "native-first", sectionId: null, previousSessionIds: [],
       managed: { path: "/offline", policy: "stage1-fenced-workspace", token: "fixture", automaticDelivery: true } });

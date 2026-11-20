@@ -53,7 +53,22 @@ describe("refreshMailPages", () => {
     expect(current).toEqual({ cards: [card(6), card(5), card(4)], nextCursor: "4", changeToken: "before" });
   });
 
-  it("refreshes to the oldest cached receipt time after upgrading from sequence order", async () => {
+  it("starts from a single first page after a change of order, even when the old first page contains the oldest receipt", async () => {
+    const late = card(501, { receivedAt: "2026-11-13T00:00:00.000Z" });
+    const newer = Array.from({ length: 500 }, (_, index) => card(index - 500));
+    const all = [...newer, late];
+    const load = vi.fn(async (cursor?: string): Promise<BridgeMailPage> => {
+      const start = cursor ? all.findIndex(mail => String(mail.seq) === cursor) + 1 : 0;
+      const cards = all.slice(start, start + 50);
+      return { cards, order: "received", ...(start + 50 < all.length ? { nextCursor: String(cards.at(-1)!.seq) } : {}) };
+    });
+
+    const page = await refreshMailPages(load, { cards: [late, ...newer.slice(-49).reverse()], changeToken: "legacy", nextCursor: "-49" }, "received");
+    expect(load.mock.calls).toEqual([[undefined]]);
+    expect(page).toEqual({ cards: newer.slice(0, 50), nextCursor: "-451", order: "received", changeToken: "received" });
+  });
+
+  it("still refreshes through the loaded receipt range when the order is unchanged", async () => {
     const late = card(7, { receivedAt: "2026-11-13T00:00:00.000Z" });
     const live = card(5);
     const history = card(-8);
@@ -62,8 +77,8 @@ describe("refreshMailPages", () => {
       .mockResolvedValueOnce({ cards: [latest, history], nextCursor: "-8", order: "received" })
       .mockResolvedValueOnce({ cards: [live, late], nextCursor: "7", order: "received" });
 
-    expect(await refreshMailPages(load, { cards: [late, live], changeToken: "old", nextCursor: "5" }, "new")).toEqual({
-      cards: [latest, history, live, late], nextCursor: "7", order: "received", changeToken: "new",
+    expect(await refreshMailPages(load, { cards: [history, live, late], changeToken: "old", order: "received", nextCursor: "7" }, "updated")).toEqual({
+      cards: [latest, history, live, late], nextCursor: "7", order: "received", changeToken: "updated",
     });
     expect(load.mock.calls).toEqual([[undefined], ["-8"]]);
   });

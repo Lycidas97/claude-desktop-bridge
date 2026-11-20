@@ -154,8 +154,10 @@ export interface BridgeMailPage {
   /** Orders both cards and cursors. Omitted for legacy sequence order. */
   order?: "received";
   folderCounts?: Partial<Record<BridgeMailCategory, number>>;
-  /** Recent live cards kept for the assistant conversation, never rendered in the inbox. */
+  /** Filed live cards for legacy sequence-order inboxes. */
   filedTimelineCards?: BridgeMailCard[];
+  /** Recent live cards absent from the receipt-order first page, for the assistant conversation. */
+  timelineCards?: BridgeMailCard[];
 }
 
 export interface BridgeMailDetail {

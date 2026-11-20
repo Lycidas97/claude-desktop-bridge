@@ -465,7 +465,32 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await openAssistant();
   await eventually(() => cards().count(), 50, "Persisted mail appears before a native message or ACK");
   assert.equal(host.requests.some(request => request.method === "turn.start"), false);
-  await page.getByRole("button", { name: "更早邮件", exact: true }).click();
+  const older = page.getByRole("button", { name: "更早邮件", exact: true });
+  const { capabilities: legacyCapabilities } = host.snapshot.host;
+  const legacyMail = host.snapshot.assistantMail;
+  const mailError = page.getByRole("alert").filter({ hasText: "隔离邮件列表读取失败" });
+  host.mailPageFailure = true;
+  try {
+    host.snapshot.host.capabilities = [...legacyCapabilities, "plugin.assistant-mail.attention.v1", "plugin.assistant-mail.received-order.v1"];
+    host.snapshot.assistantMail = host.nativeApproval.mailSnapshot();
+    await host.send({ kind: "snapshot", snapshot: host.snapshot });
+    await mailError.waitFor();
+  } finally { host.mailPageFailure = false; }
+  const beforeRetry = host.requests.length;
+  await older.click();
+  await eventually(() => host.requests.slice(beforeRetry).find(({ method }) => method === "plugin.assistant-mail.list")?.params.order,
+    "received", "More retries the newly selected sort after its first page failed");
+  assert.equal(host.requests.slice(beforeRetry).find(({ method }) => method === "plugin.assistant-mail.list").params.cursor,
+    undefined, "More never sends the old sequence cursor under receipt order");
+  await mailError.waitFor({ state: "hidden" });
+  await eventually(() => older.isEnabled(), true, "Receipt-order first page finishes before switching back");
+  const beforeRollback = host.requests.length;
+  host.snapshot.host.capabilities = legacyCapabilities;
+  host.snapshot.assistantMail = legacyMail;
+  await host.send({ kind: "snapshot", snapshot: host.snapshot });
+  await eventually(() => host.requests.slice(beforeRollback).some(({ method, params }) => method === "plugin.assistant-mail.list" && params.order === undefined),
+    true, "Going back to a legacy host refreshes in sequence order");
+  await older.click();
   await eventually(() => cards().count(), 60, "Older mail pages remain visible");
   await openMobileDrawer(page);
   assert.equal(await page.locator(".drawer-assistant-capsule").getAttribute("aria-label"), "助理", "Initial history and older pages add no unread mail");

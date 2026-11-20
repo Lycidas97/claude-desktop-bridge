@@ -21,7 +21,7 @@ export function mergeMailCards(current: BridgeMailCard[], incoming: BridgeMailCa
 export async function refreshMailPages(load: (cursor?: string) => Promise<BridgeMailPage>, current: BridgeMailCache, changeToken: string): Promise<BridgeMailCache> {
   const firstPage = await load(undefined);
   const compare = mailCardOrder(firstPage.order);
-  const oldest = current.cards.reduce<BridgeMailCard | undefined>((oldest, card) => !oldest || compare(card, oldest) > 0 ? card : oldest, undefined);
+  const oldest = current.order === firstPage.order ? current.cards.at(-1) : undefined;
   let page = firstPage;
   const cards = [...page.cards];
   while (page.nextCursor && oldest && (!current.nextCursor || compare(page.cards.at(-1)!, oldest) < 0)) {

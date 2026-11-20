@@ -1,4 +1,4 @@
-import { ARTIFACT_MAX_BYTES, MAIL_CATEGORIES, mailAttachmentPreviewKind, type BridgeMailCategory, type BridgeMailFolder, type BridgeHistoryItem, type BridgeMailAttachment, type BridgeMailCard, type BridgeMailDetail } from "@bridge/protocol";
+import { ARTIFACT_MAX_BYTES, mailAttachmentPreviewKind, type BridgeMailCategoryEntry, type BridgeMailFolder, type BridgeHistoryItem, type BridgeMailAttachment, type BridgeMailCard, type BridgeMailDetail } from "@bridge/protocol";
 import { Download, Folder, Mail, Paperclip } from "lucide-react";
 import { useEffect, useState, type MouseEvent } from "react";
 import { downloadMailAttachment } from "../../lib/artifact-download.js";
@@ -22,9 +22,6 @@ const DELIVERY_STATUS: Record<BridgeMailCard["nativeDelivery"]["state"], { detai
   cancelled: { detail: "任务已取消" },
 };
 const MAIL_HINT_LABELS = { waiting: "等待助理", processing: "处理中", failed: "助理任务失败" };
-export const MAIL_FOLDER_LABELS: Record<BridgeMailCategory, string> = {
-  marketing: "营销与垃圾邮件", verification: "验证码", account: "账号注册", other: "其他",
-};
 const PROCESSING_LABELS = { pending: "待处理", processing: "处理中", processed: "已处理" };
 
 function MailAttachmentRow({ attachment, mailRefId, enabled }: { attachment: BridgeMailAttachment; mailRefId: string; enabled: boolean }) {
@@ -58,7 +55,9 @@ function MailAttachmentRow({ attachment, mailRefId, enabled }: { attachment: Bri
   </li>;
 }
 
-function MailCategoryPicker({ disabled, move }: { disabled: boolean; move(category: BridgeMailCategory, control: HTMLElement): void }) {
+function MailCategoryPicker({ categories, disabled, move }: {
+  categories: readonly BridgeMailCategoryEntry[]; disabled: boolean; move(category: string, control: HTMLElement): void;
+}) {
   const [opener, setOpener] = useState<HTMLButtonElement>();
   useEffect(() => {
     if (!opener) return;
@@ -73,10 +72,10 @@ function MailCategoryPicker({ disabled, move }: { disabled: boolean; move(catego
     }}>收入分类</button>
     {opener && !disabled && <Sheet title="收入分类" manageFocus onClose={() => setOpener(undefined)}>
       <div className="m-group assistant-mail-category-options">
-        {MAIL_CATEGORIES.map(category => <SheetAction key={category} icon={<Folder size={18} />}
-          label={MAIL_FOLDER_LABELS[category]} onClick={() => {
+        {categories.map(({ id, label }) => <SheetAction key={id} icon={<Folder size={18} />}
+          label={label} onClick={() => {
             setOpener(undefined);
-            move(category, opener);
+            move(id, opener);
           }} />)}
       </div>
     </Sheet>}
@@ -90,6 +89,7 @@ export function MailCard({ card, nativeMessage, onDiscuss, showBatchDelivery = t
 }) {
   const mail = useAssistantMail();
   const accountLabel = mail?.accountLabel(card.accountKey) ?? "邮件插件";
+  const folderLabel = filing?.showFolder && card.folder ? mail?.categoryLabel(card.folder) : undefined;
   const [detail, setDetail] = useState<BridgeMailDetail>();
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -106,7 +106,7 @@ export function MailCard({ card, nativeMessage, onDiscuss, showBatchDelivery = t
   const hint = delivery?.hint === "failed" ? "failed" : card.processingStatus === "processing" ? "processing" : delivery?.hint;
   return <article className="assistant-mail-card" data-mail-id={card.mailRefId} data-stream-key={`mail:${card.mailRefId}`} aria-label={`邮件：${card.subject || "无主题"}`}>
     <header><span><Mail size={15} aria-hidden="true" />{accountLabel}</span><time dateTime={card.receivedAt}>{new Date(card.receivedAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</time></header>
-    {filing?.showFolder && card.folder && <p className="assistant-mail-folder-label">{MAIL_FOLDER_LABELS[card.folder]}</p>}
+    {folderLabel && <p className="assistant-mail-folder-label">{folderLabel}</p>}
     <h3>{card.subject || "无主题"}</h3>
     <p className="assistant-mail-from">{card.from.map(sender => [sender.name, sender.address].filter(Boolean).join(" ")).join("，") || "未知发件人"}</p>
     {card.preview && <p className="assistant-mail-preview">{card.preview}</p>}
@@ -150,7 +150,7 @@ export function MailCard({ card, nativeMessage, onDiscuss, showBatchDelivery = t
       {filing && <>
         {card.folder
           ? <button type="button" className="assistant-session-link" disabled={filing.disabled} onClick={event => filing.move("inbox", event.currentTarget)}>收回收件</button>
-          : <MailCategoryPicker disabled={filing.disabled} move={filing.move} />}
+          : <MailCategoryPicker categories={mail.categories} disabled={filing.disabled} move={filing.move} />}
       </>}
       {junkAction && <button type="button" className="assistant-session-link assistant-mail-junk-action" disabled={junkAction.disabled} onClick={junkAction.onMark}>标为垃圾邮件</button>}
     </div>}

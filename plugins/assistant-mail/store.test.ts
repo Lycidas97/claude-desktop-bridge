@@ -91,17 +91,20 @@ it("pages by receipt time across accounts and imports, with a stable anchor that
   const newest = (await store.record({ ...message(2), historical: true, receivedAt: "2026-11-15T19:00:00.000Z" }))!;
   const tied = (await store.record({ ...message(2), accountKey: "other-account", historical: true, receivedAt: "2026-11-14T13:00:00+01:00" }))!;
   const undated = (await store.record({ ...message(3), historical: true, receivedAt: "now" }))!;
-  const first = store.page({ limit: 2 }, true, "inbox", true);
+  const first = store.page({ limit: 2 }, true, "inbox", true, true);
   expect(first).toEqual({ events: [newest, tied], nextCursor: String(tied.seq) });
-  store.setFolder(tied.mailRefId, "account", "user");
-  expect(store.page({ cursor: first.nextCursor }, true, "inbox", true).events).toEqual([live, late, undated]);
-  expect(store.page({}, false, "inbox", true).events).toEqual([live, late]);
-  store.setFolder(late.mailRefId, "account", "user");
-  const folder = store.page({ limit: 1 }, true, "account", true);
+  store.changeCategory({ action: "add", label: "Project receipts" });
+  const category = store.categories().at(-1)!.id;
+  store.setFolder(tied.mailRefId, category, "user");
+  expect(store.page({ cursor: first.nextCursor }, true, "inbox", true, true).events).toEqual([live, late, undated]);
+  expect(store.page({}, false, "inbox", true, true).events).toEqual([live, late]);
+  store.setFolder(late.mailRefId, category, "user");
+  const folder = store.page({ limit: 1 }, true, category, true, true);
   expect(folder.events.map(event => event.mailRefId)).toEqual([tied.mailRefId]);
-  expect(store.page({ cursor: folder.nextCursor }, true, "account", true).events.map(event => event.mailRefId)).toEqual([late.mailRefId]);
-  expect(store.page({}, true, { query: "External sender" }, true).events.map(event => event.mailRefId))
+  expect(store.page({ cursor: folder.nextCursor }, true, category, true, true).events.map(event => event.mailRefId)).toEqual([late.mailRefId]);
+  expect(store.page({}, true, { query: "External sender" }, true, true).events.map(event => event.mailRefId))
     .toEqual([newest, tied, live, late, undated].map(event => event.mailRefId));
+  expect(store.page({}, true, "inbox", false, true).events).toEqual([newest, tied, live, late, undated]);
 });
 
 it("pages and searches saved folders independently and keeps an explicit restore after restart", async () => {
@@ -136,6 +139,83 @@ it("pages and searches saved folders independently and keeps an explicit restore
   expect(store.attention(true)).toContainEqual({ kind: "mail", id: promo.mailRefId, title: promo.subject, reason: "action" });
   expect(store.page({}, true, "inbox").events.map(event => event.mailRefId)).toContain(junk.mailRefId);
   expect(store.page({}, true, "legacy").events.map(event => event.mailRefId)).toContain(junk.mailRefId);
+});
+
+it("keeps category IDs across renames and returns mail from a deleted category without deleting the original", async () => {
+  store.openMailbox("test-account", "1", 5);
+  const userMail = (await store.record(message(5)))!;
+  const assistantMail = (await store.record(message(6)))!;
+  const promo = (await store.record(message(7)))!;
+  const junk = (await store.record(message(8)))!;
+  store.changeCategory({ action: "add", label: "订单" });
+  const { id } = store.categories().at(-1)!;
+  const analysis = { summary: "订单已发货", suggestions: ["查看物流"], questions: [], attention: "action" as const };
+  expect(store.updateAnalysis(userMail.mailRefId, { ...analysis, category: id })).not.toHaveProperty("folder");
+  store.setFolder(userMail.mailRefId, id, "user");
+  store.setFolder(assistantMail.mailRefId, id, "assistant");
+  store.markRead([userMail.mailRefId]);
+  store.setProcessingStatus(userMail.mailRefId, "processed");
+  store.changeCategory({ action: "rename", id, label: "采购记录" });
+  expect(store.categories().at(-1)).toEqual({ id, label: "采购记录" });
+  expect(store.page({}, true, id).events.map(event => event.mailRefId)).toEqual([assistantMail.mailRefId, userMail.mailRefId]);
+
+  store.changeCategory({ action: "rename", id: "marketing", label: "广告" });
+  expect(() => store.changeCategory({ action: "delete", id: "marketing" })).toThrow("此分类用于垃圾邮件和自动收纳，不能删除");
+  store.updateAnalysis(promo.mailRefId, { ...analysis, category: "marketing" });
+  store.setJunk(junk.mailRefId, true);
+  store.changeCategory({ action: "delete", id });
+  store.changeCategory({ action: "delete", id: "account" });
+  store.close();
+  store = new AssistantMailStore(root);
+  await store.initialize();
+
+  expect(store.categories()).toEqual([{ id: "marketing", label: "广告" }, { id: "verification", label: "验证码" }, { id: "other", label: "其他" }]);
+  expect(store.folderCounts(true)).toEqual({ marketing: 2 });
+  expect(store.page({}, true, "inbox").events.map(event => event.mailRefId)).toEqual([assistantMail.mailRefId, userMail.mailRefId]);
+  const original = (await store.read(userMail.mailRefId))!;
+  expect(original.source).toEqual(message(5).source);
+  expect(original.event).toMatchObject({ hostRead: true, processingStatus: "processed", analysis });
+  expect(original.event.analysis).not.toHaveProperty("category");
+  expect(store.setFolder(userMail.mailRefId, "verification", "assistant")).toBe(false);
+  expect(store.setFolder(assistantMail.mailRefId, "verification", "assistant")).toBe(false);
+  expect(store.attention(false)).toContainEqual({ kind: "mail", id: userMail.mailRefId, title: userMail.subject, reason: "action" });
+});
+
+it("keeps custom-filed mail visible after rollback and honors the old host's moves on re-upgrade", async () => {
+  store.openMailbox("test-account", "1", 5);
+  const kept = (await store.record(message(5)))!;
+  const moved = (await store.record(message(6)))!;
+  const olderCategory = (await store.record(message(7)))!;
+  store.changeCategory({ action: "add", label: "订单" });
+  const { id } = store.categories().at(-1)!;
+  store.changeCategory({ action: "delete", id: "account" });
+  store.setFolder(kept.mailRefId, id, "user");
+  store.setFolder(moved.mailRefId, id, "user");
+  store.close();
+
+  const previous = new DatabaseSync(join(store.directory, "assistant.sqlite"));
+  try {
+    // The previous host reads only filing, user_junk and the legacy marketing fallback.
+    const inbox = previous.prepare(`SELECT mail_ref_id FROM mail_events WHERE
+      CASE WHEN user_junk = 1 THEN 'marketing' WHEN filing IS NOT NULL THEN replace(filing, 'user:', '')
+        WHEN json_extract(analysis_json, '$.category') = 'marketing' THEN 'marketing' ELSE 'inbox' END = 'inbox'
+      ORDER BY seq`);
+    expect(inbox.all().map(row => row.mail_ref_id)).toEqual([kept.mailRefId, moved.mailRefId, olderCategory.mailRefId]);
+    const file = previous.prepare("UPDATE mail_events SET user_junk = 0, filing = ? WHERE mail_ref_id = ?");
+    file.run("user:verification", moved.mailRefId);
+    file.run("user:inbox", moved.mailRefId);
+    file.run("user:account", olderCategory.mailRefId);
+    previous.prepare("UPDATE mail_events SET analysis_json = ? WHERE mail_ref_id = ?")
+      .run(JSON.stringify({ summary: "Old analysis", suggestions: [], questions: [], category: "account" }), olderCategory.mailRefId);
+  } finally { previous.close(); }
+
+  store = new AssistantMailStore(root);
+  await store.initialize();
+  expect(store.categories().map(category => category.id)).not.toContain("account");
+  expect(store.page({}, true, id).events.map(event => event.mailRefId)).toEqual([kept.mailRefId]);
+  expect(store.page({}, true, "inbox").events.map(event => event.mailRefId)).toEqual([olderCategory.mailRefId, moved.mailRefId]);
+  expect(store.event(olderCategory.mailRefId)?.analysis).toEqual({ summary: "Old analysis", suggestions: [], questions: [] });
+  expect(store.setFolder(olderCategory.mailRefId, "verification", "assistant")).toBe(false);
 });
 
 it("keeps mail already in the inbox eligible for its first classification", async () => {
@@ -364,7 +444,7 @@ it("creates the assistant business tables and private POSIX files including WAL/
   const database = new DatabaseSync(join(store.directory, "assistant.sqlite"));
   openDatabases.push(database);
   expect(database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all().map(row => row.name))
-    .toEqual(["assistant_attention_ack", "assistant_attention_baseline", "assistant_attention_replies", "assistant_binding", "assistant_managed_binding", "imap_history", "imap_watermarks", "mail_events", "trigger_batches", "trigger_deliveries"]);
+    .toEqual(["assistant_attention_ack", "assistant_attention_baseline", "assistant_attention_replies", "assistant_binding", "assistant_managed_binding", "imap_history", "imap_watermarks", "mail_categories", "mail_events", "trigger_batches", "trigger_deliveries"]);
   if (process.platform === "win32") return;
   for (const path of [join(root, "private"), store.directory, join(store.directory, "raw-mail")]) {
     expect((await fs.stat(path)).mode & 0o777).toBe(0o700);

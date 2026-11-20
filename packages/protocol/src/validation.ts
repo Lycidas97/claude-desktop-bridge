@@ -120,6 +120,7 @@ const METHODS = new Set([
   "plugin.assistant-mail.read",
   "plugin.assistant-mail.junk.set",
   "plugin.assistant-mail.filing.set",
+  "plugin.assistant-mail.category.change",
   "plugin.assistant-mail.attention.ack",
   "plugin.assistant-mail.bind",
   "plugin.assistant-mail.workspace.initialize",

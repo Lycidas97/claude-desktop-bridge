@@ -238,8 +238,9 @@ describe("controller transport publication", () => {
   });
 
   it.each([
-    ["plugin.assistant-mail.junk.set", { junk: true }],
-    ["plugin.assistant-mail.filing.set", { folder: "marketing" }],
+    ["plugin.assistant-mail.junk.set", { mailRefId: "saved-mail", junk: true }],
+    ["plugin.assistant-mail.filing.set", { mailRefId: "saved-mail", folder: "marketing" }],
+    ["plugin.assistant-mail.category.change", { action: "add", label: "订单" }],
   ] as const)("requires the encrypted snapshot handshake before routing %s", async (mailMethod, mutation) => {
     const { ws, controller, paired, config } = await fixture();
     const device = config.devices[0]!;
@@ -258,19 +259,18 @@ describe("controller transport publication", () => {
         expect(replies.map(reply => reply.payload)).toContainEqual(expect.objectContaining({ kind: "response", requestId, ...expected }));
       });
     }
-    const params = { mailRefId: "saved-mail", ...mutation };
     const rejected = { ok: false, error: expect.objectContaining({ code: "PAIRING_REQUIRED" }) };
-    await send("before-read", mailMethod, params, rejected);
+    await send("before-read", mailMethod, mutation, rejected);
     await send("ordinary-read", "project.list", { client: { name: "Before handshake" } }, { ok: true });
     expect(device.pairedAt).toBeUndefined();
     expect(device.name).toBe("Synthetic phone");
-    await send("after-read", mailMethod, params, rejected);
+    await send("after-read", mailMethod, mutation, rejected);
     expect(write).not.toHaveBeenCalled();
 
     await requestSnapshot(ws, paired, config.hostDeviceId);
     const pairedAt = device.pairedAt;
     expect(pairedAt).toEqual(expect.any(Number));
-    await send("after-pairing", mailMethod, { ...params, client: { name: "Paired phone", platform: "web" } },
+    await send("after-pairing", mailMethod, { ...mutation, client: { name: "Paired phone", platform: "web" } },
       { ok: true, result: { marked: true } });
     expect(write).toHaveBeenCalledOnce();
     expect(device).toMatchObject({ pairedAt, name: "Paired phone", platform: "web" });

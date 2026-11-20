@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { ARTIFACT_MAX_BYTES, ASSISTANT_ATTENTION_CAPABILITY, ASSISTANT_MAIL_FILING_CAPABILITY, MAIL_FOLDERS, ASSISTANT_MAIL_SHARED_AUTH_CAPABILITY, ASSISTANT_MEMORY_POLICY, ASSISTANT_SMTP_CAPABILITY, isAssistantWorkspacePolicy, isMailPollInterval, mailAttachmentPreviewKind } from "@bridge/protocol";
+import { ARTIFACT_MAX_BYTES, ASSISTANT_ATTENTION_CAPABILITY, ASSISTANT_MAIL_FILING_CAPABILITY, ASSISTANT_MAIL_RECEIVED_ORDER_CAPABILITY, MAIL_FOLDERS, ASSISTANT_MAIL_SHARED_AUTH_CAPABILITY, ASSISTANT_MEMORY_POLICY, ASSISTANT_SMTP_CAPABILITY, isAssistantWorkspacePolicy, isMailPollInterval, mailAttachmentPreviewKind } from "@bridge/protocol";
 import { AgendaEditError } from "../../../../plugins/assistant-mail/agenda-store.js";
 import type { AssistantAgendaService } from "../../../../plugins/assistant-mail/agenda.js";
 import { configureSmtp, saveMailAccount } from "../../../../plugins/assistant-mail/proposal-contract.js";
@@ -35,6 +35,7 @@ export const ASSISTANT_MAIL_CAPABILITIES = [
   "plugin.assistant-mail.polling.v1",
   "plugin.assistant-mail.attachments.v1",
   "plugin.assistant-mail.history.v1",
+  ASSISTANT_MAIL_RECEIVED_ORDER_CAPABILITY,
   "plugin.assistant-mail.junk.v1",
   ASSISTANT_MAIL_FILING_CAPABILITY,
   ASSISTANT_ATTENTION_CAPABILITY,
@@ -114,14 +115,16 @@ function projectMailCard(event: NonNullable<ReturnType<AssistantMailService["eve
 }
 
 export function assistantMailPage(mail: AssistantMailService, options: z.infer<typeof MailPageParameters>, includeHistory: boolean,
-  scope: MailPageScope, delivery?: (mailRefId: string) => BridgeMailCard["nativeDelivery"] | undefined): BridgeMailPage {
-  const page = mail.page(options, includeHistory, scope);
+  scope: MailPageScope, delivery?: (mailRefId: string) => BridgeMailCard["nativeDelivery"] | undefined, receivedOrder = false): BridgeMailPage {
+  const page = mail.page(options, includeHistory, scope, receivedOrder);
   const folderCounts = scope === "inbox" && !options.cursor ? mail.folderCounts(includeHistory) : undefined;
   const filedTimelineCards = folderCounts && Object.keys(folderCounts).length
     ? mail.page({}, false, "legacy").events.filter(event => event.folder).map(event => projectMailCard(event, delivery?.(event.mailRefId))) : [];
   return {
     cards: page.events.map(event => projectMailCard(event, delivery?.(event.mailRefId))),
     ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
+    ...(receivedOrder ? { order: "received" } : {}),
+    ...(page.latestArrivalSeq !== undefined ? { latestArrivalSeq: page.latestArrivalSeq } : {}),
     ...(folderCounts ? { folderCounts } : {}),
     ...(filedTimelineCards.length ? { filedTimelineCards } : {}),
   };
@@ -434,7 +437,8 @@ export class AssistantMailCoordinator {
     publish: () => Promise<DesktopControlSnapshot>,
   ): Promise<unknown> {
     if (method === "plugin.assistant-mail.list") {
-      const { client: _client, includeHistory, folder, query, ...pageParams } = params;
+      const { client: _client, includeHistory, folder, query, order, ...pageParams } = params;
+      if (order !== undefined && order !== "received") throw new BridgeRequestError("INVALID_PARAMS", "邮件排序无效。");
       const scope = z.enum(MAIL_FOLDERS).optional().safeParse(folder);
       const search = MailSearchQuery.optional().safeParse(query);
       if (!scope.success || !search.success || (scope.data && search.data) || (includeHistory !== undefined && typeof includeHistory !== "boolean")) {
@@ -445,7 +449,7 @@ export class AssistantMailCoordinator {
       return { mailPage: assistantMailPage(this.mail, pageParams, includeHistory === true, search.data ? { query: search.data } : scope.data ?? "legacy", this.dispatcher && (mailRefId => {
         const batch = this.mail.triggers.batchForEvent("mail.received", mailRefId);
         return batch ? this.dispatcher!.project(batch, enabledSessionId) : undefined;
-      })) };
+      }), order === "received") };
     }
     if (method === "plugin.assistant-mail.batch") {
       const sessionId = stringParam(params, "sessionId")!;

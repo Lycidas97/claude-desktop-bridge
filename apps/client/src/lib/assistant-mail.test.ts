@@ -53,6 +53,21 @@ describe("refreshMailPages", () => {
     expect(current).toEqual({ cards: [card(6), card(5), card(4)], nextCursor: "4", changeToken: "before" });
   });
 
+  it("refreshes to the oldest cached receipt time after upgrading from sequence order", async () => {
+    const late = card(7, { receivedAt: "2026-11-13T00:00:00.000Z" });
+    const live = card(5);
+    const history = card(-8);
+    const latest = card(-9, { receivedAt: "2026-11-15T00:00:00.000Z" });
+    const load = vi.fn<(cursor?: string) => Promise<BridgeMailPage>>()
+      .mockResolvedValueOnce({ cards: [latest, history], nextCursor: "-8", order: "received", latestArrivalSeq: 7 })
+      .mockResolvedValueOnce({ cards: [live, late], nextCursor: "7", order: "received" });
+
+    expect(await refreshMailPages(load, { cards: [late, live], changeToken: "old", nextCursor: "5" }, "new")).toEqual({
+      cards: [latest, history, live, late], nextCursor: "7", order: "received", latestArrivalSeq: 7, changeToken: "new",
+    });
+    expect(load.mock.calls).toEqual([[undefined], ["-8"]]);
+  });
+
   it("re-reads older analysis and processing status even when no insertion sequence changes", async () => {
     const current: BridgeMailCache = { cards: [card(6), card(5), card(4), card(3)], nextCursor: "3", changeToken: "before" };
     const updated = card(3, {

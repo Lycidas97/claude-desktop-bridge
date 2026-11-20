@@ -1,4 +1,4 @@
-import { ASSISTANT_ATTENTION_CAPABILITY, ASSISTANT_MAIL_FILING_CAPABILITY, type AssistantAttentionAcknowledgment, type AssistantAttentionItem, type BridgeAssistantMailSnapshot, type BridgeHostSnapshot, type BridgeMailCache, type BridgeMailCard, type BridgeMailDetail, type BridgeMailPage, type BridgeMethod, type BridgeResponse } from "@bridge/protocol";
+import { ASSISTANT_ATTENTION_CAPABILITY, ASSISTANT_MAIL_FILING_CAPABILITY, ASSISTANT_MAIL_RECEIVED_ORDER_CAPABILITY, type AssistantAttentionAcknowledgment, type AssistantAttentionItem, type BridgeAssistantMailSnapshot, type BridgeHostSnapshot, type BridgeMailCache, type BridgeMailCard, type BridgeMailDetail, type BridgeMailPage, type BridgeMethod, type BridgeResponse } from "@bridge/protocol";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { mergeMailCards, refreshMailPages } from "../../lib/assistant-mail.js";
 
@@ -22,6 +22,7 @@ interface AssistantMailState {
   supportsAttachments: boolean;
   supportsBatches: boolean;
   supportsFiling: boolean;
+  receivedOrder: boolean;
   markViewed(card: BridgeMailCard): void;
   selectMail(card: BridgeMailCard): void;
   clearReference(): void;
@@ -109,7 +110,8 @@ export function AssistantMailProvider({ hostId, snapshot, online, request, loadC
     void loadCache().then(stored => {
       if (!active || !stored) return;
       // An empty cache can have been saved before the first successful sync.
-      if (stored.cards[0]) initializeUnreadBaseline(stored.cards[0].seq);
+      const baselineSeq = stored.latestArrivalSeq ?? stored.cards[0]?.seq;
+      if (baselineSeq !== undefined) initializeUnreadBaseline(baselineSeq);
       setCache(stored);
     })
       .catch(reason => { if (active) setError(String(reason)); })
@@ -137,10 +139,11 @@ export function AssistantMailProvider({ hostId, snapshot, online, request, loadC
   const changeToken = assistant?.changeToken ?? "";
   const supportsFiling = capabilities.includes(ASSISTANT_MAIL_FILING_CAPABILITY);
   const supportsHistory = capabilities.includes("plugin.assistant-mail.history.v1");
+  const receivedOrder = capabilities.includes(ASSISTANT_MAIL_RECEIVED_ORDER_CAPABILITY);
   const loadPage = useCallback(async (cursor?: string) => mailResult<{ mailPage: BridgeMailPage }>(await request(
     "plugin.assistant-mail.list", { ...(cursor ? { cursor } : {}), ...(supportsHistory ? { includeHistory: true } : {}),
-      ...(supportsFiling ? { folder: "inbox" } : {}) },
-  )).mailPage, [request, supportsHistory, supportsFiling]);
+      ...(supportsFiling ? { folder: "inbox" } : {}), ...(receivedOrder ? { order: "received" } : {}) },
+  )).mailPage, [request, supportsHistory, supportsFiling, receivedOrder]);
   useEffect(() => {
     if (!online) {
       setLoading(false);
@@ -154,7 +157,7 @@ export function AssistantMailProvider({ hostId, snapshot, online, request, loadC
     void refreshMailPages(loadPage, cacheRef.current, changeToken)
       .then(next => {
         if (!active) return;
-        initializeUnreadBaseline(next.cards[0]?.seq ?? 0);
+        initializeUnreadBaseline(next.latestArrivalSeq ?? next.cards[0]?.seq ?? 0);
         setCache(next);
         setRefreshStatus(status => status === "refreshing" ? "refreshed" : undefined);
       })
@@ -182,7 +185,7 @@ export function AssistantMailProvider({ hostId, snapshot, online, request, loadC
       const mailPage = await loadPage(cache.nextCursor);
       if (!mounted.current) return;
       const { nextCursor: _cursor, ...current } = cacheRef.current;
-      setCache({ ...current, cards: mergeMailCards(current.cards, mailPage.cards), changeToken,
+      setCache({ ...current, cards: mergeMailCards(current.cards, mailPage.cards, mailPage.order), changeToken,
         ...(mailPage.nextCursor ? { nextCursor: mailPage.nextCursor } : {}) });
     } catch (reason) { if (mounted.current) setError(reason instanceof Error ? reason.message : "邮件读取失败"); }
     finally { if (mounted.current) setLoading(false); }
@@ -211,7 +214,7 @@ export function AssistantMailProvider({ hostId, snapshot, online, request, loadC
   return <AssistantMailContext.Provider value={enabled ? {
     cache, timelineCards, unreadCount, attention: assistant?.attention, acknowledge, assistant, canReference, selectedMail,
     supportsAttachments: capabilities.includes("plugin.assistant-mail.attachments.v1"),
-    supportsFiling,
+    supportsFiling, receivedOrder,
     supportsBatches: capabilities.includes("plugin.assistant-mail.batches.v1"),
     accountLabel: accountKey => {
       const label = accountLabels.get(accountKey);

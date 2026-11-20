@@ -203,6 +203,8 @@ export async function verifyAssistantMailHistory(page, host, steps, directory, v
   await older.waitFor({ state: "hidden" });
   assert.equal(new Set(await cards.evaluateAll(elements => elements.map(element => element.dataset.mailId))).size, 25);
   await cards.first().getByText("收件记录 25", { exact: true }).waitFor();
+  assert.equal(await cards.nth(1).getByText("收件记录 5", { exact: true }).count(), 1,
+    "A newly imported older UID belongs at its received time, even above the previous page boundary");
   await cards.last().getByText("原文", { exact: true }).click();
   await cards.last().locator("details[open] pre").waitFor();
   await page.screenshot({ path: resolve(directory, "assistant-mail-history.png"), fullPage: true });
@@ -217,8 +219,11 @@ export async function verifyAssistantMailHistory(page, host, steps, directory, v
   await latest.getByText("收件记录 26", { exact: true }).waitFor();
   // Retain coverage of the legacy action and its safe-area undo on older hosts.
   const capabilities = host.snapshot.host.capabilities;
-  host.snapshot.host.capabilities = capabilities.filter(value => value !== "plugin.assistant-mail.filing.v1");
+  const requestsBeforeLegacy = host.requests.length;
+  host.snapshot.host.capabilities = capabilities.filter(value => !["plugin.assistant-mail.filing.v1", "plugin.assistant-mail.received-order.v1"].includes(value));
   await host.send({ kind: "snapshot", snapshot: host.snapshot });
+  await eventually(() => host.requests.slice(requestsBeforeLegacy).some(({ method, params }) => method === "plugin.assistant-mail.list" && params.order === undefined),
+    true, "An older host receives the sequence-order request without the new parameter");
   const emulation = await page.context().newCDPSession(page);
   try {
     await emulation.send("Emulation.setSafeAreaInsetsOverride", { insets: { top: 0, right: 0, bottom: 48, left: 0 } });
@@ -234,10 +239,11 @@ export async function verifyAssistantMailHistory(page, host, steps, directory, v
   host.snapshot.host.capabilities = capabilities;
   await host.send({ kind: "snapshot", snapshot: host.snapshot });
   await page.getByRole("searchbox", { name: "搜索邮件" }).waitFor();
+  await cards.nth(2).getByText("收件记录 5", { exact: true }).waitFor();
 
-  const filing = cards.nth(9).getByRole("combobox", { name: "收入分类", exact: true });
   const deepId = await cards.nth(9).getAttribute("data-mail-id");
   const filedCard = page.locator(`.assistant-mail-list > [data-mail-id="${deepId}"]`);
+  const filing = filedCard.getByRole("combobox", { name: "收入分类", exact: true });
   const feedback = page.locator(".assistant-mail-junk-feedback");
   const inViewport = locator => locator.evaluate(element => {
     const bounds = element.getBoundingClientRect();

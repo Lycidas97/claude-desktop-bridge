@@ -42,6 +42,8 @@ interface MailProjection {
 
 const unavailablePreview = "原文无法解析，预览不可用。";
 const mailOrder = "CASE WHEN historical = 1 THEN -seq ELSE seq END";
+// Valid IMAP dates are stored as UTC ISO. Restrict SQLite's parser to date strings, not relative values such as 'now'.
+const receivedOrderKey = "CASE WHEN received_at GLOB '????-??-??T*' THEN COALESCE(julianday(received_at), -1) ELSE -1 END";
 const mailFolder = `CASE WHEN user_junk = 1 THEN 'marketing'
   WHEN filing IS NOT NULL THEN replace(filing, 'user:', '')
   WHEN json_extract(analysis_json, '$.category') = 'marketing' THEN 'marketing' ELSE 'inbox' END`;
@@ -208,6 +210,7 @@ export class AssistantMailStore {
     if (!columns.includes("filing")) this.database.exec("ALTER TABLE mail_events ADD COLUMN filing TEXT");
     this.database.exec(`
       CREATE INDEX IF NOT EXISTS mail_events_page_order ON mail_events (${mailOrder});
+      CREATE INDEX IF NOT EXISTS mail_events_received_order ON mail_events (${receivedOrderKey}, seq);
       CREATE TABLE IF NOT EXISTS assistant_attention_ack (
         kind TEXT NOT NULL, id TEXT NOT NULL, PRIMARY KEY(kind, id)
       ) STRICT;
@@ -359,7 +362,9 @@ export class AssistantMailStore {
     }
   }
 
-  page(input: unknown = {}, includeHistory = true, scope: MailPageScope = "all"): { events: MailEvent[]; nextCursor?: string } {
+  page(input: unknown = {}, includeHistory = true, scope: MailPageScope = "all", receivedOrder = false): {
+    events: MailEvent[]; nextCursor?: string; latestArrivalSeq?: number;
+  } {
     const { cursor, limit = 50, processingStatus } = MailPageParameters.parse(input);
     const order = includeHistory ? mailOrder : "seq";
     const scopeValue = typeof scope === "object" ? scope.query : scope === "legacy" || scope === "all" ? undefined : scope;
@@ -368,16 +373,25 @@ export class AssistantMailStore {
       EXISTS (SELECT 1 FROM json_each(from_json) WHERE instr(lower(json_extract(value, '$.name')), lower($scope)) > 0
         OR instr(lower(json_extract(value, '$.address')), lower($scope)) > 0)
     )` : scope === "legacy" ? "AND user_junk = 0" : scope === "all" ? "" : `AND (${mailFolder}) = $scope`;
+    const anchor = cursor && receivedOrder
+      ? `(SELECT ${receivedOrderKey} AS anchor_date, seq AS anchor_seq FROM mail_events WHERE seq = abs($cursor)) CROSS JOIN ` : "";
+    // SQLite needs a scalar bound to seek into the expression index before comparing ties.
+    const after = !cursor ? "" : receivedOrder
+      ? `AND ${receivedOrderKey} <= anchor_date AND (${receivedOrderKey}, seq) < (anchor_date, anchor_seq)`
+      : `AND (${order}) < $cursor`;
     const rows = this.db().prepare(`
-      SELECT * FROM mail_events WHERE (${order}) < $cursor AND ($status IS NULL OR processing_status = $status)${includeHistory ? "" : " AND historical = 0"}
-      ${filter} ORDER BY (${order}) DESC LIMIT $limit
-    `).all({ $cursor: cursor ? Number(cursor) : Number.MAX_SAFE_INTEGER, $status: processingStatus ?? null, $limit: limit + 1,
+      SELECT mail_events.* FROM ${anchor}mail_events WHERE ($status IS NULL OR processing_status = $status)${includeHistory ? "" : " AND historical = 0"}
+      ${filter} ${after} ORDER BY ${receivedOrder ? `${receivedOrderKey} DESC, seq DESC` : `(${order}) DESC`} LIMIT $limit
+    `).all({ ...(cursor ? { $cursor: Number(cursor) } : {}), $status: processingStatus ?? null, $limit: limit + 1,
       ...(scopeValue !== undefined ? { $scope: scopeValue } : {}) }) as EventRow[];
     const events = rows.slice(0, limit).map(row => {
       const event = eventFromRow(row);
       return { ...event, attachments: event.attachments.slice(0, 32) };
     });
-    return { events, ...(rows.length > limit ? { nextCursor: String(events.at(-1)!.seq) } : {}) };
+    return { events, ...(rows.length > limit ? { nextCursor: String(events.at(-1)!.seq) } : {}),
+      ...(receivedOrder && !cursor && (scope === "inbox" || scope === "legacy") ? {
+        latestArrivalSeq: (this.db().prepare("SELECT COALESCE(MAX(seq), 0) AS seq FROM mail_events WHERE historical = 0").get() as { seq: number }).seq,
+      } : {}) };
   }
 
   folderCounts(includeHistory: boolean): Partial<Record<BridgeMailCategory, number>> {

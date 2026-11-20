@@ -130,6 +130,17 @@ it("bounds storage to the newest 200 sequences and resumes from the last retaine
   }
 });
 
+it("keeps the receipt-order cursor and unread baseline when capping an encrypted cache", async () => {
+  const crypto = await pairHost("mail-receipt-boundary");
+  const cache = { ...mailCache(Array.from({ length: 201 }, (_, index) => index + 1)), order: "received" as const, latestArrivalSeq: 201 };
+  cache.cards[0] = { ...cache.cards[0]!, seq: -1, receivedAt: "2026-11-15T00:00:00.000Z" };
+  await vault.saveMailCache(crypto, cache);
+
+  expect(await vault.loadMailCache(crypto)).toEqual({
+    ...cache, cards: [cache.cards[0], ...cache.cards.slice(2).reverse()], nextCursor: "3",
+  });
+});
+
 it("isolates host caches and forgets only the selected host", async () => {
   const first = await pairHost("mail-first-host");
   const second = await pairHost("mail-second-host");

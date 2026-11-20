@@ -9,9 +9,9 @@ export async function verifyAssistantReplies(page, host, steps, directory, serve
   host.nativeApproval.configuration = async request => {
     const result = await configuration(request);
     if (request.params.includeBackgroundTasks) {
-      // The scenario models queue and completion updates on the mock session, not the Native fixture.
-      const { turnState, pendingCount, lastCompletedTurnId } = host.session;
-      Object.assign(result.session, { turnState, pendingCount, lastCompletedTurnId });
+      // Use the mock queue state without delivering realtime completion markers through polling.
+      const { turnState, pendingCount } = host.session;
+      Object.assign(result.session, { turnState, pendingCount });
     }
     return result;
   };

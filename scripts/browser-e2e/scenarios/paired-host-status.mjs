@@ -74,9 +74,25 @@ export async function verifyPairedHostStatus(page, previousHost, host, steps, di
   assert.equal(await retrying.isDisabled(), true, "Relay presence alone does not complete the retry");
   assert.equal(await current.locator(".is-online").count(), 0);
   assert.equal(await failure.count(), 0, "A new attempt clears the previous failure");
-  previousHost.send = send;
-  await previousHost.send(heldReply);
+  await send(heldReply);
   await current.locator(".is-online").waitFor();
   assert.equal(await retrying.count(), 0, "An authenticated reply completes the retry");
   steps.push("Same-name pairings stay separate; quick switch retry reports progress, an inline offline failure, and recovery only after an encrypted reply without navigating away");
+
+  previousHost.socket.close();
+  await retry.waitFor();
+  const connectionsBeforeRevocation = serverRoutes.length;
+  await retry.click();
+  await eventually(() => serverRoutes.length > connectionsBeforeRevocation, true, "The retry opens a new route for Relay to reject");
+  serverRoutes.at(-1).send(JSON.stringify({ type: "error", code: "DEVICE_REVOKED", message: "Test fixture revoked this device" }));
+  await switcher.getByRole("alert").filter({ hasText: "撤销" }).waitFor();
+  assert.equal(await retry.count(), 0, "The revoked pairing cannot be retried");
+  await current.click();
+  const pairingLink = page.getByRole("textbox", { name: "配对链接" });
+  await pairingLink.waitFor({ timeout: 3_000 });
+  await page.getByRole("button", { name: "返回主机列表" }).click();
+  await page.getByRole("button", { name: "重新配对", exact: true }).click({ timeout: 3_000 });
+  await pairingLink.waitFor({ timeout: 3_000 });
+  await page.screenshot({ path: resolve(directory, "repair-pairing-screen.png") });
+  steps.push("Relay revocation keeps the inline reason and opens the pairing screen from both the affected host row and the disconnected catalog");
 }

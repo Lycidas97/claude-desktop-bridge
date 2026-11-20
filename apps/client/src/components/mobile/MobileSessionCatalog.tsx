@@ -191,6 +191,7 @@ export function MobileSessionCatalog({
   const seenCompletions = useSeenSessionCompletions(activeHostId);
   const searchQuery = search.trim().toLocaleLowerCase();
   const online = connection === "connected" && desktopOnline;
+  const repairActiveHost = hosts?.some((host) => host.roomId === activeHostId && host.needsRepair) ? onAddHost : undefined;
   const supportsCreateSection = Boolean(onCreateSection && snapshot?.host.capabilities.includes("section.create.v1"));
   const hasActiveSessions = sessions.some((candidate) => !candidate.archivedAt);
   const totalArchivedFamilies = archivedFamilies ?? groupProjectSessionFamilies(archivedSessions);
@@ -291,7 +292,8 @@ export function MobileSessionCatalog({
                       onClick={() => {
                         onToggleHostSwitcher?.();
                         onClose?.();
-                        void onSelectHost?.(host.roomId);
+                        if (host.needsRepair && onAddHost) onAddHost();
+                        else void onSelectHost?.(host.roomId);
                       }}
                     >
                       <i className={`m-status-dot${isOnline ? " is-online" : ""}`} aria-hidden="true" />
@@ -421,6 +423,19 @@ export function MobileSessionCatalog({
           )}
 
           {(snapshot ? (!hasActiveSessions && grouped.length === 0) || (Boolean(searchQuery) && grouped.length === 0) : !online) && (() => {
+            if (repairActiveHost) {
+              return (
+                <EmptyState
+                  title="电脑需要重新配对"
+                  {...(!hostSwitcherOpen && quickReconnect?.status === "failed" ? { description: quickReconnect.message } : {})}
+                  action={(
+                    <button type="button" className="secondary-button session-catalog-empty-action" onClick={repairActiveHost}>
+                      重新配对
+                    </button>
+                  )}
+                />
+              );
+            }
             const claudeRuntime = snapshot?.runtimes?.find((candidate) => candidate.id === "claude-desktop");
             const claudeDesktopReady = claudeRuntime
               ? claudeRuntime.state === "ready"

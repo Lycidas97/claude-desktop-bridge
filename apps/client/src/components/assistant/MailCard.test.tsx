@@ -80,6 +80,15 @@ describe("MailCard plain text rendering", () => {
     expect(collapsed?.match(/等待助理|处理中|没能发给助理/gu) ?? []).toEqual(hint ? [hint] : []);
   });
 
+  it("leaves shared delivery information to the batch header but keeps each mail's processing status", () => {
+    const html = renderToStaticMarkup(createElement(MailCard, {
+      card: card({ nativeDelivery: { state: "queued", batchId: "batch-1" } }), showBatchDelivery: false,
+    }));
+
+    expect(html).toContain("待处理");
+    expect(html).not.toMatch(/自动发送|等待助理|已排队等助理/u);
+  });
+
   it("shows active processing once even when delivery also has a hint", () => {
     const html = renderToStaticMarkup(createElement(MailCard, { card: card({
       processingStatus: "processing", nativeDelivery: { state: "queued" },

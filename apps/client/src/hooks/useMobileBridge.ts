@@ -53,6 +53,7 @@ import {
   loadOlderBridgeHistory,
   openBridgeSession,
   previewBridgeArtifact,
+  refreshLatestBridgeHistory,
   syncSessionCommandEvents,
   uploadBridgeSessionFile,
 } from "./bridge/bridge-artifacts.js";
@@ -235,9 +236,14 @@ export function useMobileBridge() {
 
   useEffect(() => onNativePushWake(() => reconnectAndResume()), [reconnectAndResume]);
 
-  useEffect(() => subscribeNetworkAndVisibilityWake(reconnectAndResume), [reconnectAndResume]);
-
-  useEffect(() => subscribeCapacitorAppWake(reconnectAndResume), [reconnectAndResume]);
+  const onForeground = useCallback((networkChanged = false) => {
+    if (!networkChanged && socketRef.current?.state === "connected") {
+      setState((current) => ({ ...current, foregroundRevision: (current.foregroundRevision ?? 0) + 1 }));
+    }
+    reconnectAndResume(networkChanged);
+  }, [reconnectAndResume]);
+  useEffect(() => subscribeNetworkAndVisibilityWake(onForeground), [onForeground]);
+  useEffect(() => subscribeCapacitorAppWake(onForeground), [onForeground]);
 
   const pair = useCallback(
     (pairing: PairingBundle): Promise<boolean> => pairBridgeHost(
@@ -255,7 +261,7 @@ export function useMobileBridge() {
 
   const backToHosts = useCallback(() => backToBridgeHosts(transportRefs), []);
 
-  const artifactCtx = { setState, stateRef, cryptoRef, socketRef, sendRequest };
+  const artifactCtx = { setState, stateRef, cryptoRef, socketRef, sendRequest, historyReadSequenceRef: transportRefs.historyReadSequenceRef };
 
   const openSession = useCallback(
     (sessionId: string) => openBridgeSession({ ...artifactCtx, openedSessionRef, openingSessionsRef }, sessionId),
@@ -311,6 +317,11 @@ export function useMobileBridge() {
         transferGaugesRef.current.activeDownloads = Math.max(0, transferGaugesRef.current.activeDownloads - 1);
       }
     },
+    [sendRequest],
+  );
+
+  const refreshLatestHistory = useCallback(
+    (sessionId: string, readCompletedTurnId: string | undefined) => refreshLatestBridgeHistory(artifactCtx, sessionId, readCompletedTurnId),
     [sendRequest],
   );
 
@@ -867,6 +878,7 @@ export function useMobileBridge() {
     setRelayUrl,
     backToHosts,
     openSession,
+    refreshLatestHistory,
     loadOlderHistory,
     loadOlderEvidence,
     loadEvidenceDetails,

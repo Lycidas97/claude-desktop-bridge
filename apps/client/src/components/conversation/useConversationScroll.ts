@@ -83,11 +83,8 @@ export function useConversationScroll({ sessionId, sessionView, streamVisible, h
       && stream.scrollHeight - stream.scrollTop - stream.clientHeight > 4
     );
     const shouldFollowBottom = scrolledUpSynchronously ? false : previous.pinnedToBottom;
-    const historyPrepended = (
-      firstHistoryKey !== undefined
-      && previous.firstHistoryKey !== undefined
-      && firstHistoryKey !== previous.firstHistoryKey
-      && historyCount > previous.historyCount
+    const historyNeedsAnchor = historyCount > previous.historyCount && (
+      !shouldFollowBottom || (previous.firstHistoryKey !== undefined && firstHistoryKey !== previous.firstHistoryKey)
     );
     const cardChangedWhileReading = !shouldFollowBottom && (
       (openedEvidenceIds && openedEvidenceIds !== previous.openedEvidenceIds) || inlineProposalLayout !== previous.inlineProposalLayout
@@ -97,7 +94,7 @@ export function useConversationScroll({ sessionId, sessionView, streamVisible, h
     if (entering) {
       stream.scrollTop = stream.scrollHeight;
     } else if (savedAnchor && (
-      (previous.paused && !shouldFollowBottom) || firstKey !== previous.firstKey || historyPrepended || cardChangedWhileReading
+      (previous.paused && !shouldFollowBottom) || firstKey !== previous.firstKey || historyNeedsAnchor || cardChangedWhileReading
     )) {
       const anchor = [...stream.querySelectorAll<HTMLElement>(":scope > [data-stream-key]")]
         .find((element) => element.dataset.streamKey === savedAnchor.key);

@@ -468,9 +468,14 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
           }
           break;
         case "events.resume": {
-          const resumed = events.filter((event) => event.seq > request.params.afterSeq);
+          const replay = events.filter((event) => event.seq > request.params.afterSeq);
+          const resumed = replay.slice(0, request.params.limit);
           resumeBatches.push(resumed.map((event) => event.eventId));
-          result = { events: resumed, latestSeq: snapshot.latestSeq, hasMore: false };
+          result = {
+            events: resumed, latestSeq: snapshot.latestSeq,
+            nextSeq: resumed.at(-1)?.seq ?? request.params.afterSeq,
+            hasMore: replay.length > resumed.length,
+          };
           break;
         }
         case "assistant.proposal.list":
@@ -644,6 +649,11 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
         case "session.list": result = { sessions: snapshot.sessions }; break;
         case "project.list": result = { projects: snapshot.projects }; break;
         case "session.open": {
+          if (host.failOpenOnce) {
+            host.failOpenOnce = false;
+            error = { code: "E2E_OPEN_FAILED", message: "隔离会话打开失败" };
+            break;
+          }
           const sidechatItems = nativePreview && String(request.params.sessionId).startsWith("browser-e2e-btw-")
             ? [
                 {
@@ -678,12 +688,15 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
           break;
         }
         case "session.history":
-          assert.equal(request.params.sessionId, sessionId);
           if (host.historyGate) await host.historyGate;
           if (host.failHistoryOnce) {
             host.failHistoryOnce = false;
             error = { code: "E2E_HISTORY_FAILED", message: "隔离历史请求失败" };
-          } else result = { history: host.historyPage(request.params.cursor, request.params.limit) };
+          } else if (request.params.sessionId === sessionId) {
+            result = { history: host.historyPage(request.params.cursor, request.params.limit) };
+          } else {
+            result = await host.nativeApproval.controllerRequest(request);
+          }
           break;
         case "evidence.list":
           result = { evidence: { sessionId: request.params.sessionId, items: [], hasMore: false } };

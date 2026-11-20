@@ -36,6 +36,7 @@ function sessionOpener(...lists: Array<Promise<BridgeResponse>>) {
     socketRef: { current: undefined },
     openedSessionRef: { current: undefined },
     openingSessionsRef: { current: new Map() },
+    historyReadSequenceRef: { current: 0 },
     sendRequest,
   };
   return { stateRef, sendRequest, open: () => openBridgeSession(ctx, sessionId) };

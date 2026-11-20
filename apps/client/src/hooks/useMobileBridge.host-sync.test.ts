@@ -1,7 +1,8 @@
 import type { BridgeCrypto, BridgeEvent, BridgeHostSnapshot, BridgeRequest, BridgeResponse, BridgeSessionInfo, DecryptedEnvelope, EncryptedEnvelope, ServerFrame, SocketState } from "@bridge/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { INITIAL_STATE, useMobileBridge } from "./useMobileBridge.js";
+import { applyIncomingEventsToState, INITIAL_STATE, useMobileBridge } from "./useMobileBridge.js";
 import { createBridgeTestStore, type HarnessStore } from "./useMobileBridge.test-harness.js";
+import { conversationItems } from "../lib/conversation-timeline.js";
 import { bridgeVault } from "../lib/vault.js";
 import {
   ensureSessionNotificationPermission,
@@ -1667,9 +1668,141 @@ describe("mobile history pagination", () => {
       ["evidence.list", expect.anything()],
       ["session.history", expect.objectContaining({ sessionId: "shared-session", cursor: "recent-uuid", limit: 50 })],
     ]);
-    expect(harness.state.histories["shared-session"]).toEqual({ status: "ready", items: [older, recent], hasMore: false });
+    expect(harness.state.histories["shared-session"]).toEqual({ status: "ready", items: [older, recent], hasMore: false, latestRead: { sequence: 1, completedTurnId: undefined } });
     expect(harness.addOutbox).not.toHaveBeenCalled();
     expect(harness.state.localTurns).toEqual([]);
+  });
+
+  it("keeps a completion published while the old session.open page is in flight", async () => {
+    const session = { sessionId: recent.sessionId, lastCompletedTurnId: "old" } as BridgeSessionInfo;
+    harness.state.snapshot = { ...snapshot("A"), sessions: [session] };
+    const response = deferred<Record<string, unknown>>();
+    harness.respond = request => request.method === "session.open" ? response.promise : Promise.resolve({});
+    const bridge = useMobileBridge();
+    const opening = bridge.openSession(session.sessionId);
+    await vi.waitFor(() => expect(harness.requests).toHaveLength(1));
+    harness.store!.setState(current => applyIncomingEventsToState(current, [{
+      eventId: "completion-published", seq: 1, timestamp: 3, origin: "claude-desktop", sessionId: session.sessionId,
+      type: "runtime.updated", data: { replaceSession: true, session: { ...session, lastCompletedTurnId: "new" } },
+    }]));
+    response.resolve({ session, history: { items: [recent], hasMore: false } });
+    await opening;
+    expect(harness.state.snapshot.sessions[0].lastCompletedTurnId).toBe("new");
+    expect(harness.state.histories[session.sessionId].latestRead?.completedTurnId).toBe("old");
+  });
+
+  it("keeps a successful manual open when an older automatic history response arrives afterwards", async () => {
+    const automatic = deferred<Record<string, unknown>>();
+    const reply = { ...recent, id: "manual-recovered-reply", role: "assistant", createdAt: recent.createdAt + 1 };
+    harness.respond = async ({ method }) => method === "session.history" ? automatic.promise
+      : method === "session.open" ? { history: { items: [recent, reply], hasMore: false } } : {};
+    const bridge = useMobileBridge();
+    const catchingUp = bridge.refreshLatestHistory(recent.sessionId, undefined);
+    await vi.waitFor(() => expect(harness.requests[0]?.request.method).toBe("session.history"));
+    await bridge.openSession(recent.sessionId);
+    expect(harness.state.histories[recent.sessionId].items).toEqual([recent, reply]);
+    automatic.resolve({ history: { items: [recent], hasMore: false } });
+    await catchingUp;
+    expect(harness.state.histories[recent.sessionId].items).toEqual([recent, reply]);
+  });
+
+  it("keeps a newer catch-up when a manual open started during pagination finishes last", async () => {
+    const olderResponse = deferred<Record<string, unknown>>();
+    const openResponse = deferred<Record<string, unknown>>();
+    const reply = { ...recent, id: "recovered-after-open-started", role: "assistant", createdAt: 3 };
+    harness.respond = async ({ method, params }) => method === "session.open" ? openResponse.promise
+      : method === "session.history" ? params.cursor ? olderResponse.promise
+        : { history: { items: [older, recent, reply], hasMore: false } } : {};
+    const bridge = useMobileBridge();
+    const paging = bridge.loadOlderHistory(recent.sessionId);
+    await vi.waitFor(() => expect(harness.requests[0]?.request.method).toBe("session.history"));
+    const opening = bridge.openSession(recent.sessionId);
+    await vi.waitFor(() => expect(harness.requests[1]?.request.method).toBe("session.open"));
+    olderResponse.resolve({ history: { items: [older], hasMore: false } });
+    await paging;
+    expect(harness.state.histories[recent.sessionId].status).toBe("ready");
+    await bridge.refreshLatestHistory(recent.sessionId, "later-completion");
+    expect(harness.state.histories[recent.sessionId].items).toEqual([older, recent, reply]);
+    openResponse.resolve({ history: { items: [recent], hasMore: false } });
+    await opening;
+    expect(harness.state.histories[recent.sessionId]).toMatchObject({
+      items: [older, recent, reply], latestRead: { sequence: 2, completedTurnId: "later-completion" },
+    });
+  });
+
+  it.each(["in order", "newest first"])("keeps both replies when overlapping catch-up reads finish %s", async order => {
+    const firstResponse = deferred<Record<string, unknown>>();
+    const secondResponse = deferred<Record<string, unknown>>();
+    const firstReply = { ...recent, id: "reply-while-visible", role: "assistant", createdAt: 3 };
+    const secondReply = { ...firstReply, id: "reply-while-away", createdAt: 4 };
+    harness.respond = vi.fn().mockReturnValueOnce(firstResponse.promise).mockReturnValueOnce(secondResponse.promise);
+    const bridge = useMobileBridge();
+    const firstRead = bridge.refreshLatestHistory(recent.sessionId, "first-completion");
+    await vi.waitFor(() => expect(harness.requests).toHaveLength(1));
+    const secondRead = bridge.refreshLatestHistory(recent.sessionId, "second-completion");
+    await vi.waitFor(() => expect(harness.requests).toHaveLength(2));
+
+    const firstPage = { history: { items: [recent, firstReply], hasMore: false } };
+    const secondPage = { history: { items: [recent, firstReply, secondReply], hasMore: false } };
+    if (order === "in order") {
+      firstResponse.resolve(firstPage);
+      await firstRead;
+      expect(harness.state.histories[recent.sessionId].items).toEqual([recent, firstReply]);
+      secondResponse.resolve(secondPage);
+    } else {
+      secondResponse.resolve(secondPage);
+      await secondRead;
+      firstResponse.resolve(firstPage);
+    }
+    await Promise.all([firstRead, secondRead]);
+    expect(harness.state.histories[recent.sessionId]).toMatchObject({
+      items: [recent, firstReply, secondReply], latestRead: { sequence: 2, completedTurnId: "second-completion" },
+    });
+  });
+
+  it("keeps older-page replies visible when the latest history moves a repeated plan", async () => {
+    const plan = { ...older, id: "plan:shared", role: "assistant", taskPlan: { id: "shared", items: [], updatedAt: 1 } };
+    const updatedPlan = { ...plan, createdAt: 4, taskPlan: { ...plan.taskPlan, updatedAt: 4 } };
+    const missing = { ...recent, id: "missing-reply", role: "assistant", createdAt: 3 };
+    const newest = { ...recent, id: "newest", createdAt: 5 };
+    harness.state.histories[recent.sessionId] = { status: "ready", items: [plan, recent], hasMore: true, nextCursor: "native-older-cursor" };
+    harness.respond = async ({ params }) => ({ history: params.cursor === undefined
+      ? { items: [updatedPlan, newest], hasMore: true, nextCursor: "native-newer-page" }
+      : { items: [plan, recent, missing], hasMore: true, nextCursor: "native-older-cursor" },
+    });
+    const bridge = useMobileBridge();
+    await bridge.refreshLatestHistory(recent.sessionId, "native-completion");
+    expect(harness.requests.map(({ request }) => request.params.cursor)).toEqual([undefined, "native-newer-page"]);
+    const history = harness.state.histories[recent.sessionId];
+    expect(conversationItems(recent.sessionId, history, [], [], true).map(({ id }) => id))
+      .toEqual([recent.id, missing.id, updatedPlan.id, newest.id]);
+    expect(history).toMatchObject({ items: [recent, missing, updatedPlan, newest], nextCursor: "native-older-cursor" });
+  });
+
+  it("fills a gap from the latest history page without losing the already loaded prefix or its cursor", async () => {
+    harness.state.histories["shared-session"] = { status: "ready", items: [older, recent], hasMore: true, nextCursor: older.id };
+    const between = { ...recent, id: "between", createdAt: 3 };
+    const newest = { ...between, id: "latest-reply", role: "assistant", createdAt: 4 };
+    const updated = { ...recent, text: "Authoritative version" };
+    const first = { ...older, id: "first-uuid", createdAt: 0 };
+    harness.respond = async ({ params }) => ({ history: params.cursor === undefined
+      ? { items: [newest], hasMore: true, nextCursor: newest.id }
+      : params.cursor === newest.id
+        ? { items: [updated, between], hasMore: true, nextCursor: updated.id }
+        : { items: [first], hasMore: false },
+    });
+    const bridge = useMobileBridge();
+    await bridge.refreshLatestHistory("shared-session", "native-completion");
+    expect(harness.state.histories["shared-session"]).toEqual({
+      status: "ready", items: [older, updated, between, newest], hasMore: true, nextCursor: older.id, latestRead: { sequence: 1, completedTurnId: "native-completion" },
+    });
+    await bridge.loadOlderHistory("shared-session");
+    expect(harness.requests.map(({ request: { method, params } }) => [method, params.cursor])).toEqual([
+      ["session.history", undefined], ["session.history", newest.id], ["session.history", older.id],
+    ]);
+    expect(harness.state.histories["shared-session"]).toEqual({
+      status: "ready", items: [first, older, updated, between, newest], hasMore: false, latestRead: { sequence: 1, completedTurnId: "native-completion" },
+    });
   });
 
   it("keeps failed paging data and its error row during retry, then clears the error with the successful prepend", async () => {

@@ -118,12 +118,12 @@ export function assistantMailPage(mail: AssistantMailService, options: z.infer<t
   scope: MailPageScope, delivery?: (mailRefId: string) => BridgeMailCard["nativeDelivery"] | undefined, receivedOrder = false): BridgeMailPage {
   const page = mail.page(options, includeHistory, scope, receivedOrder);
   const folderCounts = scope === "inbox" && !options.cursor ? mail.folderCounts(includeHistory) : undefined;
-  const timelineIds = receivedOrder && !options.cursor && (scope === "inbox" || scope === "legacy")
-    ? new Set(page.events.map(event => event.mailRefId)) : undefined;
-  const timelineCards = timelineIds || (!receivedOrder && folderCounts && Object.keys(folderCounts).length)
-    ? mail.page({}, false, "legacy").events
-      .filter(event => timelineIds ? !timelineIds.has(event.mailRefId) : event.folder)
-      .map(event => projectMailCard(event, delivery?.(event.mailRefId))) : [];
+  const timelineEvents = receivedOrder && !options.cursor && (scope === "inbox" || scope === "legacy")
+    ? mail.page({}, false, scope).events.filter(event => !page.events.some(card => card.mailRefId === event.mailRefId)) : [];
+  if (folderCounts && Object.keys(folderCounts).length) {
+    timelineEvents.push(...mail.page({}, false, "legacy").events.filter(event => event.folder));
+  }
+  const timelineCards = timelineEvents.map(event => projectMailCard(event, delivery?.(event.mailRefId)));
   return {
     cards: page.events.map(event => projectMailCard(event, delivery?.(event.mailRefId))),
     ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),

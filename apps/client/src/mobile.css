@@ -1123,6 +1123,10 @@
     box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.22);
     animation: m-sheet-rise var(--t-enter) var(--ease-out);
   }
+
+  /* A dropdown below a bottom-anchored field would leave the screen; open it in the sheet's own scroll flow instead. */
+  .session-configuration-dialog:has(.select-menu.is-open) { overflow-y: auto; }
+  .session-configuration-dialog .select-menu-listbox { position: static; margin-top: 5px; }
 }
 
 /* ---- Cardless Hairline Settings & Host Details Pages ---- */

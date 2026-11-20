@@ -283,6 +283,37 @@ body:has(.assistant-mail-category-options) .diagnostic-floating-entry { display:
 .assistant-mail-reference > .icon-button:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: -3px; }
 .assistant-mail-reference p { grid-column: 1 / -1; margin: 0 8px 8px 0; color: var(--danger-ink); font-size: calc(12px * var(--font-scale)); }
 
+.sent-mail-reference {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  min-height: 44px;
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-input);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  text-align: start;
+}
+.sent-mail-reference:not(:first-child) { margin-top: 8px; }
+.sent-mail-reference:hover { border-color: var(--line-strong); }
+.sent-mail-reference:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 2px; }
+.sent-mail-reference > svg { flex: none; color: var(--muted); }
+.sent-mail-reference > svg:first-child { color: var(--accent-ink); }
+.sent-mail-reference-summary { display: grid; flex: 1; min-width: 0; gap: 2px; }
+.sent-mail-reference-summary > strong, .sent-mail-reference-summary > span > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sent-mail-reference-summary > strong { font-size: calc(13px * var(--font-scale)); font-weight: 600; }
+.sent-mail-reference-summary > span { display: flex; gap: 8px; color: var(--muted); font-size: calc(12px * var(--font-scale)); }
+.sent-mail-reference-summary time { flex: none; }
+.sent-mail-original { margin: 0; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
+
 .assistant-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; }
 .assistant-workspace-confirm { margin: 12px 0; }
 .assistant-workspace-confirm code { display: block; margin-bottom: 12px; overflow-wrap: anywhere; color: var(--text); }

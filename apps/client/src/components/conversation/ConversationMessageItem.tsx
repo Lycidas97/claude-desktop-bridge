@@ -1,6 +1,7 @@
 import type { BridgeSessionInfo } from "@bridge/protocol";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useAssistantMail } from "../assistant/AssistantMailProvider.js";
+import { SentMailReference } from "../assistant/SentMailReference.js";
 import { deliveryLabel, formatTime, isQueuedConversationMessage, type ConversationItem } from "../../lib/conversation-timeline.js";
 import { desktopRuntimeId } from "../../lib/runtime-labels.js";
 import { MarkdownText } from "../common/MarkdownText.js";
@@ -111,6 +112,7 @@ export function ConversationMessageItem({
           <div className="conversation-text">{item.text}</div>
         )
       )}
+      {item.mailRefId && <SentMailReference mailRefId={item.mailRefId} />}
       {item.taskPlan && <TaskPlanCard key={`${item.sessionId}:${item.taskPlan.id}`} plan={item.taskPlan} />}
       {interactivePrompt}
       {item.attachments?.length ? (

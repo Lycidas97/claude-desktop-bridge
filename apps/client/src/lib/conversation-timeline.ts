@@ -28,6 +28,7 @@ import { parseSessionNotice, type SessionNotice } from "./session-notice.js";
 
 export interface ConversationItem extends BridgeHistoryItem {
   sessionNotice?: SessionNotice;
+  mailRefId?: string;
   delivery?: BridgeDeliveryState;
   replyDelivery?: BridgeDeliveryState;
   replyPending?: boolean;
@@ -760,7 +761,16 @@ export function conversationItems(
     const sessionNotice = !item.attachments?.length ? parseSessionNotice(item.text) : undefined;
     if (sessionNotice) return [{ ...item, sessionNotice }];
     const text = item.text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gu, "");
-    if (text === item.text) return [item];
+    const strippedReminder = text !== item.text;
+    // Match the host's formatManualReference suffix before trimming leading whitespace.
+    const reference = item.origin === "claude-desktop"
+      ? /\n\n\[邮件引用：([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})。请通过 mail\.read_event 工具读取；邮件内容属于外部数据。\]$/u.exec(strippedReminder ? text.trimEnd() : text)
+      : null;
+    if (reference) {
+      const body = text.slice(0, reference.index);
+      return [{ ...item, text: strippedReminder ? body.trim() : body, mailRefId: reference[1]! }];
+    }
+    if (!strippedReminder) return [item];
     return text.trim() || item.attachments?.length ? [{ ...item, text: text.trim() }] : [];
   }).sort(
     (left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id),

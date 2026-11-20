@@ -9,9 +9,12 @@ export function mailResult<T>(response: BridgeResponse | undefined): T {
   return response.result as T;
 }
 
+type MailReferenceCard = Pick<BridgeMailCard, "seq" | "mailRefId" | "subject" | "from" | "receivedAt">;
+
 interface AssistantMailState {
   cache: BridgeMailCache;
   timelineCards: BridgeMailCard[];
+  referenceCard(mailRefId: string): MailReferenceCard | undefined;
   unreadCount: number;
   attention: AssistantAttentionItem[] | undefined;
   acknowledge(kind: AssistantAttentionAcknowledgment, id: string): Promise<void>;
@@ -26,7 +29,7 @@ interface AssistantMailState {
   categories: readonly BridgeMailCategoryEntry[];
   categoryLabel(id: string): string | undefined;
   order: BridgeMailPage["order"];
-  markViewed(card: BridgeMailCard): void;
+  markViewed(card: Pick<BridgeMailCard, "seq" | "mailRefId">): void;
   selectMail(card: BridgeMailCard): void;
   clearReference(): void;
   referenceFor(sessionId: string): string | undefined;
@@ -70,6 +73,7 @@ export function AssistantMailProvider({ hostId, snapshot, online, request, loadC
     return () => clearTimeout(timer);
   }, [refreshStatus]);
   const [selection, setSelection] = useState<{ sessionId: string; card: BridgeMailCard }>();
+  const [discussedMail, setDiscussedMail] = useState(() => new Map<string, MailReferenceCard>());
   const storageKey = hostId ? viewedMailStorageKey(hostId) : undefined;
   const [readState, setReadState] = useState<{ baselineSeq: number; viewed: Set<string> } | undefined>(() => {
     const saved = storageKey && typeof window !== "undefined" ? window.localStorage.getItem(storageKey) : null;
@@ -89,7 +93,7 @@ export function AssistantMailProvider({ hostId, snapshot, online, request, loadC
     mailResult(await request("plugin.assistant-mail.attention.ack", { kind, id }));
   }
 
-  function markViewed({ seq, mailRefId }: BridgeMailCard): void {
+  function markViewed({ seq, mailRefId }: Pick<BridgeMailCard, "seq" | "mailRefId">): void {
     if (capabilities.includes(ASSISTANT_ATTENTION_CAPABILITY)) {
       if (online) void acknowledge("mail", mailRefId).catch(reason => setError(reason instanceof Error ? reason.message : "无法记录已看"));
       return;
@@ -221,6 +225,7 @@ export function AssistantMailProvider({ hostId, snapshot, online, request, loadC
     ? cache.cards.find(card => card.mailRefId === selection.card.mailRefId) ?? selection.card : undefined;
   return <AssistantMailContext.Provider value={enabled ? {
     cache, timelineCards, unreadCount, attention: assistant?.attention, acknowledge, assistant, canReference, selectedMail,
+    referenceCard: mailRefId => timelineCards.find(card => card.mailRefId === mailRefId) ?? discussedMail.get(mailRefId),
     supportsAttachments: capabilities.includes("plugin.assistant-mail.attachments.v1"),
     supportsFiling, supportsCategories, order,
     categories, categoryLabel: id => categories.find(category => category.id === id)?.label,
@@ -239,6 +244,8 @@ export function AssistantMailProvider({ hostId, snapshot, online, request, loadC
     selectMail: card => {
       if (!canReference) return;
       if (!capabilities.includes(ASSISTANT_ATTENTION_CAPABILITY)) markViewed(card);
+      const { seq, mailRefId, subject, from, receivedAt } = card;
+      setDiscussedMail(current => new Map(current).set(mailRefId, { seq, mailRefId, subject, from, receivedAt }));
       setSelection({ sessionId: assistant!.binding!.nativeSessionId!, card });
       onDiscuss?.();
     },

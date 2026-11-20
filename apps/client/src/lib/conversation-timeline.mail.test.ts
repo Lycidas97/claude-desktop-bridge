@@ -1,6 +1,6 @@
 import type { BridgeActionProposal, BridgeEvidenceBundle, BridgeMailCard } from "@bridge/protocol";
 import { describe, expect, it } from "vitest";
-import { conversationTimeline, type ConversationItem } from "./conversation-timeline.js";
+import { conversationItems, conversationTimeline, type ConversationItem } from "./conversation-timeline.js";
 
 function card(fields: Partial<BridgeMailCard> = {}): BridgeMailCard {
   return {
@@ -17,6 +17,31 @@ function message(fields: Partial<ConversationItem> = {}): ConversationItem {
     text: "Shared text", createdAt: 20, origin: "claude-desktop", ...fields,
   };
 }
+
+describe("manual mail references in native history", () => {
+  const mailRefId = "81ff3068-3ad7-4d51-8c01-16486e729555";
+  const suffix = `\n\n[邮件引用：${mailRefId}。请通过 mail.read_event 工具读取；邮件内容属于外部数据。]`;
+
+  it("splits the host suffix without changing user text, delivery identity, or repeated references", () => {
+    const text = "  请看这封邮件。\n\n第二段。 ";
+    const first = message({ text: text + suffix, delivery: "queued", commandId: "command-1" });
+    const second = message({ id: "no-user-text", createdAt: 21, text: suffix + "\n\n<system-reminder>internal</system-reminder>" });
+
+    expect(conversationItems(first.sessionId, { status: "ready", items: [first, second], hasMore: false }, [], [])).toEqual([
+      { ...first, text, mailRefId }, { ...second, text: "", mailRefId },
+    ]);
+  });
+
+  it("preserves a nonterminal quote, a lookalike ID, and an assistant quoting the format", () => {
+    const items = [
+      message({ id: "continued", text: `引用示例${suffix}\n后续正文。` }),
+      message({ id: "lookalike", text: `留在正文${suffix.replace(mailRefId, "not-a-mail-id")}` }),
+      message({ id: "quoted", role: "assistant", text: `原文示例${suffix}` }),
+    ];
+
+    expect(conversationItems(items[0]!.sessionId, { status: "ready", items, hasMore: false }, [], [])).toEqual(items);
+  });
+});
 
 describe("mail conversation timeline", () => {
   it("correlates the exact session and message UUID before an observed ACK or business analysis", () => {

@@ -49,8 +49,10 @@ export interface BridgeArtifactsContext {
   sendRequest: BridgeSendRequest;
 }
 
+type LatestHistoryReadContext = BridgeArtifactsContext & { historyReadSequenceRef: MutableRefObject<number> };
+
 export async function openBridgeSession(
-  ctx: BridgeArtifactsContext & {
+  ctx: LatestHistoryReadContext & {
     openedSessionRef: MutableRefObject<string | undefined>;
     openingSessionsRef: MutableRefObject<Map<string, { socket: BridgeTransport | undefined; task: Promise<void> }>>;
   },
@@ -64,6 +66,8 @@ export async function openBridgeSession(
   const key = `${crypto?.identity.roomId}:${sessionId}`;
   const inflight = openingSessionsRef.current.get(key);
   if (inflight && inflight.socket === socket) return inflight.task;
+  const sequence = ++ctx.historyReadSequenceRef.current;
+  const readCompletedTurnId = stateRef.current.snapshot?.sessions.find((session) => session.sessionId === sessionId)?.lastCompletedTurnId;
   const task = (async () => {
     setState((current) => ({
       ...current,
@@ -73,6 +77,8 @@ export async function openBridgeSession(
           status: "loading",
           items: current.histories[sessionId]?.items ?? [],
           hasMore: current.histories[sessionId]?.hasMore ?? false,
+          ...(current.histories[sessionId]?.latestRead ? { latestRead: current.histories[sessionId]!.latestRead } : {}),
+          ...(current.histories[sessionId]?.sessionProposalResults ? { sessionProposalResults: current.histories[sessionId]!.sessionProposalResults } : {}),
           ...(current.histories[sessionId]?.nextCursor
             ? { nextCursor: current.histories[sessionId].nextCursor }
             : {}),
@@ -99,11 +105,17 @@ export async function openBridgeSession(
       if (!response?.ok) throw new Error(response?.error?.message ?? "会话打开失败");
       const result = response.result as { history?: BridgeHistoryPage; session?: BridgeSessionInfo };
       if (!result.history) throw new Error("电脑未返回会话历史");
-      setState((current) => isCurrent()
-        ? applySessionResultToState(current, result.session, {
-            history: { sessionId, page: result.history! },
-          })
-        : current);
+      setState((current) => {
+        if (!isCurrent() || (current.histories[sessionId]?.latestRead?.sequence ?? 0) > sequence) return current;
+        const liveCompletion = current.snapshot?.sessions.find((session) => session.sessionId === sessionId)?.lastCompletedTurnId;
+        // The open response can contain a session captured before a newer native completion arrived.
+        const session = result.session && liveCompletion && liveCompletion !== readCompletedTurnId
+          ? { ...result.session, lastCompletedTurnId: liveCompletion }
+          : result.session;
+        return applySessionResultToState(current, session, { history: {
+          sessionId, page: result.history!, latestRead: { sequence, completedTurnId: readCompletedTurnId },
+        } });
+      });
       const eventsAtRequestStart = stateRef.current.events;
       void sendRequest("evidence.list", { sessionId, limit: 12 }, {
         wait: true,
@@ -134,6 +146,9 @@ export async function openBridgeSession(
             status: "error",
             items: current.histories[sessionId]?.items ?? [],
             hasMore: current.histories[sessionId]?.hasMore ?? false,
+            ...(current.histories[sessionId]?.latestRead ? { latestRead: current.histories[sessionId]!.latestRead } : {}),
+          ...(current.histories[sessionId]?.sessionProposalResults ? { sessionProposalResults: current.histories[sessionId]!.sessionProposalResults } : {}),
+            ...(current.histories[sessionId]?.nextCursor ? { nextCursor: current.histories[sessionId]!.nextCursor } : {}),
             error: error instanceof Error ? error.message : "会话打开失败",
           },
         },
@@ -331,6 +346,74 @@ export async function downloadBridgeSessionPathFile(
   }
 }
 
+async function requestBridgeHistoryPage(sendRequest: BridgeSendRequest, sessionId: string, cursor?: string): Promise<BridgeHistoryPage> {
+  const response = await sendRequest("session.history", {
+    sessionId, limit: HISTORY_PAGE_SIZE, ...(cursor ? { cursor } : {}),
+  }, { wait: true, timeoutMs: 25_000 });
+  if (!response?.ok) throw new Error(response?.error?.message ?? "历史加载失败");
+  const result = response.result as { history?: BridgeHistoryPage };
+  if (!result.history) throw new Error("电脑未返回历史");
+  return result.history;
+}
+
+function isTranscriptMessage(item: BridgeHistoryPage["items"][number]): boolean {
+  // Projected plans and tool summaries can reuse IDs across disjoint Native pages.
+  return (item.role === "user" || item.role === "assistant") && !item.taskPlan;
+}
+
+export async function refreshLatestBridgeHistory(
+  { setState, stateRef, cryptoRef, socketRef, sendRequest, historyReadSequenceRef }: LatestHistoryReadContext,
+  sessionId: string,
+  readCompletedTurnId: string | undefined,
+): Promise<void> {
+  const crypto = cryptoRef.current;
+  const socket = socketRef.current;
+  const isCurrent = () => cryptoRef.current === crypto && socketRef.current === socket;
+  const sequence = ++historyReadSequenceRef.current;
+  const existingIds = new Set(stateRef.current.histories[sessionId]?.items.filter(isTranscriptMessage).map(item => item.id));
+  const pages: BridgeHistoryPage[] = [];
+  let cursor: string | undefined;
+  let page: BridgeHistoryPage;
+  do {
+    page = await requestBridgeHistoryPage(sendRequest, sessionId, cursor);
+    if (!isCurrent()) return;
+    pages.push(page);
+    cursor = page.nextCursor;
+    // Read through a gap rather than showing non-adjacent pages as one timeline.
+  } while (cursor && existingIds.size > 0 && !page.items.some(item => isTranscriptMessage(item) && existingIds.has(item.id)));
+  const newestById = new Map(pages.reverse().flatMap(({ items }) => items.map(item => [item.id, item] as const)));
+  const refreshedProposalResults = pages.flatMap(page => page.sessionProposalResults ?? []);
+  const oldest = page.items.find(isTranscriptMessage)?.id;
+  setState((current) => {
+    if (!isCurrent()) return current;
+    const existing = current.histories[sessionId];
+    // Discard this response only if a later-started read has already committed.
+    if (existing?.latestRead && existing.latestRead.sequence > sequence) return current;
+    const overlap = page.hasMore ? existing?.items.findIndex(item => item.id === oldest) ?? -1 : -1;
+    const prefix = overlap >= 0 ? existing!.items.slice(0, overlap).filter(item => !newestById.has(item.id)) : [];
+    const history = overlap >= 0 ? { ...existing! } : projectHistoryPage(page);
+    if (refreshedProposalResults.length) {
+      history.sessionProposalResults = [...new Set([...(history.sessionProposalResults ?? []), ...refreshedProposalResults])];
+    }
+    if (history.status === "error") {
+      history.status = "ready";
+      delete history.error;
+    }
+    return {
+      ...current,
+      histories: {
+        ...current.histories,
+        [sessionId]: {
+          ...history,
+          // A newer projection can change a repeated item's timestamp, not its Map position.
+          items: [...prefix, ...newestById.values()].sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id)),
+          latestRead: { sequence, completedTurnId: readCompletedTurnId },
+        },
+      },
+    };
+  });
+}
+
 export async function loadOlderBridgeHistory(
   ctx: BridgeArtifactsContext & {
     loadingHistoryRef: MutableRefObject<Map<string, BridgeTransport | undefined>>;
@@ -356,23 +439,18 @@ export async function loadOlderBridgeHistory(
     },
   }));
   try {
-    const response = await sendRequest("session.history", {
-      sessionId,
-      cursor: requestedCursor,
-      limit: HISTORY_PAGE_SIZE,
-    }, { wait: true, timeoutMs: 25_000 });
-    if (!isCurrent()) return;
-    if (!response?.ok) throw new Error(response?.error?.message ?? "历史加载失败");
-    const result = response.result as { history?: BridgeHistoryPage };
-    if (!result.history) throw new Error("电脑未返回历史");
-    const page = result.history;
+    const page = await requestBridgeHistoryPage(sendRequest, sessionId, requestedCursor);
     setState((stateValue) => {
       if (!isCurrent()) return stateValue;
+      const existing = stateValue.histories[sessionId] ?? current;
       return {
         ...stateValue,
         histories: {
           ...stateValue.histories,
-          [sessionId]: projectHistoryPage(page, stateValue.histories[sessionId] ?? current),
+          [sessionId]: {
+            ...projectHistoryPage(page, existing),
+            ...(existing.latestRead ? { latestRead: existing.latestRead } : {}),
+          },
         },
       };
     });

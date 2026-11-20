@@ -90,6 +90,7 @@ export interface SessionHistoryState {
   nextCursor?: string;
   hasMore: boolean;
   error?: string;
+  latestRead?: { sequence: number; completedTurnId: string | undefined };
 }
 
 export interface SessionEvidenceState {
@@ -146,6 +147,7 @@ export interface MobileBridgeState {
   desktopName: string | undefined;
   connection: SocketState;
   desktopOnline: boolean;
+  foregroundRevision?: number;
   snapshot: BridgeHostSnapshot | undefined;
   snapshotSeq: number;
   permissions: BridgePermissionInfo[];
@@ -1480,6 +1482,7 @@ export interface ApplySessionResultOptions {
   history?: {
     sessionId: string;
     page: BridgeHistoryPage;
+    latestRead?: SessionHistoryState["latestRead"];
   } | undefined;
   titleOnly?: boolean | undefined;
   prepend?: boolean | undefined;
@@ -1566,7 +1569,10 @@ export function applySessionResultToState(
   const histories = options.history
     ? {
         ...current.histories,
-        [options.history.sessionId]: projectHistoryPage(options.history.page),
+        [options.history.sessionId]: {
+          ...projectHistoryPage(options.history.page),
+          ...(options.history.latestRead ? { latestRead: options.history.latestRead } : {}),
+        },
       }
     : current.histories;
   if (snapshot === current.snapshot && histories === current.histories) return current;

@@ -30,6 +30,7 @@ import {
   LoaderCircle,
   MoreHorizontal,
   ShieldCheck,
+  X,
 } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from "react";
 import {
@@ -134,6 +135,7 @@ export interface ConversationViewProps {
   onRefresh?: ((sessionId?: string) => Promise<unknown>) | undefined;
   onRetry?: (() => Promise<void>) | undefined;
   history: SessionHistoryState | undefined;
+  latestHistorySync?: "loading" | { error: string; retry(): Promise<void>; dismiss(): void } | undefined;
   evidence: SessionEvidenceState | undefined;
   openedEvidenceIds?: ReadonlySet<string> | undefined;
   renderEvidence(props: Pick<ComponentProps<typeof EvidencePanel>,
@@ -223,6 +225,7 @@ export function ConversationView({
   onRefresh,
   onRetry,
   history,
+  latestHistorySync,
   evidence,
   openedEvidenceIds,
   renderEvidence,
@@ -1365,6 +1368,18 @@ export function ConversationView({
       {isAssistant ? (
         <div className="conversation-stage" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
           {transcript}
+          {!transcriptHidden && latestHistorySync && (latestHistorySync === "loading" ? (
+            <div className="latest-history-notice session-channel-warning" role="status">
+              <LoaderCircle className="is-spinning" size={15} aria-hidden="true" />正在同步最新对话…
+            </div>
+          ) : (
+            <div className="latest-history-notice session-channel-warning danger">
+              <AlertTriangle size={17} aria-hidden="true" />
+              <span role="alert"><strong>最新对话同步失败</strong>{latestHistorySync.error}</span>
+              <button type="button" className="secondary-button" disabled={!isOnline || history?.status === "loading"} onClick={() => void latestHistorySync.retry()}>重试同步</button>
+              <IconButton label="关闭同步提示" onClick={latestHistorySync.dismiss}><X size={16} aria-hidden="true" /></IconButton>
+            </div>
+          ))}
           {hasAlternateStage ? (
             <div className="conversation-alternate-stage" style={{ flex: 1, overflowY: "auto" }}>
               {alternateStage(canConfigure && isOnline ? () => setInternalConfiguration("model-effort") : undefined)}

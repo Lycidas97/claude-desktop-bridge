@@ -31,7 +31,7 @@ const SECTIONS = [
   ["quota", "Magpie 额度"],
   ["connections", "连接与启动"],
   ["appearance", "外观与显示"],
-  ["about", "诊断与关于"],
+  ["about", "诊断与支持"],
 ] as const;
 
 export type DesktopSettingsSection = typeof SECTIONS[number][0];
@@ -183,7 +183,6 @@ export function DesktopDevices({
           className="desktop-page-empty"
           icon={<Smartphone size={22} aria-hidden="true" />}
           title="还没有配对手机"
-          description="点击右上角「添加手机」生成十分钟有效的配对二维码。"
         />
       )}
       <ConfirmationDialog
@@ -520,7 +519,7 @@ export function DesktopSettings({
             {section === "connections" && (
               <SettingsGroup title="连接" label="连接与启动">
                 <dl className="settings-facts">
-                  <div><dt>主机状态</dt><dd>{snapshot.connection === "connected" ? "已连接" : snapshot.connection === "connecting" || snapshot.connection === "reconnecting" ? "正在连接" : "离线"}</dd></div>
+                  <div><dt>连接状态</dt><dd>{snapshot.connection === "connected" ? "已连接" : snapshot.connection === "connecting" || snapshot.connection === "reconnecting" ? "正在连接" : "离线"}</dd></div>
                   <div><dt>连接方式</dt><dd>{snapshot.transport ? ({ direct: "直连", "public-relay": "安全中继", "lan-relay": "局域网连接" })[snapshot.transport.path] : "等待连接"} · 端到端加密</dd></div>
                   <div><dt>连接延迟</dt><dd>{snapshot.transport?.rttMs !== undefined ? `${Math.round(snapshot.transport.rttMs)} ms` : "正在测量"}</dd></div>
                   <div><dt>待发送</dt><dd>{snapshot.transport?.pendingCount ?? 0} 条</dd></div>
@@ -550,9 +549,9 @@ export function DesktopSettings({
             )}
             {section === "appearance" && <AppearanceSettings themeControl={themeControl} />}
             {section === "about" && (
-              <SettingsGroup title="诊断与关于" label="诊断与关于">
+              <SettingsGroup title="诊断与支持" label="诊断与支持">
                 <dl className="settings-facts">
-                  <div><dt>Bridge 版本</dt><dd>{snapshot.host.version}</dd></div>
+                  <div><dt>当前版本</dt><dd>{snapshot.host.version}</dd></div>
                   <div><dt>电脑</dt><dd>{snapshot.host.name}</dd></div>
                   <div><dt>Claude 版本</dt><dd>{snapshot.runtime.version ?? "未检测到"}</dd></div>
                   <div><dt>原生中转</dt><dd>{isClaudeNativeRelay(snapshot) ? "已就绪" : "未就绪"}</dd></div>

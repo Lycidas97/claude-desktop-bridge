@@ -39,6 +39,7 @@ import { SessionProfileSummary } from "./session/SessionProfileSummary.js";
 import { SectionCreateDialog } from "./session/SectionCreateDialog.js";
 import { SectionManageDialog } from "./session/SectionManageDialog.js";
 import { SessionActionSheets } from "./session/SessionActionSheets.js";
+import { SessionConfigurationDialog } from "./session/SessionConfigurationDialog.js";
 import { SessionCreateDialog } from "./session/SessionCreateDialog.js";
 import { MobilePageHeader } from "./mobile/MobilePageHeader.js";
 import { ProjectOrderSheet } from "./mobile/ProjectOrderSheet.js";
@@ -306,14 +307,14 @@ describe("desktop session header", () => {
     Object.assign(snapshot.sessions[0]!, { model: "model-id", modelDisplayName: "Claude Opus 5.5 custom model", effort: "high", nativePermissionMode: "auto" });
     snapshot.sessions[0]!.allowedActions!.canConfigure = canConfigure;
     await openSessions();
-    expect(textContent(tree).replace(/\s+/gu, " ")).toContain("Claude Opus 5.5 custom model · High · Auto");
+    expect(textContent(tree).replace(/\s+/gu, " ")).toContain("Claude Opus 5.5 custom model · 高 · 自动模式");
     expect(elements(tree).some(element => element.props["aria-label"] === "会话设置")).toBe(canConfigure);
     const updated = { ...snapshot, sessions: [{ ...snapshot.sessions[0]!, nativePermissionMode: "dontAsk" as const }] };
     tree = sessions.draw({ ...sessionsProps, snapshot: updated });
-    expect(textContent(tree).replace(/\s+/gu, " ")).toContain("Claude Opus 5.5 custom model · High · Don't Ask");
+    expect(textContent(tree).replace(/\s+/gu, " ")).toContain("Claude Opus 5.5 custom model · 高 · 仅允许已批准");
     const bypassed = { ...snapshot, sessions: [{ ...snapshot.sessions[0]!, nativePermissionMode: "bypassPermissions" as const }] };
     tree = sessions.draw({ ...sessionsProps, snapshot: bypassed });
-    expect(textContent(tree).replace(/\s+/gu, " ")).toContain("Claude Opus 5.5 custom model · High · Bypass");
+    expect(textContent(tree).replace(/\s+/gu, " ")).toContain("Claude Opus 5.5 custom model · 高 · 完全授权");
     expect(elements(tree).some(element => typeof element.props.className === "string" && element.props.className.includes("is-bypass"))).toBe(true);
     expect(apiRequest).not.toHaveBeenCalled();
   });
@@ -884,7 +885,7 @@ describe("desktop common commands", () => {
     await settle();
     tree = sessions.draw();
 
-    expect(elements(tree).find(element => element.type === SessionCommandDialogs)!.props.session.sessionId).toBe("new-A");
+    expect(elements(tree).find(element => element.type === ConversationView)!.props.session.sessionId).toBe("new-A");
     expect(apiRequest.mock.calls.filter(([req]) => req.method === "session.open" && req.params.sessionId === "new-A")).toHaveLength(1);
     expect(elements(tree).filter((element) => element.type === ConversationMessageItem).map((element) => element.props.item.text))
       .toEqual(["New context history"]);
@@ -1993,7 +1994,7 @@ describe("unified desktop and assistant conversation composition", () => {
         },
       },
     });
-    await expect(artifactDownloadPromise).rejects.toThrow("主机已切换");
+    await expect(artifactDownloadPromise).rejects.toThrow("电脑已切换");
     standaloneTree = standalone.draw();
     expect(collectDiagnosticsStateSnapshot().desktopConversations).toMatchObject({ artifactTransfersCount: 1 });
 
@@ -2018,7 +2019,7 @@ describe("unified desktop and assistant conversation composition", () => {
     await settle();
     standaloneTree = standalone.draw();
     expect(collectDiagnosticsStateSnapshot().desktopConversations).toMatchObject({ artifactTransfersCount: 0 });
-    expect(elements(standaloneTree).some((element) => element.props.role === "alert" && textContent(element).includes("主机已切换"))).toBe(true);
+    expect(elements(standaloneTree).some((element) => element.props.role === "alert" && textContent(element).includes("电脑已切换"))).toBe(true);
 
     // Neither host-2 nor host-1 receives read or close with stale transferIds after the host switch
     expect(host2Api).not.toHaveBeenCalled();
@@ -2154,10 +2155,10 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
     tree = sessions.draw();
     expect(elements(tree).some((element) => element.props.className === "project-group-empty" && element.props.children === "此分组暂无会话")).toBe(true);
 
-    // Create section via 项目 micro-header + 分组 -> 新建 Section modal (auto-expanded via revealedEmptySectionKey)
+    // Create section via 项目 micro-header + 分组 -> 新建分组 modal (auto-expanded via revealedEmptySectionKey)
     elements(tree).find((element) => element.type === "button" && element.props.children === "+ 分组")!.props.onClick();
     tree = sessions.draw();
-    const sectionInput = elements(tree).find((element) => element.props["aria-label"] === "Section 名称")!;
+    const sectionInput = elements(tree).find((element) => element.props["aria-label"] === "分组名称")!;
     sectionInput.props.onChange({ target: { value: "Experiments" } });
     tree = sessions.draw();
     apiRequest.mockResolvedValueOnce({
@@ -2177,7 +2178,7 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
         },
       },
     });
-    const sectionDialog = elements(tree).find((element) => element.props["aria-label"] === "新建 Section")!;
+    const sectionDialog = elements(tree).find((element) => element.props["aria-label"] === "新建分组")!;
     const sectionForm = elements(sectionDialog).find((element) => element.type === "form")!;
     sectionForm.props.onSubmit({ preventDefault: vi.fn() });
     await settle();
@@ -2203,7 +2204,10 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
     elements(tree).find((element) => element.type === IconButton && element.props.label === "管理分组：Research")!.props.onClick();
     tree = sessions.draw();
     apiRequest.mockResolvedValueOnce({ kind: "response", requestId: "sec-delete", ok: true, result: {} });
-    elements(tree).find((element) => element.type === SheetAction && element.props.label === "删除空分组")!.props.onClick();
+    elements(tree).find((element) => element.type === SheetAction && element.props.label === "删除分组")!.props.onClick();
+    tree = sessions.draw();
+    expect(apiRequest).not.toHaveBeenCalledWith({ method: "section.delete", params: { sectionId: "sec-1" } });
+    elements(tree).find((element) => element.type === ConfirmationDialog && element.props.title === "删除分组")!.props.onConfirm();
     await settle();
     expect(apiRequest).toHaveBeenCalledWith({ method: "section.delete", params: { sectionId: "sec-1" } });
 
@@ -2276,6 +2280,17 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
     tree = sessions.draw();
     expect(elements(tree).find((element) => element.type === Sheet && element.props.title === activeTitle)!.props.focusPaused).toBe(false);
     elements(tree).find((element) => element.type === Sheet && element.props.title === activeTitle)!.props.onClose();
+    tree = sessions.draw();
+
+    // The sidebar row menu offers the same management entries as the conversation menu.
+    elements(tree).find((element) => element.props.label === `会话操作：${activeTitle}`)!.props.onClick();
+    tree = sessions.draw();
+    expect(elements(tree).filter((element) => element.type === SheetAction).map((element) => element.props.label))
+      .toEqual(expect.arrayContaining(["会话设置", "同步此会话", "删除会话"]));
+    elements(tree).find((element) => element.type === SheetAction && element.props.label === "会话设置")!.props.onClick();
+    tree = sessions.draw();
+    expect(elements(tree).find((element) => element.type === SessionConfigurationDialog)?.props.session.sessionId).toBe(snapshot.sessions[0]!.sessionId);
+    elements(tree).find((element) => element.type === SessionConfigurationDialog)!.props.onClose();
     tree = sessions.draw();
 
     // Per-project 新建会话：<项目名> opens unified NewChatCanvas with initialProjectId and wires directory browse/mkdir
@@ -2670,6 +2685,8 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
       renderConversation: () => null,
     });
     let assistantTree = assistantRenderer.draw();
+    elements(assistantTree).find((element) => element.type === IconButton && element.props.label === "助理设置")!.props.onClick();
+    assistantTree = assistantRenderer.draw();
     elements(assistantTree).find((element) => element.type === "button" && element.props.children === "新建会话")!.props.onClick();
     assistantTree = assistantRenderer.draw();
     const assistantCreateDialog = elements(assistantTree).find((element) => element.type === SessionCreateDialog)!;

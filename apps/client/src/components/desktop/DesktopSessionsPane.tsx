@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { ThemeControl } from "../../hooks/useTheme.js";
+import { canConfigureSession } from "../../lib/conversation-timeline.js";
 import {
   CLAUDE_UNSECTIONED_PROJECT_ID,
   expandProject,
@@ -33,12 +34,14 @@ import { EmptyState } from "../common/EmptyState.js";
 import { IconButton } from "../common/IconButton.js";
 import { ThemeMenu } from "../common/ThemeMenu.js";
 import { useConversationDrafts } from "../conversation/ConversationDraftsProvider.js";
+import { SessionPrActions } from "../conversation/SessionPrBar.js";
 import { ProjectOrderSheet } from "../mobile/ProjectOrderSheet.js";
 import { NewChatCanvas, type NewChatDirectoryPickerRequest } from "../session/NewChatCanvas.js";
 import { ProjectGroupHeader } from "../session/ProjectGroupHeader.js";
 import { SectionCreateDialog, type SectionCreateState } from "../session/SectionCreateDialog.js";
 import { SectionManageDialog, useSectionManage } from "../session/SectionManageDialog.js";
 import { SessionActionSheets } from "../session/SessionActionSheets.js";
+import { SessionConfigurationDialog } from "../session/SessionConfigurationDialog.js";
 import { SessionCreateDialog } from "../session/SessionCreateDialog.js";
 import { SessionFamilyList } from "../session/SessionFamilyList.js";
 import { useProjectSessionGroups } from "../session/useProjectSessionGroups.js";
@@ -63,7 +66,7 @@ export type DesktopWorkspaceTab = "sessions" | "assistant" | "settings";
 export function connectionLabel(snapshot: DesktopControlSnapshot): string {
   if (snapshot.host.version.startsWith("0.2.")) return "需要升级";
   if (snapshot.connection === "connecting" || snapshot.connection === "reconnecting") return "正在重连";
-  if (snapshot.connection !== "connected") return "主机离线";
+  if (snapshot.connection !== "connected") return "电脑离线";
   if (snapshot.transport?.path === "direct") return "直连";
   if (snapshot.transport?.path === "public-relay") return "安全中继";
   return "局域网连接";
@@ -185,7 +188,9 @@ export function DesktopSessions({
   const [rowRenameSessionId, setRowRenameSessionId] = useState<string>();
   const [rowRenameTitle, setRowRenameTitle] = useState("");
   const [rowDeleteSessionId, setRowDeleteSessionId] = useState<string>();
-  const { busy: rowActionBusy, error: rowActionError, setError: setRowActionError, run: runRowAction } = useSessionMenuAction();
+  const [rowConfigurationSessionId, setRowConfigurationSessionId] = useState<string>();
+  const [rowSync, setRowSync] = useState<{ sessionId: string; synced: boolean }>();
+  const { busy: rowActionBusy, setBusy: setRowActionBusy, error: rowActionError, setError: setRowActionError, run: runRowAction } = useSessionMenuAction();
   const desktopProjectListRef = useRef<HTMLDivElement>(null);
   const rowRenameDialogRef = useRef<HTMLElement>(null);
   const handledResetEventsRef = useRef(new Set<string>());
@@ -321,7 +326,7 @@ export function DesktopSessions({
       method: "section.create",
       params: { name: rawName.trim() },
     }));
-    if (!project) throw new Error("Section 未创建，请重试。");
+    if (!project) throw new Error("分组未创建，请重试。");
     sectionManage.revealEmptySections();
     registerCreatedSection(project.projectId, options);
     await onRefreshSnapshot();
@@ -338,7 +343,7 @@ export function DesktopSessions({
       setSectionCreate({
         ...sectionCreate,
         busy: false,
-        error: reason instanceof Error ? reason.message : "Section 创建失败",
+        error: reason instanceof Error ? reason.message : "分组创建失败",
       });
     }
   }
@@ -384,6 +389,23 @@ export function DesktopSessions({
     if (!rowRenameSessionId || !rowActionBusy) return;
     rowRenameDialogRef.current?.focus();
   }, [rowActionBusy, rowRenameSessionId]);
+
+  useEffect(() => {
+    if (!rowSync?.synced) return;
+    const timer = setTimeout(() => setRowSync(undefined), 2_400);
+    return () => clearTimeout(timer);
+  }, [rowSync]);
+
+  async function syncRowSession(sessionId: string): Promise<void> {
+    setRowActionError(undefined);
+    setRowSync({ sessionId, synced: false });
+    try {
+      setRowSync(await controller.refreshSession(sessionId, hostId) ? { sessionId, synced: true } : undefined);
+    } catch (reason) {
+      setRowSync(undefined);
+      setRowActionError(reason instanceof Error ? reason.message : "同步会话失败");
+    }
+  }
 
   async function createSession(
     cwd: string,
@@ -512,6 +534,9 @@ export function DesktopSessions({
   const rowDeleteSession = rowDeleteSessionId
     ? snapshot.sessions.find((candidate) => candidate.sessionId === rowDeleteSessionId)
     : undefined;
+  const rowConfigurationSession = rowConfigurationSessionId
+    ? snapshot.sessions.find((candidate) => candidate.sessionId === rowConfigurationSessionId)
+    : undefined;
   const rowMoveMenuOpen = Boolean(rowMenuSession && rowMoveMenuSessionId === rowMenuSession.sessionId);
   const rowMenuSupportsRename = Boolean(
     rowMenuSession && (
@@ -624,15 +649,12 @@ export function DesktopSessions({
 
             {searchQuery ? (
               grouped.length === 0 && (
-                <EmptyState title="没有匹配的会话" description="换一个关键词试试。" />
+                <EmptyState title="没有匹配的会话" />
               )
             ) : (
               !hasActiveSessions && (
                 <EmptyState
                   title={snapshot.runtime.desktopIntegration.state === "ready" ? "暂无活跃会话" : "未检测到 Claude Desktop"}
-                  {...(snapshot.projects.length > 0
-                    ? { description: `已配置 ${snapshot.projects.length} 个项目分组，开始提问后自动归入对应目录` }
-                    : {})}
                   action={(
                     <button
                       type="button"
@@ -715,7 +737,6 @@ export function DesktopSessions({
                               seenCompletions={seenCompletions}
                               flat
                               sessionDrag={sessionDrag}
-                              actionLabel={(session) => `会话操作：${session.title}`}
                               onSelectSession={selectSessionFromSidebar}
                               onOpenSessionActions={(targetSessionId) => {
                                 setRowActionError(undefined);
@@ -759,7 +780,6 @@ export function DesktopSessions({
                           selectedId={activeTab === "sessions" ? selectedId : undefined}
                           archivedList
                           flat
-                          actionLabel={(session) => `会话操作：${session.title}`}
                           onSelectSession={selectSessionFromSidebar}
                           onOpenSessionActions={(targetSessionId) => {
                             setRowActionError(undefined);
@@ -892,6 +912,30 @@ export function DesktopSessions({
         }}
         onSubmitRename={submitRowRename}
         onCloseRename={closeRowRename}
+        onOpenConfiguration={rowMenuSession && canConfigureSession(rowMenuSession, snapshot)
+          ? () => {
+              setRowConfigurationSessionId(rowMenuSession.sessionId);
+              setRowMenuSessionId(undefined);
+            }
+          : undefined}
+        syncAction={rowMenuSession ? {
+          refreshing: rowSync?.sessionId === rowMenuSession.sessionId && !rowSync.synced,
+          syncFlash: rowSync?.sessionId === rowMenuSession.sessionId && rowSync.synced,
+          disabled: Boolean(rowSync && !rowSync.synced),
+          onSync: () => syncRowSession(rowMenuSession.sessionId),
+        } : undefined}
+        prActions={rowMenuSession && !rowMenuSession.prs?.length && snapshot.host.capabilities.includes("pr.autofix.v1") ? (
+          <SessionPrActions
+            key={`${hostId}:${rowMenuSession.sessionId}`}
+            session={rowMenuSession}
+            events={hostEvents}
+            onWriteBusyChange={setRowActionBusy}
+            supported
+            online={snapshot.runtime.desktopIntegration.state === "ready"}
+            onRead={controller.readPrAutoFix}
+            onSet={controller.setPrAutoFix}
+          />
+        ) : undefined}
         onFork={rowMenuSession && rowMenuSupportsFork
           ? () => runRowAction("Fork 分支创建失败", async () => {
               const sourceId = rowMenuSession.sessionId;
@@ -932,6 +976,20 @@ export function DesktopSessions({
         }}
       />
 
+      {rowConfigurationSession && canConfigureSession(rowConfigurationSession, snapshot) && (
+        <SessionConfigurationDialog
+          key={`configuration:${rowConfigurationSession.sessionId}`}
+          session={rowConfigurationSession}
+          manageFocus
+          revision={hostEvents.filter((event) => (
+            ((event.type === "session.configuration" || event.type === "session.compacted") && event.sessionId === rowConfigurationSession.sessionId)
+            || (event.type === "permission.policy.changed" && (!event.sessionId || event.sessionId === rowConfigurationSession.sessionId))
+          )).at(-1)?.seq ?? 0}
+          onLoad={() => controller.loadSessionConfiguration(rowConfigurationSession.sessionId)}
+          onSave={(change) => controller.configureSession(rowConfigurationSession.sessionId, change)}
+          onClose={() => setRowConfigurationSessionId(undefined)}
+        />
+      )}
       {projectOrderOpen && (
         <ProjectOrderSheet
           manageFocus

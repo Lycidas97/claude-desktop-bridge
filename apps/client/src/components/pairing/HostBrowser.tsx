@@ -20,8 +20,7 @@ function statusLabel(host: PairedHost, isCurrent: boolean, isOnline: boolean): s
 
 function statusDotClass(host: PairedHost, isCurrent: boolean, isOnline: boolean): string {
   if (host.needsRepair) return "m-status-dot waiting";
-  if (!isCurrent) return "m-status-dot";
-  if (!isOnline) return "m-status-dot is-offline";
+  if (!isCurrent || !isOnline) return "m-status-dot";
   return host.status === "attention" ? "m-status-dot waiting" : "m-status-dot is-online";
 }
 
@@ -108,9 +107,6 @@ export function HostBrowser({
       />
 
       <section className="host-browser" aria-label="已配对的电脑">
-        <header className="host-browser-section-head">
-          <span>已授权主机 · {hosts.length}</span>
-        </header>
         <div className="host-rows">
           {hosts.map((host) => {
             const isCurrent = host.roomId === activeHostId;
@@ -157,9 +153,6 @@ export function HostBrowser({
           })}
         </div>
         {error && <div className="inline-error host-error" role="alert">{error}</div>}
-        <p className="host-browser-hint">
-          在电脑端打开 Bridge →「设置 → 手机配对与设备」即可展示配对二维码。所有会话流与工具审批均经端到端加密传输。
-        </p>
       </section>
       {menuHost && (
         <Sheet
@@ -182,7 +175,6 @@ export function HostBrowser({
               <SheetAction
                 icon={<Settings2 size={19} />}
                 label="连接与电脑设置"
-                detail={menuHost.roomId === activeHostId ? "连接状态、桌面应用、默认授权" : "切换到这台电脑后打开"}
                 onClick={() => {
                   setMenuHost(undefined);
                   onDetails(menuHost.roomId);
@@ -194,7 +186,6 @@ export function HostBrowser({
             <SheetAction
               icon={<Trash2 size={19} />}
               label="移除这台电脑"
-              detail="清除手机上的密钥和消息"
               danger
               onClick={() => {
                 setMenuHost(undefined);
@@ -207,7 +198,7 @@ export function HostBrowser({
       <ConfirmationDialog
         open={Boolean(removeCandidate)}
         title="移除这台电脑？"
-        description={`将清除“${removeCandidate?.desktopName ?? "这台电脑"}”在手机上的密钥和消息；电脑在线时也会同步撤销这台手机的权限。`}
+        description={`将清除「${removeCandidate?.desktopName ?? "这台电脑"}」在手机上的密钥和消息；电脑在线时也会同步撤销这台手机的权限。`}
         confirmLabel="移除电脑"
         danger
         busy={removing}

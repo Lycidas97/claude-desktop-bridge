@@ -117,7 +117,7 @@ export function MobileComposer({
   const hasAttach = canAttachImages || Boolean(onUploadFile);
   const defaultOnlinePlaceholder = variant === "desktop"
     ? (sessionView === "evidence"
-        ? "针对产出文件继续提问，或输入修改要求…"
+        ? "针对成果继续提问，或输入修改要求…"
         : "继续追问，或输入 / 调用技能…")
     : "继续追问…";
 

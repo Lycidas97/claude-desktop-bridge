@@ -6,7 +6,7 @@ import type {
   SocketState,
 } from "@bridge/protocol";
 import { Activity, LoaderCircle, Play, Power, RefreshCw, Trash2 } from "lucide-react";
-import { type ReactNode, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import type { MobileConnectionIssue } from "../../hooks/useMobileBridge.js";
 import { setDiagDialogOpen } from "../../lib/diagnostics.js";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
@@ -15,6 +15,8 @@ import { ConfirmationDialog } from "../common/ConfirmationDialog.js";
 import {
   resolveClaudeRemoteActivationDetail,
   resolveClaudeRemoteActivationStatus,
+  useClaudeRemoteActivation,
+  type MobileInspectorCalloutProps,
 } from "../mobile/MobileInspectorCallout.js";
 import { MobilePageHeader } from "../mobile/MobilePageHeader.js";
 import { RemoteDesktopUpdaterSection, type RemoteDesktopUpdateControl } from "../updater/UpdaterSections.js";
@@ -34,9 +36,11 @@ export interface MobileHostDetailsProps {
   onRetry(): Promise<void>;
   onRefresh(): Promise<boolean>;
   onDesktopAppAction(runtimeId: BridgeDesktopRuntimeId, action: "launch" | "quit"): Promise<BridgeDesktopAppStatus[]>;
+  // Opening the debug port shows the host's reply, as on the home callout and in new chat.
+  onActivateClaude?: MobileInspectorCalloutProps["onActivate"];
   onRemove(): Promise<void>;
   onBack(): void;
-  permissionSettings?: ReactNode;
+  backLabel?: string;
   remoteUpdate?: RemoteDesktopUpdateControl | undefined;
 }
 
@@ -54,9 +58,10 @@ export function MobileHostDetails({
   onRetry,
   onRefresh,
   onDesktopAppAction,
+  onActivateClaude,
   onRemove,
   onBack,
-  permissionSettings,
+  backLabel = "返回电脑列表",
   remoteUpdate,
 }: MobileHostDetailsProps) {
   const [connectionAction, setConnectionAction] = useState<"retry" | "refresh">();
@@ -64,20 +69,18 @@ export function MobileHostDetails({
   const [error, setError] = useState("");
   const [desktopAction, setDesktopAction] = useState<{ runtimeId: BridgeDesktopRuntimeId; action: "launch" | "quit" }>();
   const [desktopActionError, setDesktopActionError] = useState<{ runtimeId: BridgeDesktopRuntimeId; message: string }>();
-  const [attemptedClaudeEnable, setAttemptedClaudeEnable] = useState(false);
   const [quitDesktopTarget, setQuitDesktopTarget] = useState<BridgeDesktopRuntimeId>();
   const [removeOpen, setRemoveOpen] = useState(false);
   const [removing, setRemoving] = useState(false);
   const claudeStatus = resolveClaudeRemoteActivationStatus(snapshot);
+  const claudeActivation = useClaudeRemoteActivation(onActivateClaude, snapshot, claudeStatus);
 
   useEffect(() => {
-    setAttemptedClaudeEnable(false);
     setDesktopActionError(undefined);
   }, [activeHostId]);
 
   useEffect(() => {
     if (!claudeStatus.nativeUnavailable) {
-      setAttemptedClaudeEnable(false);
       setDesktopActionError((previous) => (previous?.runtimeId === "claude-desktop" ? undefined : previous));
     }
   }, [claudeStatus.nativeUnavailable]);
@@ -122,9 +125,6 @@ export function MobileHostDetails({
     if (action === "quit") setQuitDesktopTarget(undefined);
     setDesktopAction({ runtimeId, action });
     setDesktopActionError(undefined);
-    if (runtimeId === "claude-desktop" && action === "launch") {
-      setAttemptedClaudeEnable(true);
-    }
     try {
       await onDesktopAppAction(runtimeId, action);
       if (action === "launch") {
@@ -171,7 +171,7 @@ export function MobileHostDetails({
         title={desktopName}
         subtitle="连接与电脑设置"
         onBack={onBack}
-        backLabel="返回电脑列表"
+        backLabel={backLabel}
         backDisabled={removing}
       />
 
@@ -223,19 +223,22 @@ export function MobileHostDetails({
         {desktopApps.map((desktopApp) => {
           const isClaude = desktopApp.id === "claude-desktop";
           const canActivateClaude = isClaude && desktopOnline && Boolean(snapshot) && claudeStatus.nativeUnavailable && !claudeStatus.cannotActivate;
+          const activatesClaude = canActivateClaude && Boolean(onActivateClaude);
           const canLaunchButton = isClaude
             ? (desktopApp.canLaunch || canActivateClaude)
             : desktopApp.canLaunch;
-          const isLaunchingThis = desktopAction?.runtimeId === desktopApp.id && desktopAction.action === "launch";
+          const isLaunchingThis = (desktopAction?.runtimeId === desktopApp.id && desktopAction.action === "launch") || (isClaude && claudeActivation.busy);
+          const activationFeedback = isClaude ? claudeActivation.feedback : undefined;
           const launchLabel = isLaunchingThis
             ? (isClaude && desktopApp.state === "running" ? "正在开启…" : "启动中")
             : isClaude
               ? (desktopApp.state === "stopped" ? "启动 Claude" : claudeStatus.nativeUnavailable ? "开启调试端口" : "启动")
               : "启动";
+          const detailError = desktopActionError?.runtimeId === desktopApp.id || Boolean(activationFeedback?.error);
           const effectiveDetail = desktopActionError?.runtimeId === desktopApp.id
             ? desktopActionError.message
-            : (isClaude && desktopOnline && snapshot && claudeStatus.nativeUnavailable
-                ? resolveClaudeRemoteActivationDetail(snapshot, { attempted: attemptedClaudeEnable })
+            : activationFeedback?.detail ?? (isClaude && desktopOnline && snapshot && claudeStatus.nativeUnavailable
+                ? resolveClaudeRemoteActivationDetail(snapshot)
                 : desktopApp.detail);
           return (
             <section className={`mobile-desktop-control ${desktopApp.state}`} key={desktopApp.id}>
@@ -243,7 +246,7 @@ export function MobileHostDetails({
                 <i aria-hidden="true" />
                 <span>
                   <strong>{desktopApp.name}</strong>
-                  <small className={desktopActionError?.runtimeId === desktopApp.id ? "desktop-app-error" : undefined}>
+                  <small className={detailError ? "desktop-app-error" : undefined} {...(isClaude ? { role: "status" } : {})}>
                     {effectiveDetail}
                   </small>
                 </span>
@@ -252,8 +255,13 @@ export function MobileHostDetails({
                 <button
                   type="button"
                   className={isClaude && claudeStatus.nativeUnavailable && desktopOnline ? "primary-button" : "secondary-button"}
-                  disabled={Boolean(desktopAction) || removing || !desktopOnline || !canLaunchButton}
-                  onClick={() => void runDesktopAppAction(desktopApp.id, "launch")}
+                  disabled={Boolean(desktopAction) || claudeActivation.busy || removing || !desktopOnline || !canLaunchButton}
+                  onClick={() => {
+                    if (!activatesClaude) return void runDesktopAppAction(desktopApp.id, "launch");
+                    // The activation result replaces an earlier launch/quit error for Claude.
+                    setDesktopActionError(undefined);
+                    void claudeActivation.activate();
+                  }}
                 >
                   {isLaunchingThis ? <LoaderCircle size={15} className="is-spinning" /> : <Play size={15} />}
                   {launchLabel}
@@ -272,17 +280,15 @@ export function MobileHostDetails({
           );
         })}
         <div className="mobile-settings-row">
-          <span>9229 调试端口</span>
+          <span>调试端口 9229</span>
           <span className="mobile-settings-value">
             {desktopOnline && snapshot ? claudeStatus.portLabel : "等待连接"}
           </span>
         </div>
       </section>
 
-      {permissionSettings}
-
       {remoteUpdate ? (
-        <RemoteDesktopUpdaterSection remote={remoteUpdate} heading="远端桌面状态" />
+        <RemoteDesktopUpdaterSection remote={remoteUpdate} />
       ) : snapshot?.host.version ? (
         <section className="mobile-settings-group" aria-labelledby="host-about-title">
           <h2 id="host-about-title">电脑信息</h2>
@@ -302,7 +308,7 @@ export function MobileHostDetails({
       <ConfirmationDialog
         open={Boolean(quitDesktopTarget)}
         title={`退出电脑上的 ${quitDesktopTarget ? desktopRuntimeName(quitDesktopTarget) : ""}？`}
-        description={`${quitDesktopTarget ? desktopRuntimeName(quitDesktopTarget) : ""} 窗口会关闭，Bridge 主机仍保持在线，可继续管理已接管的远程会话。`}
+        description={`${quitDesktopTarget ? desktopRuntimeName(quitDesktopTarget) : ""} 窗口会关闭，Bridge 仍保持在线，可继续管理已接管的远程会话。`}
         confirmLabel={`退出 ${quitDesktopTarget ? desktopRuntimeName(quitDesktopTarget) : ""}`}
         busy={desktopAction?.action === "quit"}
         danger
@@ -314,7 +320,7 @@ export function MobileHostDetails({
       <ConfirmationDialog
         open={removeOpen}
         title="移除这台电脑？"
-        description={`将清除“${desktopName}”在手机上的密钥和消息；电脑在线时也会同步撤销这台手机的权限。`}
+        description={`将清除「${desktopName}」在手机上的密钥和消息；电脑在线时也会同步撤销这台手机的权限。`}
         confirmLabel="移除电脑"
         danger
         busy={removing}

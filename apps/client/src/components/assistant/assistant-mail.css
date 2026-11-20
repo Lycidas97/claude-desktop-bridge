@@ -97,7 +97,7 @@
 .assistant-context-usage { margin: 0 0 12px; color: var(--muted); }
 .assistant-context-usage dd { margin: 0; font-variant-numeric: tabular-nums; }
 .assistant-binding details { margin-top: 12px; font-size: calc(13px * var(--font-scale)); }
-.assistant-mail-list:not([hidden]) { display: grid; gap: 12px; }
+.assistant-mail-list:not([hidden]) { display: grid; }
 .assistant-mail-search { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; padding-inline: 12px; border: 1px solid var(--line); border-radius: var(--r-input); background: var(--surface); color: var(--muted); }
 .assistant-mail-search:focus-within { border-color: var(--accent-ink); }
 .assistant-mail-search input { min-width: 0; flex: 1; min-height: 44px; border: 0; background: transparent; color: var(--text); font: inherit; }
@@ -128,7 +128,8 @@ body:has(.assistant-mail-category-options) .diagnostic-floating-entry { display:
 .assistant-mail-junk-feedback [role="status"] { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .assistant-mail-junk-feedback [role="alert"] { flex-basis: 100%; color: var(--danger-ink); padding: 8px 0; }
 .assistant-mail-card { min-width: 0; max-width: 100%; padding: 16px; border: 1px solid var(--card-border); border-radius: var(--r-card); background: var(--card-fill); box-shadow: var(--card-hi); color: var(--text); overflow-wrap: anywhere; }
-.assistant-mail-list .assistant-mail-card { border-color: var(--line); }
+/* Mail lists are first-level pages: hairline rows, no card frame. The conversation stream keeps cards. */
+:is(.assistant-mail-list, .assistant-mail-group-cards) > .assistant-mail-card { padding: 16px 0; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; box-shadow: none; }
 .assistant-mail-card > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--muted); font-size: calc(11px * var(--font-scale)); }
 .assistant-mail-groups { min-width: 0; margin-bottom: 8px; }
 .assistant-mail-group { border-bottom: 1px solid var(--line); }
@@ -140,7 +141,7 @@ body:has(.assistant-mail-category-options) .diagnostic-floating-entry { display:
 :is(.assistant-mail-group > summary, .assistant-mail-filed-entry) > small { color: var(--muted); font-variant-numeric: tabular-nums; font-size: inherit; font-weight: 400; }
 :is(.assistant-mail-group > summary, .assistant-mail-filed-entry) > svg { color: var(--muted); flex-shrink: 0; }
 .assistant-mail-group[open] > summary > svg { transform: rotate(90deg); }
-.assistant-mail-group-cards { display: grid; gap: 12px; margin-bottom: 8px; }
+.assistant-mail-group-cards { display: grid; margin-bottom: 8px; }
 .assistant-mail-card > header span { display: inline-flex; align-items: center; gap: 6px; }
 .assistant-mail-card > header time { flex-shrink: 0; font-variant-numeric: tabular-nums; }
 .assistant-mail-card h3 { margin: 12px 0 5px; font-size: calc(16px * var(--font-scale)); line-height: 1.5; font-weight: 600; }
@@ -176,6 +177,7 @@ body:has(.assistant-mail-category-options) .diagnostic-floating-entry { display:
 .assistant-trigger-batch > details pre { white-space: pre-wrap; }
 .conversation-stream .assistant-mail-preview, .desktop-conversation-stream .assistant-mail-preview { -webkit-line-clamp: 3; white-space: normal; }
 .assistant-mail-empty { text-align: center; padding: 48px 8px; color: var(--muted); }
+.assistant-unbound { display: grid; justify-items: center; gap: 16px; padding: 48px 8px; color: var(--muted); }
 .assistant-mail-older { display: block; margin: 20px auto 0; }
 .conversation-stream > .assistant-mail-card, .desktop-conversation-stream > .assistant-mail-card { margin: 16px 0; }
 .assistant-page.has-conversation { display: flex; flex-direction: column; overflow: hidden; padding-bottom: 0; }
@@ -282,7 +284,7 @@ body:has(.assistant-mail-category-options) .diagnostic-floating-entry { display:
 .assistant-mail-reference p { grid-column: 1 / -1; margin: 0 8px 8px 0; color: var(--danger-ink); font-size: calc(12px * var(--font-scale)); }
 
 .assistant-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; }
-.assistant-workspace-confirm, .assistant-account-confirm { margin: 12px 0; }
+.assistant-workspace-confirm { margin: 12px 0; }
 .assistant-workspace-confirm code { display: block; margin-bottom: 12px; overflow-wrap: anywhere; color: var(--text); }
 .assistant-accounts-heading { border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .assistant-accounts-heading h2 { margin: 0; font-size: calc(16px * var(--font-scale)); font-weight: 600; }
@@ -297,7 +299,10 @@ body:has(.assistant-mail-category-options) .diagnostic-floating-entry { display:
 .assistant-account-state[data-state="reconnecting"] { color: var(--warm-ink); }
 .assistant-account-polling { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: calc(12px * var(--font-scale)); }
 .assistant-account-polling select { min-height: 36px; padding: 4px 8px; border: 1px solid var(--line-strong); border-radius: var(--r-input); color: var(--text); background: var(--surface); font: inherit; }
-.assistant-page-mobile .assistant-account-polling select { min-height: 44px; font-size: max(16px, calc(12px * var(--font-scale))); }
+/* On the phone the interval reads as a setting row with a quiet filled value, like search and the home capsules. */
+.assistant-page-mobile .assistant-account-polling { justify-content: space-between; color: var(--text); font-size: var(--m-fs-callout); }
+.assistant-page-mobile .assistant-account-polling select { min-height: var(--m-touch); padding: 0 12px; border: 0; border-radius: var(--m-r-control); background: color-mix(in srgb, var(--text) 5.5%, transparent); font-size: max(16px, var(--m-fs-callout)); }
+.assistant-page-mobile .assistant-session-link { font-size: var(--m-fs-callout); }
 .assistant-account-form { display: grid; min-width: 0; max-width: 30rem; gap: 12px; margin: 16px 0 0; padding: 0; border: 0; }
 .assistant-account-form legend { margin-bottom: 12px; padding: 0; font-size: calc(14px * var(--font-scale)); font-weight: 600; overflow-wrap: anywhere; }
 .assistant-smtp-fields { display: grid; min-width: 0; gap: 12px; margin: 0; padding: 0; border: 0; }

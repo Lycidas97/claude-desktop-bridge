@@ -1,5 +1,5 @@
 import type { BridgeEvent, BridgeHostSnapshot, BridgePrAutoFixState, BridgePrAutoFixUpdate, BridgeProjectInfo, BridgePullRequest, BridgeSessionCommandResult, BridgeSessionInfo } from "@bridge/protocol";
-import { CornerUpLeft, GitFork, MessageSquare, PackageCheck } from "lucide-react";
+import { CornerUpLeft, FileText, GitFork, MessageSquare } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import type { SessionHistoryState } from "../../hooks/useMobileBridge.js";
 import { desktopRuntimeId } from "../../lib/runtime-labels.js";
@@ -10,7 +10,8 @@ import { SessionPrActions } from "./SessionPrBar.js";
 
 export type ConversationMenuBindings = {
   open(): void;
-  requestRename(session: BridgeSessionInfo): void;
+  /** Present only when the computer can rename this session, so /rename follows the ⋯ menu. */
+  requestRename?: ((session: BridgeSessionInfo) => void) | undefined;
 } | {
   rename?: ((sessionId: string, title: string) => Promise<void>) | undefined;
   move?: ((sessionId: string, sectionId: string | null) => Promise<{ session?: BridgeSessionInfo; projects?: BridgeProjectInfo[] } | void>) | undefined;
@@ -245,8 +246,9 @@ export function useConversationMenu({ hostId, draftKey, previousDraftKeyRef, ses
       }
     },
     closeOnBack,
-    onRename: external ? () => external.requestRename(session) : (onRenameSession || onRunSessionCommand) ? startRename : undefined,
-    commitRename: onRenameSession ? (title: string) => onRenameSession(session.sessionId, title) : undefined,
+    onRename: external
+      ? external.requestRename && (() => external.requestRename!(session))
+      : menuSupportsRename ? startRename : undefined,
     canSync: canSyncSession,
     refreshing: effectiveRefreshing,
     refresh: runInternalRefresh,
@@ -293,10 +295,9 @@ export function useConversationMenu({ hostId, draftKey, previousDraftKeyRef, ses
           leadingGroup={(
             <div className="m-group">
               <SheetAction
-                icon={sessionView === "evidence" ? <MessageSquare size={19} /> : <PackageCheck size={19} />}
+                icon={sessionView === "evidence" ? <MessageSquare size={19} /> : <FileText size={19} />}
                 label={sessionView === "evidence" ? "返回对话" : `成果${evidenceCount > 0 ? ` ${evidenceCount}` : ""}`}
                 disabled={actionBusy}
-                detail={sessionView === "evidence" ? "回到对话记录" : "文件变更、产物与图片"}
                 onClick={() => {
                   onToggleView();
                   setInternalMenuOpen(false);

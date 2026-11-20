@@ -31,6 +31,7 @@ vi.mock("react", async (importOriginal) => ({
     }];
   },
   useMemo: (create: () => unknown) => create(),
+  useRef: (current: unknown) => ({ current }),
   useEffect(effect: () => (() => void) | void, deps?: unknown[]) {
     const index = hooks.effectIndex++;
     const previous = hooks.effects[index];
@@ -135,7 +136,7 @@ describe("session effort", () => {
     expect(button(draw(), "中").props["aria-pressed"]).toBe(true);
   });
 
-  it("shows gateway-only effort levels without offering them as settings", async () => {
+  it("offers only native effort levels when the gateway declares more", async () => {
     const loaded: BridgeSessionConfiguration = {
       ...configuration,
       availableModels: [{ value: "current-model", displayName: "Current", supportedEffortLevels: ["medium"], declaredEffortLevels: ["none", "medium", "ultra"] }],
@@ -144,7 +145,6 @@ describe("session effort", () => {
     const draw = () => render(() => <SessionConfigurationDialog {...props} />);
     draw(); await settle();
     const tree = draw();
-    expect(textContent(tree)).toContain("原生会话不支持：关闭、超高");
     expect(button(tree, "关闭")).toBeUndefined();
     expect(button(tree, "超高")).toBeUndefined();
     button(tree, "中").props.onClick();
@@ -152,21 +152,72 @@ describe("session effort", () => {
     expect(props.onSave).toHaveBeenCalledExactlyOnceWith({ effort: "medium" });
   });
 
-  it.each([
-    { declared: ["low", "ultra"], notice: "当前模型不可用：低、超高" },
-    { declared: ["ultra"], notice: "原生会话不支持：超高" },
-  ])("explains the unavailable levels when a model offers no selectable effort: $notice", async ({ declared, notice }) => {
+  it("hides the effort field when a model offers no selectable effort", async () => {
     const loaded: BridgeSessionConfiguration = {
       ...configuration,
-      availableModels: [{ value: "current-model", displayName: "Current", supportsEffort: false, declaredEffortLevels: declared }],
+      availableModels: [{ value: "current-model", displayName: "Current", supportsEffort: false, declaredEffortLevels: ["low", "ultra"] }],
     };
     const draw = () => render(() => <SessionConfigurationDialog session={session}
       onLoad={vi.fn().mockResolvedValue(loaded)} onSave={vi.fn()} onClose={vi.fn()} />);
     draw(); await settle();
-    const tree = draw();
-    expect(textContent(tree)).toContain(notice);
-    expect(button(tree, "低")).toBeUndefined();
-    expect(button(tree, "超高")).toBeUndefined();
+    expect(elements(draw()).some(element => element.props.className === "session-effort-field")).toBe(false);
+  });
+
+  it("clears a configured effort when 默认 is picked", async () => {
+    const loaded = { ...configuration, effort: "high" as const, availableEffortLevels: ["low", "medium", "high"] as const };
+    const props = {
+      session, onLoad: vi.fn().mockResolvedValue(loaded),
+      onSave: vi.fn().mockResolvedValue({ ...loaded, effort: undefined }), onClose: vi.fn(),
+    };
+    const draw = () => render(() => <SessionConfigurationDialog {...props} />);
+    draw(); await settle();
+    expect(button(draw(), "高").props["aria-pressed"]).toBe(true);
+    button(draw(), "默认").props.onClick();
+    expect(button(draw(), "默认").props["aria-pressed"]).toBe(true);
+    button(draw(), "保存配置").props.onClick(); await settle();
+    expect(props.onSave).toHaveBeenCalledExactlyOnceWith({ effort: null });
+  });
+
+  it("still clears the session effort when 默认 is picked together with a model change", async () => {
+    const loaded: BridgeSessionConfiguration = {
+      ...configuration,
+      effort: "high",
+      availableModels: [
+        { value: "current-model", displayName: "Current" },
+        { value: "next-model", displayName: "Next", supportedEffortLevels: ["low", "medium", "high"] },
+      ],
+      availableEffortLevels: ["low", "medium", "high"],
+    };
+    const props = {
+      session, onLoad: vi.fn().mockResolvedValue(loaded),
+      onSave: vi.fn().mockResolvedValue({ ...loaded, model: "next-model", effort: undefined }), onClose: vi.fn(),
+    };
+    const draw = () => render(() => <SessionConfigurationDialog {...props} />);
+    draw(); await settle();
+    elements(draw()).find(element => element.type === SelectMenu && element.props.ariaLabel === "模型")!.props.onChange("next-model");
+    button(draw(), "默认").props.onClick();
+    button(draw(), "保存配置").props.onClick(); await settle();
+    expect(props.onSave).toHaveBeenCalledExactlyOnceWith({ model: "next-model", effort: null });
+  });
+
+  it("keeps showing the session effort that a model-only save leaves in place", async () => {
+    const loaded: BridgeSessionConfiguration = {
+      ...configuration,
+      effort: "high",
+      availableModels: [
+        { value: "current-model", displayName: "Current" },
+        { value: "next-model", displayName: "Next", supportedEffortLevels: ["low", "medium", "high"] },
+      ],
+      availableEffortLevels: ["low", "medium", "high"],
+    };
+    const props = { session, onLoad: vi.fn().mockResolvedValue(loaded), onSave: vi.fn().mockResolvedValue({ ...loaded, model: "next-model" }), onClose: vi.fn() };
+    const draw = () => render(() => <SessionConfigurationDialog {...props} />);
+    draw(); await settle();
+    elements(draw()).find(element => element.type === SelectMenu && element.props.ariaLabel === "模型")!.props.onChange("next-model");
+    expect(button(draw(), "高").props["aria-pressed"]).toBe(true);
+    expect(button(draw(), "默认").props["aria-pressed"]).toBe(false);
+    button(draw(), "保存配置").props.onClick(); await settle();
+    expect(props.onSave).toHaveBeenCalledExactlyOnceWith({ model: "next-model" });
   });
 
   it("starts unset and shows the effort Desktop returns after an explicit change", async () => {
@@ -179,7 +230,7 @@ describe("session effort", () => {
     draw(); await settle();
     const tree = draw();
     expect(button(tree, "低").props["aria-pressed"]).toBe(false);
-    expect(textContent(tree)).toContain("思考强度 · 默认");
+    expect(button(tree, "默认").props["aria-pressed"]).toBe(true);
     button(tree, "高").props.onClick();
     button(draw(), "保存配置").props.onClick(); await settle();
     expect(props.onSave).toHaveBeenCalledExactlyOnceWith({ effort: "high" });
@@ -253,7 +304,7 @@ describe("native Claude session configuration", () => {
     const draw = () => render(() => <SessionConfigurationDialog {...props} />);
     draw(); await settle();
     let tree = draw();
-    const select = elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "Desktop 授权模式")!;
+    const select = elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "权限模式")!;
     select.props.onChange("bypassPermissions"); tree = draw();
     button(tree, "保存配置").props.onClick(); tree = draw();
     expect(confirmation(tree).props.open).toBe(true);
@@ -271,7 +322,7 @@ describe("native Claude session configuration", () => {
       const draw = () => render(() => <SessionConfigurationDialog {...props} />);
       draw(); await settle();
       let tree = draw();
-      elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "Desktop 授权模式")!
+      elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "权限模式")!
         .props.onChange("bypassPermissions");
       tree = draw();
       button(tree, "保存配置").props.onClick();
@@ -281,7 +332,7 @@ describe("native Claude session configuration", () => {
       expect(workspaceBack).not.toHaveBeenCalled();
       tree = draw();
       expect(confirmation(tree).props.open).toBe(false);
-      expect(elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "Desktop 授权模式")!.props.value).toBe("bypassPermissions");
+      expect(elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "权限模式")!.props.value).toBe("bypassPermissions");
       expect(props.onSave).not.toHaveBeenCalled();
       expect(props.onClose).not.toHaveBeenCalled();
       expect(dispatchMobileBack()).toBe(true);

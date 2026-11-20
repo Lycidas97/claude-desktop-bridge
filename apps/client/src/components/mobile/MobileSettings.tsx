@@ -1,5 +1,4 @@
-import type { BridgeHostSnapshot } from "@bridge/protocol";
-import { Activity, Bell, ChevronRight, Gauge, LoaderCircle, Play, Settings2 } from "lucide-react";
+import { Activity, Bell, ChevronRight, Gauge, Laptop, Settings2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { ThemeControl } from "../../hooks/useTheme.js";
 import { useClientUpdater } from "../../lib/client-updater.js";
@@ -13,18 +12,7 @@ import {
 } from "../../lib/session-notifications.js";
 import { AppearanceSettings } from "../common/AppearanceSettings.js";
 import { SettingsGroup } from "../common/SettingsGroup.js";
-import {
-  MobileClientUpdaterSection,
-  RemoteDesktopUpdaterSection,
-  type ClientUpdaterHandle,
-  type RemoteDesktopUpdateControl,
-} from "../updater/UpdaterSections.js";
-import {
-  resolveClaudeRemoteActivationDetail,
-  resolveClaudeRemoteActivationStatus,
-  useClaudeRemoteActivation,
-  type MobileInspectorCalloutProps,
-} from "./MobileInspectorCallout.js";
+import { MobileClientUpdaterSection, type ClientUpdaterHandle } from "../updater/UpdaterSections.js";
 import { MobilePageHeader } from "./MobilePageHeader.js";
 
 function initialSyncNotificationPermission(): SessionNotificationPermissionState {
@@ -37,26 +25,18 @@ function initialSyncNotificationPermission(): SessionNotificationPermissionState
   return "prompt";
 }
 
-export interface MobileClaudeRuntimeSettingsControl {
-  desktopName: string;
-  snapshot: BridgeHostSnapshot | undefined;
-  connected: boolean;
-  onActivate: NonNullable<MobileInspectorCalloutProps["onActivate"]>;
-}
-
 export function MobileSettings({
   themeControl,
+  computer,
   quota,
   providers,
-  claudeRuntime,
-  remoteDesktop,
   clientUpdater,
 }: {
   themeControl: ThemeControl;
-  quota?: { desktopName: string; onOpen(): void };
-  providers?: { desktopName: string; onOpen(): void };
-  claudeRuntime?: MobileClaudeRuntimeSettingsControl | undefined;
-  remoteDesktop?: RemoteDesktopUpdateControl | undefined;
+  // Remote version, update channel and the debug port live in this computer's connection settings.
+  computer?: { desktopName: string; onOpen(): void };
+  quota?: { onOpen(): void };
+  providers?: { onOpen(): void };
   clientUpdater?: ClientUpdaterHandle | undefined;
 }) {
   const fallbackUpdater = useClientUpdater(false);
@@ -70,12 +50,6 @@ export function MobileSettings({
     () => initialSyncNotificationPermission(),
   );
   const [requestingPermission, setRequestingPermission] = useState(false);
-
-  const claudeStatus = resolveClaudeRemoteActivationStatus(claudeRuntime?.snapshot);
-  const { busy: claudeBusy, feedback: claudeFeedback, activate: activateClaude } = useClaudeRemoteActivation(
-    claudeRuntime?.onActivate, claudeRuntime?.snapshot, claudeStatus,
-  );
-  const computerHeadingName = providers?.desktopName ?? quota?.desktopName ?? claudeRuntime?.desktopName;
 
   useEffect(() => {
     let active = true;
@@ -111,20 +85,17 @@ export function MobileSettings({
     }
   }
 
-  const claudeGuidance = claudeRuntime?.connected && claudeRuntime.snapshot
-    ? claudeFeedback?.detail ?? (claudeStatus.nativeUnavailable && (
-      claudeStatus.cannotActivate
-      || claudeStatus.inspector?.startup?.state === "accessibility-required"
-      || claudeStatus.inspector?.startup?.state === "failed"
-    ) ? resolveClaudeRemoteActivationDetail(claudeRuntime.snapshot) : undefined)
-    : undefined;
-
   return (
     <main className="mobile-workspace mobile-settings-page">
       <MobilePageHeader title="设置" />
       <div className="mobile-settings-content">
-        {(providers || quota || claudeRuntime) && (
-          <SettingsGroup title={`当前电脑 · ${computerHeadingName}`} titleId="mobile-computer-settings-title">
+        {computer && (
+          <SettingsGroup title={`当前电脑 · ${computer.desktopName}`} titleId="mobile-computer-settings-title">
+            <button type="button" className="mobile-settings-row" onClick={computer.onOpen}>
+              <Laptop size={18} aria-hidden="true" />
+              <div><strong>连接与电脑设置</strong></div>
+              <ChevronRight size={18} aria-hidden="true" />
+            </button>
             {providers && (
               <button type="button" className="mobile-settings-row" onClick={providers.onOpen}>
                 <Settings2 size={18} aria-hidden="true" />
@@ -135,70 +106,16 @@ export function MobileSettings({
             {quota && (
               <button type="button" className="mobile-settings-row" onClick={quota.onOpen}>
                 <Gauge size={18} aria-hidden="true" />
-                <div>
-                  <strong>Magpie 额度</strong>
-                  <small>各账号剩余额度与重置时间</small>
-                </div>
+                <div><strong>Magpie 额度</strong></div>
                 <ChevronRight size={18} aria-hidden="true" />
               </button>
             )}
-            {claudeRuntime && (
-              <>
-                <div className="mobile-settings-row">
-                  <span>
-                    <strong>Claude 调试端口 (9229)</strong>
-                    <small>
-                      {!claudeRuntime.connected
-                        ? "电脑已离线"
-                        : claudeStatus.claudeApp?.state === "stopped"
-                          ? "Claude Desktop 未启动"
-                          : claudeStatus.portLabel === "已开启"
-                            ? (claudeStatus.nativeUnavailable ? "Claude 原生连接未就绪" : "Claude Desktop 已就绪")
-                            : "调试端口未开启"}
-                    </small>
-                  </span>
-                  {claudeRuntime.connected && claudeRuntime.snapshot && (claudeStatus.nativeUnavailable || claudeBusy) ? (
-                    <button
-                      type="button"
-                      className="primary-button mobile-settings-compact-btn"
-                      disabled={claudeBusy || claudeStatus.cannotActivate}
-                      onClick={() => void activateClaude()}
-                    >
-                      {claudeBusy ? (
-                        <>
-                          <LoaderCircle size={14} className="is-spinning" aria-hidden="true" />
-                          <span>正在开启…</span>
-                        </>
-                      ) : (
-                        <>
-                          <Play size={13} aria-hidden="true" />
-                          <span>{claudeStatus.claudeApp?.state === "stopped" ? "启动 Claude" : claudeStatus.buttonLabel}</span>
-                        </>
-                      )}
-                    </button>
-                  ) : (
-                    <span className="mobile-settings-value">
-                      {claudeRuntime.connected && claudeRuntime.snapshot ? claudeStatus.portLabel : "未连接"}
-                    </span>
-                  )}
-                </div>
-                {claudeGuidance && (
-                  <p className={claudeFeedback?.error ? "mobile-settings-row updater-error" : "mobile-settings-row detail-text"} role="status">
-                    {claudeGuidance}
-                  </p>
-                )}
-              </>
-            )}
           </SettingsGroup>
         )}
-        {remoteDesktop && <RemoteDesktopUpdaterSection remote={remoteDesktop} heading="远端桌面状态" />}
         <AppearanceSettings themeControl={themeControl} />
-        <SettingsGroup title="任务通知" titleId="mobile-notifications-title">
+        <SettingsGroup title="通知" titleId="mobile-notifications-title">
           <div className="mobile-settings-row">
-            <span>
-              <strong>任务通知</strong>
-              <small>后台或浏览其他会话时提醒任务完成与待授权</small>
-            </span>
+            <span><strong>任务通知</strong></span>
             <div className="segmented mobile-settings-compact-segmented" role="group" aria-label="任务通知开关">
               <button
                 type="button"

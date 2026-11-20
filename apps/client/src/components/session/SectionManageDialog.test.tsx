@@ -180,23 +180,25 @@ describe("SectionManageDialog and useSectionManage", () => {
     expect(disabled.canManage(snapshot.projects[0])).toBe(false);
   });
 
-  it("deletes an empty section in one tap without opening ConfirmationDialog", async () => {
+  it("confirms before deleting an empty section without mentioning moved sessions", async () => {
     let controller = renderController();
     controller.openMenu("section:empty");
     controller = renderController();
 
     const tree = <SectionManageDialog controller={controller} />;
-    const html = renderToStaticMarkup(tree);
-    expect(html).toContain("重命名分组");
-    expect(html).toContain("删除空分组");
-
-    const deleteBtn = elements(tree).find(
-      (el) => el.type === "button" && renderToStaticMarkup(el).includes("删除空分组"),
-    )!;
-    deleteBtn.props.onClick();
-    await vi.waitFor(() => expect(onDeleteSection).toHaveBeenCalledWith("section:empty"));
+    expect(renderToStaticMarkup(tree)).toContain("重命名分组");
+    elements(tree).find(
+      (el) => el.type === "button" && renderToStaticMarkup(el).includes("删除分组"),
+    )!.props.onClick();
     controller = renderController();
-    expect(controller.state).toBeUndefined();
+    expect(onDeleteSection).not.toHaveBeenCalled();
+    const confirmHtml = renderToStaticMarkup(<SectionManageDialog controller={controller} />);
+    expect(confirmHtml).toContain("删除「空分组」分组？");
+    expect(confirmHtml).not.toContain("组内");
+
+    await controller.runDelete();
+    expect(onDeleteSection).toHaveBeenCalledWith("section:empty");
+    expect(renderController().state).toBeUndefined();
   });
 
   it("requires confirmation before deleting a non-empty section and intercepts mobile back", async () => {

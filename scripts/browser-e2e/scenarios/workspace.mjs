@@ -670,9 +670,9 @@ export async function verifySectionManage(page, host, steps, directory) {
 
   async function createSectionFromDirectory(name) {
     await drawer.getByRole("button", { name: "+ 分组", exact: true }).click();
-    const dialog = page.getByRole("dialog", { name: "新建 Section" });
-    await dialog.getByLabel("Section 名称").fill(name);
-    await dialog.getByRole("button", { name: "创建 Section", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "新建分组" });
+    await dialog.getByLabel("分组名称").fill(name);
+    await dialog.getByRole("button", { name: "创建分组", exact: true }).click();
     await dialog.waitFor({ state: "detached" });
   }
 
@@ -724,14 +724,17 @@ export async function verifySectionManage(page, host, steps, directory) {
   );
   assert.equal(await groups.filter({ hasText: "新建即现" }).locator(".project-group-open").getAttribute("aria-expanded"), "true");
   await drawer.getByRole("button", { name: "管理分组：新建即现", exact: true }).click();
-  await page.getByRole("button", { name: "删除空分组", exact: true }).click();
+  await page.getByRole("button", { name: "删除分组", exact: true }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "删除分组", exact: true }).click();
   await eventually(async () => (await headers.allTextContents()).includes("新建即现"), false, "Temporary section cleaned up");
   steps.push("empty custom sections default to collapsed across reloads, remain searchable, and auto-expand the newly created section");
 
-  // 1-tap delete on empty section ("删除空分组") without ConfirmationDialog.
+  // Empty sections confirm too; the dialog does not mention moving sessions.
   await drawer.getByRole("button", { name: "管理分组：临时空组", exact: true }).click();
-  await page.getByRole("button", { name: "删除空分组", exact: true }).click();
-  assert.equal(await page.getByRole("alertdialog").count(), 0, "Empty section deletion skips confirmation dialog");
+  await page.getByRole("button", { name: "删除分组", exact: true }).click();
+  const emptyConfirm = page.getByRole("alertdialog");
+  assert.doesNotMatch(await emptyConfirm.innerText(), /组内/u);
+  await emptyConfirm.getByRole("button", { name: "删除分组", exact: true }).click();
   await eventually(
     async () => (await headers.allTextContents()).includes("临时空组"),
     false,
@@ -753,10 +756,10 @@ export async function verifySectionManage(page, host, steps, directory) {
     true,
     "Renamed custom section updates in catalog",
   );
-  steps.push("empty sections delete in one tap and custom sections rename via native section.rename");
+  steps.push("empty sections delete after confirmation and custom sections rename via native section.rename");
 
   // Move a session into "重点推进", then verify non-empty delete requires confirmation and returns session to folder.
-  await drawer.locator('[data-session-id="browser-e2e-misc-sub"]').getByRole("button", { name: "会话操作", exact: true }).click();
+  await drawer.locator('[data-session-id="browser-e2e-misc-sub"]').getByRole("button", { name: /^会话操作：/u }).click();
   await page.getByRole("button", { name: /移动到分组/u }).click();
   await page.locator(".m-sheet").getByRole("button", { name: /重点推进/u }).click();
   await eventually(

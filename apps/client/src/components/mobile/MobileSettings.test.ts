@@ -2,6 +2,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { AppearanceSettings } from "../common/AppearanceSettings.js";
+import { RemoteDesktopUpdaterSection } from "../updater/UpdaterSections.js";
 import { MobileSettings } from "./MobileSettings.js";
 import type { FontSize } from "../../hooks/useTheme.js";
 
@@ -25,32 +26,42 @@ describe("shared appearance font size control", () => {
   });
 });
 
-function render(quota?: { desktopName: string; onOpen(): void }) {
+function render(options: { quota?: boolean } = {}) {
   return renderToStaticMarkup(createElement(MobileSettings, {
     themeControl: { theme: "light", family: "sunstone", setTheme: vi.fn(), setFamily: vi.fn(), toggleTheme: vi.fn() },
-    ...(quota ? { quota } : {}),
+    computer: { desktopName: "Studio Mac", onOpen: vi.fn() },
+    providers: { onOpen: vi.fn() },
+    ...(options.quota ? { quota: { onOpen: vi.fn() } } : {}),
   }));
 }
 
-describe("Magpie quota entry in settings", () => {
-  it("leads settings with the dashboard entry for a computer that declares the plugin", () => {
-    const html = render({ desktopName: "Studio Mac", onOpen: vi.fn() });
-    expect(html).toContain("Magpie 额度");
+describe("current computer group in settings", () => {
+  it("links to the computer's own pages before local settings", () => {
+    const html = render({ quota: true });
     expect(html).toContain("当前电脑 · Studio Mac");
-    expect(html).toContain("各账号剩余额度与重置时间");
-    expect(html.indexOf("Magpie 额度")).toBeLessThan(html.indexOf("外观"));
+    const order = ["连接与电脑设置", "模型与网关", "Magpie 额度", "外观", "通知", "版本与更新", "诊断与支持"].map(label => html.indexOf(label));
+    expect(order.every(index => index >= 0)).toBe(true);
+    expect(order).toEqual([...order].sort((a, b) => a - b));
   });
 
-  it("is absent otherwise", () => {
+  it("leaves remote version, update channel and debug port to the computer's connection settings", () => {
+    const html = render({ quota: true });
+    expect(html).not.toContain("调试端口");
+    expect(html).not.toContain("电脑端版本");
+    expect(html).not.toContain('aria-label="电脑端更新通道"');
+    expect(html.match(/>更新通道</g)).toHaveLength(1);
+    expect(html).toContain("查看 GitHub Releases");
+  });
+
+  it("omits the quota entry for a computer without the plugin", () => {
     expect(render()).not.toContain("Magpie 额度");
   });
 });
 
-describe("mobile client updater and remote desktop updater sections", () => {
-  it("renders persistent client version & graceful Web fallback plus remote desktop update controls", () => {
-    const html = renderToStaticMarkup(createElement(MobileSettings, {
-      themeControl: { theme: "light", family: "sunstone", setTheme: vi.fn(), setFamily: vi.fn(), toggleTheme: vi.fn() },
-      remoteDesktop: {
+describe("remote desktop updater section", () => {
+  it("shows the computer's version and check controls without remote download or restart", () => {
+    const html = renderToStaticMarkup(createElement(RemoteDesktopUpdaterSection, {
+      remote: {
         hostVersion: "1.3.2",
         connected: true,
         supported: true,
@@ -69,14 +80,13 @@ describe("mobile client updater and remote desktop updater sections", () => {
         onInvoke: vi.fn(),
       },
     }));
-    expect(html).toContain("远端桌面状态");
+    expect(html).toContain("版本与更新");
+    expect(html).toContain("电脑端版本");
     expect(html).toContain("v1.3.2");
     expect(html).toContain("发现 v1.3.3");
-    expect(html).toContain('aria-label="远端桌面更新通道"');
+    expect(html).toContain('aria-label="电脑端更新通道"');
     expect(html).toContain("检查更新");
     expect(html).not.toContain("检查并升级");
     expect(html).not.toContain("检查并下载");
-    expect(html).toContain("版本与更新");
-    expect(html).toContain("查看 GitHub Releases");
   });
 });

@@ -50,7 +50,7 @@ export async function openDesktopAssistant(page, host, baseUrl, requests) {
   await page.locator(".assistant-conversation textarea").waitFor();
 }
 
-async function verifyAssistantConfiguration(page, host, requests, { model, effort, effortLabel, unavailableLabel, screenshot }) {
+async function verifyAssistantConfiguration(page, host, requests, { model, effort, effortLabel, screenshot }) {
   const binding = structuredClone(host.snapshot.assistantMail.binding);
   const { nativeSessionId } = binding;
   const chat = page.locator(".assistant-conversation textarea");
@@ -62,10 +62,9 @@ async function verifyAssistantConfiguration(page, host, requests, { model, effor
   const dialog = page.getByRole("dialog", { name: "助理", exact: true });
   const modelSelect = dialog.getByRole("combobox", { name: "模型", exact: true });
   await selectCustomOption(page, modelSelect, model);
-  assert.equal(await dialog.getByLabel("Desktop 授权模式").count(), 0);
+  assert.equal(await dialog.getByLabel("权限模式", { exact: true }).count(), 0);
   const effortGroup = dialog.getByRole("group", { name: /^思考强度/u });
-  await effortGroup.getByText(`原生会话不支持：${unavailableLabel}`, { exact: true }).waitFor();
-  assert.deepEqual(await effortGroup.getByRole("button").allTextContents(), ["低", "高", "最大"]);
+  await eventually(() => effortGroup.getByRole("button").allTextContents(), ["默认", "低", "高", "最大"], "Only native effort levels are offered, after Default");
   const effortChoice = effortGroup.getByRole("button", { name: effortLabel, exact: true });
   await effortChoice.click();
   const beforeSave = host.nativeApproval.calls.length;
@@ -84,6 +83,8 @@ async function verifyAssistantConfiguration(page, host, requests, { model, effor
   assert.equal(await effortChoice.getAttribute("aria-pressed"), "true");
   await page.screenshot({ path: screenshot, fullPage: true });
   await dialog.getByRole("button", { name: "关闭", exact: true }).click();
+  const mobileSettingsBack = page.locator(".assistant-page-mobile .m-header").getByRole("button", { name: "返回", exact: true });
+  if (await mobileSettingsBack.count()) await mobileSettingsBack.click();
   await page.getByRole("button", { name: "对话", exact: true }).click();
   assert.equal(await chat.inputValue(), "配置前的助理草稿");
   await chat.fill("");
@@ -156,6 +157,7 @@ export async function verifyAssistantMailUnread(page, host, steps, directory, vi
   await badge.click();
   await cardFor(first).waitFor();
   await cardFor(second).waitFor();
+  await page.getByRole("button", { name: "助理设置", exact: true }).click();
   await selectCustomOption(page, page.getByLabel("助理会话", { exact: true }), sessionId);
   await page.getByRole("button", { name: "绑定会话", exact: true }).click();
   await page.locator(".assistant-conversation textarea").waitFor();
@@ -475,16 +477,12 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
     await card.getByText("原文", { exact: true }).click();
     await card.locator("details[open] pre").filter({ hasText: /^Fixture mail with attachments\.$/u }).waitFor();
     assert.equal(await card.locator("details[open] .assistant-attachments").count(), 0);
-    const nextCard = card.locator("+ article[data-mail-id]");
-    const expandedBounds = await card.boundingBox();
-    const nextBounds = await nextCard.boundingBox();
-    assert.ok(expandedBounds && nextBounds && nextBounds.y - (expandedBounds.y + expandedBounds.height) >= 8,
-      "Visible space separates the expanded mail from the next card");
     assert.ok(await card.evaluate(element => {
       const style = getComputedStyle(element);
-      return style.borderStyle === "solid" && parseFloat(style.borderWidth) > 0 && parseFloat(style.borderRadius) > 0 &&
-        style.backgroundColor !== "rgba(0, 0, 0, 0)";
-    }), "The expanded mail has a full rounded border and a visible surface");
+      const next = getComputedStyle(element.nextElementSibling);
+      return style.borderBottomStyle === "solid" && parseFloat(style.borderBottomWidth) > 0 && parseFloat(style.borderTopWidth) === 0 &&
+        parseFloat(style.paddingBottom) >= 8 && parseFloat(next.paddingTop) >= 8;
+    }), "A hairline with padding on both sides separates the expanded mail from the next one, without a card frame");
     await card.getByText("原文", { exact: true }).click();
     await attachmentCard.getByRole("button", { name: "预览 notes.txt", exact: true }).click();
     await page.getByRole("heading", { name: "下载大文件预览？", exact: true }).waitFor();
@@ -670,6 +668,11 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   host.mailOffline = false;
   host.socket.connect();
   await eventually(() => page.getByText("电脑离线，显示已缓存邮件。", { exact: true }).count(), 0, "Host reconnects before binding");
+  assert.equal(await page.getByLabel("助理会话", { exact: true }).count(), 0, "Binding lives only in 助理设置");
+  await page.locator(".assistant-view-tabs").getByRole("button", { name: "对话", exact: true }).click();
+  await page.getByText("尚未绑定会话", { exact: true }).waitFor();
+  await capture("mobile-assistant-unbound");
+  await page.getByRole("button", { name: "前往助理设置", exact: true }).click();
   await selectCustomOption(page, page.getByLabel("助理会话", { exact: true }), sessionId);
   await page.getByRole("button", { name: "绑定会话", exact: true }).click();
   await page.locator('.assistant-view-tabs button[aria-pressed="true"]').getByText("对话", { exact: true }).waitFor();
@@ -699,6 +702,8 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
     assert.equal(await page.locator(".assistant-page textarea:visible").count(), 1, "The inbox shares the same composer");
     await page.locator(".assistant-view-tabs").getByRole("button", { name: "助理设置", exact: true }).click();
     assert.equal(await page.locator(".assistant-page textarea:visible").count(), 0, "Settings hides the composer");
+    await page.locator(".assistant-page .m-header").getByRole("button", { name: "返回", exact: true }).click();
+    assert.equal(await page.locator(".assistant-view-tabs").getByRole("button", { name: "收件", exact: true }).getAttribute("aria-pressed"), "true", "Back from settings returns to 收件");
     await page.locator(".assistant-view-tabs").getByRole("button", { name: "对话", exact: true }).click();
     await assistantFiles.getByRole("status").getByText(/正在保存/u).waitFor();
     assert.equal(await page.locator(".assistant-page textarea:visible").count(), 1);
@@ -781,6 +786,7 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   host.nativeApproval.assistantMail.service.setBinding({ assistantId, nativeSessionId: null, sectionId: null, previousSessionIds: [sessionId] });
   await page.getByText("原会话已归档或删除，请重新绑定。", { exact: true }).waitFor();
   assert.equal(host.snapshot.assistantMail.binding.assistantId, assistantId);
+  await page.getByRole("button", { name: "前往助理设置", exact: true }).click();
   await selectCustomOption(page, page.getByLabel("助理会话", { exact: true }), sessionId);
   await page.getByRole("button", { name: "绑定会话", exact: true }).click();
   await page.locator(".assistant-conversation textarea").waitFor();
@@ -836,7 +842,6 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await page.getByText(`绑定会话：${sessionId}`, { exact: true }).waitFor();
   await eventually(() => cards().count(), 124, "Bound workspace and records survive without any ordinary snapshot");
   assert.equal(await page.locator(".assistant-conversation textarea").count(), 0, "Cached binding never invents a native session or enables sending");
-  assert.equal(await page.getByRole("button", { name: "对话", exact: true }).isDisabled(), true);
   host.mailPageFailure = false;
   host.mailOffline = false;
   host.socket.connect();
@@ -881,8 +886,8 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await accounts.getByRole("button", { name: "添加账号", exact: true }).click();
   await extraAccount.getByText("imap.second.example.test:993", { exact: true }).waitFor();
   await extraAccount.getByText("SMTP smtp.second.example.test:465", { exact: true }).waitFor();
-  await accounts.getByText("已连接（IDLE）", { exact: true }).waitFor();
-  await extraAccount.getByText("轮询中", { exact: true }).waitFor();
+  await accounts.getByText("实时接收", { exact: true }).waitFor();
+  await extraAccount.getByText("定时轮询", { exact: true }).waitFor();
   const { accountKey, smtp, smtpSharedAuth } = host.snapshot.assistantMail.accounts.find(account => account.user === extraUser);
   assert.equal(smtpSharedAuth, true);
   assert.deepEqual(smtp, { host: "smtp.second.example.test", port: 465, security: "tls", user: extraUser, from: extraUser });
@@ -895,7 +900,7 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await accounts.getByRole("button", { name: "关闭发信", exact: true }).click();
   await extraAccount.getByText("SMTP smtp.second.example.test:465", { exact: true }).waitFor({ state: "hidden" });
   assert.equal(host.snapshot.assistantMail.accounts.find(account => account.accountKey === accountKey)?.enabled, true);
-  await extraAccount.getByText("轮询中", { exact: true }).waitFor();
+  await extraAccount.getByText("定时轮询", { exact: true }).waitFor();
   const pollInterval = extraAccount.getByRole("combobox", { name: /^备用轮询间隔/u });
   assert.equal(await pollInterval.inputValue(), "60");
   await accounts.getByRole("button", { name: "添加邮箱", exact: true }).click();
@@ -916,7 +921,7 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   assert.equal(await draftAddress.inputValue(), "unsaved@example.test");
   await accounts.getByRole("button", { name: "取消", exact: true }).click();
   await pollInterval.selectOption("30");
-  await extraAccount.getByText("轮询中", { exact: true }).waitFor();
+  await extraAccount.getByText("定时轮询", { exact: true }).waitFor();
   assert.equal(await pollInterval.inputValue(), "30");
   const { client: _client, ...pollingParams } = host.requests.findLast(request => request.method === "plugin.assistant-mail.account.set-poll-interval").params;
   assert.deepEqual(pollingParams, { accountKey, pollIntervalSeconds: 30 });
@@ -945,6 +950,7 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await host.send({ kind: "snapshot", snapshot: { ...host.snapshot, assistantMail: {
     ...assistantMail, accounts: assistantMail.accounts.map(account => account.accountKey === accountKey ? { ...account, user: originalAccount.user } : account),
   } } });
+  await page.locator(".assistant-page .m-header").getByRole("button", { name: "返回", exact: true }).click();
   await page.getByRole("button", { name: "收件", exact: true }).click();
   await original.locator("header").getByText(`${originalAccount.user} (${originalAccount.host}:${originalAccount.port})`, { exact: true }).waitFor();
   await host.send({ kind: "snapshot", snapshot: host.snapshot });
@@ -969,7 +975,7 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   assert.equal(managedSession.nativePermissionMode, "dontAsk");
   assert.equal(host.snapshot.projects.find(project => project.projectId === managedSession.projectId).managedAssistant, true);
   await verifyAssistantConfiguration(page, host, host.requests, {
-    model: "synthetic-model-large[1m]", effort: "max", effortLabel: "最大", unavailableLabel: "超高",
+    model: "synthetic-model-large[1m]", effort: "max", effortLabel: "最大",
     screenshot: resolve(directory, "mobile-assistant-configuration.png"),
   });
   const managedDesktop = await page.context().newPage();
@@ -977,15 +983,15 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
     const requests = [];
     await openDesktopAssistant(managedDesktop, host, baseUrl, requests);
     await verifyAssistantConfiguration(managedDesktop, host, requests, {
-      model: "synthetic-model", effort: "low", effortLabel: "低", unavailableLabel: "关闭",
+      model: "synthetic-model", effort: "low", effortLabel: "低",
       screenshot: resolve(directory, "desktop-assistant-configuration.png"),
     });
   } finally {
     await managedDesktop.close();
   }
-  steps.push("mobile and desktop settings explain unsupported gateway efforts and save and reopen a Native effort on the same managed session, preserving its draft, binding and dontAsk permission");
-  const settingsButton = page.locator(".assistant-view-tabs").getByRole("button", { name: "助理设置", exact: true });
-  if (await settingsButton.getAttribute("aria-pressed") !== "true") await settingsButton.click();
+  steps.push("mobile and desktop settings offer only native efforts and save and reopen a Native effort on the same managed session, preserving its draft, binding and dontAsk permission");
+  const settingsHeader = page.locator(".assistant-page .m-header").filter({ hasText: "助理设置" });
+  if (!await settingsHeader.count()) await page.locator(".assistant-view-tabs").getByRole("button", { name: "助理设置", exact: true }).click();
   const proactive = page.getByRole("switch", { name: "主动助理" });
   assert.equal(await proactive.isChecked(), false);
   await page.locator("label.toggle-row").filter({ has: proactive }).click();
@@ -993,6 +999,7 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await proactive.and(page.locator(":checked")).waitFor();
   host.mailPageFailure = true;
   await host.nativeApproval.assistantMail.deliver(2);
+  await settingsHeader.getByRole("button", { name: "返回", exact: true }).click();
   await page.locator(".assistant-view-tabs").getByRole("button", { name: "对话", exact: true }).click();
   const batch = page.getByRole("region", { name: "助理唤醒" });
   await batch.getByText("原生已观测", { exact: true }).waitFor();
@@ -1036,11 +1043,12 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   assert.equal(host.requests.findLast(request => request.method === "turn.queue.cancel").params.commandId, receipt.commandId);
   assert.deepEqual(host.nativeApproval.calls.findLast(call => call.method === "cancelQueuedMessage").args, [managedSessionId, receipt.messageId]);
   host.nativeApproval.setSessionBusy(managedSessionId, false);
-  await settingsButton.click();
+  await page.locator(".assistant-view-tabs").getByRole("button", { name: "助理设置", exact: true }).click();
   await page.locator("label.toggle-row").filter({ has: proactive }).click();
   await eventually(() => host.snapshot.assistantMail.automaticDelivery, false, "Explicit opt-out stops new wakes");
   await proactive.and(page.locator(":not(:checked)")).waitFor();
-  await page.locator(".assistant-view-tabs").getByRole("button", { name: "对话", exact: true }).click();
+  await settingsHeader.getByRole("button", { name: "返回", exact: true }).click();
+  await page.locator(".assistant-view-tabs").getByRole("button", { name: "对话", exact: true, pressed: true }).waitFor();
   steps.push("managed opt-in batches two new emails into one native send and shows both independent processing statuses");
 
   const service = host.nativeApproval.assistantMail.service;
@@ -1158,6 +1166,7 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await page.getByRole("button", { name: "助理设置", exact: true }).click();
   await page.getByRole("button", { name: "初始化托管助理", exact: true }).waitFor();
   await host.send({ kind: "snapshot", snapshot: host.snapshot });
+  await settingsHeader.getByRole("button", { name: "返回", exact: true }).click();
   await openMobileDrawer(page);
   await page.locator(".mobile-home-catalog .project-groups > .project-group:not(.archived-group)").last()
     .locator(".project-group-header").getByText("助理", { exact: true }).waitFor();
@@ -1276,11 +1285,11 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await eventually(() => host.snapshot.assistantMail.accounts.find(account => account.accountKey === accountKey)?.state,
     "connected", "The re-enabled synthetic receiver reconnects after its RPC acknowledgement");
   await page.evaluate(assistantMail => window.assistantDesktopSnapshot({ assistantMail }), host.snapshot.assistantMail);
-  await extraAccount.getByText("轮询中", { exact: true }).waitFor();
+  await extraAccount.getByText("定时轮询", { exact: true }).waitFor();
   assert.equal(await pollInterval.inputValue(), "120");
   await accounts.getByRole("button", { name: `移除：${extraUser}`, exact: true }).click();
   assert.ok(host.snapshot.assistantMail.accounts.some(account => account.accountKey === accountKey));
-  await accounts.getByRole("button", { name: "确认移除", exact: true }).click();
+  await page.getByRole("alertdialog", { name: "移除邮箱？" }).getByRole("button", { name: "确认移除", exact: true }).click();
   await extraAccount.waitFor({ state: "detached" });
   assert.equal(host.snapshot.assistantMail.accounts.some(account => account.accountKey === accountKey), false);
 

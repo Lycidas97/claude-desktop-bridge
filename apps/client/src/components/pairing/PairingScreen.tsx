@@ -81,7 +81,7 @@ export function PairingScreen({
   return (
     <main className="pairing-shell">
       <header className="pairing-header pairing-nav">
-        {onCancel && <IconButton label="返回主机列表" onClick={onCancel}><ArrowLeft size={19} /></IconButton>}
+        {onCancel && <IconButton label="返回电脑列表" onClick={onCancel}><ArrowLeft size={19} /></IconButton>}
         <BrandMark />
       </header>
       <section className="pairing-panel" aria-labelledby="pair-title">
@@ -90,13 +90,11 @@ export function PairingScreen({
           <span className="connection-line"><span /></span>
           <span className="device device-computer" />
         </div>
-        <div className="eyebrow">连接自己的电脑</div>
         <h1 id="pair-title">扫描电脑上的二维码</h1>
-        <p>打开相机对准电脑屏幕，或粘贴电脑端复制的配对链接。</p>
         <button type="button" className="primary-button full-button" onClick={scan} disabled={loading || scanning}>
           <ScanLine size={18} /><span>{scanning ? "正在扫描" : "扫描二维码"}</span>
         </button>
-        <div className="pairing-divider"><span>或者粘贴电脑端复制的链接</span></div>
+        <div className="pairing-divider" aria-hidden="true" />
         <div className="pairing-input-wrap">
           <Link2 size={18} aria-hidden="true" />
           <input
@@ -116,7 +114,6 @@ export function PairingScreen({
           <span>{loading ? "正在连接" : "连接电脑"}</span><ArrowRight size={18} />
         </button>
       </section>
-      <footer className="pairing-footer">配对后，只有这台手机能读到消息内容</footer>
       {webScannerOpen && (
         <WebQrScannerDialog
           onResult={acceptWebScan}

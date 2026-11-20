@@ -54,7 +54,7 @@ export async function verifyDesktopDiagnostics(page, host, steps, baseUrl) {
   assert.equal(await page.evaluate(() => window.accessibilitySettingsOpened), 1);
   assert.equal(await history.count(), 0, "Pending Accessibility consent is not historical startup failure");
   steps.push("Desktop shows Windows Alt guidance, real socket state, stable history and actionable macOS Accessibility consent");
-  await page.getByRole("button", { name: "诊断与关于", exact: true }).click();
+  await page.getByRole("button", { name: "诊断与支持", exact: true }).click();
   const toggle = page.getByRole("checkbox", { name: /后台诊断记录/u });
   assert.equal(await toggle.isChecked(), false);
   await page.getByText("后台诊断记录", { exact: true }).click();
@@ -125,12 +125,12 @@ export async function verifyDesktopQuota(page, host, steps, directory, viewports
   await page.locator(".magpie-quota-account > header > strong").filter({ hasText: "隔离额度账号" }).waitFor();
   steps.push("The unique desktop quota group lazily reads refresh:false, refreshes with refresh:true, disables during a pending read, and retains prior data on refresh errors");
 
-  for (const [group, heading] of [["Claude 接入", "开发者工具"], ["连接与启动", "启动"], ["外观与显示", "外观"], ["诊断与关于", "版本更新"]]) {
+  for (const [group, heading] of [["Claude 接入", "开发者工具"], ["连接与启动", "启动"], ["外观与显示", "外观"], ["诊断与支持", "版本与更新"]]) {
     await page.getByRole("button", { name: group, exact: true }).click();
     await page.getByRole("heading", { name: heading, exact: true }).waitFor();
     assert.equal(await page.locator(".magpie-quota-board").count(), 0);
   }
-  const desktopUpdaterRegion = page.getByRole("region", { name: "版本更新", exact: true });
+  const desktopUpdaterRegion = page.getByRole("region", { name: "版本与更新", exact: true });
   await desktopUpdaterRegion.getByRole("button", { name: "检查更新", exact: true }).waitFor();
   await desktopUpdaterRegion.getByRole("link", { name: "GitHub Releases", exact: true }).waitFor();
   assert.equal(await desktopUpdaterRegion.getByText("空闲静默重启").count(), 0);

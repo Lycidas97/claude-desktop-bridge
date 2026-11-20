@@ -75,6 +75,7 @@ import {
   type SessionConfigurationChange,
 } from "../session/SessionConfigurationDialog.js";
 import { SessionProfileSummary } from "../session/SessionProfileSummary.js";
+import { PERMISSION_MODE_LABELS } from "../session/session-labels.js";
 import { BackgroundTaskMarker, BackgroundTasksSheet, findBackgroundTask } from "./BackgroundTasks.js";
 import { useConversationDrafts } from "./ConversationDraftsProvider.js";
 
@@ -88,7 +89,6 @@ import { NativePromptCard } from "./NativePromptCard.js";
 import {
   InteractivePromptCard,
   matchingQuestionPermission,
-  NATIVE_MODE_LABELS,
   PermissionPrompt,
 } from "./PermissionPrompts.js";
 import { SessionCommandDialogs } from "./SessionCommandDialogs.js";
@@ -413,7 +413,7 @@ export function ConversationView({
     } : undefined,
     onModel: () => setConfigurationOpen(true),
     onRewind: () => setRewindTarget({ sessionId: session.sessionId }),
-    ...(!isAssistant && menu.onRename ? { onRename: menu.onRename } : {}),
+    ...(menu.onRename ? { onRename: menu.onRename } : {}),
     onSession: async (nextSessionId) => {
       await onSelectSession(nextSessionId);
     },
@@ -695,7 +695,7 @@ export function ConversationView({
   const { streamRef, onScroll } = useConversationScroll({
     sessionId: session.sessionId,
     sessionView: isAssistant ? "conversation" : effectiveSessionView,
-    streamVisible: !isAssistant || (visible && !transcriptHidden),
+    streamVisible: visible && !transcriptHidden,
     history,
     openedEvidenceIds,
     inlineProposalLayout: JSON.stringify([
@@ -1084,13 +1084,11 @@ export function ConversationView({
       )}
       <SessionCommandDialogs
         key={`commands:${session.sessionId}`}
-        session={session}
         result={commands.dialog}
         onClose={commands.close}
         onOpenSession={async (nextSessionId) => {
           await onSelectSession(nextSessionId);
         }}
-        {...(menu.commitRename ? { onRename: menu.commitRename } : {})}
         onLoadPermissions={() => onLoadSessionPermissions!(session.sessionId)}
         onSavePermissions={(mode, rules) => onSaveSessionPermissions!(session.sessionId, mode, rules)}
       />
@@ -1314,8 +1312,8 @@ export function ConversationView({
         <div className="session-channel-warning message-queue-status" role="status" aria-label="Desktop 会话授权变更">
           <ShieldCheck size={17} />
           <span>{session.nativePermissionModeChange.state === "requested"
-            ? `已请求切换为「${NATIVE_MODE_LABELS[session.nativePermissionModeChange.mode ?? "bypassPermissions"]}」，等待 Desktop 确认`
-            : `Desktop 未切换为「${NATIVE_MODE_LABELS[session.nativePermissionModeChange.mode ?? "bypassPermissions"]}」，后续请求仍需确认`}</span>
+            ? `已请求切换为「${PERMISSION_MODE_LABELS[session.nativePermissionModeChange.mode ?? "bypassPermissions"]}」，等待 Desktop 确认`
+            : `Desktop 未切换为「${PERMISSION_MODE_LABELS[session.nativePermissionModeChange.mode ?? "bypassPermissions"]}」，后续请求仍需确认`}</span>
         </div>
       )}
       {showQueueBanner && (
@@ -1476,7 +1474,8 @@ export function ConversationView({
           )}
         </Sheet>
       )}
-      {!isAssistant && menu.renderSheets({
+      {/* The assistant surface has no ⋯ menu; it still uses the shared /rename dialog. */}
+      {menu.renderSheets({
         sessionView: effectiveSessionView,
         evidenceCount,
         parentSession,

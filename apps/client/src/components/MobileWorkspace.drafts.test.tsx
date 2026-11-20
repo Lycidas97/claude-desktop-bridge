@@ -453,7 +453,7 @@ describe("Session PR disclosure", () => {
     draw();
     backToCatalog();
     const row = elements(tree).find(element => element.props["data-session-id"] === "B")!;
-    elements(row).find(element => element.type === IconButton && element.props.label === "会话操作")!.props.onClick();
+    elements(row).find(element => element.type === IconButton && element.props.label.startsWith("会话操作："))!.props.onClick();
     draw();
     const actions = elements(tree).find(element => element.type === SessionPrActions)!;
     expect(actions.props.session.sessionId).toBe("B");
@@ -605,10 +605,8 @@ describe("mobile session deletion confirmation", () => {
       expect(confirmation.props.description).toContain("从 Claude Desktop 中删除「Session A」会话");
       expect(confirmation.props.description).not.toContain("原生会话与文件不受影响");
       expect(confirmation.props.description).not.toContain("从 Bridge 列表中删除");
-      expect(action.props.detail).toBe("删除 Claude Desktop 中的会话");
     } else {
       expect(confirmation.props.description).toBe("从 Bridge 列表中删除「Session A」？对应 Desktop 应用中的原生会话与文件不受影响；Bridge 中的会话配置、排队与授权记录会被清除，此操作不可恢复。");
-      expect(action.props.detail).toBe("仅从 Bridge 移除，Desktop 原会话保留");
     }
     expect(confirmation.props.description).toContain("此操作不可恢复");
     confirmation.props.onCancel(); draw();
@@ -1120,7 +1118,7 @@ describe("mobile session creation", () => {
     modelMenu().props.onChange("claude-opus-4-7"); draw();
     const effortBtn = elements(tree).find(element => element.type === "button" && element.props.children === "极高")!;
     effortBtn.props.onClick(); draw();
-    const permissionMenu = () => elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "授权模式")!;
+    const permissionMenu = () => elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "权限模式")!;
     permissionMenu().props.onChange("bypassPermissions"); draw();
     const confirmBypass = elements(tree).find(element => element.type === ConfirmationDialog && element.props.title === "启用完全授权")!;
     expect(confirmBypass.props.open).toBe(true);
@@ -1130,8 +1128,10 @@ describe("mobile session creation", () => {
     expect(permissionMenu().props.value).toBe("plan");
     const styleMenu = elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "输出风格")!;
     expect(styleMenu.props.value).toBe("");
-    expect(styleMenu.props.options).toContainEqual({ value: "default", label: "默认" });
-    styleMenu.props.onChange("default");
+    // One 默认 keeps Claude Desktop's own choice; no second explicit "default" entry.
+    expect(styleMenu.props.options.map((option: { value: string; label: string }) => option.value)).toEqual(["", "Learning", "Personal notes"]);
+    expect(styleMenu.props.options[0]).toEqual({ value: "", label: "默认" });
+    styleMenu.props.onChange("Personal notes");
     draw();
 
     // A Native session still on "default" can project the selected picker ID as its fallback label.
@@ -1142,7 +1142,7 @@ describe("mobile session creation", () => {
     expect(props.onCreateSession).toHaveBeenCalledWith("/tmp/project-2", undefined, "claude-desktop", "project-2");
     expect(callOrder).toEqual([
       "create:/tmp/project-2:project-2",
-      "configure:created-1:claude-opus-4-7:xhigh:plan:default",
+      "configure:created-1:claude-opus-4-7:xhigh:plan:Personal notes",
       "send:created-1:跨入口保留的新建草稿",
     ]);
   });
@@ -1232,7 +1232,6 @@ describe("mobile session creation", () => {
     await settle();
     elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "模型")!.props.onChange("gateway-model");
     draw();
-    expect(elements(tree).find(element => element.props.className === "effort-unavailable")?.props.children).toBe("原生会话不支持：超高");
     expect(elements(tree).some(element => element.props['aria-label'] === "思考强度")).toBe(false);
     elements(tree).find(element => element.type === "button" && String(element.props.className).includes("new-chat-empty-create-btn"))!.props.onClick();
     await settle();
@@ -1251,7 +1250,7 @@ describe("mobile session creation", () => {
     startNewChatFromDrawer();
     elements(tree).find(element => element.type === "textarea" && element.props["aria-label"] === "给 Claude 发指令")!
       .props.onChange({ target: { value: "待配置后发送的首条消息" } });
-    elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "授权模式")!.props.onChange("plan");
+    elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "权限模式")!.props.onChange("plan");
     draw();
     await form().props.onSubmit({ preventDefault() {} });
     await settle();
@@ -1307,7 +1306,7 @@ describe("mobile session creation", () => {
     const newChatTextarea = () => elements(tree).find(element => element.type === "textarea" && element.props["aria-label"] === "给 Claude 发指令")!;
     newChatTextarea().props.onChange({ target: { value: "必须在计划模式下执行的敏感指令" } });
     draw();
-    elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "授权模式")!.props.onChange("plan");
+    elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "权限模式")!.props.onChange("plan");
     draw();
 
     // First submit hits WORKSPACE_TRUST_REQUIRED; second plain submit must STILL NOT pass trustWorkspace=true!
@@ -1335,14 +1334,14 @@ describe("mobile session creation", () => {
     expect(props.onCreateSession).toHaveBeenNthCalledWith(3, "/tmp/project", undefined, "claude-desktop", undefined, true);
     expect(props.onSendTurn).not.toHaveBeenCalled();
     expect(input().props.value).toBe("必须在计划模式下执行的敏感指令");
-    expect(elements(tree).some(el => el.props.role === "alert" && nodeText(el).includes("所选授权模式未生效"))).toBe(true);
+    expect(elements(tree).some(el => el.props.role === "alert" && nodeText(el).includes("所选权限模式未生效"))).toBe(true);
   });
 });
 
 describe("mobile section creation", () => {
   let create: ReturnType<typeof vi.fn>;
   const createAction = () => elements(tree).find(element => element.type === "button" && element.props.children === "+ 分组");
-  const dialog = () => elements(tree).find(element => element.props.role === "dialog" && element.props["aria-label"] === "新建 Section");
+  const dialog = () => elements(tree).find(element => element.props.role === "dialog" && element.props["aria-label"] === "新建分组");
   const nameInput = () => elements(dialog()).find(element => element.type === "input")!;
   const submitButton = () => elements(dialog()).find(element => element.type === "button" && element.props.type === "submit")!;
   function enable(capable = true) {
@@ -1437,7 +1436,7 @@ describe("mobile session renaming", () => {
     if (entry === "list") {
       backToCatalog();
       const row = elements(tree).find(element => element.props["data-session-id"] === "A")!;
-      elements(row).find(element => element.type === IconButton && element.props.label === "会话操作")!.props.onClick();
+      elements(row).find(element => element.type === IconButton && element.props.label.startsWith("会话操作："))!.props.onClick();
     } else {
       const header = conversationHeader();
       elements(header.props.actions).find(element => element.type === IconButton && element.props.label === "会话操作")!.props.onClick();
@@ -1517,6 +1516,18 @@ describe("mobile session renaming", () => {
     draw(); openMenu("conversation");
     expect(renameAction()).toBeUndefined();
     expect(elements(tree).some(element => element.props.label === "同步此会话")).toBe(true);
+  });
+
+  it("opens the rename dialog for a bare /rename only when the ⋯ menu can rename", async () => {
+    props = { ...props, onRenameSession: vi.fn().mockResolvedValue(undefined) };
+    draw(); text("/rename");
+    await form().props.onSubmit({ preventDefault() {} }); await settle();
+    expect(dialog()).toBeUndefined();
+    expect(JSON.stringify(elements(tree).map(element => element.props.children).filter(child => typeof child === "string"))).toContain("当前电脑版本不支持会话命令，请更新 Bridge");
+    enableRename(); text("/rename");
+    await form().props.onSubmit({ preventDefault() {} }); await settle();
+    expect(titleInput().props.value).toBe("Session A");
+    expect(props.onSendTurn).not.toHaveBeenCalled();
   });
 });
 
@@ -2487,7 +2498,7 @@ describe("sidechat and slash command integration", () => {
     text("/help"); form().props.onSubmit({ preventDefault() {} }); await settle();
     expect(props.onLoadSessionCommands).toHaveBeenCalledExactlyOnceWith("B");
     expect(props.onRunSessionCommand).toHaveBeenCalledExactlyOnceWith("B", "/help");
-    expect(elements(tree).find(element => element.type === SessionCommandDialogs)!.props.session.sessionId).toBe("B");
+    expect(elements(tree).find(element => element.type === SessionCommandDialogs)!.props.result).toEqual({ action: "help" });
     expect(props.onSendTurn).not.toHaveBeenCalled();
     elements(tree).find(element => element.type === "button" && Array.isArray(element.props.children) && element.props.children.includes("主会话：Session A"))!.props.onClick(); await settle();
     expect(input().props.value).toBe("parent draft");
@@ -2880,7 +2891,7 @@ describe("mobile section movement and subfolder labels", () => {
     };
     toDirectory();
     const rowA = elements(tree).find(element => element.props["data-session-id"] === "A")!;
-    elements(rowA).find(element => element.type === IconButton && element.props.label === "会话操作")!.props.onClick();
+    elements(rowA).find(element => element.type === IconButton && element.props.label.startsWith("会话操作："))!.props.onClick();
     draw();
     const inGroupMove = elements(tree).find(element => element.props.label === "移动到分组")!;
     expect(inGroupMove.props.detail).toBe("杂活");

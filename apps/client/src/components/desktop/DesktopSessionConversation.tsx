@@ -529,14 +529,14 @@ function useDesktopConversationController(input: DesktopConversationInput): Desk
     if (cached) return cached;
     const startingRequest = latestRef.current.apiRequest;
     if (latestRef.current.snapshot.host.hostId !== targetHostId) {
-      throw new Error("主机已切换，成果预览已取消");
+      throw new Error("电脑已切换，成果预览已取消");
     }
     const response = await startingRequest({
       method: "artifact.preview",
       params: { artifactId },
     });
     if (latestRef.current.snapshot.host.hostId !== targetHostId) {
-      throw new Error("主机已切换，成果预览已取消");
+      throw new Error("电脑已切换，成果预览已取消");
     }
     const preview = unwrap<{ preview: BridgeArtifactPreview }>(response).preview;
     setArtifactPreviewsByHost((current) => {

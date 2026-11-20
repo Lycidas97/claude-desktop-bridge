@@ -31,9 +31,9 @@ import type {
 } from "@bridge/protocol";
 import {
   CornerUpLeft,
+  FileText,
   GitFork,
   MessageSquare,
-  PackageCheck,
   SquarePen,
 } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -360,7 +360,7 @@ export function MobileWorkspace({
     options?: { clearSearch?: boolean | undefined },
   ): Promise<BridgeProjectInfo> {
     const project = await onCreateSection!(rawName.trim());
-    if (!project) throw new Error("Section 未创建，请重试。");
+    if (!project) throw new Error("分组未创建，请重试。");
     sectionManage.revealEmptySections();
     registerCreatedSection(project.projectId, options);
     return project;
@@ -376,7 +376,7 @@ export function MobileWorkspace({
       setSectionCreate({
         ...sectionCreate,
         busy: false,
-        error: reason instanceof Error ? reason.message : "Section 创建失败",
+        error: reason instanceof Error ? reason.message : "分组创建失败",
       });
     }
   }
@@ -385,7 +385,9 @@ export function MobileWorkspace({
     ? sessions.find((session) => session.sessionId === effectiveSelectedId)
     : undefined;
   const showingHomeCatalog = !selectedSession && !newChatMode;
-  const activeConversationSessionId = visible && !showingHomeCatalog && selectedSession && sessionView === "conversation"
+  // New chat opened from a conversation's ⋯ keeps that conversation mounted underneath to return to.
+  const newChatReturnSession = newChatMode ? selectedSession : undefined;
+  const activeConversationSessionId = visible && !newChatMode && selectedSession && sessionView === "conversation"
     ? selectedSession.sessionId
     : undefined;
   useEffect(() => {
@@ -416,12 +418,11 @@ export function MobileWorkspace({
     && snapshot?.host.capabilities.includes("section.move.v1")
     && menuSession?.allowedActions?.canMoveSection,
   );
-  const menuSupportsRename = Boolean(
-    menuSession && (
-      (onRenameSession && snapshot?.host.capabilities.includes("session.rename.v1"))
-      || (onRunSessionCommand && snapshot?.host.capabilities.includes("session.command.v1") && desktopRuntimeId(menuSession) === "claude-desktop")
-    ),
+  const canRename = (session: BridgeSessionInfo) => Boolean(
+    (onRenameSession && snapshot?.host.capabilities.includes("session.rename.v1"))
+    || (onRunSessionCommand && snapshot?.host.capabilities.includes("session.command.v1") && desktopRuntimeId(session) === "claude-desktop"),
   );
+  const menuSupportsRename = Boolean(menuSession && canRename(menuSession));
   const renameCanSave = Boolean(renameTitle.trim() && renameTitle.trim() !== menuSession?.title && !sessionActionBusy);
   const menuSupportsFork = Boolean(menuSession && menuSession.projectId !== managedProjectId && onForkSession && desktopRuntimeId(menuSession) === "claude-desktop");
 
@@ -507,7 +508,7 @@ export function MobileWorkspace({
     }, 110);
     const unregisterNewChat = registerMobileBackHandler(() => {
       if (visible && newChatMode) {
-        closeToCatalog();
+        leaveNewChat();
         return true;
       }
       return false;
@@ -525,6 +526,7 @@ export function MobileWorkspace({
     menuSessionId,
     moveMenuSessionId,
     newChatMode,
+    newChatReturnSession,
     projectOrderOpen,
     renameOpen,
     sectionCreate,
@@ -538,6 +540,11 @@ export function MobileWorkspace({
       directoryRef.current.scrollTop = directoryScrollPositions.current.get("") ?? 0;
     }
   }, [showingHomeCatalog, visible]);
+
+  function leaveNewChat(): void {
+    if (newChatReturnSession) setNewChatMode(false);
+    else closeToCatalog();
+  }
 
   function closeToCatalog(): void {
     autoOpenedSessionRef.current = undefined;
@@ -636,8 +643,7 @@ export function MobileWorkspace({
     await onOpenSession(sessionId);
   }
 
-  function startNewChat(targetProjectId?: string, targetCwd?: string): void {
-    autoOpenedSessionRef.current = undefined;
+  function startNewChat(targetProjectId?: string, targetCwd?: string, keepConversation = false): void {
     setNewChatTarget((previous) => ({
       key: (previous?.key ?? 0) + 1,
       ...(targetProjectId !== undefined ? { initialProjectId: targetProjectId } : {}),
@@ -648,9 +654,12 @@ export function MobileWorkspace({
     setMenuSessionId(undefined);
     setMoveMenuSessionId(undefined);
     setHostSwitcherOpen(false);
-    setSelectedSessionId(undefined);
-    setForkChainOpen(false);
-    setSessionView("conversation");
+    if (!keepConversation) {
+      autoOpenedSessionRef.current = undefined;
+      setSelectedSessionId(undefined);
+      setForkChainOpen(false);
+      setSessionView("conversation");
+    }
     if ((activeTab ?? mobileNav?.tab) !== "sessions") {
       (onSelectTab ?? mobileNav?.onTabChange)?.("sessions");
     }
@@ -815,15 +824,13 @@ export function MobileWorkspace({
             {menuSession.projectId !== managedProjectId && <SheetAction
               icon={<SquarePen size={19} />}
               label="新建会话"
-              detail="使用当前目录与分组"
               disabled={sessionActionBusy || !snapshot || !online}
-              onClick={() => startNewChat(menuSession.projectId, menuSession.cwd)}
+              onClick={() => startNewChat(menuSession.projectId, menuSession.cwd, true)}
             />}
             <SheetAction
-              icon={sessionView === "evidence" ? <MessageSquare size={19} /> : <PackageCheck size={19} />}
+              icon={sessionView === "evidence" ? <MessageSquare size={19} /> : <FileText size={19} />}
               label={sessionView === "evidence" ? "返回对话" : `成果${evidenceCount > 0 ? ` ${evidenceCount}` : ""}`}
               disabled={sessionActionBusy}
-              detail={sessionView === "evidence" ? "回到对话记录" : "查看产出文件与最新快照"}
               onClick={() => {
                 setSessionView(sessionView === "evidence" ? "conversation" : "evidence");
                 setMenuSessionId(undefined);
@@ -1036,7 +1043,8 @@ export function MobileWorkspace({
   return (
     <>
       <div className="mobile-workspace-canvas">
-        {selectedSession ? (
+        {selectedSession && (
+          <div className="mobile-conversation-slot" hidden={newChatMode}>
           <ConversationView
             variant="mobile"
             hostId={activeHostId}
@@ -1045,7 +1053,7 @@ export function MobileWorkspace({
             snapshot={snapshot}
             connection={connection}
             desktopOnline={desktopOnline}
-            visible={visible}
+            visible={visible && !newChatMode}
             navigation
             onBackToCatalog={closeToCatalog}
             onSelectSession={selectSession}
@@ -1064,12 +1072,12 @@ export function MobileWorkspace({
                 setMoveMenuSessionId(undefined);
                 setMenuSessionId(selectedSession.sessionId);
               },
-              requestRename(target) {
+              requestRename: canRename(selectedSession) ? (target) => {
                 setMenuSessionId(target.sessionId);
                 setRenameTitle(target.title);
                 setSessionActionError(undefined);
                 setRenameOpen(true);
-              },
+              } : undefined,
             }}
             refreshing={refreshing}
             onRefresh={runRefresh}
@@ -1118,7 +1126,9 @@ export function MobileWorkspace({
             onPreviewRewind={onPreviewRewind}
             onRewindSession={onRewindSession}
           />
-        ) : (
+          </div>
+        )}
+        {(!selectedSession || newChatMode) && (
           <main className="mobile-workspace new-chat-workspace">
             <NewChatCanvas
               key={`${activeHostId ?? ""}:${newChatTarget?.key ?? 0}`}
@@ -1129,8 +1139,8 @@ export function MobileWorkspace({
               conversationDrafts={conversationDrafts}
               {...(newChatTarget?.initialProjectId !== undefined ? { initialProjectId: newChatTarget.initialProjectId } : {})}
               {...(newChatTarget?.initialCwd !== undefined ? { initialCwd: newChatTarget.initialCwd } : {})}
-              onBack={closeToCatalog}
-              backLabel="返回会话列表"
+              onBack={leaveNewChat}
+              backLabel={newChatReturnSession ? "返回会话" : "返回会话列表"}
               onOpenDirectoryPicker={openDirectoryPickerFromCanvas}
               {...(supportsCreateSection && onCreateSection
                 ? {

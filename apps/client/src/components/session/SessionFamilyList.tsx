@@ -59,7 +59,6 @@ export interface SessionFamilyListProps {
   seenCompletions?: Readonly<Record<string, string>> | undefined;
   onSelectSession(sessionId: string): void | Promise<void>;
   onOpenSessionActions?: (sessionId: string) => void;
-  actionLabel?: (session: BridgeSessionInfo) => string;
   onToggleForkGroup(parentSessionId: string): void;
   sessionDrag?: Pick<SessionSectionDragController, "dragState" | "canMoveToSection" | "onSessionPointerDown"> | undefined;
 }
@@ -76,7 +75,6 @@ export function SessionFamilyList({
   seenCompletions,
   onSelectSession,
   onOpenSessionActions,
-  actionLabel,
   onToggleForkGroup,
   sessionDrag,
 }: SessionFamilyListProps) {
@@ -197,7 +195,7 @@ export function SessionFamilyList({
           {hasForks && badgesNode}
           {onOpenSessionActions && (
             <IconButton
-              label={actionLabel ? actionLabel(session) : "会话操作"}
+              label={`会话操作：${session.title}`}
               className="session-row-action"
               onClick={() => onOpenSessionActions(session.sessionId)}
             >

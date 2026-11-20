@@ -1,29 +1,7 @@
-import type { BridgeSDKPermissionMode, BridgeSessionInfo } from "@bridge/protocol";
+import type { BridgeSessionInfo } from "@bridge/protocol";
 import { Fragment } from "react";
 import { formatSessionModelLabel } from "../../lib/conversation-timeline.js";
-
-export const HEADER_MODE_LABELS: Record<BridgeSDKPermissionMode, string> = {
-  default: "Manual",
-  auto: "Auto",
-  bypassPermissions: "Bypass",
-  acceptEdits: "Accept Edits",
-  plan: "Plan",
-  dontAsk: "Don't Ask",
-};
-
-const EFFORT_LABELS: Record<string, string> = {
-  low: "Low",
-  medium: "Medium",
-  high: "High",
-  xhigh: "XHigh",
-  max: "Max",
-};
-
-export function formatSessionEffortLabel(effort: string | undefined): string | undefined {
-  const trimmed = effort?.trim();
-  if (!trimmed) return undefined;
-  return EFFORT_LABELS[trimmed.toLowerCase()] ?? `${trimmed.charAt(0).toUpperCase()}${trimmed.slice(1)}`;
-}
+import { PERMISSION_MODE_LABELS, effortLabel } from "./session-labels.js";
 
 export function SessionProfileSummary({
   session,
@@ -34,11 +12,11 @@ export function SessionProfileSummary({
   id?: string | undefined;
 }) {
   const modelText = formatSessionModelLabel(session);
-  const effortLabel = formatSessionEffortLabel(session.effort ?? session.reasoningEffort);
-  const modeLabel = session.nativePermissionMode ? HEADER_MODE_LABELS[session.nativePermissionMode] : undefined;
+  const effort = (session.effort ?? session.reasoningEffort)?.trim().toLowerCase();
+  const modeLabel = session.nativePermissionMode ? PERMISSION_MODE_LABELS[session.nativePermissionMode] : undefined;
   const outputStyle = session.outputStyle === "default" ? undefined : session.outputStyle;
   const metaParts: Array<{ text: string; className?: string }> = [
-    ...(effortLabel ? [{ text: effortLabel }] : []),
+    ...(effort ? [{ text: effortLabel(effort) }] : []),
     ...(modeLabel ? [{ text: modeLabel, className: session.nativePermissionMode === "bypassPermissions" ? "is-bypass" : "" }] : []),
     ...(outputStyle ? [{ text: outputStyle, className: "is-output-style" }] : []),
   ];

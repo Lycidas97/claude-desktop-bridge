@@ -20,7 +20,7 @@ export function trapModalTabKey(event: KeyboardEvent<HTMLElement>, dialog: HTMLE
   const first = focusables[0]!;
   const last = focusables[focusables.length - 1]!;
   const active = typeof document !== "undefined" ? document.activeElement : null;
-  if (event.shiftKey && (active === first || !dialog.contains(active))) {
+  if (event.shiftKey && (active === first || active === dialog || !dialog.contains(active))) {
     event.preventDefault();
     last.focus();
   } else if (!event.shiftKey && (active === last || !dialog.contains(active))) {
@@ -64,12 +64,12 @@ export function SectionCreateDialog({
         className="create-session-dialog session-create-dialog section-create-dialog"
         role="dialog"
         aria-modal="true"
-        aria-label="新建 Section"
+        aria-label="新建分组"
         tabIndex={-1}
         onKeyDown={(event) => trapModalTabKey(event, event.currentTarget)}
       >
         <header className="session-create-header">
-          <h2>新建 Section</h2>
+          <h2>新建分组</h2>
         </header>
         <form
           onSubmit={(event) => {
@@ -79,9 +79,9 @@ export function SectionCreateDialog({
         >
           <div className="session-create-body">
             <label>
-              <span>Section 名称</span>
+              <span>分组名称</span>
               <input
-                aria-label="Section 名称"
+                aria-label="分组名称"
                 value={state.name}
                 autoFocus
                 required
@@ -91,14 +91,14 @@ export function SectionCreateDialog({
               />
             </label>
             {state.error && <p className="session-create-error" role="alert">{state.error}</p>}
-            {!online && <p className="session-create-status" role="status">电脑已离线，连接后可创建 Section。</p>}
+            {!online && <p className="session-create-status" role="status">电脑已离线，连接后可创建分组。</p>}
           </div>
           <footer className="dialog-actions session-create-actions">
             <button type="button" className="secondary-button" disabled={state.busy} onClick={onClose}>
               取消
             </button>
             <button type="submit" className="primary-button" disabled={!canSubmit}>
-              {state.busy ? "正在创建…" : "创建 Section"}
+              {state.busy ? "正在创建…" : "创建分组"}
             </button>
           </footer>
         </form>

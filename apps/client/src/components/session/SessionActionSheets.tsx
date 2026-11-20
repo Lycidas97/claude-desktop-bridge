@@ -201,7 +201,6 @@ export function SessionActionSheets({
                     <SheetAction
                       icon={syncAction.refreshing ? <LoaderCircle className="is-spinning" size={19} /> : syncAction.syncFlash ? <Check size={19} /> : <RefreshCw size={19} />}
                       label={syncAction.refreshing ? "正在同步" : syncAction.syncFlash ? "已同步" : "同步此会话"}
-                      detail="重新读取电脑端的最新记录"
                       disabled={busy || syncAction.disabled}
                       onClick={() => void syncAction.onSync()}
                     />
@@ -214,7 +213,6 @@ export function SessionActionSheets({
                   <SheetAction
                     icon={<GitFork size={19} />}
                     label="Fork 分支"
-                    detail="复制完整对话为独立会话，原会话不变"
                     disabled={busy}
                     onClick={() => void onFork()}
                   />
@@ -226,7 +224,6 @@ export function SessionActionSheets({
                     <SheetAction
                       icon={menuSession.archivedAt ? <ArchiveRestore size={19} /> : <Archive size={19} />}
                       label={menuSession.archivedAt ? "恢复会话" : "归档会话"}
-                      detail={menuSession.archivedAt ? "放回所属项目" : "从列表收起，历史保留"}
                       disabled={busy}
                       onClick={() => void onArchive(!menuSession.archivedAt)}
                     />
@@ -235,11 +232,7 @@ export function SessionActionSheets({
                     <SheetAction
                       icon={<Trash2 size={19} />}
                       label="删除会话"
-                      detail={sessionBusy
-                        ? "任务进行中，先停止再删除"
-                        : menuSession.transport === "claude-desktop-native"
-                          ? "删除 Claude Desktop 中的会话"
-                          : "仅从 Bridge 移除，Desktop 原会话保留"}
+                      detail={sessionBusy ? "任务进行中，先停止再删除" : undefined}
                       danger
                       disabled={busy || sessionBusy}
                       onClick={onRequestDelete}

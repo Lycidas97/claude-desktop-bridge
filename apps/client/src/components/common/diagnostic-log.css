@@ -117,24 +117,7 @@
   overflow-wrap: normal;
 }
 
-.diagnostic-confirm-backdrop.confirm-backdrop {
-  position: absolute;
-  z-index: 1;
-}
-
-.diagnostic-confirm {
-  max-height: 100%;
-  overflow-y: auto;
-}
-
-.diagnostic-confirm.confirm-dialog h2 {
-  font-size: var(--m-fs-title);
-}
-
-.diagnostic-confirm.confirm-dialog p {
-  font-size: var(--m-fs-subhead);
-}
-
-.diagnostic-confirm .confirm-actions {
-  flex-wrap: wrap;
+/* Only the diagnostic sheet's own confirmation sits above it; other confirmations stay below the sheet. */
+.confirm-backdrop.diagnostic-confirm-backdrop {
+  z-index: 10000;
 }

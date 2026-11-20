@@ -12,7 +12,6 @@ export async function verifyAssistantAgenda(page, host, steps, directory, viewpo
   const settingsButton = page.locator(".assistant-view-tabs").getByRole("button", { name: "助理设置", exact: true });
   const refreshMail = page.getByRole("button", { name: /刷新邮件列表/u });
   await page.locator(".mobile-home-catalog").getByRole("button", { name: /^助理(?:，.*)?$/u }).click();
-  await settingsButton.click();
   const mobileSettingsX = (await settingsButton.boundingBox()).x;
   const agendaFixture = host.nativeApproval.assistantMail.agenda;
   const today = await page.evaluate(() => new Date().toLocaleDateString("sv-SE"));

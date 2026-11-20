@@ -75,9 +75,9 @@ export function DesktopUpdaterSection({
   const releaseHref = safeReleaseHref(updater.releaseUrl);
 
   return (
-    <section className="provider-settings-profile" aria-label="版本更新">
+    <section className="provider-settings-profile" aria-label="版本与更新">
       <div className="settings-section-heading">
-        <h3>版本更新</h3>
+        <h3>版本与更新</h3>
         <span className={hasAvailableUpdate ? "updater-badge-available" : undefined}>
           {formatDesktopUpdaterPhase(updater)}
         </span>
@@ -173,13 +173,7 @@ export interface RemoteDesktopUpdateControl {
   onInvoke(params: BridgeSystemUpdateParams): Promise<BridgeUpdaterSnapshot>;
 }
 
-export function RemoteDesktopUpdaterSection({
-  remote,
-  heading = "远端桌面状态",
-}: {
-  remote: RemoteDesktopUpdateControl;
-  heading?: string;
-}) {
+export function RemoteDesktopUpdaterSection({ remote }: { remote: RemoteDesktopUpdateControl }) {
   const [busyAction, setBusyAction] = useState<BridgeSystemUpdateParams["action"]>();
   const [error, setError] = useState("");
   const headingId = "remote-desktop-updater-title";
@@ -201,16 +195,16 @@ export function RemoteDesktopUpdaterSection({
 
   return (
     <section className="mobile-settings-group" aria-labelledby={headingId}>
-      <h2 id={headingId}>{heading}</h2>
+      <h2 id={headingId}>版本与更新</h2>
       <div className="mobile-settings-row">
-        <span>桌面端版本</span>
+        <span>电脑端版本</span>
         <span className="mobile-settings-value">v{remote.hostVersion}</span>
       </div>
       <div className="mobile-settings-row">
         <span>更新状态</span>
         <span className={`mobile-settings-value ${updater?.phase === "available" || updater?.phase === "ready" ? "updater-badge-available" : ""}`}>
           {!remote.supported
-            ? "旧版桌面端不支持远程检查"
+            ? "旧版电脑端不支持远程检查"
             : !remote.connected
               ? "离线"
               : formatDesktopUpdaterPhase(updater)}
@@ -219,7 +213,7 @@ export function RemoteDesktopUpdaterSection({
       {remote.supported && updater && (
         <div className="mobile-settings-row">
           <span>更新通道</span>
-          <div className="segmented" role="group" aria-label="远端桌面更新通道">
+          <div className="segmented" role="group" aria-label="电脑端更新通道">
             {(["stable", "prerelease"] as const).map((ch) => (
               <button
                 type="button"

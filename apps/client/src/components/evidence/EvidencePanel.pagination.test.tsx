@@ -235,14 +235,13 @@ describe("deduplicated chronological output-file evidence list", () => {
     draw();
     await settle();
     expect(loadDetails.mock.calls).toEqual([["evidence", "artifacts"]]);
-    expect(text()).toContain("产出文件 · 按最近更新排序");
     expect(text()).toContain("共 30 个文件");
     expect(text()).toContain("file-first-0.txt");
     expect(text()).not.toContain("工具与命令");
     expect(elements().some((element) => element.type === "details")).toBe(false);
 
     const moreButton = elements().find(
-      (element) => element.type === "button" && text(element.props.children).includes("加载更多产出文件"),
+      (element) => element.type === "button" && text(element.props.children).includes("加载更多"),
     )!;
     expect(moreButton).toBeDefined();
     moreButton.props.onClick();
@@ -250,6 +249,44 @@ describe("deduplicated chronological output-file evidence list", () => {
     expect(loadDetails).toHaveBeenCalledWith("evidence", "artifacts", "second");
     expect(text()).toContain("共 60 个文件");
     expect(text()).toContain("file-first-0.txt");
+    expect(text()).toContain("file-second-0.txt");
+  });
+
+  it("moves 加载更多 on to older batches after the current batch's next page fails", async () => {
+    props.state = { status: "ready", items: [bundle()], hasMore: true };
+    draw();
+    await settle();
+    const more = () => elements().find((element) => element.type === "button" && text(element.props.children).includes("加载更多"))!;
+    loadDetails.mockRejectedValueOnce(new Error("detail page unavailable"));
+    more().props.onClick();
+    await settle();
+    expect(text()).toContain("detail page unavailable");
+    expect(props.onLoadMore).not.toHaveBeenCalled();
+    more().props.onClick();
+    expect(props.onLoadMore).toHaveBeenCalledOnce();
+    expect(loadDetails.mock.calls.filter(([, , cursor]) => cursor === "second")).toHaveLength(1);
+  });
+
+  it("retries a failed later page from its saved cursor and keeps the loaded pages", async () => {
+    loadDetails.mockImplementation(async (evidenceId, kind, cursor) => ({
+      evidenceId,
+      kind,
+      items: Array.from({ length: 30 }, (_, i) => artifact(`file-${cursor ?? "first"}-${i}`)),
+      ...(cursor === "third" ? { hasMore: false } : { nextCursor: cursor ? "third" : "second", hasMore: true }),
+    }) as BridgeEvidenceDetailPage);
+    draw();
+    await settle();
+    const more = () => elements().find((element) => element.type === "button" && text(element.props.children).includes("加载更多"))!;
+    more().props.onClick();
+    await settle();
+    loadDetails.mockRejectedValueOnce(new Error("third page unavailable"));
+    more().props.onClick();
+    await settle();
+    expect(text()).toContain("third page unavailable");
+    elements().find((element) => element.props["aria-label"] === "重试加载成果")!.props.onClick();
+    await settle();
+    expect(loadDetails.mock.calls.map(([, , cursor]) => cursor)).toEqual([undefined, "second", "third", "third"]);
+    expect(text()).toContain("共 90 个文件");
     expect(text()).toContain("file-second-0.txt");
   });
 
@@ -312,7 +349,7 @@ describe("deduplicated chronological output-file evidence list", () => {
 
     props = { ...props, online: false };
     draw();
-    expect(text()).toContain("主机离线 · 已缓存预览仍可打开");
+    expect(text()).toContain("电脑离线 · 已缓存预览仍可打开");
     expect(text()).toContain("file-first-0.txt");
   });
 

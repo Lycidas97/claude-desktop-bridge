@@ -1,4 +1,4 @@
-.agenda-view { min-width: 0; padding: 12px; border: 1px solid var(--card-border); border-radius: var(--r-card); background: var(--card-fill); }
+.agenda-view { min-width: 0; }
 .agenda-toolbar, .agenda-month, .agenda-pagination { display: flex; align-items: center; gap: 8px; }
 .agenda-toolbar { flex-wrap: wrap; justify-content: space-between; }
 .agenda-month { gap: 4px; font-variant-numeric: tabular-nums; white-space: nowrap; }

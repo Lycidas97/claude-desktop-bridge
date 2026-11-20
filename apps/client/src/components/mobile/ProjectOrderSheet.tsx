@@ -291,7 +291,6 @@ export function ProjectOrderSheet({
         </>
       )}
     >
-      <p className="m-sheet-note">项目按这里的顺序固定显示，点开或收到回复都不会移动项目；新出现的项目排在最前。项目内的会话按最近回复或打开的先后排列。</p>
       <div
         ref={listRef}
         role="list"

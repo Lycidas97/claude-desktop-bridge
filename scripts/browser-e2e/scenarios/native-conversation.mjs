@@ -110,20 +110,19 @@ export async function verifyNativeMessages(page, host, steps, directory) {
   const settingsButton = page.getByRole("button", { name: "会话设置", exact: true });
   await eventually(async () => (await settingsButton.innerText()).includes("隔离模型 · 标准"), true, "Initial native alias snapshot uses its saved header label before opening configuration");
   const modelLabel = await settingsButton.getByText("隔离模型 · 标准", { exact: true }).boundingBox();
-  const permissionLabel = await settingsButton.getByText("Manual", { exact: true }).boundingBox();
+  const permissionLabel = await settingsButton.getByText("逐个确认", { exact: true }).boundingBox();
   const chevron = await settingsButton.locator("svg").boundingBox();
   assert.ok(modelLabel && permissionLabel && chevron, "The header must show the model, permission mode and chevron");
-  assert.ok(permissionLabel.y >= modelLabel.y + modelLabel.height, "The Manual permission mode is below the model at 375px");
+  assert.ok(permissionLabel.y >= modelLabel.y + modelLabel.height, "The 逐个确认 permission mode is below the model at 375px");
   assert.ok(chevron.x >= permissionLabel.x + permissionLabel.width - 1, "The chevron follows the permission mode");
   await settingsButton.click();
   const configuration = page.getByRole("dialog", { name: originalTitle, exact: true });
   const modelSelect = configuration.getByRole("combobox", { name: "模型", exact: true });
   await eventually(() => customSelectValue(modelSelect), "synthetic-model", "Native alias selects the matching original model ID in the picker");
   const effortGroup = configuration.getByRole("group", { name: /^思考强度/u });
-  await effortGroup.getByText("原生会话不支持：关闭", { exact: true }).waitFor();
-  assert.deepEqual(await effortGroup.getByRole("button").allTextContents(), ["低", "高", "最大"]);
+  await eventually(() => effortGroup.getByRole("button").allTextContents(), ["默认", "低", "高", "最大"], "Only native effort levels are offered, after Default");
   await page.screenshot({ path: resolve(directory, "native-effort-availability.png"), fullPage: true });
-  steps.push("gateway-only effort levels are visible but cannot be picked in session configuration");
+  steps.push("gateway-only effort levels are not offered in session configuration");
   await modelSelect.click();
   const modelListbox = page.getByRole("listbox");
   await modelListbox.waitFor();
@@ -282,8 +281,19 @@ export async function verifyHistoryPagination(page, host, steps, directory) {
     const node = [...root.querySelectorAll("[data-stream-key]")].find(candidate => candidate.getBoundingClientRect().bottom > rect.top + 1);
     return { key: node.getAttribute("data-stream-key"), offset: node.getBoundingClientRect().top - rect.top };
   });
+  let releaseRetry;
+  host.historyGate = new Promise(resolve => { releaseRetry = resolve; });
   await page.getByRole("button", { name: "重试加载更早消息", exact: true }).click();
   await eventually(() => host.requests.filter(request => request.method === "session.history").length, 3, "The retry button explicitly retries the retained cursor");
+  // The retried page lands while a new chat opened from ⋯ covers the conversation.
+  const itemsBeforeRetry = await stream.locator("article.conversation-item").count();
+  await page.locator(".m-header:visible").getByRole("button", { name: "会话操作", exact: true }).click();
+  await page.locator(".m-sheet").getByRole("button", { name: "新建会话", exact: true }).click();
+  await page.locator(".new-chat-canvas").getByRole("heading", { name: "新建会话", exact: true }).waitFor();
+  host.historyGate = undefined;
+  releaseRetry();
+  await eventually(async () => await stream.locator("article.conversation-item").count() > itemsBeforeRetry, true, "The retried page is prepended while the conversation is hidden");
+  await page.locator(".m-header:visible").getByRole("button", { name: "返回会话", exact: true }).click();
   await stream.locator(".load-older-button").waitFor({ state: "hidden" });
   await assertAnchor(beforeRetry);
   const older = host.requests.filter(request => request.method === "session.history");
@@ -296,7 +306,7 @@ export async function verifyHistoryPagination(page, host, steps, directory) {
   assert.equal(new Set(keys).size, keys.length, "History pages do not duplicate visible message identities");
   assert.equal(host.requests.filter(request => request.method === "turn.start" || request.method === "turn.steer").length, 0);
   await page.screenshot({ path: resolve(directory, "history-pagination-complete.png"), fullPage: true });
-  steps.push("failed paging preserves data/cursor for manual retry; retry preserves the anchor, and the last page stops loading");
+  steps.push("failed paging preserves data/cursor for manual retry; a retried page that lands behind new chat preserves the anchor, and the last page stops loading");
 
   await stream.evaluate(root => { root.scrollTop = root.scrollHeight; root.dispatchEvent(new Event("scroll")); });
   const streaming = stream.locator("article.conversation-item.assistant").filter({ hasText: "流式滚动起始片段" });
@@ -323,6 +333,39 @@ export async function verifyHistoryPagination(page, host, steps, directory) {
     await eventually(() => stream.evaluate(root => root.scrollHeight - root.clientHeight - root.scrollTop < 4), true, "Returning to the bottom resumes streaming follow");
   }
   steps.push("streaming follows at the bottom, preserves the reader's position after 40/80/640px upward scrolling, and follows again only after returning to the bottom");
+
+  const opensBefore = host.requests.filter(request => request.method === "session.open").length;
+  const itemsBefore = await stream.locator("article.conversation-item").count();
+  const reading = await stream.evaluate(root => {
+    root.scrollTop = Math.floor(root.scrollHeight / 3);
+    root.dispatchEvent(new Event("scroll"));
+    const rect = root.getBoundingClientRect();
+    const node = [...root.querySelectorAll("[data-stream-key]")].find(candidate => candidate.getBoundingClientRect().bottom > rect.top + 1);
+    return { key: node.getAttribute("data-stream-key"), offset: node.getBoundingClientRect().top - rect.top };
+  });
+  await page.locator(".m-header:visible").getByRole("button", { name: "会话操作", exact: true }).click();
+  await page.locator(".m-sheet").getByRole("button", { name: "新建会话", exact: true }).click();
+  await page.locator(".new-chat-canvas").getByRole("heading", { name: "新建会话", exact: true }).waitFor();
+  // Streaming continues while the conversation is hidden underneath the new chat.
+  await host.emit("assistant.delta", { text: `\n\n新建页停留期间的流式片段。${"隐藏时的输出不应改动阅读位置。".repeat(6)}` }, { turnId: "scroll-follow-turn", itemId: "scroll-follow-message" });
+  await streaming.filter({ hasText: "新建页停留期间的流式片段" }).waitFor({ state: "attached" });
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  await page.locator(".m-header:visible").getByRole("button", { name: "返回会话", exact: true }).click();
+  await page.getByRole("heading", { name: originalTitle, exact: true }).waitFor();
+  await assertAnchor(reading);
+  assert.equal(await stream.locator("article.conversation-item").count(), itemsBefore, "Returning from new chat keeps the loaded older pages");
+  assert.equal(host.requests.filter(request => request.method === "session.open").length, opensBefore, "Returning from new chat does not reopen the session");
+  steps.push("cancelling a new chat opened from the conversation ⋯ returns to the same loaded pages and reading position without session.open, even after a streaming update arrived while hidden");
+
+  await stream.evaluate(root => { root.scrollTop = root.scrollHeight; root.dispatchEvent(new Event("scroll")); });
+  await page.locator(".m-header:visible").getByRole("button", { name: "会话操作", exact: true }).click();
+  await page.locator(".m-sheet").getByRole("button", { name: "新建会话", exact: true }).click();
+  await page.locator(".new-chat-canvas").getByRole("heading", { name: "新建会话", exact: true }).waitFor();
+  await host.emit("assistant.delta", { text: `\n\n新建页停留期间的跟随片段。${"跟随底部的读者回来后应看到最新输出。".repeat(6)}` }, { turnId: "scroll-follow-turn", itemId: "scroll-follow-message" });
+  await streaming.filter({ hasText: "新建页停留期间的跟随片段" }).waitFor({ state: "attached" });
+  await page.locator(".m-header:visible").getByRole("button", { name: "返回会话", exact: true }).click();
+  await eventually(() => stream.evaluate(root => root.scrollHeight - root.clientHeight - root.scrollTop < 4), true, "A reader following the bottom sees output that arrived while the new chat was open");
+  steps.push("a reader following the bottom returns from new chat to the output streamed while hidden");
 }
 
 export async function verifyNativeCompaction(page, host, steps, directory) {
@@ -821,61 +864,65 @@ export async function verifyNativeBoundaries(page, host, steps, directory) {
 
   await openMobileDrawer(page);
   await page.locator(".mobile-drawer-dock-nav").getByRole("button", { name: "设置", exact: true }).click();
-  await page.getByRole("heading", { name: "远端桌面状态", exact: true }).waitFor();
-  await page.getByRole("region", { name: "版本与更新", exact: true }).getByRole("button", { name: "查看 GitHub Releases", exact: true }).waitFor();
-  assert.ok((await page.locator(".mobile-settings-page").innerText()).includes("v1.1.1"));
-  const remoteUpdaterRegion = page.getByRole("region", { name: "远端桌面状态", exact: true });
+  const settingsUpdaterRegion = page.locator(".mobile-settings-content").getByRole("region", { name: "版本与更新", exact: true });
+  await settingsUpdaterRegion.getByRole("button", { name: "查看 GitHub Releases", exact: true }).waitFor();
+  const openComputerSettings = () => page.locator(".mobile-settings-content").getByRole("button", { name: "连接与电脑设置" }).click();
+  const returnToSettings = () => page.locator(".m-header:visible").getByRole("button", { name: "返回设置", exact: true }).click();
+  await openComputerSettings();
+  const remoteUpdaterRegion = page.locator(".mobile-host-details").getByRole("region", { name: "版本与更新", exact: true });
+  await remoteUpdaterRegion.getByText("v1.1.1", { exact: true }).waitFor();
   assert.deepEqual(
     await remoteUpdaterRegion.locator(".mobile-settings-actions button").allInnerTexts(),
     ["检查更新"],
-    "Remote desktop status exposes only 检查更新 without remote upgrade/download buttons",
+    "Computer updates expose only 检查更新 without remote upgrade/download buttons",
   );
   await remoteUpdaterRegion.getByRole("button", { name: "检查更新", exact: true }).click();
   await eventually(() => host.requests.some(request => request.method === "system.update" && request.params.action === "check"), true, "Mobile triggers encrypted system.update check RPC");
-  await eventually(() => page.locator(".mobile-settings-page").innerText().then(t => t.includes("发现 v1.3.5")), true, "Remote desktop status reflects available version over E2EE");
-  async function assertUpdaterCards() {
-    for (const title of ["远端桌面状态", "版本与更新"]) {
-      const rows = await page.getByRole("region", { name: title, exact: true }).locator(":scope > :not(h2)").evaluateAll(elements => elements.map(element => {
-        const rect = element.getBoundingClientRect();
-        const style = getComputedStyle(element);
-        return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, background: style.backgroundColor,
-          topRadius: [style.borderTopLeftRadius, style.borderTopRightRadius], bottomRadius: [style.borderBottomLeftRadius, style.borderBottomRightRadius],
-          topBorder: style.borderTopWidth, bottomBorder: style.borderBottomWidth, sideBorderWidths: [style.borderLeftWidth, style.borderRightWidth] };
-      }));
-      if (title === "版本与更新") {
-        assert.equal(rows.length, 3, "Web updates show the version, channel, and Releases action");
-      } else {
-        assert.ok(rows.length >= 4, "Remote desktop updates show version, details, and actions");
-      }
-      for (const [index, row] of rows.entries()) {
-        assert.equal(row.left, rows[0].left, `${title} rows share the left hairline edge`);
-        assert.equal(row.right, rows[0].right, `${title} rows share the right hairline edge`);
-        assert.equal(row.background, rows[0].background, `${title} rows stay flat without boxed cards`);
-        assert.deepEqual(row.sideBorderWidths, ["0px", "0px"], `${title} rows have no vertical card borders`);
-        assert.deepEqual(row.topRadius, ["0px", "0px"], `${title} rows are cardless`);
-        assert.deepEqual(row.bottomRadius, ["0px", "0px"], `${title} rows are cardless`);
-        assert.equal(row.topBorder, "0px", `${title} rows use bottom hairlines only`);
-        assert.equal(row.bottomBorder, "1px", `${title} rows render 1px hairline dividers`);
-        if (index > 0) {
-          assert.ok(Math.abs(row.top - rows[index - 1].bottom) <= 1, `${title} has no gaps between rows`);
-        }
+  await eventually(() => remoteUpdaterRegion.innerText().then(t => t.includes("发现 v1.3.5")), true, "Computer updates reflect the available version over E2EE");
+  async function assertUpdaterCard(region, title) {
+    const rows = await region.locator(":scope > :not(h2)").evaluateAll(elements => elements.map(element => {
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, background: style.backgroundColor,
+        topRadius: [style.borderTopLeftRadius, style.borderTopRightRadius], bottomRadius: [style.borderBottomLeftRadius, style.borderBottomRightRadius],
+        topBorder: style.borderTopWidth, bottomBorder: style.borderBottomWidth, sideBorderWidths: [style.borderLeftWidth, style.borderRightWidth] };
+    }));
+    if (title === "Web") {
+      assert.equal(rows.length, 3, "Web updates show the version, channel, and Releases action");
+    } else {
+      assert.ok(rows.length >= 4, "Computer updates show version, details, and actions");
+    }
+    for (const [index, row] of rows.entries()) {
+      assert.equal(row.left, rows[0].left, `${title} rows share the left hairline edge`);
+      assert.equal(row.right, rows[0].right, `${title} rows share the right hairline edge`);
+      assert.equal(row.background, rows[0].background, `${title} rows stay flat without boxed cards`);
+      assert.deepEqual(row.sideBorderWidths, ["0px", "0px"], `${title} rows have no vertical card borders`);
+      assert.deepEqual(row.topRadius, ["0px", "0px"], `${title} rows are cardless`);
+      assert.deepEqual(row.bottomRadius, ["0px", "0px"], `${title} rows are cardless`);
+      assert.equal(row.topBorder, "0px", `${title} rows use bottom hairlines only`);
+      assert.equal(row.bottomBorder, "1px", `${title} rows render 1px hairline dividers`);
+      if (index > 0) {
+        assert.ok(Math.abs(row.top - rows[index - 1].bottom) <= 1, `${title} has no gaps between rows`);
       }
     }
   }
-  await assertUpdaterCards();
+  await assertUpdaterCard(remoteUpdaterRegion, "Computer");
   await page.screenshot({ path: resolve(directory, "settings-updater-cards.png"), fullPage: true });
   host.snapshot.updater = { ...host.snapshot.updater, phase: "idle" };
   await host.send({ kind: "snapshot", snapshot: host.snapshot });
-  await eventually(() => page.getByRole("button", { name: "检查更新", exact: true }).isEnabled(), true, "Remote updater is idle before the rejection check");
+  await eventually(() => remoteUpdaterRegion.getByRole("button", { name: "检查更新", exact: true }).isEnabled(), true, "Remote updater is idle before the rejection check");
   host.systemUpdateError = "隔离更新请求失败";
-  await page.getByRole("button", { name: "检查更新", exact: true }).click();
-  await page.getByRole("alert").filter({ hasText: host.systemUpdateError }).waitFor();
   for (const family of ["Sunstone", "Apple"]) {
+    await returnToSettings();
     await page.getByRole("group", { name: "主题风格", exact: true }).getByRole("button", { name: family, exact: true }).click();
-    await assertUpdaterCards();
-    await page.getByRole("region", { name: "远端桌面状态", exact: true }).screenshot({ path: resolve(directory, `settings-updater-error-${family}.png`) });
+    await assertUpdaterCard(settingsUpdaterRegion, "Web");
+    await openComputerSettings();
+    await remoteUpdaterRegion.getByRole("button", { name: "检查更新", exact: true }).click();
+    await remoteUpdaterRegion.getByRole("alert").filter({ hasText: host.systemUpdateError }).waitFor();
+    await assertUpdaterCard(remoteUpdaterRegion, "Computer");
+    await remoteUpdaterRegion.screenshot({ path: resolve(directory, `settings-updater-error-${family}.png`) });
   }
-  steps.push("mobile Settings keeps updater details/actions, rejected RPC errors, and Web release fallback in continuous cards in Sunstone/Apple themes and triggers E2EE system.update check");
+  steps.push("Settings keeps the Web Releases fallback and 连接与电脑设置 keeps computer update details/actions and rejected RPC errors, both in continuous cards in Sunstone/Apple themes, and triggers E2EE system.update check");
 }
 
 export async function verifyNativeSessionNotices(page, host, steps, directory) {

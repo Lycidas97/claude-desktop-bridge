@@ -103,7 +103,7 @@
 }
 
 .desktop-app-control > span .desktop-app-error {
-  color: var(--danger);
+  color: var(--danger-ink);
 }
 
 .desktop-app-actions {
@@ -567,11 +567,6 @@
 }
 
 /* ---- Apple 家族组件级收尾 ---- */
-
-/* 发送钮：Sunstone 深色用深字压赤陶，Apple 蓝底回白字 */
-[data-theme-family="apple"][data-theme="dark"] .send-button {
-  color: #fff;
-}
 
 /* 扫码屏是常驻深色 UI：家族内换成 Apple 蓝 */
 [data-theme-family="apple"] .qr-scanner-kicker {
@@ -1080,14 +1075,6 @@
   animation: bridge-top-dropdown-in 140ms var(--ease-out) both;
 }
 
-[data-theme="dark"] .select-menu-listbox {
-  background: #252421;
-}
-
-[data-theme-family="apple"][data-theme="dark"] .select-menu-listbox {
-  background: #28282b;
-}
-
 .select-menu-option {
   display: flex;
   width: 100%;
@@ -1147,17 +1134,10 @@
   color: var(--accent-ink);
 }
 
-.assistant-binding-select,
 .session-create-field-group {
   display: grid;
   gap: 6px;
   min-width: 0;
-}
-
-.assistant-binding-select > span {
-  color: var(--muted);
-  font-size: calc(12px * var(--font-scale));
-  font-weight: 600;
 }
 
 /* Background tasks: one line per task in the stream, details in the tray sheet. */
@@ -1192,7 +1172,7 @@
 .background-task-state { display: inline-grid; flex: none; place-items: center; color: var(--muted); }
 .background-task-state.is-running { color: var(--accent); }
 .background-task-state.is-completed { color: var(--success); }
-.background-task-state.is-failed { color: var(--danger); }
+.background-task-state.is-failed { color: var(--danger-ink); }
 
 .background-tasks-button { position: relative; }
 .background-tasks-count {
@@ -2054,13 +2034,6 @@
   border-bottom: 1px solid var(--line);
 }
 
-.evidence-list-heading {
-  color: var(--muted);
-  font-size: calc(12px * var(--font-scale));
-  font-weight: 600;
-  letter-spacing: 0.01em;
-}
-
 .evidence-list-count {
   flex: none;
   color: var(--muted);
@@ -2531,17 +2504,6 @@
   outline: none;
 }
 
-[data-theme="dark"] .context-window-popover {
-  background: #23221f;
-  border-color: rgba(255, 250, 240, 0.14);
-  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.54);
-}
-
-[data-theme="dark"][data-theme-family="apple"] .context-window-popover {
-  background: #1c1c1e;
-  border-color: rgba(255, 255, 255, 0.14);
-}
-
 .context-popover-header {
   display: flex;
   align-items: center;
@@ -2791,10 +2753,6 @@
   padding: 4px 2px;
 }
 
-.desktop-sidebar-host .m-status-dot.is-online {
-  background: var(--success);
-}
-
 .desktop-sidebar-host strong {
   overflow: hidden;
   color: var(--text);
@@ -2994,6 +2952,7 @@
   gap: 2px;
 }
 
+/* Overrides the desktop sidebar's card fill (.desktop-project-list .project-group). */
 .is-flat-tree .project-group {
   border: 0;
   border-radius: 0;
@@ -3018,10 +2977,7 @@
   border-top: 1px solid color-mix(in srgb, var(--line-strong) 82%, var(--line));
 }
 
-.is-flat-tree .project-group-header,
-.is-flat-tree .project-group.expanded .project-group-header {
-  border-bottom: 0;
-  background: transparent;
+.is-flat-tree .project-group-header {
   align-items: center;
 }
 
@@ -3178,11 +3134,7 @@
 }
 
 .is-flat-tree .session-state-dot {
-  width: 6px;
-  height: 6px;
   flex: none;
-  border-radius: 50%;
-  box-shadow: none;
 }
 
 .is-flat-tree .session-row-copy {

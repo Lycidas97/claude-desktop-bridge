@@ -87,7 +87,7 @@ it("mounts quota only in its unique group and returns to existing settings", () 
   expect(elements().filter(element => element.type === "button" && text(element.props.children) === "Magpie 额度")).toHaveLength(1);
   button("Magpie 额度").props.onClick(); draw();
   expect(elements().filter(element => element.props["data-quota-dashboard"])).toHaveLength(1);
-  for (const [label, content] of [["连接与启动", "开机自动运行"], ["外观与显示", "显示模式"], ["诊断与关于", "后台诊断记录"], ["Claude 接入", "开发者工具"]]) {
+  for (const [label, content] of [["连接与启动", "开机自动运行"], ["外观与显示", "显示模式"], ["诊断与支持", "后台诊断记录"], ["Claude 接入", "开发者工具"]]) {
     button(label!).props.onClick(); draw();
     expect(text()).toContain(content);
     expect(elements().filter(element => element.props["data-quota-dashboard"])).toHaveLength(0);
@@ -96,7 +96,7 @@ it("mounts quota only in its unique group and returns to existing settings", () 
 
 it("uses the local recorder setting and displays the returned state", async () => {
   props.api.setDiagnosticsEnabled = vi.fn(async enabled => ({ ...props.snapshot, diagnosticsEnabled: enabled }));
-  button("诊断与关于").props.onClick(); draw();
+  button("诊断与支持").props.onClick(); draw();
   const checkbox = () => elements().find(element => element.type === "input" && element.props.type === "checkbox")!;
   expect(checkbox().props.checked).toBe(false);
   checkbox().props.onChange({ target: { checked: true } }); await settle();
@@ -210,10 +210,10 @@ it("renders desktop updater controls and GitHub release download link in about s
     },
   } as unknown as DesktopControlSnapshot;
   draw();
-  button("诊断与关于").props.onClick();
+  button("诊断与支持").props.onClick();
   draw();
   expect(text()).toContain("发现 v1.3.5");
-  expect(text()).toContain("版本更新");
+  expect(text()).toContain("版本与更新");
   expect(text()).toContain("前往下载 v1.3.5");
   expect(text()).not.toContain("空闲静默重启");
 });
@@ -232,7 +232,7 @@ it("passes the collected renderer diagnostics snapshot to exportDiagnostics whil
   });
   props.api.exportDiagnostics = vi.fn().mockResolvedValue({ saved: true, path: "/tmp/diag.json" });
   try {
-    button("诊断与关于").props.onClick();
+    button("诊断与支持").props.onClick();
     draw();
     expect(text()).toContain("后台诊断记录");
     expect(button("连接诊断与日志")).toBeDefined();

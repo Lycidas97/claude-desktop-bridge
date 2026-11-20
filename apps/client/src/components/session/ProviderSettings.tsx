@@ -82,7 +82,8 @@ export function ProviderSettings({ snapshot, connected = true, desktopLocal = fa
 
   return <section className="provider-settings" aria-label="提供方设置" aria-busy={busy}>
     <header className="settings-section-heading">
-      <div><h2>模型与网关</h2>{snapshot && <span>{snapshot.host.name}</span>}</div>
+      {/* The mobile page header already names this page. */}
+      <div>{desktopLocal && <h2>模型与网关</h2>}{snapshot && <span>{snapshot.host.name}</span>}</div>
       <button type="button" className="secondary-button" disabled={!snapshot || !connected || busy} onClick={() => void run(onRefresh)}>
         {busy ? <LoaderCircle className="is-spinning" size={16} /> : <RefreshCw size={16} />}重新检测
       </button>

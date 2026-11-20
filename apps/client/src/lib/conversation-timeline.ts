@@ -380,6 +380,8 @@ export function conversationItems(
       ...(taskPlan ? { taskPlan } : {}),
     });
   }
+  // Keep the projected IDs of loaded rows separate from replay-only events.
+  const loadedHistoryIds = paged && history?.hasMore && new Set(items.keys());
   const acceptedRequests = new Set(
     sessionEvents
       .filter((event) => event.type === "user.message.accepted" && typeof event.data.requestId === "string")
@@ -835,9 +837,9 @@ export function conversationItems(
   if (paged) {
     if (!history || (history.status === "loading" && history.items.length === 0)) return [];
     const first = sessionHistory[0];
-    if (history.hasMore && first) {
+    if (loadedHistoryIds && first) {
       return sorted.filter((item) => (
-        item.createdAt > first.createdAt ||
+        loadedHistoryIds.has(item.id) || item.createdAt > first.createdAt ||
         (item.createdAt === first.createdAt && item.id.localeCompare(first.id) >= 0)
       ));
     }

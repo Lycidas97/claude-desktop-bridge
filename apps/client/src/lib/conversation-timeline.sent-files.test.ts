@@ -25,3 +25,20 @@ it("shows one file card at the SendUserFile call after an older page or live rep
   const unavailable = [{ name: "报告.md" }];
   expect(items({ ...loaded, sessionFileReceipts: { send: unavailable } }, [started, completed])[0]?.sentFiles).toEqual(unavailable);
 });
+
+it("keeps a loaded SendUserFile card at the page boundary but hides earlier replay-only items", () => {
+  const call: BridgeHistoryItem = { id: "toolu_123", sessionId: "session", role: "tool", origin: "claude-desktop",
+    toolName: "SendUserFile", text: "原始输入", createdAt: 10 };
+  const reply: BridgeHistoryItem = { id: "reply", sessionId: "session", role: "assistant", origin: "claude-desktop", text: "已发送", createdAt: 11 };
+  const sentFiles = [{ name: "报告.md", path: "/workspace/报告.md" }];
+  const history = projectHistoryPage({ sessionId: "session", items: [call, reply], hasMore: true, nextCursor: "older",
+    sessionFileReceipts: { [call.id]: sentFiles } });
+  const events: BridgeEvent[] = [
+    { eventId: "old", itemId: "old", seq: 1, timestamp: 9, sessionId: "session", origin: "claude-desktop", type: "assistant.completed", data: { text: "Earlier replay" } },
+    { eventId: "same-time", itemId: "same-time", seq: 2, timestamp: 10, sessionId: "session", origin: "claude-desktop", type: "assistant.completed", data: { text: "Same-time earlier replay" } },
+    { eventId: "live", itemId: "live", seq: 3, timestamp: 12, sessionId: "session", origin: "claude-desktop", type: "assistant.completed", data: { text: "New reply" } },
+  ];
+  expect(conversationItems("session", history, events, [], true)).toMatchObject([
+    { id: `tool:${call.id}`, createdAt: 10, sentFiles }, { id: reply.id }, { id: "live" },
+  ]);
+});

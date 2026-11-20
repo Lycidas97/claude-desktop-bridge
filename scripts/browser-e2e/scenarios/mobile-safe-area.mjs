@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
-import { openMobileDrawer, openMobileSession } from "../helpers.mjs";
+import { eventually, openMobileDrawer, openMobileSession } from "../helpers.mjs";
 
 export async function verifyMobileSafeArea(page, steps, directory, viewports) {
   const emulation = await page.context().newCDPSession(page);
@@ -95,12 +95,25 @@ export async function verifyMobileSafeArea(page, steps, directory, viewports) {
   }
   const settings = page.locator(".mobile-settings-content");
   const { x, y, width, height } = await settings.boundingBox();
-  const gesture = { x: x + width / 2, y: y + height / 2, gestureSourceType: "touch", preventFling: true };
+  const touchX = x + width / 2;
+  // Headless Edge on Windows can omit the moves from synthesizeScrollGesture.
+  async function swipeSettings(startY, distance) {
+    // Timestamp the drag at 40 ms per move, then lift 300 ms after the last move to avoid a fling.
+    const releasedAt = Date.now();
+    const startedAt = releasedAt - 540;
+    await emulation.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: touchX, y: startY }], timestamp: startedAt / 1000 });
+    for (let step = 1; step <= 6; step++) {
+      await emulation.send("Input.dispatchTouchEvent", {
+        type: "touchMove", touchPoints: [{ x: touchX, y: startY + distance * step / 6 }], timestamp: (startedAt + step * 40) / 1000,
+      });
+    }
+    await emulation.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [], timestamp: releasedAt / 1000 });
+  }
   const scrollEnd = await settings.evaluate(element => element.scrollTop);
-  await emulation.send("Input.synthesizeScrollGesture", { ...gesture, yDistance: 120 });
-  assert.ok(await settings.evaluate(element => element.scrollTop) < scrollEnd, "Settings still scrolls away from the end with a touch gesture");
-  await emulation.send("Input.synthesizeScrollGesture", { ...gesture, yDistance: -240 });
-  assert.equal(await settings.evaluate(element => element.scrollTop), scrollEnd, "An upward swipe past the end leaves settings at the content boundary");
+  await swipeSettings(y + height / 2, 120);
+  await eventually(() => settings.evaluate((element, end) => element.scrollTop < end, scrollEnd), true, "Settings still scrolls away from the end with a touch gesture");
+  await swipeSettings(y + height * 3 / 4, -240);
+  await eventually(() => settings.evaluate(element => element.scrollTop), scrollEnd, "An upward swipe past the end leaves settings at the content boundary");
   // Headless Chromium does not render the phone's elastic bounce. Check the
   // resolved browser policy as well as the bounds reached by touch scrolling.
   assert.equal(await settings.evaluate(element => getComputedStyle(element).overscrollBehaviorY), "none", "Settings disables vertical rubber-banding and scroll chaining at the boundary");

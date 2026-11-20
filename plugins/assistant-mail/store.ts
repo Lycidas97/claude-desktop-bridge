@@ -174,6 +174,7 @@ export class AssistantMailStore {
     if (!columns.includes("mime_projection")) this.database.exec("ALTER TABLE mail_events ADD COLUMN mime_projection TEXT");
     if (!columns.includes("historical")) this.database.exec("ALTER TABLE mail_events ADD COLUMN historical INTEGER NOT NULL DEFAULT 0");
     if (!columns.includes("host_read")) this.database.exec("ALTER TABLE mail_events ADD COLUMN host_read INTEGER NOT NULL DEFAULT 0");
+    if (!columns.includes("user_junk")) this.database.exec("ALTER TABLE mail_events ADD COLUMN user_junk INTEGER NOT NULL DEFAULT 0");
     this.database.exec(`CREATE INDEX IF NOT EXISTS mail_events_page_order ON mail_events (${mailOrder})`);
     this.triggers = new AssistantTriggerStore(this.database);
     extend?.(this.database);
@@ -315,11 +316,12 @@ export class AssistantMailStore {
     }
   }
 
-  page(input: unknown = {}, includeHistory = true): { events: MailEvent[]; nextCursor?: string } {
+  page(input: unknown = {}, includeHistory = true, scope: "all" | "inbox" = "all"): { events: MailEvent[]; nextCursor?: string } {
     const { cursor, limit = 50, processingStatus } = MailPageParameters.parse(input);
     const order = includeHistory ? mailOrder : "seq";
     const rows = this.db().prepare(`
       SELECT * FROM mail_events WHERE (${order}) < ? AND (? IS NULL OR processing_status = ?)${includeHistory ? "" : " AND historical = 0"}
+      ${scope === "inbox" ? "AND user_junk = 0" : ""}
       ORDER BY (${order}) DESC LIMIT ?
     `).all(cursor ? Number(cursor) : Number.MAX_SAFE_INTEGER,
       processingStatus ?? null, processingStatus ?? null, limit + 1) as EventRow[];
@@ -341,6 +343,15 @@ export class AssistantMailStore {
     const row = this.db().prepare("UPDATE mail_events SET processing_status = ? WHERE mail_ref_id = ? RETURNING *")
       .get(status, mailRefId) as EventRow | undefined;
     return row ? eventFromRow(row) : undefined;
+  }
+
+  setJunk(mailRefId: string, junk: boolean): boolean | undefined {
+    const db = this.db();
+    const row = db.prepare("SELECT user_junk FROM mail_events WHERE mail_ref_id = ?").get(mailRefId);
+    if (!row) return undefined;
+    if (row.user_junk === Number(junk)) return false;
+    db.prepare("UPDATE mail_events SET user_junk = ? WHERE mail_ref_id = ?").run(Number(junk), mailRefId);
+    return true;
   }
 
   markRead(mailRefIds: readonly string[]): number | undefined {
@@ -372,7 +383,7 @@ export class AssistantMailStore {
   unreadCount(): number {
     if (!this.database) return 0;
     const row = this.database
-      .prepare("SELECT COUNT(*) AS count FROM mail_events WHERE historical = 0 AND processing_status = 'pending'")
+      .prepare("SELECT COUNT(*) AS count FROM mail_events WHERE historical = 0 AND user_junk = 0 AND processing_status = 'pending'")
       .get() as { count: number | bigint } | undefined;
     return Number(row?.count ?? 0);
   }

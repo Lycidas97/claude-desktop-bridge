@@ -311,7 +311,7 @@ export async function deliverTransportMessage(
   const delivered = diagnostics.begin(`rpc.${method}`);
   try {
     const deviceId = message.header.fromDeviceId;
-    if (requestMethod.startsWith("assistant.proposal.") && !host.isPairedDevice(deviceId)) {
+    if ((requestMethod.startsWith("assistant.proposal.") || requestMethod === "plugin.assistant-mail.junk.set") && !host.isPairedDevice(deviceId)) {
       await host.sendToDevice({ kind: "response", requestId: message.payload.requestId, ok: false,
         error: { code: "PAIRING_REQUIRED", message: "请先完成设备配对。", retryable: false } }, deviceId, undefined, true);
       host.socket?.ack([encrypted.id]);

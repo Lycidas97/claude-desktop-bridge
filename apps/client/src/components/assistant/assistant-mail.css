@@ -89,6 +89,23 @@
 .assistant-context-usage dd { margin: 0; font-variant-numeric: tabular-nums; }
 .assistant-binding details { margin-top: 12px; font-size: calc(13px * var(--font-scale)); }
 .assistant-mail-list { display: grid; gap: 12px; }
+.assistant-mail-junk-action { color: var(--muted); }
+.assistant-mail-junk-feedback {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0 16px;
+  padding: 0 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-input);
+  font-size: calc(13px * var(--font-scale));
+}
+.assistant-mail-junk-feedback [role="alert"] { color: var(--danger-ink); padding: 8px 0; }
 .assistant-mail-card { min-width: 0; max-width: 100%; padding: 16px; border: 1px solid var(--card-border); border-radius: var(--r-card); background: var(--card-fill); box-shadow: var(--card-hi); color: var(--text); overflow-wrap: anywhere; }
 .assistant-mail-list .assistant-mail-card { border-color: var(--line); }
 .assistant-mail-card > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--muted); font-size: calc(11px * var(--font-scale)); }

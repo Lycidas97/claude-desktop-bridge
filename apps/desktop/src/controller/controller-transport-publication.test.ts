@@ -237,6 +237,24 @@ describe("controller transport publication", () => {
     expect(controller.onlineDevices.has(paired.pairing.deviceId)).toBe(true);
   });
 
+  it("requires a completed pairing before accepting a local junk write", async () => {
+    const { ws, controller, paired, config } = await fixture();
+    delete config.devices[0]!.pairedAt;
+    const phone = await BridgeCrypto.fromPairing(paired.pairing);
+    const handle = vi.spyOn(controller, "handleRequest");
+    const envelope = await phone.encrypt({ kind: "request", requestId: "mark-junk", idempotencyKey: "mark-junk",
+      method: "plugin.assistant-mail.junk.set", params: { mailRefId: "saved-mail", junk: true } }, "mobile", "desktop", Date.now(), undefined, config.hostDeviceId);
+    ws.receive({ type: "envelope", envelope });
+    await vi.waitFor(async () => {
+      const replies = await Promise.all(ws.sent.flatMap(frame => frame.type === "envelope" ? [phone.decrypt(frame.envelope)] : []));
+      expect(replies.map(reply => reply.payload)).toContainEqual(expect.objectContaining({
+        kind: "response", requestId: "mark-junk", ok: false, error: expect.objectContaining({ code: "PAIRING_REQUIRED" }),
+      }));
+    });
+    expect(config.devices[0]?.pairedAt).toBeUndefined();
+    expect(handle).not.toHaveBeenCalled();
+  });
+
   it.each<ServerFrame>([
     { type: "stored", ids: ["delivery-1"] },
     { type: "acknowledged", ids: ["delivery-1"], byDeviceId: "synthetic-phone" },

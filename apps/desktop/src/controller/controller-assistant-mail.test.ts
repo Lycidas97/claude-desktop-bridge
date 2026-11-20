@@ -232,6 +232,33 @@ describe("assistant mail mobile RPC projections", () => {
     expect(run.broker.startTurn).not.toHaveBeenCalled();
   });
 
+  it("updates only the local inbox projection and publishes a change on mark and undo", async () => {
+    const older = await record(2);
+    const { mailRefId } = await record(3);
+    const before = await run.controller.snapshot();
+    expect(before.host.capabilities).toContain("plugin.assistant-mail.junk.v1");
+    await expect(run.request("plugin.assistant-mail.junk.set", { mailRefId, junk: "true" })).rejects.toMatchObject({ code: "INVALID_PARAMS" });
+    await expect(run.request("plugin.assistant-mail.junk.set", { mailRefId: " ", junk: true })).rejects.toMatchObject({ code: "INVALID_PARAMS" });
+    await expect(run.request("plugin.assistant-mail.junk.set", { mailRefId: "missing", junk: true })).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect((await run.controller.snapshot()).assistantMail?.changeToken).toBe(before.assistantMail?.changeToken);
+
+    await run.request("plugin.assistant-mail.junk.set", { mailRefId, junk: true });
+    const marked = (await run.controller.snapshot()).assistantMail?.changeToken;
+    expect(marked).not.toBe(before.assistantMail?.changeToken);
+    await run.request("plugin.assistant-mail.junk.set", { mailRefId, junk: true });
+    expect((await run.controller.snapshot()).assistantMail?.changeToken).toBe(marked);
+    const { mailPage } = await run.request<{ mailPage: BridgeMailPage }>("plugin.assistant-mail.list", { limit: 1 });
+    expect(mailPage.cards.map(card => card.mailRefId)).toEqual([older.mailRefId]);
+    expect(mailPage.nextCursor).toBeUndefined();
+    expect(service.page().events[0]).toMatchObject({ mailRefId, processingStatus: "pending" });
+    await expect(run.request("plugin.assistant-mail.read", { mailRefId })).resolves.toMatchObject({ mailDetail: { bodyText: "Body 3" } });
+
+    await run.request("plugin.assistant-mail.junk.set", { mailRefId, junk: false });
+    expect((await run.controller.snapshot()).assistantMail?.changeToken).not.toBe(marked);
+    const restored = await run.request<{ mailPage: BridgeMailPage }>("plugin.assistant-mail.list", { limit: 1 });
+    expect(restored.mailPage.cards.map(card => card.mailRefId)).toEqual([mailRefId]);
+  });
+
   it("only includes history in mail pages when the client opts in", async () => {
     const live = await record(3);
     const history = await store.record({

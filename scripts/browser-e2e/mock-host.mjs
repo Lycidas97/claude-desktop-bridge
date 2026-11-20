@@ -486,6 +486,7 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
         case "plugin.assistant-mail.batch":
         case "plugin.assistant-mail.history":
         case "plugin.assistant-mail.read":
+        case "plugin.assistant-mail.junk.set":
         case "plugin.assistant-mail.bind":
         case "plugin.assistant-mail.workspace.initialize":
         case "plugin.assistant-mail.automatic-delivery.set":

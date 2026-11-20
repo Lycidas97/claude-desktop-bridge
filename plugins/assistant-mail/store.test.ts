@@ -220,6 +220,34 @@ it("migrates legacy mail as unmarked and retains host read marks after reopening
   expect(store.openMailbox("test-account", "1", 100)).toBe(5);
 });
 
+it("migrates and keeps local junk marks across reopen without changing mail identity, processing, or raw bytes", async () => {
+  store.openMailbox("test-account", "1", 5);
+  const older = (await store.record({ ...message(4), historical: true }))!;
+  const target = (await store.record(message(5)))!;
+  const latest = (await store.record(message(6)))!;
+  store.close();
+  const legacy = new DatabaseSync(join(store.directory, "assistant.sqlite"));
+  try { legacy.exec("ALTER TABLE mail_events DROP COLUMN user_junk"); }
+  finally { legacy.close(); }
+  await store.initialize();
+
+  expect(store.page({ limit: 2 }, true, "inbox")).toEqual({ events: [latest, target], nextCursor: String(target.seq) });
+  expect(store.setJunk("missing", true)).toBeUndefined();
+  expect(store.setJunk(target.mailRefId, true)).toBe(true);
+  expect(store.setJunk(target.mailRefId, true)).toBe(false);
+  expect(store.unreadCount()).toBe(1);
+  store.close();
+  await store.initialize();
+
+  expect(store.page({ limit: 2 }, true, "inbox")).toEqual({ events: [latest, older] });
+  expect(store.page({ cursor: String(target.seq) }, true, "inbox").events).toEqual([older]);
+  expect(store.page().events).toEqual([latest, target, older]);
+  expect(await store.record(message(5))).toBeUndefined();
+  expect(await store.read(target.mailRefId)).toEqual({ event: target, source: message(5).source });
+  expect(store.setJunk(target.mailRefId, false)).toBe(true);
+  expect(store.page({}, true, "inbox").events).toEqual([latest, target, older]);
+});
+
 it("creates the assistant business tables and private POSIX files including WAL/SHM", async () => {
   store.openMailbox("test-account", "1", 5);
   await store.record(message());

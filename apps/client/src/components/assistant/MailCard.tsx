@@ -44,8 +44,9 @@ function MailAttachmentRow({ attachment, mailRefId, enabled }: { attachment: Bri
   </li>;
 }
 
-export function MailCard({ card, nativeMessage, onDiscuss, showBatchDelivery = true }: {
+export function MailCard({ card, nativeMessage, onDiscuss, showBatchDelivery = true, junkAction }: {
   card: BridgeMailCard; nativeMessage?: BridgeHistoryItem; onDiscuss?(): void; showBatchDelivery?: boolean;
+  junkAction?: { disabled: boolean; onMark(): void } | undefined;
 }) {
   const mail = useAssistantMail();
   const accountLabel = mail?.accountLabel(card.accountKey) ?? "邮件插件";
@@ -93,6 +94,9 @@ export function MailCard({ card, nativeMessage, onDiscuss, showBatchDelivery = t
       </> : <p role={error ? "alert" : "status"}>{error || (loading ? "正在读取原文…" : mail?.online ? "展开以读取原文" : "连接电脑后可查看原文")}</p>}
     </details>
     {nativeMessage && <details className="assistant-mail-native"><summary>关联原生消息</summary><code>{nativeMessage.id}</code><pre>{nativeMessage.text}</pre></details>}
-    {mail && <button type="button" className="assistant-session-link" disabled={!mail.canReference} onClick={() => { mail.selectMail(card); onDiscuss?.(); }}>讨论此邮件</button>}
+    {mail && <div className="assistant-actions">
+      <button type="button" className="assistant-session-link" disabled={!mail.canReference} onClick={() => { mail.selectMail(card); onDiscuss?.(); }}>讨论此邮件</button>
+      {junkAction && <button type="button" className="assistant-session-link assistant-mail-junk-action" disabled={junkAction.disabled} onClick={junkAction.onMark}>标为垃圾邮件</button>}
+    </div>}
   </article>;
 }

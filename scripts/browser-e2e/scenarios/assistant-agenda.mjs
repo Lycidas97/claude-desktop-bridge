@@ -1,0 +1,169 @@
+import assert from "node:assert/strict";
+import { resolve } from "node:path";
+import { eventually } from "../helpers.mjs";
+import { openDesktopAssistant } from "./assistant-mail.mjs";
+
+export async function verifyAssistantAgenda(page, host, steps, directory, viewports, baseUrl) {
+  async function capture(name) {
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true, `${name} fits the viewport`);
+    viewports.push({ page: name, ...page.viewportSize() });
+    await page.screenshot({ path: resolve(directory, `${name}.png`), fullPage: true });
+  }
+  const settingsButton = page.locator(".assistant-view-tabs").getByRole("button", { name: "助理设置", exact: true });
+  const refreshMail = page.getByRole("button", { name: /刷新邮件列表/u });
+  await page.locator(".mobile-home-catalog").getByRole("button", { name: /^助理(?:，.*)?$/u }).click();
+  await settingsButton.click();
+  const mobileSettingsX = (await settingsButton.boundingBox()).x;
+  const agendaFixture = host.nativeApproval.assistantMail.agenda;
+  const today = await page.evaluate(() => new Date().toLocaleDateString("sv-SE"));
+  const tomorrow = new Date(Date.parse(today) + 86_400_000).toISOString().slice(0, 10);
+  for (let index = 1; index <= 51; index++) {
+    agendaFixture.saveTodo({ value: { title: `分页待办 ${index}`, status: "pending", dueAt: new Date(Date.parse(today) - (52 - index) * 86_400_000).toISOString().slice(0, 10) } });
+  }
+  agendaFixture.saveEvent({ value: { title: "今天的评审", startAt: today, endAt: tomorrow, allDay: true, timeZone: "America/Los_Angeles" } });
+  agendaFixture.saveEvent({ value: { title: "明天的全天日程", startAt: tomorrow,
+    endAt: new Date(Date.parse(tomorrow) + 86_400_000).toISOString().slice(0, 10), allDay: true, timeZone: "UTC" } });
+  agendaFixture.saveTodo({ value: { title: "当天待办", status: "pending", dueAt: today } });
+  await page.locator(".assistant-view-tabs").getByRole("button", { name: "议程", exact: true }).click();
+  const agendaView = page.getByRole("region", { name: "议程", exact: true });
+  const sameDay = agendaView.getByRole("list", { name: "当日议程", exact: true });
+  await sameDay.getByText("当天待办", { exact: true }).waitFor();
+  await sameDay.getByText("今天的评审", { exact: true }).waitFor();
+  assert.equal((await settingsButton.boundingBox()).x, mobileSettingsX, "Mobile assistant settings stays in place on Agenda");
+  assert.equal(await refreshMail.count(), 0, "Agenda does not offer a mail refresh");
+  assert.equal(await agendaView.getByRole("button", { name: /^新建(?:待办|日程)$/u }).count(), 0, "Day view has no create buttons");
+  assert.equal(await sameDay.getByRole("listitem").count(), 2, "Tasks due before this date cannot consume the day page");
+  const overdue = page.getByRole("list", { name: "已逾期待办", exact: true });
+  await overdue.getByText("分页待办 1", { exact: true }).waitFor();
+  assert.equal(await overdue.getByRole("listitem").count(), 3, "A limited overdue preview is visible without expanding other tasks");
+  steps.push("the default agenda shows both same-day records and a small preview of overdue tasks");
+  await page.getByRole("checkbox", { name: "完成 当天待办", exact: true }).click();
+  await eventually(() => agendaFixture.listTodos({ limit: 100 }).records.find(record => record.title === "当天待办")?.status, "completed", "Mobile agenda mutations reach the authenticated controller");
+  await eventually(() => page.getByRole("checkbox", { name: "完成 当天待办", exact: true }).isChecked(), true, "Live agenda change refreshes the mobile checkbox");
+  await capture("mobile-agenda");
+  await page.locator(".agenda-other-todos summary").click();
+  const otherTodos = page.getByRole("list", { name: "其他待办", exact: true });
+  const moreTodos = page.getByRole("button", { name: "更多其他待办", exact: true });
+  await eventually(() => otherTodos.getByRole("listitem").count(), 47, "Other tasks show the remaining first page without duplicating the overdue preview");
+  host.mailOffline = true;
+  host.socket.close();
+  await page.getByText("电脑离线，连接后可同步议程。", { exact: true }).waitFor();
+  const beforeOfflineChange = host.events.length;
+  agendaFixture.saveTodo({ value: { title: "未安排日期的待办", status: "pending" } });
+  const lastOfflineChange = host.events.slice(beforeOfflineChange).find(event => event.type === "plugin.assistant-agenda.changed").eventId;
+  host.mailOffline = false;
+  host.socket.connect();
+  await eventually(() => host.resumeBatches.some(batch => batch.includes(lastOfflineChange)), true, "Reconnect replays the last offline agenda change");
+  await sameDay.getByText("今天的评审", { exact: true }).waitFor();
+  await moreTodos.click();
+  await eventually(() => otherTodos.getByRole("listitem").count(), 49, "Other tasks retain cursor pagination after reconnect");
+  await otherTodos.getByText("未安排日期的待办", { exact: true }).waitFor();
+  const secondPage = agendaFixture.listTodos({ limit: 100 }).records.find(record => record.title === "分页待办 51");
+  agendaFixture.saveTodo({ existing: { id: secondPage.id, revision: secondPage.revision }, value: { title: "第二页已同步", status: "pending", dueAt: secondPage.dueAt } });
+  await page.getByText("第二页已同步", { exact: true }).waitFor();
+  steps.push("agenda reconnect and live changes reload the requested page depth");
+
+  const originalTodo = agendaFixture.listTodos({ limit: 100 }).records.find(record => record.title === "当天待办");
+  agendaFixture.saveEvent({ value: { title: "待编辑日程", startAt: `${today}T17:00:00Z`, endAt: `${today}T18:00:00Z`, allDay: false, timeZone: "America/Los_Angeles" } });
+  const originalEvent = agendaFixture.listEvents({ from: `${today}T00:00:00Z`, to: `${tomorrow}T00:00:00Z` })
+    .records.find(record => record.title === "待编辑日程");
+  const desktopRequests = [];
+  await openDesktopAssistant(page, host, baseUrl, desktopRequests);
+  const desktopSettingsX = (await settingsButton.boundingBox()).x;
+  await page.locator(".assistant-view-tabs").getByRole("button", { name: "议程", exact: true }).click();
+  await sameDay.getByText("当天待办", { exact: true }).waitFor();
+  await sameDay.getByText("今天的评审", { exact: true }).waitFor();
+  assert.equal((await settingsButton.boundingBox()).x, desktopSettingsX, "Desktop assistant settings stays in place on Agenda");
+  assert.equal(await page.getByRole("checkbox", { name: "完成 当天待办", exact: true }).isChecked(), true);
+  await page.getByRole("button", { name: "编辑 当天待办", exact: true }).click();
+  assert.equal(await page.getByLabel("截止日期", { exact: true }).inputValue(), today);
+  await page.getByLabel("标题", { exact: true }).fill("桌面编辑的待办");
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await page.getByText("桌面编辑的待办", { exact: true }).waitFor();
+  assert.deepEqual(desktopRequests.find(request => request.method === "plugin.assistant-agenda.todo.save")?.params?.existing,
+    { id: originalTodo.id, revision: originalTodo.revision }, "Desktop edits the original todo revision");
+  await capture("desktop-agenda");
+  await agendaView.getByRole("button", { name: "日历", exact: true }).click();
+  await agendaView.getByText("今天的评审", { exact: true }).waitFor();
+  assert.equal(await agendaView.getByRole("button", { name: /^新建(?:待办|日程)$/u }).count(), 0, "Month view has no create buttons");
+  assert.equal(await agendaView.getByRole("checkbox").count(), 0, "The month query shows only calendar events");
+  await agendaView.getByRole("button", { name: "上个月", exact: true }).click();
+  await agendaView.getByText("本月暂无日程", { exact: true }).waitFor();
+  await agendaView.getByRole("button", { name: "按日", exact: true }).click();
+  await sameDay.getByText("桌面编辑的待办", { exact: true }).waitFor();
+  await sameDay.getByText("今天的评审", { exact: true }).waitFor();
+  await agendaView.getByRole("button", { name: "前一天", exact: true }).click();
+  await sameDay.getByText("第二页已同步", { exact: true }).waitFor();
+  assert.equal(await sameDay.getByText("今天的评审", { exact: true }).count(), 0);
+  await agendaView.getByRole("button", { name: "回到今天", exact: true }).click();
+  await sameDay.getByText("今天的评审", { exact: true }).waitFor();
+  await agendaView.getByRole("button", { name: "后一天", exact: true }).click();
+  await sameDay.getByText("明天的全天日程", { exact: true }).waitFor();
+  assert.equal(await sameDay.getByText("今天的评审", { exact: true }).count(), 0);
+  await page.locator(".assistant-view-tabs").getByRole("button", { name: "收件", exact: true }).click();
+  await page.locator(".assistant-view-tabs").getByRole("button", { name: "议程", exact: true }).click();
+  await sameDay.getByText("今天的评审", { exact: true }).waitFor();
+  steps.push("browsing a different month leaves the selected day intact; the today shortcut and reopening both return to today");
+  await page.clock.setFixedTime(new Date(`${tomorrow}T19:00:00Z`));
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await eventually(() => agendaView.locator(".agenda-month time").getAttribute("datetime"), tomorrow, "The today view follows the new date when the tab becomes visible again");
+  await sameDay.getByText("明天的全天日程", { exact: true }).waitFor();
+  await page.clock.setFixedTime(new Date());
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await sameDay.getByText("今天的评审", { exact: true }).waitFor();
+  await agendaView.getByRole("button", { name: "编辑 待编辑日程", exact: true }).click();
+  await page.getByLabel("标题", { exact: true }).fill("单日全天日程");
+  await page.getByLabel("全天", { exact: true }).check();
+  const endDate = page.getByLabel("结束日期", { exact: true });
+  await endDate.fill(today);
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  const editEvent = agendaView.getByRole("button", { name: "编辑 单日全天日程", exact: true });
+  await editEvent.click();
+  assert.equal(await page.getByLabel("开始日期", { exact: true }).inputValue(), today);
+  assert.equal(await endDate.inputValue(), today, "Reopening a one-day event shows the same date at both ends");
+  await page.getByRole("button", { name: "取消", exact: true }).click();
+  steps.push("day and month views have no create buttons; phone completion and Desktop todo/event edits share durable agenda storage");
+
+  host.nativeApproval.assistantMail.seedCalendar([
+    "BEGIN:VCALENDAR", "VERSION:2.0", "BEGIN:VTIMEZONE", "TZID:Eastern Standard Time", "BEGIN:STANDARD",
+    "DTSTART:19700101T000000", "TZOFFSETFROM:-0500", "TZOFFSETTO:-0500", "END:STANDARD", "END:VTIMEZONE",
+    "BEGIN:VEVENT", "UID:custom-zone", "SUMMARY:外部时区日程", "DTSTART;TZID=Eastern Standard Time:20270630T090000",
+    "DURATION:PT1H", "END:VEVENT", "END:VCALENDAR", "",
+  ].join("\r\n"), [
+    "BEGIN:VCALENDAR", "VERSION:2.0", "BEGIN:VEVENT", "UID:over-budget", "DTSTART:20140101T090000Z",
+    "DURATION:PT30M", "RRULE:FREQ=HOURLY;BYMINUTE=0", "END:VEVENT", "END:VCALENDAR", "",
+  ].join("\r\n"));
+  await agendaView.getByRole("button", { name: "日历", exact: true }).click();
+  await agendaView.getByRole("button", { name: "下个月", exact: true }).click();
+  await editEvent.click();
+  await page.getByLabel("标题", { exact: true }).fill("东京跨月日程");
+  await page.getByLabel("全天", { exact: true }).uncheck();
+  await page.locator(".agenda-form").getByRole("combobox").selectOption("Asia/Tokyo");
+  await page.getByLabel("开始时间", { exact: true }).fill("2027-07-01T00:15");
+  await page.getByLabel("结束时间", { exact: true }).fill("2027-07-01T01:15");
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await page.getByText("东京跨月日程", { exact: true }).waitFor();
+  assert.deepEqual(desktopRequests.filter(request => request.method === "plugin.assistant-agenda.event.save").map(request => request.params?.existing), [
+    { id: originalEvent.id, revision: originalEvent.revision },
+    { id: originalEvent.id, revision: originalEvent.revision + 1 },
+  ], "Both calendar edits save the same event with its current revision");
+  assert.equal(await page.locator(".agenda-month strong").innerText(), "2027年6月");
+  const importedEvent = page.getByRole("listitem").filter({ hasText: "外部时区日程" });
+  await importedEvent.waitFor();
+  assert.match(await importedEvent.innerText(), /America\/Los_Angeles/u);
+  await page.getByRole("status").filter({ hasText: "部分重复日程超出展开上限，未显示。" }).waitFor();
+  await capture("desktop-agenda-partial");
+  steps.push("the Los Angeles month shows the saved Tokyo event and the custom TZID import alongside a partial-calendar warning");
+
+  const requestsBeforeLegacyAgenda = desktopRequests.length;
+  await page.evaluate(host => window.assistantDesktopSnapshot({ host }), { ...host.snapshot.host,
+    capabilities: host.snapshot.host.capabilities.filter(value => !["plugin.assistant-agenda.day.v1", "plugin.magpie-quota.v1"].includes(value)) });
+  await agendaView.getByRole("button", { name: "按日", exact: true }).click();
+  await agendaView.getByRole("button", { name: "更多待办", exact: true }).click();
+  await sameDay.getByText("桌面编辑的待办", { exact: true }).waitFor();
+  assert.deepEqual(desktopRequests.slice(requestsBeforeLegacyAgenda).filter(request => request.method === "plugin.assistant-agenda.todo.list")
+    .map(request => Object.keys(request.params ?? {}).filter(key => key !== "client")), [[], ["cursor"]]);
+  assert.deepEqual(desktopRequests.slice(requestsBeforeLegacyAgenda).filter(request => request.method === "plugin.assistant-agenda.event.list")
+    .map(request => Object.keys(request.params ?? {}).filter(key => key !== "client").sort()), [["from", "to"]]);
+  steps.push("an older host gets only the original event window, unfiltered todo request and cursor");
+}

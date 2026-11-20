@@ -1,6 +1,6 @@
 import ICAL from "ical.js";
 import type { AgendaEventInput, AgendaTodoInput, AgendaWindow } from "../../packages/protocol/src/assistant-agenda.js";
-import { agendaInstant, componentZone, timestamp, type AgendaZone } from "./agenda-time.js";
+import { agendaInstant, componentZone, timestamp, wallClock, type AgendaZone } from "./agenda-time.js";
 
 const DAY = 86_400_000;
 const expansionLimit = 100_000;
@@ -199,15 +199,29 @@ function expandSeries(items: Timing[], fallback: AgendaZone, window: AgendaWindo
   return instances;
 }
 
+function alarmTime(component: ICAL.Component, zone: AgendaZone, startAt?: string, endAt?: string) {
+  const alarm = component.getFirstSubcomponent("valarm")?.getFirstProperty("trigger");
+  if (!alarm) return;
+  try {
+    const trigger = alarm.getFirstValue();
+    if (trigger instanceof ICAL.Time) return timestamp(trigger, zone);
+    if (trigger instanceof ICAL.Duration) {
+      const anchor = alarm.getFirstParameter("related")?.toUpperCase() === "END" ? endAt : startAt;
+      if (!anchor) return;
+      const at = agendaInstant(anchor, zone);
+      return trigger.weeks || trigger.days ? durationEnd(wallClock(at, zone), trigger, zone)
+        : new Date(at + trigger.toSeconds() * 1000).toISOString();
+    }
+  } catch (error) {
+    if (error instanceof RangeError && error.message === "Invalid time value") return;
+    if (error instanceof Error && /^(?:invalid (?:date-time|duration) value:|Could not extract integer from )/u.test(error.message)) return;
+    throw error;
+  }
+}
+
 function todoFields({ item: { component, zone, endAt }, start, recurrenceId, endAt: periodEnd }: Instance) {
   const dueAt = periodEnd ?? endAt(start);
-  const alarm = component.getFirstSubcomponent("valarm")?.getFirstProperty("trigger");
-  const trigger = alarm?.getFirstValue();
-  let remindAt = trigger instanceof ICAL.Time ? timestamp(trigger, zone) : undefined;
-  if (trigger instanceof ICAL.Duration) {
-    const anchor = alarm?.getFirstParameter("related")?.toUpperCase() === "END" ? dueAt : start && timestamp(start, zone);
-    if (anchor) remindAt = new Date(agendaInstant(anchor, zone) + trigger.toSeconds() * 1000).toISOString();
-  }
+  const remindAt = alarmTime(component, zone, start && timestamp(start, zone), dueAt);
   const status = text(component, "status", 32)?.toUpperCase();
   const priority = component.getFirstPropertyValue("priority");
   return {
@@ -248,7 +262,8 @@ export function parseAgendaObject(data: string, fallbackZone: AgendaZone, option
       eventRecords.push({
         title: text(component, "summary", 500) || "无标题日程",
         notes: text(component, "description", 8000), location: text(component, "location", 1000),
-        startAt, endAt: end, timeZone: typeof zone === "string" ? zone : zone === utc ? "UTC" : zone.tzid,
+        startAt, endAt: end, remindAt: alarmTime(component, zone, startAt, end),
+        timeZone: typeof zone === "string" ? zone : zone === utc ? "UTC" : zone.tzid,
         allDay: start!.isDate, recurrenceId,
         attendees: component.getAllProperties("attendee").slice(0, 30).map(property =>
           String(property.getFirstParameter("cn") ?? property.getFirstValue()).slice(0, 320)),

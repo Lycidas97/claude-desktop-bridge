@@ -61,6 +61,7 @@ import {
 } from "../lib/project-groups.js";
 import { desktopRuntimeId } from "../lib/runtime-labels.js";
 import { setActiveViewedSession } from "../lib/session-notifications.js";
+import { useAssistantEntry } from "./assistant/AssistantProposalProvider.js";
 import { useAssistantMail } from "./assistant/AssistantMailProvider.js";
 import { MailReference } from "./assistant/MailReference.js";
 import { SheetAction } from "./common/Sheet.js";
@@ -301,6 +302,7 @@ export function MobileWorkspace({
   const [createDialogState, setCreateDialogState] = useState<NewChatDirectoryPickerRequest>();
   const conversationDrafts = useConversationDrafts(activeHostId);
   const assistantMail = useAssistantMail();
+  const assistantEntry = useAssistantEntry();
   const [sectionCreate, setSectionCreate] = useState<SectionCreateState>();
   const [configurationSessionId, setConfigurationSessionId] = useState<string>();
   const [permissionOpen, setPermissionOpen] = useState(false);
@@ -944,7 +946,6 @@ export function MobileWorkspace({
     mobileNav?.assistantAvailable
     ?? snapshot?.host.capabilities.some(capability => capability === "plugin.assistant-mail.v1" || capability === ASSISTANT_AGENDA_CAPABILITY),
   );
-  const assistantUnreadCount = assistantMail?.unreadCount ?? 0;
 
   if (!visible) {
     if (hasPortalOverlay && typeof document !== "undefined" && document.body) {
@@ -966,7 +967,7 @@ export function MobileWorkspace({
         activeTab={activeTab}
         onSelectTab={onSelectTab ?? mobileNav?.onTabChange}
         assistantAvailable={assistantAvailable}
-        assistantUnreadCount={assistantUnreadCount}
+        assistantEntry={assistantEntry}
         themeControl={themeControl}
         onStartNewChat={startNewChat}
         selectedSessionId={undefined}

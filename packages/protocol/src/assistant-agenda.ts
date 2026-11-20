@@ -37,6 +37,7 @@ export interface AgendaEventInput {
   notes?: string | undefined;
   startAt: string;
   endAt: string;
+  remindAt?: string | undefined;
   timeZone: string;
   allDay: boolean;
   location?: string | undefined;

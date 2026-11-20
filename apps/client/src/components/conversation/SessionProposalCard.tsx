@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Braces, GitFork } from "lucide-react";
+import { Braces, ChevronDown, GitFork } from "lucide-react";
 import type { BridgeHistoryItem } from "@bridge/protocol";
 import { ToolCallDetailSheet } from "./ToolCallDetailSheet.js";
 
@@ -25,7 +25,14 @@ export function SessionProposalCard({ proposal, itemId, hostId, sessionId, toolU
         onClick={() => setDetailOpen(true)}>
         <Braces size={16} aria-hidden="true" />
       </button>
-      {proposal.background && <p>{proposal.background}</p>}
+      {proposal.background && (
+        <details className="session-proposal-background">
+          <summary>
+            <span>{proposal.background}</span>
+            <ChevronDown size={14} aria-hidden="true" />
+          </summary>
+        </details>
+      )}
       {detailOpen && <ToolCallDetailSheet
         {...(hostId ? { hostId } : {})}
         sessionId={sessionId}

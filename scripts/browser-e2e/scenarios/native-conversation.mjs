@@ -742,7 +742,15 @@ export async function verifyNativeBoundaries(page, host, steps, directory) {
   assert.equal(await afterProposal.getAttribute("open"), null, "The new right group is independent");
   assert.equal(await toolRows.filter({ hasText: proposalTool }).count(), 0, "A proposal card replaces rather than duplicates its tool row");
   assert.equal(await proposal.getByRole("button", { name: /^(启动|撤回)/ }).count(), 0);
+  const background = proposal.locator(".session-proposal-background > summary");
+  const visibleLines = () => background.locator("span").evaluate(span => Math.round(span.clientHeight / parseFloat(getComputedStyle(span).lineHeight)));
+  assert.equal(await visibleLines(), 3, "Long proposal backgrounds start as a three-line preview");
   await proposal.screenshot({ path: resolve(directory, "native-session-proposal.png"), animations: "disabled" });
+  await background.click();
+  assert.ok(await visibleLines() > 3, "Tapping the background reveals the full text");
+  await proposal.screenshot({ path: resolve(directory, "native-session-proposal-expanded.png"), animations: "disabled" });
+  await background.press("Enter");
+  assert.equal(await visibleLines(), 3, "Keyboard activation collapses the background again");
   const proposalPage = await host.nativeApproval.history();
   host.history.splice(0, host.history.length, ...proposalPage.items);
   const mockHistoryPage = host.historyPage;

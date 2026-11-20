@@ -835,15 +835,29 @@
 .session-proposal-heading { display: grid; gap: 2px; line-height: 1.4; }
 .session-proposal-heading > span { color: var(--muted); font-size: calc(11px * var(--font-scale)); }
 .session-proposal-heading > strong { font-size: calc(14px * var(--font-scale)); overflow-wrap: anywhere; }
-.session-proposal-card > p {
-  grid-column: 2 / -1;
-  margin: 0;
+.session-proposal-background { grid-column: 2 / -1; min-width: 0; }
+.session-proposal-background > summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 14px;
+  gap: 8px;
+  min-height: 44px;
   color: var(--muted);
   font-size: calc(13px * var(--font-scale));
   line-height: 1.5;
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
+  cursor: pointer;
+  list-style: none;
 }
+.session-proposal-background > summary::-webkit-details-marker { display: none; }
+.session-proposal-background > summary:focus-visible { outline: 2px solid var(--accent); }
+.session-proposal-background > summary > span { overflow-wrap: anywhere; white-space: pre-wrap; }
+.session-proposal-background > summary > svg { margin-top: 3px; }
+.session-proposal-background:not([open]) > summary > span {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+.session-proposal-background[open] > summary > svg { transform: rotate(180deg); }
 
 .session-proposal-detail {
   display: grid;

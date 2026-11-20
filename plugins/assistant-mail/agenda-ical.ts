@@ -205,7 +205,7 @@ function alarmTime(component: ICAL.Component, zone: AgendaZone, startAt?: string
   let trigger;
   try { trigger = alarm.getFirstValue(); }
   catch (error) {
-    if (error instanceof Error && error.message.startsWith("invalid duration value:")) return;
+    if (error instanceof Error && /^(?:invalid (?:date-time|duration) value:|Could not extract integer from )/u.test(error.message)) return;
     throw error;
   }
   if (trigger instanceof ICAL.Time) return timestamp(trigger, zone);

@@ -267,13 +267,17 @@ export class AgendaStore {
     const remote = this.db.prepare(`SELECT object.source_id, object.href, object.etag, object.data, source.url, source.calendar_timezone
       FROM agenda_caldav_objects object JOIN assistant_sources source ON source.id = object.source_id
       WHERE object.data LIKE '%BEGIN:VALARM%'`).iterate() as Iterable<RemoteObject>;
+    // Dense recurrences can exceed the annual expansion budget. At least scan until the next daily refresh.
+    const today = { from: window.from, to: new Date(now + 86_400_000).toISOString() };
     for (const row of remote) {
-      try {
-        const { uid, events: records } = parseAgendaObject(row.data, collectionZone(row.calendar_timezone, this.timeZone), {
-          window, allDayZone: this.timeZone,
-        });
-        for (const record of records) if (record.remindAt) events.push({ ...record, ...this.importedIdentity(row, uid, record.recurrenceId) });
-      } catch (error) { if (!(error instanceof AgendaExpansionLimitError)) throw error; }
+      const zone = collectionZone(row.calendar_timezone, this.timeZone);
+      for (const range of [window, today]) {
+        try {
+          const { uid, events: records } = parseAgendaObject(row.data, zone, { window: range, allDayZone: this.timeZone });
+          for (const record of records) if (record.remindAt) events.push({ ...record, ...this.importedIdentity(row, uid, record.recurrenceId) });
+          break;
+        } catch (error) { if (!(error instanceof AgendaExpansionLimitError)) throw error; }
+      }
     }
     for (const event of events) {
       const end = this.eventEnd(event);

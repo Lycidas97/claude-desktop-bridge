@@ -299,10 +299,7 @@ export function ConversationView({
   const transcriptHidden = isAssistant && (hasAlternateStage || effectiveSessionView === "evidence");
   useAcknowledgeSessionCompletion(hostId, session,
     visible && !transcriptHidden && effectiveSessionView === "conversation" && (history?.status === "ready" || Boolean(history?.items.length)));
-  function setSessionView(next: "conversation" | "evidence"): void {
-    if (onSessionViewChange) onSessionViewChange(next);
-    else setInternalSessionView(next);
-  }
+  const setSessionView = onSessionViewChange ?? setInternalSessionView;
   const effectiveForkChainOpen = controlledForkChainOpen ?? internalForkChainOpen;
   function setForkChainOpen(next: boolean): void {
     if (onForkChainOpenChange) onForkChainOpenChange(next);
@@ -698,7 +695,8 @@ export function ConversationView({
 
   const replyPage = useRef<{ target: typeof assistantReplyTarget; cursor: string }>(undefined);
   useLayoutEffect(() => {
-    if (!assistantReplyTarget || !visible || transcriptHidden) return;
+    if (!assistantReplyTarget || !visible || hasAlternateStage) return;
+    if (effectiveSessionView === "evidence") { setSessionView("conversation"); return; }
     const { itemId, done } = assistantReplyTarget;
     const element = streamRef.current?.querySelector(`article[data-stream-key="${CSS.escape(itemId)}"]`);
     if (element) { element.scrollIntoView({ block: "center" }); done(); return; }
@@ -712,7 +710,7 @@ export function ConversationView({
     }
     replyPage.current = { target: assistantReplyTarget, cursor };
     void onLoadOlderHistory(session.sessionId);
-  }, [assistantReplyTarget, history, isOnline, onLoadOlderHistory, session.sessionId, streamKeys, streamRef, transcriptHidden, visible]);
+  }, [assistantReplyTarget, effectiveSessionView, hasAlternateStage, history, isOnline, onLoadOlderHistory, session.sessionId, setSessionView, streamKeys, streamRef, visible]);
 
   async function sendMessage(): Promise<void> {
     await sessionDraft.submitMessage({
@@ -970,6 +968,7 @@ export function ConversationView({
             session={session}
             entering={streamEntering(item.id)}
             latestMessage={node === latestMessage}
+            visible={visible && !transcriptHidden && effectiveSessionView === "conversation"}
             revealActionsOnTap={isMobile}
             online={isOnline}
             canSend={canSendSession(session, snapshot)}

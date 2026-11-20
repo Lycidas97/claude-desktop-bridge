@@ -48,7 +48,14 @@ function AttentionDetail({ item, onClose }: { item: Extract<AssistantAttentionIt
   }, [item, mail.online, detail]);
   useEffect(() => {
     if (!detail || !mail.online || item.kind !== "mail") return;
-    void mail.acknowledge("mail", item.id).catch(reason => setError(reason instanceof Error ? reason.message : "无法记录已看"));
+    const acknowledgeVisible = () => {
+      if (document.hidden) return;
+      document.removeEventListener("visibilitychange", acknowledgeVisible);
+      void mail.acknowledge("mail", item.id).catch(reason => setError(reason instanceof Error ? reason.message : "无法记录已看"));
+    };
+    document.addEventListener("visibilitychange", acknowledgeVisible);
+    acknowledgeVisible();
+    return () => document.removeEventListener("visibilitychange", acknowledgeVisible);
   }, [detail, item, mail.online]);
 
   const confirm = item.kind === "event" ? "已看" : item.reason === "action" ? "标为已解决" : undefined;

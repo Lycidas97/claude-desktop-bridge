@@ -133,13 +133,17 @@ test("preserves reminders on legacy edits and lets current clients clear them", 
   expect(store.attention(Date.parse(remindAt), new Set()).items).toEqual([]);
 });
 
-test("ignores a malformed VEVENT alarm stored by older hosts without losing the event", () => {
+test.each([
+  "TRIGGER:-PTM",
+  "TRIGGER;VALUE=DATE-TIME:20270313",
+  "TRIGGER;VALUE=DATE-TIME:20270313TAB0000Z",
+])("ignores a malformed legacy VEVENT alarm %s without losing the event", malformed => {
   const database = new DatabaseSync(":memory:");
   closers.push(() => database.close());
   const store = new AgendaStore(database, "UTC");
   const id = store.addSource(source, Buffer.from("sealed"));
   store.applySync(id, { removed: [], changed: [calendar] });
-  database.prepare("UPDATE agenda_caldav_objects SET data = ? WHERE source_id = ?").run(calendar.data.replace("TRIGGER:-PT15M", "TRIGGER:-PTM"), id);
+  database.prepare("UPDATE agenda_caldav_objects SET data = ? WHERE source_id = ?").run(calendar.data.replace("TRIGGER:-PT15M", malformed), id);
   const from = "2027-03-13T16:50:00.000Z";
   expect(store.attention(Date.parse(from), new Set()).items).toEqual([]);
   expect(store.listEvents({ from, to: "2027-03-13T19:00:00.000Z" }).records).toMatchObject([{ title: "Daily" }]);
@@ -157,6 +161,17 @@ test.each([
   const now = Date.parse(remindAt);
   expect(store.attention(now - 1, new Set())).toEqual({ items: [], nextAt: now });
   expect(store.attention(now, new Set()).items).toMatchObject([{ kind: "event", title: "DST" }]);
+});
+
+test("projects the next alarm of a dense recurrence that exceeds the annual expansion budget", () => {
+  const store = testStore();
+  const id = store.addSource(source, Buffer.from("sealed"));
+  store.applySync(id, { removed: [], changed: [object("frequent", wrap("BEGIN:VEVENT", "UID:frequent", "SUMMARY:Frequent",
+    "DTSTART:20270314T090000Z", "DTEND:20270314T090300Z", "RRULE:FREQ=MINUTELY;INTERVAL=5",
+    "BEGIN:VALARM", "TRIGGER:-PT1M", "ACTION:DISPLAY", "DESCRIPTION:Reminder", "END:VALARM", "END:VEVENT"))] });
+  const alarm = Date.parse("2027-03-14T09:04:00.000Z");
+  expect(store.attention(alarm - 1, new Set())).toEqual({ items: [], nextAt: alarm });
+  expect(store.attention(alarm, new Set()).items).toMatchObject([{ kind: "event", title: "Frequent", startAt: "2027-03-14T09:05:00.000Z" }]);
 });
 
 test("malformed remote data cannot advance the token or delete a previously committed object", () => {

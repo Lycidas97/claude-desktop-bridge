@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import { sessionId } from "../config.mjs";
-import { desktopFixtureRequest, eventually, openMobileDrawer } from "../helpers.mjs";
+import { desktopFixtureRequest, eventually, openMobileDrawer, openMobileSession } from "../helpers.mjs";
 import { openDesktopAssistant } from "./assistant-mail.mjs";
 
 export async function verifyAssistantAttention(page, host, steps, directory, viewports, baseUrl) {
@@ -36,8 +36,12 @@ export async function verifyAssistantAttention(page, host, steps, directory, vie
   assert.equal(await attention.locator("li").count(), 1, "Opening Assistant does not acknowledge a mail");
   await page.screenshot({ path: resolve(directory, "mobile-assistant-attention.png") });
   viewports.push({ page: "mobile-assistant-attention", ...page.viewportSize() });
+  await page.evaluate(() => { Object.defineProperty(document, "hidden", { value: true, configurable: true }); });
   await attention.getByRole("button", { name: /值得看/u }).click();
   await page.locator(".assistant-attention-original").waitFor();
+  assert.equal(host.requests.some(request => request.method === "plugin.assistant-mail.attention.ack" && request.params.id === worth.mailRefId), false,
+    "A loaded original behind a background tab does not mark the mail seen");
+  await page.evaluate(() => { delete document.hidden; document.dispatchEvent(new Event("visibilitychange")); });
   await attention.waitFor({ state: "hidden" });
   await dismiss();
   await back();
@@ -79,6 +83,10 @@ export async function verifyAssistantAttention(page, host, steps, directory, vie
   await page.locator(".assistant-conversation [data-stream-key=after-reply-109]").waitFor();
   const reply = page.locator(".assistant-conversation [data-stream-key=attention-reply-item]");
   assert.equal(await reply.count(), 0, "The reply is beyond the first Native history page");
+  await host.emit("evidence.ready", { evidence: { id: "attention-evidence", sessionId, turnId: "after-reply-109", source: "claude-desktop", confidence: "exact",
+    state: "ready", startedAt: Date.now() + 1000, toolCount: 0, changeCount: 1, artifactCount: 0, tools: [], artifacts: [], warnings: [] } });
+  await page.locator(".assistant-conversation .evidence-inline-summary").click();
+  await page.getByRole("button", { name: "返回对话", exact: true }).waitFor();
   await attention.locator("summary").click();
   await attention.getByRole("button", { name: /助理回复/u }).click();
   await reply.getByText("预算已更新，可查看最新版本。", { exact: true }).waitFor();
@@ -94,23 +102,37 @@ export async function verifyAssistantAttention(page, host, steps, directory, vie
   await eventually(() => host.snapshot.assistantMail.attention.some(item => item.kind === "reply"), false, "A visible reply is acknowledged individually");
   await attention.getByRole("button", { name: /需要处理/u }).click();
   await page.locator(".assistant-attention-original").waitFor();
-  const coveredEvents = [];
-  for (const message of [
-    { type: "user", uuid: "covered-input", message: { content: "请检查提交状态" } },
-    { type: "assistant", uuid: "covered-response", message: { id: "covered-reply", content: [{ type: "text", text: "提交已完成。" }] } },
-    { type: "result", uuid: "covered-result", is_error: false, user_message_uuid: "covered-input" },
-  ]) coveredEvents.push(...await native.message({ timestamp: Date.now(), ...message }));
-  await host.syncNativeQueue({ events: coveredEvents, history: await native.history(200), session: native.session() });
+  async function deliverReply(id, text) {
+    const events = [];
+    for (const message of [
+      { type: "user", uuid: `${id}-input`, message: { content: "请检查提交状态" } },
+      { type: "assistant", uuid: `${id}-response`, message: { id: `${id}-reply`, content: [{ type: "text", text }] } },
+      { type: "result", uuid: `${id}-result`, is_error: false, user_message_uuid: `${id}-input` },
+    ]) events.push(...await native.message({ timestamp: Date.now(), ...message }));
+    await host.syncNativeQueue({ events, history: await native.history(200), session: native.session() });
+  }
+  await deliverReply("covered", "提交已完成。");
   const coveredReply = page.locator(".assistant-conversation [data-stream-key=covered-reply]");
   await coveredReply.evaluate(element => element.scrollIntoView({ block: "center" }));
   assert.equal(await coveredReply.evaluate(element => new Promise(resolve => {
     const observer = new IntersectionObserver(([entry]) => { observer.disconnect(); resolve(entry.intersectionRect.height >= Math.min(36, entry.boundingClientRect.height * 0.95)); });
     observer.observe(element);
   })), true, "The reply intersects the conversation behind the modal sheet");
-  const pendingReply = () => host.snapshot.assistantMail.attention.some(item => item.kind === "reply" && item.id === `${sessionId}:covered-reply`);
-  assert.equal(pendingReply(), true, "The open original-mail sheet prevents the covered reply from being acknowledged");
+  const pendingReply = id => host.snapshot.assistantMail.attention.some(item => item.kind === "reply" && item.id === `${sessionId}:${id}-reply`);
+  assert.equal(pendingReply("covered"), true, "The open original-mail sheet prevents the covered reply from being acknowledged");
   await dismiss();
-  await eventually(pendingReply, false, "Closing the sheet acknowledges the newly visible reply");
+  await eventually(() => pendingReply("covered"), false, "Closing the sheet acknowledges the newly visible reply");
+  await page.getByRole("button", { name: "收件", exact: true }).click();
+  const longText = Array.from({ length: 14 }, (_, index) => `${index + 1}、${"这是一段用于核对显示高度的文字。".repeat(6)}`).join("\n\n");
+  await deliverReply("long", longText);
+  await eventually(() => pendingReply("long"), true, "A long reply arriving in the inbox remains pending");
+  const longReply = page.locator(".assistant-conversation [data-stream-key=long-reply]");
+  await longReply.waitFor({ state: "attached" });
+  assert.equal(await longReply.isVisible(), false, "The assistant transcript stays mounted but hidden");
+  await page.getByRole("button", { name: "对话", exact: true }).click();
+  await longReply.evaluate(element => element.scrollIntoView({ block: "center" }));
+  assert.ok(await longReply.evaluate(element => element.getBoundingClientRect().height > innerHeight), "The whole long reply cannot fit in the viewport");
+  await eventually(() => pendingReply("long"), false, "Reading a viewport of the long reply acknowledges it after returning to the conversation");
   await attention.getByText("需要处理", { exact: true }).waitFor();
   host.mailReadFailure = true;
   await attention.getByRole("button", { name: /需要处理/u }).click();
@@ -134,6 +156,22 @@ export async function verifyAssistantAttention(page, host, steps, directory, vie
   await native.controllerRequest(desktopFixtureRequest({ method: "assistant.proposal.dismiss", params: { proposalId, revision, payloadHash } }), "desktop");
   await eventually(label, "助理", "Only resolving the final pending item extinguishes the entry");
   assert.equal(host.requests.some(request => request.method === "plugin.assistant-mail.attention.ack" && request.params.kind === "mail"), true);
+
+  await openMobileSession(page);
+  await page.getByRole("button", { name: "会话设置", exact: true }).click();
+  const configuration = page.locator(".modal-backdrop .session-configuration-dialog");
+  await configuration.waitFor();
+  await deliverReply("modal", "会话设置打开时收到的回复。");
+  const modalReply = page.locator("[data-stream-key=modal-reply]");
+  await modalReply.evaluate(element => element.scrollIntoView({ block: "center" }));
+  assert.equal(await modalReply.evaluate(element => new Promise(resolve => {
+    const observer = new IntersectionObserver(([entry]) => { observer.disconnect(); resolve(entry.isIntersecting); });
+    observer.observe(element);
+  })), true, "The reply intersects the transcript behind session configuration");
+  assert.equal(pendingReply("modal"), true, "A non-Sheet modal also prevents acknowledgments");
+  await dismiss();
+  await eventually(() => pendingReply("modal"), false, "Closing session settings acknowledges the reply");
+  await openMobileDrawer(page);
 
   for (const turn of ["keep", "discard"]) {
     const inputId = `rewind-${turn}-input`;

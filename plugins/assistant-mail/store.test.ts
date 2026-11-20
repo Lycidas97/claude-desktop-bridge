@@ -153,7 +153,45 @@ it("keeps category IDs across renames and returns mail from a deleted category w
   expect(original.event).toMatchObject({ hostRead: true, processingStatus: "processed", analysis });
   expect(original.event.analysis).not.toHaveProperty("category");
   expect(store.setFolder(userMail.mailRefId, "verification", "assistant")).toBe(false);
+  expect(store.setFolder(assistantMail.mailRefId, "verification", "assistant")).toBe(false);
   expect(store.attention(false)).toContainEqual({ kind: "mail", id: userMail.mailRefId, title: userMail.subject, reason: "action" });
+});
+
+it("keeps custom-filed mail visible after rollback and honors the old host's moves on re-upgrade", async () => {
+  store.openMailbox("test-account", "1", 5);
+  const kept = (await store.record(message(5)))!;
+  const moved = (await store.record(message(6)))!;
+  const olderCategory = (await store.record(message(7)))!;
+  store.changeCategory({ action: "add", label: "订单" });
+  const { id } = store.categories().at(-1)!;
+  store.changeCategory({ action: "delete", id: "account" });
+  store.setFolder(kept.mailRefId, id, "user");
+  store.setFolder(moved.mailRefId, id, "user");
+  store.close();
+
+  const previous = new DatabaseSync(join(store.directory, "assistant.sqlite"));
+  try {
+    // The previous host reads only filing, user_junk and the legacy marketing fallback.
+    const inbox = previous.prepare(`SELECT mail_ref_id FROM mail_events WHERE
+      CASE WHEN user_junk = 1 THEN 'marketing' WHEN filing IS NOT NULL THEN replace(filing, 'user:', '')
+        WHEN json_extract(analysis_json, '$.category') = 'marketing' THEN 'marketing' ELSE 'inbox' END = 'inbox'
+      ORDER BY seq`);
+    expect(inbox.all().map(row => row.mail_ref_id)).toEqual([kept.mailRefId, moved.mailRefId, olderCategory.mailRefId]);
+    const file = previous.prepare("UPDATE mail_events SET user_junk = 0, filing = ? WHERE mail_ref_id = ?");
+    file.run("user:verification", moved.mailRefId);
+    file.run("user:inbox", moved.mailRefId);
+    file.run("user:account", olderCategory.mailRefId);
+    previous.prepare("UPDATE mail_events SET analysis_json = ? WHERE mail_ref_id = ?")
+      .run(JSON.stringify({ summary: "Old analysis", suggestions: [], questions: [], category: "account" }), olderCategory.mailRefId);
+  } finally { previous.close(); }
+
+  store = new AssistantMailStore(root);
+  await store.initialize();
+  expect(store.categories().map(category => category.id)).not.toContain("account");
+  expect(store.page({}, true, id).events.map(event => event.mailRefId)).toEqual([kept.mailRefId]);
+  expect(store.page({}, true, "inbox").events.map(event => event.mailRefId)).toEqual([olderCategory.mailRefId, moved.mailRefId]);
+  expect(store.event(olderCategory.mailRefId)?.analysis).toEqual({ summary: "Old analysis", suggestions: [], questions: [] });
+  expect(store.setFolder(olderCategory.mailRefId, "verification", "assistant")).toBe(false);
 });
 
 it("keeps mail already in the inbox eligible for its first classification", async () => {

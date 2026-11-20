@@ -43,6 +43,7 @@ interface MailProjection {
 const unavailablePreview = "原文无法解析，预览不可用。";
 const mailOrder = "CASE WHEN historical = 1 THEN -seq ELSE seq END";
 const mailFolder = `CASE WHEN user_junk = 1 THEN 'marketing'
+  WHEN custom_filing IS NOT NULL THEN custom_filing
   WHEN filing IS NOT NULL THEN replace(filing, 'user:', '')
   WHEN json_extract(analysis_json, '$.category') = 'marketing' THEN 'marketing' ELSE 'inbox' END`;
 const legacyFolders = DEFAULT_MAIL_CATEGORIES.map(({ id }) => `'${id}'`).join(", ");
@@ -110,6 +111,7 @@ type EventRow = {
   host_read: number;
   user_junk: number;
   filing: BridgeMailFolder | `user:${BridgeMailFolder}` | null;
+  custom_filing: BridgeMailCategory | null;
   analysis_json: string | null;
   raw_file: string;
   mime_projection: string | null;
@@ -119,8 +121,8 @@ type EventRow = {
 function eventFromRow(row: EventRow): MailEvent {
   const analysis = row.analysis_json ? JSON.parse(row.analysis_json) as MailAnalysis : null;
   const projection = row.mime_projection ? JSON.parse(row.mime_projection) as MailProjection : undefined;
-  const folder = row.user_junk === 1 ? "marketing" : row.filing
-    ? row.filing.replace(/^user:/u, "") as BridgeMailFolder : analysis?.category === "marketing" ? "marketing" : "inbox";
+  const folder = row.user_junk === 1 ? "marketing" : row.custom_filing ?? (row.filing
+    ? row.filing.replace(/^user:/u, "") : analysis?.category === "marketing" ? "marketing" : "inbox");
   return {
     seq: row.historical === 1 ? -row.seq : row.seq, mailRefId: row.mail_ref_id, accountKey: row.account_key,
     mailbox: row.mailbox, uidValidity: row.uid_validity, uid: row.uid,
@@ -211,6 +213,7 @@ export class AssistantMailStore {
     if (!columns.includes("host_read")) this.database.exec("ALTER TABLE mail_events ADD COLUMN host_read INTEGER NOT NULL DEFAULT 0");
     if (!columns.includes("user_junk")) this.database.exec("ALTER TABLE mail_events ADD COLUMN user_junk INTEGER NOT NULL DEFAULT 0");
     if (!columns.includes("filing")) this.database.exec("ALTER TABLE mail_events ADD COLUMN filing TEXT");
+    if (!columns.includes("custom_filing")) this.database.exec("ALTER TABLE mail_events ADD COLUMN custom_filing TEXT");
     this.database.exec(`
       CREATE INDEX IF NOT EXISTS mail_events_page_order ON mail_events (${mailOrder});
       CREATE TABLE IF NOT EXISTS mail_categories (
@@ -218,6 +221,12 @@ export class AssistantMailStore {
         id TEXT NOT NULL UNIQUE,
         label TEXT NOT NULL
       ) STRICT;
+      CREATE TRIGGER IF NOT EXISTS clear_custom_filing_on_legacy_move
+      AFTER UPDATE OF filing ON mail_events
+      WHEN OLD.custom_filing IS NOT NULL AND NEW.custom_filing IS OLD.custom_filing AND NEW.filing IS NOT OLD.filing
+      BEGIN
+        UPDATE mail_events SET custom_filing = NULL WHERE seq = NEW.seq;
+      END;
       CREATE TABLE IF NOT EXISTS assistant_attention_ack (
         kind TEXT NOT NULL, id TEXT NOT NULL, PRIMARY KEY(kind, id)
       ) STRICT;
@@ -233,6 +242,12 @@ export class AssistantMailStore {
     this.database.prepare(`INSERT INTO mail_categories (id, label)
       SELECT json_extract(value, '$.id'), json_extract(value, '$.label') FROM json_each(?)
       WHERE NOT EXISTS (SELECT 1 FROM mail_categories) ORDER BY key`).run(JSON.stringify(DEFAULT_MAIL_CATEGORIES));
+    // An older host can file into a built-in category that the user already removed.
+    this.database.exec(`UPDATE mail_events SET filing = CASE WHEN filing LIKE 'user:%' THEN 'user:inbox' ELSE 'inbox' END
+      WHERE replace(filing, 'user:', '') <> 'inbox' AND replace(filing, 'user:', '') NOT IN (SELECT id FROM mail_categories);
+      UPDATE mail_events SET filing = COALESCE(filing, 'inbox'), analysis_json = json_remove(analysis_json, '$.category')
+        WHERE json_extract(analysis_json, '$.category') NOT IN (SELECT id FROM mail_categories);
+    `);
     this.triggers = new AssistantTriggerStore(this.database);
     extend?.(this.database);
   }
@@ -394,8 +409,8 @@ export class AssistantMailStore {
       if (change.id === MAIL_JUNK_CATEGORY_ID) throw new MailCategoryError("INVALID_PARAMS", "此分类用于垃圾邮件和自动收纳，不能删除。");
       db.exec("BEGIN");
       try {
-        db.prepare(`UPDATE mail_events SET filing = CASE filing WHEN ? THEN 'user:inbox' ELSE 'inbox' END
-          WHERE filing IN (?, ?)`).run(`user:${change.id}`, `user:${change.id}`, change.id);
+        db.prepare(`UPDATE mail_events SET filing = 'user:inbox', custom_filing = NULL
+          WHERE custom_filing = ? OR filing IN (?, ?)`).run(change.id, `user:${change.id}`, change.id);
         db.prepare(`UPDATE mail_events SET filing = COALESCE(filing, 'inbox'), analysis_json = json_remove(analysis_json, '$.category')
           WHERE json_extract(analysis_json, '$.category') = ?`).run(change.id);
         db.prepare("DELETE FROM mail_categories WHERE id = ?").run(change.id);
@@ -521,7 +536,7 @@ export class AssistantMailStore {
     const row = db.prepare("SELECT user_junk FROM mail_events WHERE mail_ref_id = ?").get(mailRefId);
     if (!row) return undefined;
     if (row.user_junk === Number(junk)) return false;
-    db.prepare("UPDATE mail_events SET user_junk = ?, filing = ? WHERE mail_ref_id = ?")
+    db.prepare("UPDATE mail_events SET user_junk = ?, filing = ?, custom_filing = NULL WHERE mail_ref_id = ?")
       .run(Number(junk), junk ? "user:marketing" : "user:inbox", mailRefId);
     return true;
   }
@@ -536,9 +551,12 @@ export class AssistantMailStore {
       if (row.user_junk === 1 || row.filing?.startsWith("user:")) return false;
       if (folder === "inbox" && row.folder === "inbox") return false;
     }
-    const filing = source === "user" ? `user:${folder}` : folder;
-    if (row.user_junk === 0 && row.filing === filing) return false;
-    db.prepare("UPDATE mail_events SET user_junk = 0, filing = ? WHERE mail_ref_id = ?").run(filing, mailRefId);
+    // Keep the original filing column readable by an older host on the same database.
+    const custom = folder !== "inbox" && !DEFAULT_MAIL_CATEGORIES.some(({ id }) => id === folder) ? folder : null;
+    const legacyFolder = custom ? "inbox" : folder;
+    const filing = source === "user" ? `user:${legacyFolder}` : legacyFolder;
+    if (row.user_junk === 0 && row.filing === filing && row.folder === folder) return false;
+    db.prepare("UPDATE mail_events SET user_junk = 0, filing = ?, custom_filing = ? WHERE mail_ref_id = ?").run(filing, custom, mailRefId);
     return true;
   }
 

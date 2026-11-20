@@ -184,7 +184,9 @@ describe("assistant mail mobile RPC projections", () => {
     service.updateAnalysis(mailRefId, { ...analysis, category: id });
     await run.request("plugin.assistant-mail.filing.set", { mailRefId, folder: id });
     expect((await run.publish()).assistantMail?.changeToken).not.toBe(before.changeToken);
-    expect(await run.request("plugin.assistant-mail.list", { folder: "inbox" })).toMatchObject({ mailPage: { cards: [{ mailRefId, analysis }], folderCounts: {} } });
+    const legacyInbox = await run.request<{ mailPage: BridgeMailPage }>("plugin.assistant-mail.list", { folder: "inbox" });
+    expect(legacyInbox.mailPage.cards).toMatchObject([{ mailRefId, analysis }]);
+    expect(legacyInbox.mailPage.folderCounts).toEqual({});
     const legacy = await run.request<{ mailPage: BridgeMailPage }>("plugin.assistant-mail.list", { query: "Subject 1" });
     expect(legacy.mailPage.cards[0]).not.toHaveProperty("folder");
     expect(legacy.mailPage.cards[0]?.analysis).toEqual(analysis);
@@ -192,7 +194,9 @@ describe("assistant mail mobile RPC projections", () => {
     expect(await run.request("plugin.assistant-mail.list", { folder: id, includeCustomCategories: true })).toMatchObject({ mailPage: { cards: [{ mailRefId, folder: id }] } });
     await run.request("plugin.assistant-mail.category.change", { action: "delete", id });
     await expect(run.request("plugin.assistant-mail.list", { folder: id, includeCustomCategories: true })).rejects.toMatchObject({ code: "INVALID_PARAMS" });
-    expect(await run.request("plugin.assistant-mail.list", { folder: "inbox", includeCustomCategories: true })).toMatchObject({ mailPage: { cards: [{ mailRefId, analysis }], folderCounts: {} } });
+    const restored = await run.request<{ mailPage: BridgeMailPage }>("plugin.assistant-mail.list", { folder: "inbox", includeCustomCategories: true });
+    expect(restored.mailPage.cards).toMatchObject([{ mailRefId, analysis }]);
+    expect(restored.mailPage.folderCounts).toEqual({});
   });
 
   it("requires an explicitly supplied shared credential and saves the complete mailbox in one request", async () => {

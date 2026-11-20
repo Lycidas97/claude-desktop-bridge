@@ -11,7 +11,7 @@ import type { AssistantMailService } from "./desktop.js";
 import { MailAttachmentError } from "./mime.js";
 import { CompactHookRequest } from "./compact-hook.js";
 import type { ProposalExecutor } from "./proposal-executor.js";
-import { isProposalTool, MAIL_SOURCE, MAIL_TOOLS_STOP_SUFFIX, MANAGED_MAIL_TOOLS, MailToolRequest } from "./tool-contract.js";
+import { isProposalTool, MAIL_SOURCE, MAIL_TOOLS_STOP_SUFFIX, MANAGED_MAIL_TOOLS, MailCategoryCatalogParameters, MailToolRequest } from "./tool-contract.js";
 import { MailCategoryError } from "./store.js";
 
 type MailTools = Pick<AssistantMailService, "page" | "categories" | "readEvent" | "readAttachment" | "updateAnalysis" | "setProcessingStatus" | "setFolder" | "markRead" | "triggers">;
@@ -96,7 +96,9 @@ export async function serveAssistantMailTools(options: {
           break;
         } else break;
         case "memory.lookup_entry": result = options.lookupMemory?.(sessionId!, input.arguments.entryId); break;
-        case "mail.list_events": result = { ...options.service.page(input.arguments), categories: options.service.categories() }; break;
+        case "mail.list_events": result = MailCategoryCatalogParameters.safeParse(input.arguments).success
+          ? { categories: options.service.categories() }
+          : { ...options.service.page(input.arguments), categories: options.service.categories() }; break;
         case "mail.list_unfinished_triggers": result = options.service.triggers.unfinished(sessionId!, input.arguments.cursor); break;
         case "mail.read_event": result = await options.service.readEvent(input.arguments.mailRefId); break;
         case "mail.read_attachment": result = await options.service.readAttachment(input.arguments); break;

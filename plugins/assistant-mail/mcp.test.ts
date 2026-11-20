@@ -271,7 +271,7 @@ it("restores assistant-filed mail to the inbox via managed stdio MCP", async () 
   const original = (await service.read(reference))!.source;
   service.changeCategory({ action: "add", label: "活动" });
   const { id } = service.categories().at(-1)!;
-  const catalog = await client.callTool({ name: "mail.list_events", arguments: { limit: 1 } });
+  const catalog = await client.callTool({ name: "mail.list_events", arguments: { catalogOnly: true } });
   expect(JSON.parse((catalog.content as Array<{ text: string }>)[0]!.text)).toMatchObject({
     source: MAIL_SOURCE, result: { categories: expect.arrayContaining([{ id, label: "活动" }]) },
   });
@@ -295,6 +295,17 @@ it("restores assistant-filed mail to the inbox via managed stdio MCP", async () 
     inputSchema: { properties: { folder: { type: "string" } } },
   });
 }, 20_000);
+
+it("returns the category catalog without mail fields when triaging a specific reference", async () => {
+  service.changeCategory({ action: "add", label: "订单" });
+  const { id } = service.categories().at(-1)!;
+  expect(service.page().events.map(event => event.mailRefId)).toContain(reference);
+  const result = await post({ name: "mail.list_events", arguments: { catalogOnly: true } });
+  const body = await result.json();
+  expect(result.status).toBe(200);
+  expect(body).toEqual({ source: MAIL_SOURCE, result: { categories: expect.arrayContaining([{ id, label: "订单" }]) } });
+  expect(JSON.stringify(body)).not.toContain(reference);
+});
 
 it("preserves a saved category on legacy analysis writes and replaces it only with a supported category", async () => {
   const name = "mail.update_analysis";

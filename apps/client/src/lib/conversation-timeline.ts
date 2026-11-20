@@ -15,7 +15,6 @@ import type {
   BridgeSubagentSummary,
   BridgeTaskPlan,
 } from "@bridge/protocol";
-import { parseSessionNotice, type SessionNotice } from "../components/conversation/SessionNoticeCard.js";
 import {
   isClaudeNativeRelay,
   mergeAcceptedDelivery,
@@ -25,6 +24,7 @@ import {
 import { desktopRuntimeId } from "./runtime-labels.js";
 import type { SessionFamily } from "./project-groups.js";
 import { sessionQueueLabel } from "./session-activity.js";
+import { parseSessionNotice, type SessionNotice } from "./session-notice.js";
 
 export interface ConversationItem extends BridgeHistoryItem {
   sessionNotice?: SessionNotice;

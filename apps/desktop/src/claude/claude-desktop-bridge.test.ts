@@ -1,7 +1,7 @@
 import { once } from "node:events";
-import { appendFile, rm, mkdir, mkdtemp, readFile, readdir, symlink, writeFile } from "node:fs/promises";
+import { appendFile, rm, mkdir, mkdtemp, readFile, readdir, realpath, symlink, truncate, writeFile } from "node:fs/promises";
 import * as platform from "../app/platform.js";
-import { BridgeCrypto, isEncryptedEnvelope, type BridgeArtifactTransferInfo } from "@bridge/protocol";
+import { ARTIFACT_MAX_BYTES, BridgeCrypto, isEncryptedEnvelope, type BridgeArtifactTransferInfo } from "@bridge/protocol";
 import { EvidenceManager } from "../evidence/evidence-manager.js";
 import { EvidenceStore } from "../evidence/evidence-store.js";
 import { createControllerFixture } from "../controller/controller-fixture.js";
@@ -22,7 +22,7 @@ import { fixture, NativeDesktop, withDatabase } from "./claude-desktop-bridge-fi
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const fs = await importOriginal<typeof import("node:fs/promises")>();
-  return { ...fs, readFile: vi.fn(fs.readFile) };
+  return { ...fs, readFile: vi.fn(fs.readFile), realpath: vi.fn(fs.realpath) };
 });
 
 const input = { sessionId: "local-native", text: "hello", requestId: "request", idempotencyKey: "key", origin: "mobile" as const };
@@ -2707,6 +2707,152 @@ describe("Claude native relay", () => {
       expect(older.items).toMatchObject([{ id: call.uuid, createdAt: 10, text: expect.stringContaining(title), sessionProposal: { title } }]);
       f.native.pages.set("", { messages: [call, result], hasMore: false });
       expect(await f.bridge.history("local-native")).toMatchObject({ items: older.items, sessionProposalResults: [call.uuid] });
+    } finally { await f.close(); }
+  });
+
+  it("projects only the native SendUserFile receipt, in split history and on live completion", async () => {
+    const f = await fixture();
+    try {
+      const cwd = join(f.directory, "project");
+      const harnessCwd = join(cwd, "worktree");
+      await mkdir(harnessCwd, { recursive: true });
+      const inside = join(harnessCwd, "报告.md");
+      const outside = join(f.directory, "工作区外.md");
+      const large = join(harnessCwd, "large.apk");
+      await Promise.all([
+        writeFile(inside, "worktree"), writeFile(outside, "outside"), writeFile(join(cwd, "报告.md"), "namesake"),
+        writeFile(join(harnessCwd, ".env.example"), "EXAMPLE=fixture"), writeFile(large, ""),
+        writeFile(join(harnessCwd, "同名上传.pdf"), "different local file"),
+      ]);
+      await truncate(large, ARTIFACT_MAX_BYTES + 1);
+      Object.assign(f.native.sessions[0]!, { cwd, harnessCwd });
+      await f.bridge.refreshRuntime();
+      const call = planMessage("send-call", { files: [outside, "unconfirmed.txt"] }, 10, "SendUserFile");
+      const result = { type: "user", uuid: "send-result", timestamp: 20, message: { content: [{
+        type: "tool_result", tool_use_id: call.uuid, content: [{ type: "text", text: "Files sent" }],
+      }] }, toolUseResult: { attachments: [
+        { path: "报告.md", size: 8, isImage: false, pathValidated: true, project_path: "项目文件夹/报告.md" },
+        { path: outside, size: 7, isImage: false },
+        { path: join(cwd, "报告.md"), size: 8, isImage: false },
+        { path: ".env.example", size: 15, isImage: false },
+        { path: "large.apk", size: 20, isImage: false }, // Grew after being shared; the current size governs transport.
+        { path: "同名上传.pdf", size: 13, isImage: false, file_uuid: "uploaded-file-id" },
+        { path: "project-only.pdf", size: 32, isImage: false, project_path: "项目文件夹/project-only.pdf" },
+        { path: "upload-failed.md", size: 100, isImage: false, upload_error: "not delivered" },
+      ] } };
+      const expected = [{ name: "报告.md", path: await realpath(inside) }, { name: "工作区外.md" }, { name: "报告.md" },
+        { name: ".env.example" }, { name: "large.apk" }, { name: "同名上传.pdf" }, { name: "project-only.pdf" }];
+      f.native.pages.set("", { messages: [result], hasMore: true });
+      f.native.pages.set(result.uuid, { messages: [call], hasMore: false });
+      const latest = await f.bridge.history("local-native", undefined, 1);
+      expect(latest).toMatchObject({ items: [], nextCursor: result.uuid, sessionFileReceipts: { [call.uuid]: expected } });
+      const older = await f.bridge.history("local-native", latest.nextCursor, 1);
+      expect(older.items).toMatchObject([{ id: call.uuid, createdAt: 10, toolName: "SendUserFile" }]);
+      expect(older.sessionFileReceipts).toBeUndefined();
+      await f.message(call);
+      const start = f.eventLog.latestItem("local-native", "tool.started", call.uuid);
+      expect(start?.data.sentFiles).toBeUndefined();
+      const reads = f.native.calls.length;
+      await f.message(result);
+      expect(f.eventLog.latestItem("local-native", "tool.completed", call.uuid)?.data.sentFiles).toEqual(expected);
+      expect(f.native.calls.slice(reads).some(({ method }) => method === "getTranscript")).toBe(false);
+      const unrelated = planMessage("other-call", {}, 30, "Read");
+      await f.message(unrelated);
+      await f.message({ ...result, message: { content: [{ ...result.message.content[0], tool_use_id: unrelated.uuid }] } });
+      expect(f.eventLog.latestItem("local-native", "tool.completed", unrelated.uuid)?.data.sentFiles).toBeUndefined();
+    } finally { await f.close(); }
+  });
+
+  it("projects all 33 successful attachments in a native SendUserFile receipt", async () => {
+    const f = await fixture();
+    try {
+      const cwd = await realpath(f.directory);
+      f.native.sessions[0]!.cwd = cwd;
+      await f.bridge.refreshRuntime();
+      const names = Array.from({ length: 33 }, (_, index) => `attachment-${index + 1}.txt`);
+      await Promise.all(names.map(name => writeFile(join(cwd, name), "x")));
+      f.native.page.messages = [{ type: "user", uuid: "receipt", message: { content: [{
+        type: "tool_result", tool_use_id: "send", content: "Files sent",
+      }] }, toolUseResult: { attachments: names.map(path => ({ path, size: 1, isImage: false })) } }];
+      const page = await f.bridge.history("local-native");
+      expect(page.sessionFileReceipts?.send).toEqual(names.map(name => ({ name, path: join(cwd, name) })));
+    } finally { await f.close(); }
+  });
+
+  it("keeps the file receipt and ordinary history while the native directory is rebuilding", async () => {
+    const f = await fixture();
+    let releasePath!: () => void;
+    let releaseRefresh!: () => void;
+    const pathGate = new Promise<void>(resolve => { releasePath = resolve; });
+    const refreshGate = new Promise<void>(resolve => { releaseRefresh = resolve; });
+    try {
+      const cwd = await realpath(f.directory);
+      const worktree = join(cwd, "worktree");
+      await mkdir(worktree);
+      await writeFile(join(worktree, "sent.txt"), "x");
+      Object.assign(f.native.sessions[0]!, { cwd, harnessCwd: worktree });
+      await f.bridge.refreshRuntime();
+      f.native.pages.set("older", { messages: [
+        { type: "assistant", uuid: "plain", message: { content: [{ type: "text", text: "Ordinary history" }] } },
+        { type: "user", uuid: "receipt", message: { content: [{ type: "tool_result", tool_use_id: "send", content: "File sent" }] },
+          toolUseResult: { attachments: [{ path: "sent.txt", size: 1, isImage: false }] } },
+      ], hasMore: false });
+      let markPathStarted!: () => void;
+      const pathStarted = new Promise<void>(resolve => { markPathStarted = resolve; });
+      vi.mocked(realpath).mockImplementationOnce(async path => {
+        expect(path).toBe(worktree);
+        markPathStarted();
+        await pathGate;
+        return worktree;
+      });
+      const history = f.bridge.history("local-native", "older");
+      await pathStarted;
+
+      f.native.sessions.unshift({ ...f.native.sessions[0]!, sessionId: "other-native", pendingViolinBowPrompt: { promptId: "other-prompt" } });
+      let markRefreshPaused!: () => void;
+      const refreshPaused = new Promise<void>(resolve => { markRefreshPaused = resolve; });
+      vi.spyOn(f.native, "promptChoices").mockImplementationOnce(async () => {
+        markRefreshPaused();
+        await refreshGate;
+        return undefined;
+      });
+      const refresh = f.bridge.refreshRuntime();
+      await refreshPaused;
+      expect(f.bridge.executionCwd("other-native")).toBe(worktree);
+      expect(f.bridge.executionCwd("local-native")).toBeUndefined();
+      releasePath();
+      try {
+        await expect(history).resolves.toMatchObject({
+          items: [{ id: "plain", text: "Ordinary history" }],
+          sessionFileReceipts: { send: [{ name: "sent.txt", path: join(worktree, "sent.txt") }] },
+        });
+      } finally {
+        releaseRefresh();
+        await refresh;
+      }
+    } finally {
+      releasePath();
+      releaseRefresh();
+      vi.mocked(realpath).mockReset();
+      await f.close();
+    }
+  });
+
+  it("returns ordinary history without reading the full transcript for a split file receipt", async () => {
+    const f = await fixture();
+    try {
+      const recent = { type: "assistant", uuid: "plain-message", timestamp: 20, message: { content: [{ type: "text", text: "Ordinary history" }] } };
+      const receipt = { type: "user", uuid: "send-file-receipt", timestamp: 30, message: { content: [{
+        type: "tool_result", tool_use_id: "older-send-file", content: "File sent",
+      }] }, tool_use_result: { attachments: [{ path: "uploaded.txt", size: 1, isImage: false, file_uuid: "upload-id" }] } };
+      f.native.pages.set("", { messages: [recent, receipt], hasMore: true });
+      const original = f.native.call.bind(f.native);
+      vi.spyOn(f.native, "call").mockImplementation((method, args) => method === "getTranscript"
+        ? Promise.reject(new NativeCallError("Full transcript unavailable")) : original(method, args));
+      expect(await f.bridge.history("local-native", undefined, 2)).toMatchObject({
+        items: [{ id: recent.uuid, text: "Ordinary history" }], hasMore: true, nextCursor: recent.uuid,
+        sessionFileReceipts: { "older-send-file": [{ name: "uploaded.txt" }] },
+      });
     } finally { await f.close(); }
   });
 

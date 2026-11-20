@@ -26,6 +26,28 @@ function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
+/** This is Desktop's structured attachment receipt, not the model-visible result text. */
+export function nativeSentFileReceipt(raw: unknown): { toolUseId: string; files: { path: string; local: boolean }[] } | undefined {
+  const message = record(raw);
+  if (message.type !== "user" || message.isSidechain === true || message.parent_tool_use_id) return;
+  const { attachments } = record(message.toolUseResult ?? message.tool_use_result);
+  if (!Array.isArray(attachments)) return;
+  const { content } = record(message.message);
+  if (!Array.isArray(content)) return;
+  const results = content.map(record).filter(block => block.type === "tool_result");
+  const [result] = results;
+  if (results.length !== 1 || typeof result?.tool_use_id !== "string" || result.is_error === true) return;
+  const files = attachments.flatMap(rawAttachment => {
+    const { path, size, isImage, upload_error, project_path, file_uuid, pathValidated } = record(rawAttachment);
+    if (typeof path !== "string" || !path || path.includes("\0") || typeof size !== "number"
+      || typeof isImage !== "boolean" || upload_error !== undefined) return [];
+    // Native replaces path with file_name for uploaded references and may omit pathValidated in serialized receipts.
+    const local = pathValidated === true || (pathValidated === undefined && file_uuid === undefined && project_path === undefined);
+    return [{ path, local }];
+  });
+  if (files.length) return { toolUseId: result.tool_use_id, files };
+}
+
 function singleToolResultText(content: unknown): string | undefined {
   if (typeof content === "string") return content;
   const part = Array.isArray(content) && content.length === 1 ? record(content[0]) : undefined;

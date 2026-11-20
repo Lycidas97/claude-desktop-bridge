@@ -362,7 +362,20 @@ export async function verifyNativeBoundaries(page, host, steps, directory) {
   ].join("\n\n"));
   const tool = (id, input, name = "mcp__ccd_turn__update_plan") => ({ type: "assistant", uuid: id, timestamp: Date.now(), message: { content: [{ type: "tool_use", id, name, input }] } });
   const planItems = [{ content: "读取报告", status: "in_progress" }, { content: "验证文件", status: "pending" }];
+  const archiveName = "会话交付.tar.gz";
+  const archiveBytes = Buffer.from("synthetic file download\n");
+  await writeFile(resolve(host.nativeApproval.harnessCwd, archiveName), archiveBytes);
+  const outsideFile = resolve(host.nativeApproval.harnessCwd, "../../../../工作区外的文件.txt");
+  await writeFile(outsideFile, "This file must stay on the host.");
+  await writeFile(resolve(host.nativeApproval.harnessCwd, ".env.example"), "EXAMPLE=fixture");
   const initial = [
+    tool("boundary-send-file", { files: ["说明 notes.md", archiveName, outsideFile, ".env.example", "未发送.bin"] }, "SendUserFile"),
+    { type: "user", uuid: "boundary-send-file-result", timestamp: Date.now(), message: { content: [{
+      type: "tool_result", tool_use_id: "boundary-send-file", content: [{ type: "text", text: "Files sent" }],
+    }] }, toolUseResult: { attachments: [
+      ...["说明 notes.md", archiveName, outsideFile, ".env.example"].map(path => ({ path, size: 32, isImage: false })),
+      { path: "未发送.bin", size: 12, isImage: false, upload_error: "Native delivery failed" },
+    ] } },
     tool("boundary-plan", { scope: "first_task", items: planItems }),
     { ...tool("child-plan", { scope: "first_task", items: [{ content: "子代理内部计划", status: "in_progress" }] }), isSidechain: true },
     { ...tool("child-wrap", { recap: "Child done" }, "mcp__ccd_turn__wrap_up"), isSidechain: true },
@@ -386,7 +399,9 @@ export async function verifyNativeBoundaries(page, host, steps, directory) {
   const catalogRow = page.locator(`.mobile-home-catalog [data-session-id="${sessionId}"]`);
   await eventually(() => catalogRow.locator(".session-state-dot.running").count(), 1, "Catalog row dot reflects running background subagent when main turn is idle");
   await eventually(() => catalogRow.locator(".session-row-status.running").innerText(), "后台子代理", "Catalog row badge displays running background subagent");
-  host.history.push(...(await host.nativeApproval.history()).items);
+  const nativePage = await host.nativeApproval.history();
+  host.history.push(...nativePage.items);
+  host.sessionFileReceipts = nativePage.sessionFileReceipts;
   // This fixture has no on-disk task transcript, so provide the tray separately.
   const backgroundTasks = [{
     id: "boundary-bg-call", kind: "subagent", taskId: "boundary-bg-subagent", toolUseId: "boundary-bg-call",
@@ -437,6 +452,41 @@ export async function verifyNativeBoundaries(page, host, steps, directory) {
   steps.push("session catalog state dot and status badge stay synchronized with active, stalled, and completed background subagents before opening and after returning from detail");
   await catalogRow.locator(".session-row-hit").click();
   const stream = page.locator(".conversation-stream");
+  const sentFiles = stream.getByRole("region", { name: "会话文件", exact: true });
+  await sentFiles.getByRole("button", { name: "说明 notes.md", exact: true }).click({ timeout: 5_000 });
+  await page.locator(".media-viewer").getByRole("heading", { name: "Worktree preview", exact: true }).waitFor();
+  await page.getByRole("button", { name: "关闭查看器", exact: true }).click();
+  for (const blockedName of ["工作区外的文件.txt", ".env.example"]) {
+    assert.equal(await sentFiles.getByRole("button", { name: blockedName, exact: true }).count(), 0);
+    assert.ok((await sentFiles.innerText()).includes(`${blockedName}\n请在电脑端打开`));
+  }
+  assert.equal(await sentFiles.getByText("未发送.bin", { exact: true }).count(), 0);
+  assert.equal((await sentFiles.innerText()).includes(outsideFile), false);
+  await sentFiles.screenshot({ path: resolve(directory, "native-sent-files.png"), animations: "disabled" });
+  const beforeDownload = host.requests.length;
+  await sentFiles.getByRole("button", { name: archiveName, exact: true }).click();
+  const downloadPrompt = page.getByRole("alertdialog", { name: "确认下载远程文件到手机？", exact: true });
+  assert.ok((await downloadPrompt.innerText()).includes(archiveName));
+  assert.equal(host.requests.slice(beforeDownload).some(request => request.method === "artifact.transfer.open"), false);
+  const downloadEvent = page.waitForEvent("download");
+  await downloadPrompt.getByRole("button", { name: "确认下载", exact: true }).click();
+  const download = await downloadEvent;
+  assert.equal(download.suggestedFilename(), archiveName);
+  assert.deepEqual(await readFile(await download.path()), archiveBytes);
+  steps.push("SendUserFile entries open a worktree text preview and download the original bytes after confirmation");
+  const image = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+l2p0AAAAASUVORK5CYII=", "base64");
+  await writeFile(resolve(host.nativeApproval.harnessCwd, "交付图片.png"), image);
+  for (const message of [tool("live-send-file", { files: ["交付图片.png"] }, "SendUserFile"), {
+    type: "user", uuid: "live-send-file-result", timestamp: Date.now(), message: { content: [{
+      type: "tool_result", tool_use_id: "live-send-file", content: "File sent",
+    }] }, tool_use_result: { attachments: [{ path: "交付图片.png", size: image.length, isImage: true }] },
+  }]) {
+    for (const event of await host.nativeApproval.message(message)) await host.emit(event.type, event.data, { itemId: event.itemId });
+  }
+  await sentFiles.getByRole("button", { name: "交付图片.png", exact: true }).click();
+  await page.waitForFunction(() => document.querySelector(".media-viewer img")?.naturalWidth === 1);
+  await page.getByRole("button", { name: "关闭查看器", exact: true }).click();
+  steps.push("A live SendUserFile result opens its PNG in the existing image viewer");
   await stream.locator(".background-task-marker.is-completed").waitFor();
   await eventually(() => page.locator(".session-activity").count(), 0, "Settled task tray clears stale running subagent activity and timer");
   assert.equal(host.history.find(item => item.subagent?.agentId === "boundary-bg-subagent")?.subagent.state, "running", "The timeline intentionally retains its stale running state");

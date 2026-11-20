@@ -105,7 +105,7 @@ export async function openBridgeSession(
       const result = response.result as { history?: BridgeHistoryPage; session?: BridgeSessionInfo };
       if (!result.history) throw new Error("电脑未返回会话历史");
       setState((current) => {
-        if (!isCurrent()) return current;
+        if (!isCurrent() || (current.histories[sessionId]?.latestRead?.sequence ?? 0) > sequence) return current;
         const liveCompletion = current.snapshot?.sessions.find((session) => session.sessionId === sessionId)?.lastCompletedTurnId;
         // The open response can contain a session captured before a newer native completion arrived.
         const session = result.session && liveCompletion && liveCompletion !== readCompletedTurnId
@@ -399,7 +399,8 @@ export async function refreshLatestBridgeHistory(
         ...current.histories,
         [sessionId]: {
           ...history,
-          items: [...prefix, ...newestById.values()],
+          // A newer projection can change a repeated item's timestamp, not its Map position.
+          items: [...prefix, ...newestById.values()].sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id)),
           latestRead: { sequence, completedTurnId: readCompletedTurnId },
         },
       },

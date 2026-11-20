@@ -2,6 +2,7 @@ import type { BridgeCrypto, BridgeEvent, BridgeHostSnapshot, BridgeRequest, Brid
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { applyIncomingEventsToState, INITIAL_STATE, useMobileBridge } from "./useMobileBridge.js";
 import { createBridgeTestStore, type HarnessStore } from "./useMobileBridge.test-harness.js";
+import { conversationItems } from "../lib/conversation-timeline.js";
 import { bridgeVault } from "../lib/vault.js";
 import {
   ensureSessionNotificationPermission,
@@ -1705,6 +1706,30 @@ describe("mobile history pagination", () => {
     expect(harness.state.histories[recent.sessionId].items).toEqual([recent, reply]);
   });
 
+  it("keeps a newer catch-up when a manual open started during pagination finishes last", async () => {
+    const olderResponse = deferred<Record<string, unknown>>();
+    const openResponse = deferred<Record<string, unknown>>();
+    const reply = { ...recent, id: "recovered-after-open-started", role: "assistant", createdAt: 3 };
+    harness.respond = async ({ method, params }) => method === "session.open" ? openResponse.promise
+      : method === "session.history" ? params.cursor ? olderResponse.promise
+        : { history: { items: [older, recent, reply], hasMore: false } } : {};
+    const bridge = useMobileBridge();
+    const paging = bridge.loadOlderHistory(recent.sessionId);
+    await vi.waitFor(() => expect(harness.requests[0]?.request.method).toBe("session.history"));
+    const opening = bridge.openSession(recent.sessionId);
+    await vi.waitFor(() => expect(harness.requests[1]?.request.method).toBe("session.open"));
+    olderResponse.resolve({ history: { items: [older], hasMore: false } });
+    await paging;
+    expect(harness.state.histories[recent.sessionId].status).toBe("ready");
+    await bridge.refreshLatestHistory(recent.sessionId, "later-completion");
+    expect(harness.state.histories[recent.sessionId].items).toEqual([older, recent, reply]);
+    openResponse.resolve({ history: { items: [recent], hasMore: false } });
+    await opening;
+    expect(harness.state.histories[recent.sessionId]).toMatchObject({
+      items: [older, recent, reply], latestRead: { sequence: 2, completedTurnId: "later-completion" },
+    });
+  });
+
   it.each(["in order", "newest first"])("keeps both replies when overlapping catch-up reads finish %s", async order => {
     const firstResponse = deferred<Record<string, unknown>>();
     const secondResponse = deferred<Record<string, unknown>>();
@@ -1735,20 +1760,23 @@ describe("mobile history pagination", () => {
     });
   });
 
-  it("reads the next page when only a projected task plan overlaps", async () => {
-    const plan = { ...older, id: "plan:shared", role: "assistant", taskPlan: { id: "shared", updatedAt: 1 } };
-    const updatedPlan = { ...plan, taskPlan: { ...plan.taskPlan, updatedAt: 4 } };
+  it("keeps older-page replies visible when the latest history moves a repeated plan", async () => {
+    const plan = { ...older, id: "plan:shared", role: "assistant", taskPlan: { id: "shared", items: [], updatedAt: 1 } };
+    const updatedPlan = { ...plan, createdAt: 4, taskPlan: { ...plan.taskPlan, updatedAt: 4 } };
     const missing = { ...recent, id: "missing-reply", role: "assistant", createdAt: 3 };
     const newest = { ...recent, id: "newest", createdAt: 5 };
-    harness.state.histories[recent.sessionId] = { status: "ready", items: [older, plan, recent], hasMore: true, nextCursor: older.id };
+    harness.state.histories[recent.sessionId] = { status: "ready", items: [plan, recent], hasMore: true, nextCursor: "native-older-cursor" };
     harness.respond = async ({ params }) => ({ history: params.cursor === undefined
       ? { items: [updatedPlan, newest], hasMore: true, nextCursor: "native-newer-page" }
-      : { items: [recent, missing], hasMore: true, nextCursor: recent.id },
+      : { items: [plan, recent, missing], hasMore: true, nextCursor: "native-older-cursor" },
     });
     const bridge = useMobileBridge();
     await bridge.refreshLatestHistory(recent.sessionId, "native-completion");
     expect(harness.requests.map(({ request }) => request.params.cursor)).toEqual([undefined, "native-newer-page"]);
-    expect(harness.state.histories[recent.sessionId]).toMatchObject({ items: [older, recent, missing, updatedPlan, newest], nextCursor: older.id });
+    const history = harness.state.histories[recent.sessionId];
+    expect(conversationItems(recent.sessionId, history, [], [], true).map(({ id }) => id))
+      .toEqual([recent.id, missing.id, updatedPlan.id, newest.id]);
+    expect(history).toMatchObject({ items: [recent, missing, updatedPlan, newest], nextCursor: "native-older-cursor" });
   });
 
   it("fills a gap from the latest history page without losing the already loaded prefix or its cursor", async () => {

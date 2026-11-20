@@ -84,13 +84,14 @@ async function verifyMailMarkRead(phone, host, baseUrl, capture) {
   await desktop.getByRole("button", { name: "刷新邮件列表", exact: true }).click();
   await desktop.getByRole("button", { name: "刷新邮件列表（已刷新）", exact: true }).waitFor();
   assert.equal(await desktopCount(), "2");
-  await card(desktop, marked).getByText("待处理", { exact: true }).waitFor();
+  await card(desktop, marked).waitFor();
+  assert.equal(host.nativeApproval.assistantMail.service.event(marked.mailRefId).processingStatus, "pending");
   await capture(desktop, "desktop-mail-host-read");
 
   await capture(phone, "mobile-mail-host-read");
   await mobileBadge.click();
   await phone.getByRole("button", { name: "收件", exact: true }).click();
-  await card(phone, marked).getByText("待处理", { exact: true }).waitFor();
+  await card(phone, marked).waitFor();
   host.mailOffline = true;
   host.socket.close();
   await phone.getByText("电脑离线，显示已缓存邮件。", { exact: true }).waitFor();

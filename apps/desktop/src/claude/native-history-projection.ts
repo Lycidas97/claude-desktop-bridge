@@ -37,12 +37,12 @@ export function nativeSentFileReceipt(raw: unknown): { toolUseId: string; files:
   const results = content.map(record).filter(block => block.type === "tool_result");
   const [result] = results;
   if (results.length !== 1 || typeof result?.tool_use_id !== "string" || result.is_error === true) return;
-  const files = attachments.slice(0, 32).flatMap(rawAttachment => {
+  const files = attachments.flatMap(rawAttachment => {
     const { path, size, isImage, upload_error, project_path, file_uuid, pathValidated } = record(rawAttachment);
     if (typeof path !== "string" || !path || path.includes("\0") || typeof size !== "number"
       || typeof isImage !== "boolean" || upload_error !== undefined) return [];
     // Native replaces path with file_name for uploaded references and may omit pathValidated in serialized receipts.
-    const local = project_path === undefined && (pathValidated === true || (pathValidated === undefined && file_uuid === undefined));
+    const local = pathValidated === true || (pathValidated === undefined && file_uuid === undefined && project_path === undefined);
     return [{ path, local }];
   });
   if (files.length) return { toolUseId: result.tool_use_id, files };

@@ -253,6 +253,7 @@ function useDesktopConversationController(input: DesktopConversationInput): Desk
       [key]: {
         status: "loading",
         items: current[key]?.items ?? [],
+        sessionFileReceipts: current[key]?.sessionFileReceipts,
         hasMore: current[key]?.hasMore ?? false,
         ...(current[key]?.nextCursor ? { nextCursor: current[key]!.nextCursor } : {}),
       },
@@ -287,6 +288,7 @@ function useDesktopConversationController(input: DesktopConversationInput): Desk
           [key]: {
             status: "error",
             items: current[key]?.items ?? [],
+            sessionFileReceipts: current[key]?.sessionFileReceipts,
             hasMore: false,
             error: errorMessage,
           },

@@ -23,6 +23,7 @@ import { IconButton } from "./common/IconButton.js";
 import { BackgroundTaskMarker, BackgroundTasksSheet } from "./conversation/BackgroundTasks.js";
 import { ConversationMessageItem } from "./conversation/ConversationMessageItem.js";
 import { ConversationToolGroup } from "./conversation/ConversationToolGroup.js";
+import { SessionSentFiles } from "./conversation/SessionSentFiles.js";
 import { ForkChainBar } from "./conversation/ForkChainBar.js";
 import { InteractivePromptCard, PermissionPrompt } from "./conversation/PermissionPrompts.js";
 import { SlashCommandInput } from "./conversation/SlashCommandInput.js";
@@ -935,6 +936,34 @@ it("renders composer context usage only when present and degrades cleanly for un
 });
 
 describe("desktop conversation parity", () => {
+  it("keeps the displayed file card while reopening history and after an open failure", async () => {
+    const files = [{ name: "报告.md", path: "/tmp/project/报告.md" }];
+    const call: BridgeHistoryItem = { id: "sent", sessionId: "A", role: "tool", text: "SendUserFile", toolName: "SendUserFile", createdAt: 10, origin: "claude-desktop" };
+    apiRequest.mockImplementation(async ({ method }) => ({ kind: "response", requestId: "test", ok: true, result:
+      method === "session.open" ? { history: { items: [call], hasMore: false, sessionFileReceipts: { [call.id]: files } } }
+        : { evidence: { items: [], hasMore: false } },
+    }));
+    await openSessions();
+    const card = () => elements(tree).find(element => element.type === SessionSentFiles)?.props.item.sentFiles;
+    expect(card()).toEqual(files);
+
+    let finishOpen!: (response: BridgeResponse) => void;
+    const reopening = new Promise<BridgeResponse>(resolve => { finishOpen = resolve; });
+    apiRequest.mockImplementation(({ method }) => method === "session.open" ? reopening : Promise.resolve({
+      kind: "response", requestId: "evidence", ok: true, result: { evidence: { items: [], hasMore: false } },
+    }));
+    const event: BridgeEvent = { eventId: "compact", sessionId: "A", seq: 1, timestamp: 1, origin: "claude-host", type: "session.compacted", data: {} };
+    tree = sessions.draw({ ...sessionsProps, events: [event] });
+    expect(elements(tree).find(element => element.type === ConversationView)?.props.history.status).toBe("loading");
+    expect.soft(card(), "during session.open").toEqual(files);
+
+    finishOpen({ kind: "response", requestId: "failed-open", ok: false, error: { code: "HISTORY_ERR", message: "历史读取超时", retryable: true } });
+    await settle();
+    tree = sessions.draw();
+    expect(elements(tree).find(element => element.type === ConversationView)?.props.history.status).toBe("error");
+    expect(card()).toEqual(files);
+  });
+
   it.each(["ready", "error"])("shows history and retries paging while evidence is pending, then evidence becomes %s", async (evidenceStatus) => {
     history = [
       { id: "m-2", sessionId: "A", role: "user", text: "Recent question", createdAt: 20, origin: "claude-desktop" },

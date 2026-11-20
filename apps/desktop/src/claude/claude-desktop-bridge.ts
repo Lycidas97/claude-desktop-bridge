@@ -995,25 +995,26 @@ export class ClaudeDesktopBridge extends EventEmitter {
   private async nativeSentFileReceipts(sessionId: string, messages: unknown[]): Promise<BridgeHistoryPage["sessionFileReceipts"]> {
     const receipts = messages.flatMap(message => nativeSentFileReceipt(message) ?? []);
     if (!receipts.length) return;
-    const cwd = this.executionCwd(sessionId)!;
+    const session = this.native.get(sessionId);
+    const projectCwd = session?.cwd;
+    const cwd = session?.harnessCwd ?? projectCwd;
     const unavailable = (error: NodeJS.ErrnoException) => {
       if (["ENOENT", "ENOTDIR", "EACCES", "EPERM", "ELOOP"].includes(error.code ?? "")) return undefined;
       throw error;
     };
-    const root = await realpath(cwd).catch(unavailable);
-    const projectCwd = this.native.get(sessionId)!.cwd;
-    const projectRoot = projectCwd === cwd ? root : await realpath(projectCwd).catch(unavailable);
+    const root = cwd ? await realpath(cwd).catch(unavailable) : undefined;
+    const projectRoot = projectCwd && projectCwd !== cwd ? await realpath(projectCwd).catch(unavailable) : root;
     const inside = (directory: string, path: string) => {
       const within = relative(directory, path);
       return within && within !== ".." && !within.startsWith(`..${sep}`) && !isAbsolute(within);
     };
     return Object.fromEntries(await Promise.all(receipts.map(async ({ toolUseId, files }) => [toolUseId, await Promise.all(files.map(async ({ path, local }) => {
       const name = basename(path) || path;
-      if (!local) return { name };
+      if (!local || !cwd || !root || !projectRoot) return { name };
       const candidate = resolve(cwd, path);
-      const source = root && (inside(cwd, candidate) || inside(root, candidate)) ? await realpath(candidate).catch(unavailable) : undefined;
+      const source = inside(cwd, candidate) || inside(root, candidate) ? await realpath(candidate).catch(unavailable) : undefined;
       // Do not send a path that the Markdown link transport would reinterpret.
-      const check = source && root && projectRoot && inside(root, source) && source === sessionFileLinkPath(source)
+      const check = source && inside(root, source) && source === sessionFileLinkPath(source)
         ? await workspaceTransferMetadata(projectRoot, source).catch(unavailable) : undefined;
       return { name, ...(source && check && "metadata" in check ? { path: source } : {}) };
     }))] as const)));

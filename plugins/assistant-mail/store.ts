@@ -3,7 +3,7 @@ import { createReadStream } from "node:fs";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { BridgeMailAttachment } from "../../packages/protocol/src/assistant-mail.js";
+import type { BridgeMailAttachment, BridgeMailCategory } from "../../packages/protocol/src/assistant-mail.js";
 import { MailBodyParseError, parseMail } from "./mime.js";
 import { MailPageParameters } from "./tool-contract.js";
 import { AssistantTriggerStore } from "./trigger-store.js";
@@ -29,6 +29,7 @@ export interface MailAnalysis {
   summary: string;
   suggestions: string[];
   questions: string[];
+  category?: BridgeMailCategory | undefined;
 }
 
 interface MailProjection {
@@ -330,7 +331,8 @@ export class AssistantMailStore {
   }
 
   updateAnalysis(mailRefId: string, analysis: MailAnalysis): MailEvent | undefined {
-    const row = this.db().prepare("UPDATE mail_events SET analysis_json = ? WHERE mail_ref_id = ? RETURNING *")
+    // The three text fields are replaced; omitted category survives legacy analysis writes.
+    const row = this.db().prepare("UPDATE mail_events SET analysis_json = json_patch(COALESCE(analysis_json, '{}'), ?) WHERE mail_ref_id = ? RETURNING *")
       .get(JSON.stringify(analysis), mailRefId) as EventRow | undefined;
     return row ? eventFromRow(row) : undefined;
   }

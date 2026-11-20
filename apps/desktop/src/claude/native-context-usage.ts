@@ -1,5 +1,5 @@
 import type { BridgeModelInfo, BridgeSessionContextUsage } from "@bridge/protocol";
-import { scanClaudeContextFromMessages } from "../transcript/claude-history.js";
+import { scanClaudeContextFromMessages } from "../transcript/transcript-context.js";
 import { parseMagpieSyntheticModelId } from "./claude-runtime-discovery.js";
 import { modelOptionHash, savedModelOption } from "./native-model-catalog.js";
 

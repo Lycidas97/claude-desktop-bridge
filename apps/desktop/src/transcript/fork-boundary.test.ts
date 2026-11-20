@@ -2,7 +2,8 @@ import { rm, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
-import { parseClaudeTranscriptSnapshot, readClaudeSessionSubagents } from "./claude-history.js";
+import { parseClaudeTranscriptSnapshot } from "./claude-history.js";
+import { readClaudeSessionSubagents } from "./transcript-subagents.js";
 
 const roots: string[] = [];
 afterEach(async () => {

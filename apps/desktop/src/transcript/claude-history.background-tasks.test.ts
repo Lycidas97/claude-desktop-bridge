@@ -3,12 +3,12 @@ import { appendFile, mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { readClaudeTranscriptBranch } from "./claude-history.js";
 import {
   getClaudeSubagentsMtimeMs,
   readClaudeTranscriptBackgroundTasks,
-  readClaudeTranscriptBranch,
   readClaudeTranscriptSubagents,
-} from "./claude-history.js";
+} from "./transcript-subagents.js";
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();

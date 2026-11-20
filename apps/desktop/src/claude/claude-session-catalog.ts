@@ -11,7 +11,7 @@ import {
   type ClaudeDesktopProfile,
   type ClaudeSessionEffort,
 } from "./claude-desktop-sessions.js";
-import { findClaudeTranscriptFile } from "../transcript/claude-history.js";
+import { findClaudeTranscriptFile } from "../transcript/transcript-dag.js";
 import type { ClaudeRuntimePaths } from "../app/platform.js";
 
 interface ActiveSessionFile {

@@ -2,7 +2,7 @@ import { appendFile, mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { readClaudeTranscriptSubagents } from "./claude-history.js";
+import { readClaudeTranscriptSubagents } from "./transcript-subagents.js";
 
 const roots: string[] = [];
 type Row = Record<string, unknown>;

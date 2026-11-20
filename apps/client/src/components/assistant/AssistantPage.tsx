@@ -370,7 +370,10 @@ function MailAccounts({ accounts, configUnavailable, credentialsSupported, onlin
         <div className="assistant-account-identity">
           <strong>{account.user}</strong>
           <span>{account.host}:{account.port}</span>
-          {supportsSharedAuth && account.smtp && !account.smtpSharedAuth && <span>发信使用独立授权</span>}
+          {supportsSharedAuth && account.smtp && <>
+            <span>SMTP {account.smtp.host}:{account.smtp.port}</span>
+            {!account.smtpSharedAuth && <span>发信使用独立授权</span>}
+          </>}
         </div>
         <span className="assistant-account-state" data-state={failure?.state ?? state}>{status}</span>
         <div className="assistant-actions assistant-account-actions">
@@ -409,11 +412,11 @@ function MailAccounts({ accounts, configUnavailable, credentialsSupported, onlin
             <label>端口<input name="port" type="number" min={1} max={65535} placeholder="993" /></label>
           </div>
         </>}
+        <label>密码<input name="credential" type="password" autoComplete="new-password" required /></label>
         {supportsSharedAuth && <fieldset className="assistant-smtp-fields">
           <legend>{editedAccount?.smtp ? "发信" : "发信（选填）"}</legend>
           <SmtpFields account={editedAccount} shared />
         </fieldset>}
-        <label>密码<input name="credential" type="password" autoComplete="new-password" required /></label>
         <div className="assistant-actions">
           <button type="button" className="secondary-button" onClick={() => { setError(""); setAction(undefined); }}>取消</button>
           {supportsSharedAuth && editedAccount?.smtp && <button type="button" className="secondary-button"

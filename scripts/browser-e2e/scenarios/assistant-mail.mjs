@@ -602,6 +602,7 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   const beforeAccountSave = host.requests.length;
   await accounts.getByRole("button", { name: "添加账号", exact: true }).click();
   await extraAccount.getByText("imap.second.example.test:993", { exact: true }).waitFor();
+  await extraAccount.getByText("SMTP smtp.second.example.test:465", { exact: true }).waitFor();
   await accounts.getByText("已连接（IDLE）", { exact: true }).waitFor();
   await extraAccount.getByText("轮询中", { exact: true }).waitFor();
   const { accountKey, smtp, smtpSharedAuth } = host.snapshot.assistantMail.accounts.find(account => account.user === extraUser);

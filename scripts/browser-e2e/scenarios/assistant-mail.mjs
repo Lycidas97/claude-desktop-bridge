@@ -105,7 +105,15 @@ export async function verifyAssistantMailUnread(page, host, steps, directory, vi
   const firstCard = cardFor(first);
   const original = firstCard.getByText("原文", { exact: true });
   await original.waitFor();
-  assert.doesNotMatch(await firstCard.innerText(), /已记录|未提交|待处理|未自动发给助理|没能发给助理/u);
+  assert.doesNotMatch(await firstCard.innerText(), /已记录|未提交|待处理|未自动发给助理|助理任务失败/u);
+  await firstCard.getByText("状态", { exact: true }).click();
+  await firstCard.getByText("未自动发给助理", { exact: true }).waitFor();
+  await firstCard.getByText("待处理", { exact: true }).waitFor();
+  await back.click();
+  assert.equal(await unreadLabel(), "助理，1 条未读", "Viewing only status preserves the unread badge");
+  assert.equal(host.requests.some(request => request.method === "plugin.assistant-mail.read"), false,
+    "Viewing status does not fetch the original");
+  await badge.click();
   host.mailOffline = true;
   host.socket.close();
   const offline = page.getByText("电脑离线，显示已缓存邮件。", { exact: true });
@@ -132,8 +140,6 @@ export async function verifyAssistantMailUnread(page, host, steps, directory, vi
   await badge.click();
   await original.click();
   await firstCard.locator("details[open] pre").waitFor();
-  await firstCard.getByText("待处理", { exact: true }).waitFor();
-  await firstCard.getByText("未自动发给助理", { exact: true }).waitFor();
   await back.click();
   await eventually(unreadLabel, "助理", "Opening one mail clears its badge without marking it processed");
   await page.screenshot({ path: resolve(directory, "viewed-mail.png") });
@@ -175,10 +181,15 @@ export async function verifyAssistantMailUnread(page, host, steps, directory, vi
   const latestCard = cardFor(latest);
   const processing = latestCard.getByText("处理中", { exact: true }).filter({ visible: true });
   await processing.waitFor();
-  assert.doesNotMatch(await latestCard.innerText(), /已记录|未提交|未自动发给助理|没能发给助理/u);
-  await latestCard.getByText("原文", { exact: true }).click();
+  assert.doesNotMatch(await latestCard.innerText(), /已记录|未提交|未自动发给助理|助理任务失败/u);
+  const desktopStatus = latestCard.getByText("状态", { exact: true });
+  await desktopStatus.click();
   await latestCard.getByText("未自动发给助理", { exact: true }).waitFor();
   await processing.waitFor();
+  assert.equal(await desktopBadge.textContent(), "2", "Desktop status expansion leaves both arrivals unread");
+  await desktopStatus.click();
+  await latestCard.getByText("原文", { exact: true }).click();
+  await latestCard.locator("details[open] pre").waitFor();
   await eventually(() => desktopBadge.textContent(), "1", "Desktop opening the newer mail leaves the older one unread");
   await page.screenshot({ path: resolve(directory, "desktop-mail-unread.png") });
   viewports.push({ page: "desktop-mail-unread", ...page.viewportSize() });
@@ -476,8 +487,11 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await eventually(() => cards().count(), 122, "Reconnect fills more than one new page down to the oldest loaded mail");
   await original.getByText("分析结果", { exact: true }).click();
   const processed = original.getByText("已处理", { exact: true });
+  const originalStatus = original.getByText("状态", { exact: true });
+  await processed.waitFor({ state: "hidden" });
+  await originalStatus.click();
   await processed.waitFor();
-  await original.getByText("原文", { exact: true }).click();
+  await originalStatus.click();
   await processed.waitFor({ state: "hidden" });
   await original.getByText('<img src="https://tracker.invalid/analysis">旧邮件分析已更新', { exact: true }).waitFor();
   await original.getByRole("heading", { name: "建议", exact: true }).waitFor();

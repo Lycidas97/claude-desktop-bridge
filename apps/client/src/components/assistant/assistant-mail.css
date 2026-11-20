@@ -141,7 +141,11 @@
 .assistant-mail-list .assistant-mail-card > :is(h3, .assistant-mail-from) { -webkit-line-clamp: 2; }
 .assistant-mail-hint { margin: 8px 0 0; color: var(--muted); font-size: calc(12px * var(--font-scale)); line-height: 1.5; }
 .assistant-mail-hint[data-tone="failed"] { color: var(--danger-ink); }
-.assistant-mail-card:has(> .assistant-mail-original[open]) > .assistant-mail-hint { display: none; }
+.assistant-mail-card:has(> .assistant-mail-disclosures > .assistant-mail-status[open]) > .assistant-mail-hint { display: none; }
+.assistant-mail-disclosures { display: flex; flex-wrap: wrap; column-gap: 16px; margin-top: 12px; }
+.assistant-mail-card .assistant-mail-disclosures > details { margin-top: 0; }
+.assistant-mail-disclosures > details[open] { flex-basis: 100%; }
+.assistant-mail-disclosures > details > summary { min-width: 44px; }
 .assistant-mail-detail-status { display: flex; flex-wrap: wrap; gap: 4px 20px; margin: 4px 0 8px; font-size: calc(12px * var(--font-scale)); line-height: 1.5; }
 .assistant-mail-detail-status > div { display: flex; gap: 8px; }
 .assistant-mail-detail-status dt { color: var(--muted); flex-shrink: 0; }

@@ -16,10 +16,10 @@ const DELIVERY_STATUS: Record<BridgeMailCard["nativeDelivery"]["state"], { detai
   queued: { detail: "已排队等助理", hint: "waiting" },
   observed: { detail: "助理已收到" },
   uncertain: { detail: "尚未确认助理是否收到" },
-  failed: { detail: "没能发给助理", hint: "failed" },
-  cancelled: { detail: "已撤回自动发送" },
+  failed: { detail: "任务失败", hint: "failed" },
+  cancelled: { detail: "任务已取消" },
 };
-const MAIL_HINT_LABELS = { waiting: "等待助理", processing: "处理中", failed: "没能发给助理" };
+const MAIL_HINT_LABELS = { waiting: "等待助理", processing: "处理中", failed: "助理任务失败" };
 export const MAIL_FOLDER_LABELS: Record<BridgeMailCategory, string> = {
   marketing: "营销与垃圾邮件", verification: "验证码", account: "账号注册", other: "其他",
 };
@@ -76,7 +76,7 @@ export function MailCard({ card, nativeMessage, onDiscuss, showBatchDelivery = t
   </section> : null;
   const links = detail ? [...new Set(detail.bodyText.match(/https?:\/\/[^\s<>"']+/gu) ?? [])].filter(href => URL.canParse(href)).map(href => new URL(href)) : [];
   const delivery = showBatchDelivery || !card.nativeDelivery.batchId ? DELIVERY_STATUS[card.nativeDelivery.state] : undefined;
-  const hint = card.processingStatus === "processing" ? "processing" : delivery?.hint;
+  const hint = delivery?.hint === "failed" ? "failed" : card.processingStatus === "processing" ? "processing" : delivery?.hint;
   return <article className="assistant-mail-card" data-mail-id={card.mailRefId} data-stream-key={`mail:${card.mailRefId}`} aria-label={`邮件：${card.subject || "无主题"}`}>
     <header><span><Mail size={15} aria-hidden="true" />{accountLabel}</span><time dateTime={card.receivedAt}>{new Date(card.receivedAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</time></header>
     {filing?.showFolder && card.folder && <p className="assistant-mail-folder-label">{MAIL_FOLDER_LABELS[card.folder]}</p>}
@@ -93,26 +93,30 @@ export function MailCard({ card, nativeMessage, onDiscuss, showBatchDelivery = t
       {card.analysis.questions?.length ? <><h4>问题</h4><ul>{card.analysis.questions.map((question, index) => <li key={index}>{question}</li>)}</ul></> : null}
     </details>}
     {attachmentList}
-    <details className="assistant-mail-original" onToggle={event => {
-      const disclosure = event.currentTarget;
-      if (!disclosure.open || loading || !mail?.online) return;
-      if (detail) { mail.markViewed(card); return; }
-      setLoading(true); setError("");
-      void mail.read(card.mailRefId).then(result => {
-        setDetail(result);
-        if (disclosure.open && disclosure.isConnected) mail.markViewed(card);
-      })
-        .catch(reason => setError(reason instanceof Error ? reason.message : "原文读取失败"))
-        .finally(() => setLoading(false));
-    }}><summary>原文</summary>
-      <dl className="assistant-mail-detail-status">
-        <div><dt>助理处理</dt><dd>{PROCESSING_LABELS[card.processingStatus]}</dd></div>
-        {delivery && <div><dt>自动发送</dt><dd>{delivery.detail}</dd></div>}
-      </dl>
-      {detail ? <><pre>{detail.bodyText}</pre>{detail.truncated && <p>原文过长，已截取前 256,000 个字符。</p>}
-        {links.length > 0 && <ul className="assistant-mail-links" aria-label="邮件中的外部链接">{links.map((url, index) => <li key={index}><a href={url.href} target="_blank" rel="noopener noreferrer"><span>{url.host}</span><span className="assistant-mail-link-path">{url.pathname}{url.search}{url.hash}</span></a></li>)}</ul>}
-      </> : <p role={error ? "alert" : "status"}>{error || (loading ? "正在读取原文…" : mail?.online ? "展开以读取原文" : "连接电脑后可查看原文")}</p>}
-    </details>
+    <div className="assistant-mail-disclosures">
+      <details className="assistant-mail-status"><summary>状态</summary>
+        <dl className="assistant-mail-detail-status">
+          <div><dt>助理处理</dt><dd>{PROCESSING_LABELS[card.processingStatus]}</dd></div>
+          {delivery && <div><dt>自动发送</dt><dd>{delivery.detail}</dd></div>}
+        </dl>
+      </details>
+      <details onToggle={event => {
+        const disclosure = event.currentTarget;
+        if (!disclosure.open || loading || !mail?.online) return;
+        if (detail) { mail.markViewed(card); return; }
+        setLoading(true); setError("");
+        void mail.read(card.mailRefId).then(result => {
+          setDetail(result);
+          if (disclosure.open && disclosure.isConnected) mail.markViewed(card);
+        })
+          .catch(reason => setError(reason instanceof Error ? reason.message : "原文读取失败"))
+          .finally(() => setLoading(false));
+      }}><summary>原文</summary>
+        {detail ? <><pre>{detail.bodyText}</pre>{detail.truncated && <p>原文过长，已截取前 256,000 个字符。</p>}
+          {links.length > 0 && <ul className="assistant-mail-links" aria-label="邮件中的外部链接">{links.map((url, index) => <li key={index}><a href={url.href} target="_blank" rel="noopener noreferrer"><span>{url.host}</span><span className="assistant-mail-link-path">{url.pathname}{url.search}{url.hash}</span></a></li>)}</ul>}
+        </> : <p role={error ? "alert" : "status"}>{error || (loading ? "正在读取原文…" : mail?.online ? "展开以读取原文" : "连接电脑后可查看原文")}</p>}
+      </details>
+    </div>
     {nativeMessage && <details className="assistant-mail-native"><summary>关联原生消息</summary><code>{nativeMessage.id}</code><pre>{nativeMessage.text}</pre></details>}
     {mail && <div className="assistant-actions">
       <button type="button" className="assistant-session-link" disabled={!mail.canReference} onClick={() => { mail.selectMail(card); onDiscuss?.(); }}>讨论此邮件</button>

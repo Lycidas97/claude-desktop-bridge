@@ -17,6 +17,7 @@ interface WorkspaceOptions {
   execPath: string;
   platform?: NodeJS.Platform;
   policy?: AssistantWorkspacePolicy;
+  isApprovedProfile?: (hash: string) => boolean;
 }
 
 const deny = [
@@ -60,6 +61,9 @@ memory/threads/ 与 memory/notes/ 只存按需读取的低信任资料，不是�
 ${ruleProposalInstructions}
 本档位不使用 assistant-helper。委派邮件整理给 mail-triager、日程规划给 schedule-planner、资料整理给 memory-curator。只在前台委派。
 `;
+
+const managedProfileBlock = new RegExp([profileRules, memoryRules, profileMarker]
+  .map(block => block.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&").replaceAll("\n", "\\r?\\n")).join("|"), "gu");
 
 class WorkspaceLayoutError extends Error {}
 
@@ -140,17 +144,17 @@ export class WorkspaceProvisioner {
     this.physicalPath = this.path;
     this.platform = options.platform ?? process.platform;
     this.policy = options.policy ?? ASSISTANT_WORKSPACE_POLICY;
-    this.memory = new AssistantMemory(this.path);
+    this.memory = new AssistantMemory(this.path, options.isApprovedProfile);
   }
 
   matches(cwd: string): boolean {
     return isAbsolute(cwd) && (relative(this.path, cwd) === "" || relative(this.physicalPath, cwd) === "");
   }
 
-  ruleProposalSession(binding: AssistantBinding | undefined): string | undefined {
-    if (!this.profileReady || this.repairFailed || !binding?.managed ||
+  ruleProposalPolicy(binding: AssistantBinding | undefined, sessionId: string): AssistantWorkspacePolicy | undefined {
+    if (!this.profileReady || this.repairFailed || binding?.nativeSessionId !== sessionId || !binding.managed ||
       !isAssistantWorkspacePolicy(binding.managed.policy) || !this.matches(binding.managed.path)) return undefined;
-    return binding.nativeSessionId ?? undefined;
+    return binding.managed.policy;
   }
 
   async restore(sessionToken: string, savedPath: string, policy: string = ASSISTANT_WORKSPACE_POLICY): Promise<string> {
@@ -245,29 +249,30 @@ export class WorkspaceProvisioner {
       }
     }
     const original = await readFile(claude, "utf8");
-    let next = original;
+    const previousBlock = original.matchAll(managedProfileBlock).next().value;
     let profileReady = memory;
-    if (memory) {
-      next = original.replace(profileRules, "").replace(profileMarker, "");
-      if (!next.includes(memoryRules)) next += memoryRules;
-    } else {
-      next = original.replace(memoryRules, profileMarker).replace(profileRules, profileMarker);
+    if (!memory) {
       const profilePath = join(workspace, "PROFILE.md");
-      const existing = await lstat(profilePath).catch(error => {
-        if (!isMissingPath(error)) throw error;
-      });
-      if (!existing && !next.includes(profileMarker) && !original.includes(memoryRules)) {
-        await writeFile(profilePath, ASSISTANT_PROFILE_TEMPLATE, { mode: 0o600, flag: "wx" });
-        profileReady = true;
-      } else if (existing?.isFile() && existing.nlink === 1) {
-        profileReady = (await readFile(profilePath, "utf8")).replaceAll("\r\n", "\n").startsWith(ASSISTANT_PROFILE_TEMPLATE);
-      }
-      // Keep the marker but not the import if an already provisioned profile was lost or replaced.
-      // Seeding an empty template here would also hide the missing file during proposal recovery.
-      if (profileReady) {
-        next = next.includes(profileMarker) ? next.replace(profileMarker, profileRules) : next + profileRules;
+      try {
+        const existing = await lstat(profilePath).catch(error => {
+          if (!isMissingPath(error)) throw error;
+        });
+        if (!existing && !previousBlock) {
+          await writeFile(profilePath, ASSISTANT_PROFILE_TEMPLATE, { mode: 0o600, flag: "wx" });
+          profileReady = true;
+        } else if (existing?.isFile() && existing.nlink === 1) {
+          profileReady = this.memory.ownsProfile(await readFile(profilePath));
+        }
+      } catch (error) {
+        // A profile is optional in Stage 1; unreadable rules must not disable the managed mail token.
+        if (!(error instanceof Error && "code" in error && (error.code === "EACCES" || error.code === "EPERM"))) throw error;
       }
     }
+    // Keep only the marker for an unavailable profile so a missing file stays visible to recovery.
+    let block = memory ? memoryRules : profileReady ? profileRules : previousBlock ? profileMarker : "";
+    if (original.includes("\r\n")) block = block.replaceAll("\n", "\r\n");
+    const next = previousBlock ? original.slice(0, previousBlock.index) + block +
+      original.slice(previousBlock.index).replace(managedProfileBlock, "") : original + block;
     if (next !== original) await writeWorkspaceFile(claude, next, true, posix);
     await writeWorkspaceFile(join(workspace, ".claude", "settings.json"), `${JSON.stringify(settings, null, 2)}\n`, true, posix);
     await writeWorkspaceFile(join(workspace, ".mcp.json"), `${JSON.stringify(mcp, null, 2)}\n`, true, posix);

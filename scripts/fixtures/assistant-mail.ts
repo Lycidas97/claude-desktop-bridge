@@ -67,6 +67,7 @@ export async function startAssistantMailFixture(directory: string, historyCount 
   await idle;
   return {
     service, agenda, proposals, smtp,
+    isApprovedProfile: (hash: string) => proposalStore.isApprovedProfile(hash),
     seedCalendar(...resources: string[]) {
       const url = "https://caldav.example.test/fixtures/";
       const source = store.addSource({ url, user: "fixture", label: "外部日历" }, Buffer.from("sealed"));

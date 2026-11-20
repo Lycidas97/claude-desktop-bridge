@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { ARTIFACT_MAX_BYTES, ASSISTANT_MEMORY_POLICY, ASSISTANT_MEMORY_PROPOSAL_CAPABILITY, ASSISTANT_SMTP_CAPABILITY, isAssistantWorkspacePolicy, isMailPollInterval, mailAttachmentPreviewKind } from "@bridge/protocol";
+import { ARTIFACT_MAX_BYTES, ASSISTANT_MEMORY_POLICY, ASSISTANT_SMTP_CAPABILITY, isAssistantWorkspacePolicy, isMailPollInterval, mailAttachmentPreviewKind } from "@bridge/protocol";
 import { AgendaEditError } from "../../../../plugins/assistant-mail/agenda-store.js";
 import { configureSmtp } from "../../../../plugins/assistant-mail/proposal-contract.js";
 import type {
@@ -141,7 +141,6 @@ export class AssistantMailCoordinator {
   capabilities() {
     return [
       ...ASSISTANT_MAIL_CAPABILITIES,
-      ...(this.workspace?.ruleProposalSession(this.mail.binding()) ? [ASSISTANT_MEMORY_PROPOSAL_CAPABILITY] as const : []),
       ...(this.workspace && this.host.broker?.canProvisionAssistantWorkspace() ? ["plugin.assistant-mail.workspace.v1"] as const : []),
       ...(this.dispatcher ? ["plugin.assistant-mail.triggers.v1", "plugin.assistant-mail.batches.v1"] as const : []),
     ];

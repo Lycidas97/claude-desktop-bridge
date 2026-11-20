@@ -7,6 +7,7 @@ import { ASSISTANT_MEMORY_ROOTS } from "./fs-guard.js";
 
 const sha256 = (data: string | Buffer) => createHash("sha256").update(data).digest("hex");
 export const ASSISTANT_PROFILE_TEMPLATE = "# 用户确认的助理规则\n\n仅在 Bridge 中确认提案后更新规则。\n";
+export const ASSISTANT_PROFILE_TEMPLATE_HASH = sha256(ASSISTANT_PROFILE_TEMPLATE);
 export interface ProfileIntent {
   backend: "profile";
   baseProfileSha256: string;
@@ -25,17 +26,27 @@ function regularFile(path: string, allowMissing = false): void {
 export class AssistantMemory {
   private readonly profilePath: string;
 
-  constructor(private readonly workspace: string) {
+  constructor(private readonly workspace: string, private readonly isApprovedProfile?: (hash: string) => boolean) {
     this.profilePath = join(workspace, "PROFILE.md");
   }
+
+  private ownsProfileHash(hash: string): boolean {
+    return hash === ASSISTANT_PROFILE_TEMPLATE_HASH || this.isApprovedProfile?.(hash) === true;
+  }
+
+  ownsProfile(bytes: Buffer): boolean { return this.ownsProfileHash(sha256(bytes)); }
 
   private profile(): Buffer {
     regularFile(this.profilePath);
     return readFileSync(this.profilePath);
   }
 
-  freeze(action: MemoryRuleProposalAction) {
+  freeze(action: MemoryRuleProposalAction, requireOwnedProfile: boolean) {
     const profile = this.profile();
+    const baseProfileSha256 = sha256(profile);
+    if (requireOwnedProfile && !this.ownsProfileHash(baseProfileSha256)) {
+      throw new AgendaEditError("CONFLICT", "PROFILE.md 不匹配已确认的规则版本。");
+    }
     const source = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(profile);
     const heading = `<!-- bridge-rule ${action.category}/${action.ruleId} -->`;
     const end = "<!-- /bridge-rule -->";
@@ -55,16 +66,15 @@ export class AssistantMemory {
     if (start < 0) lines.push(...block, "");
     else lines.splice(start, stop - start + 1, ...block);
     const resultText = lines.join(lineEnding);
-    const baseProfileSha256 = sha256(profile);
     return {
       profile: { before, baseProfileSha256 },
       intent: { backend: "profile", baseProfileSha256, resultProfileSha256: sha256(resultText), resultText } satisfies ProfileIntent,
     };
   }
 
-  apply(intent: ProfileIntent): "applied" | "conflict" | "failed" {
+  apply(intent: ProfileIntent, requireOwnedProfile: boolean): "applied" | "conflict" | "failed" {
     try {
-      if (this.profileSha256() !== intent.baseProfileSha256) return "conflict";
+      if (this.profileSha256() !== intent.baseProfileSha256 || (requireOwnedProfile && !this.ownsProfileHash(intent.baseProfileSha256))) return "conflict";
       const temporary = join(this.workspace, `.bridge-profile-${randomUUID()}.tmp`);
       const fd = openSync(temporary, "wx", 0o600);
       try {

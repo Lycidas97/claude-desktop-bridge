@@ -21,6 +21,7 @@ import { AssistantMailCoordinator } from "../../apps/desktop/src/controller/assi
 import { WorkspaceProvisioner } from "../../apps/desktop/src/controller/assistant-workspace.js";
 import { serveAssistantMailTools } from "../../plugins/assistant-mail/local-channel.js";
 import type { ProposalDraftAction } from "../../packages/protocol/src/assistant-proposal.js";
+import type { AssistantWorkspacePolicy } from "../../packages/protocol/src/assistant-mail.js";
 
 interface NativeApprovalResult {
   requestId: string;
@@ -374,7 +375,8 @@ export async function startNativeApprovalHost(options: {
   const eventLog = new SessionEventLog(join(options.directory, "native-events.jsonl"));
   await eventLog.initialize();
   const mailRoot = options.assistantMail ? await realpath(await mkdtemp(join(tmpdir(), "bridge-assistant-mail-"))) : undefined;
-  const workspace = mailRoot ? new WorkspaceProvisioner({ userDataPath: mailRoot, appPath: mailRoot, execPath: process.execPath }) : undefined;
+  const workspace = mailRoot ? new WorkspaceProvisioner({ userDataPath: mailRoot, appPath: mailRoot, execPath: process.execPath,
+    isApprovedProfile: (hash: string): boolean => assistantMail?.isApprovedProfile(hash) === true }) : undefined;
   const broker = new ClaudeDesktopBridge({ eventLog, conversationState: state, inspector, settingsPath,
     ...(workspace ? { assistantWorkspacePath: workspace.path } : {}),
     home: commandHome, environment: { ANTHROPIC_BASE_URL: "https://fixture.invalid", ANTHROPIC_AUTH_TOKEN: "synthetic" },
@@ -398,8 +400,7 @@ export async function startNativeApprovalHost(options: {
   const assistantMail = mailRoot ? await startAssistantMailFixture(mailRoot, options.initialMailHistory,
     options.onProposalsChanged ? {
       memory: workspace!.memory,
-      allowed: (sessionId: string): boolean => workspace!.ruleProposalSession(assistantMail?.service.binding()) === sessionId,
-      listFromTool: () => false,
+      policy: (sessionId: string): AssistantWorkspacePolicy | undefined => workspace!.ruleProposalPolicy(assistantMail?.service.binding(), sessionId),
     } : undefined) : undefined;
   assistantMail?.agenda.on("changed", snapshot => options.onAgendaChanged?.(snapshot));
   const proposals = options.onProposalsChanged ? assistantMail!.proposals : undefined;

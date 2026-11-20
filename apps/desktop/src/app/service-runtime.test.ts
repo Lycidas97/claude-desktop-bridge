@@ -358,7 +358,7 @@ it("drafts rules for a restored Stage 1 binding and writes them only after confi
     expect(authorizeManagedToken("saved-token")).toBe(binding.nativeSessionId);
     expect(authorizeManagedToken("old-token")).toBeUndefined();
     const ref = await proposals.create(binding.nativeSessionId, action);
-    expect(proposals.page({ limit: 10, includeMemory: true }, binding.nativeSessionId).proposals).toEqual([]);
+    expect(proposals.page({ limit: 10 }, binding.nativeSessionId).proposals).toEqual([]);
     await expect(proposals.create("local-other", action)).rejects.toMatchObject({ code: "UNSUPPORTED" });
     resources.assistantMail.binding.mockReturnValue({ nativeSessionId: binding.nativeSessionId });
     await expect(proposals.create(binding.nativeSessionId, action)).rejects.toMatchObject({ code: "UNSUPPORTED" });
@@ -370,9 +370,15 @@ it("drafts rules for a restored Stage 1 binding and writes them only after confi
     expect(await readFile(profile, "utf8")).toBe(before);
     await expect(proposals.commit({ ...ref, confirmMemory: true }, "paired-phone")).resolves.toMatchObject({ state: "applied" });
     expect(await readFile(profile, "utf8")).toContain(action.text);
+    const restoredWorkspace = resources.controllerOptions.mock.calls[0]![14] as WorkspaceProvisioner;
+    await restoredWorkspace.restore(binding.managed.token, workspace, binding.managed.policy);
     expect(await readFile(join(workspace, "CLAUDE.md"), "utf8")).toMatch(/^# Existing workspace rules\n[\s\S]*@PROFILE\.md/mu);
     expect(lookupMemory(binding.nativeSessionId, "a".repeat(64))).toBeUndefined();
     await expect(stat(join(workspace, "memory"))).rejects.toMatchObject({ code: "ENOENT" });
+    const replacement = "# External user file\n";
+    await writeFile(profile, replacement);
+    await expect(proposals.create(binding.nativeSessionId, { ...action, ruleId: "other" })).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(await readFile(profile, "utf8")).toBe(replacement);
   } finally { await runtime.close(); }
 });
 

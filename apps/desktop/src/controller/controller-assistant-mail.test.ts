@@ -2,12 +2,15 @@ import { EventEmitter } from "node:events";
 import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
-  ARTIFACT_MAX_BYTES, ASSISTANT_MEMORY_POLICY, BridgeCrypto, PROTOCOL_VERSION,
+  ARTIFACT_MAX_BYTES, ASSISTANT_MEMORY_POLICY, ASSISTANT_MEMORY_PROPOSAL_CAPABILITY, BridgeCrypto, PROTOCOL_VERSION,
   type BridgeArtifactTransferInfo, type BridgeTransport, type BridgeEvent, type EncryptedEnvelope,
-  type BridgeMailDetail, type BridgeMailPage, type BridgeRequest, type BridgeSessionInfo, type DesktopControlSnapshot,
+  type BridgeMailDetail, type BridgeMailPage, type BridgeProposalPage, type BridgeRequest, type BridgeSessionInfo, type DesktopControlSnapshot,
 } from "@bridge/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AgendaStore } from "../../../../plugins/assistant-mail/agenda-store.js";
 import { AssistantMailService } from "../../../../plugins/assistant-mail/desktop.js";
+import { ProposalExecutor } from "../../../../plugins/assistant-mail/proposal-executor.js";
+import { ProposalStore } from "../../../../plugins/assistant-mail/proposal-store.js";
 import { AssistantMailStore } from "../../../../plugins/assistant-mail/store.js";
 import { EvidenceManager } from "../evidence/evidence-manager.js";
 import { EvidenceStore } from "../evidence/evidence-store.js";
@@ -42,13 +45,18 @@ function nativeSession(sessionId: string, extra: Partial<BridgeSessionInfo> = {}
   };
 }
 
-async function fixture() {
+async function fixture(proposalStore: ProposalStore, agenda: AgendaStore) {
   const sessions = [nativeSession("native-first"), nativeSession("native-second", { projectId: "directory-project" })];
   const projects: DesktopControlSnapshot["projects"] = [
     { projectId: "assistant-section", name: "Assistant", kind: "desktop-group", cwd: "", runtimeId: "claude-desktop", sessionCount: 1, runningCount: 0, pendingCount: 0, lastActivityAt: 1 },
     { projectId: "directory-project", name: "Directory", cwd: "/synthetic/assistant", runtimeId: "claude-desktop", sessionCount: 1, runningCount: 0, pendingCount: 0, lastActivityAt: 1 },
   ];
-  const workspace = new WorkspaceProvisioner({ userDataPath: await realpath(root), appPath: "/fixture/app", execPath: "/fixture/Bridge" });
+  const workspace = new WorkspaceProvisioner({ userDataPath: await realpath(root), appPath: "/fixture/app", execPath: "/fixture/Bridge",
+    isApprovedProfile: hash => proposalStore.isApprovedProfile(hash) });
+  const proposals = new ProposalExecutor(proposalStore, agenda, {
+    available: () => false, encrypt: () => { throw new Error("Fixture has no calendar credentials"); },
+    decrypt: () => { throw new Error("Fixture has no calendar credentials"); },
+  }, () => {}, undefined, undefined, undefined, { memory: workspace.memory, policy: sessionId => workspace.ruleProposalPolicy(service.binding(), sessionId) });
   const broker = Object.assign(new EventEmitter(), {
     initialize: vi.fn(async () => undefined), listSessions: () => [...sessions], listProjects: () => projects,
     capabilities: vi.fn((): string[] => ["turn.start"]),
@@ -95,7 +103,7 @@ async function fixture() {
     "http://127.0.0.1:18789", relayUrl,
     broker as unknown as ControllerArguments[4], eventLog as unknown as ControllerArguments[5],
     evidence, { status: async () => ({ state: "stopped" }) } as unknown as ControllerArguments[7],
-    undefined, undefined, receiptStore, undefined, undefined, service, workspace,
+    undefined, undefined, receiptStore, undefined, undefined, service, workspace, undefined, proposals,
   );
   // Keep initialization subscriptions and snapshot/RPC/publication logic real; stop at external I/O and scheduling.
   const boundaries = {
@@ -106,7 +114,7 @@ async function fixture() {
   await controller.initialize();
   const internals = controller as unknown as ControllerInternals;
   return {
-    controller, broker, eventLog, sessions, projects, workspace, evidenceStore, receiptStore, internals, broadcast: boundaries.broadcast, queuePublish: boundaries.queuePublish,
+    controller, broker, eventLog, sessions, projects, workspace, proposals, evidenceStore, receiptStore, internals, broadcast: boundaries.broadcast, queuePublish: boundaries.queuePublish,
     publish: () => internals.publish(),
     request: <T = unknown>(method: BridgeRequest["method"], params: Record<string, unknown> = {}, deviceId = "synthetic-phone", idempotencyKey = "mail-key") => internals.handleRequest(
       { kind: "request", requestId: "mail-request", idempotencyKey, method, params }, "mobile", deviceId,
@@ -124,8 +132,10 @@ beforeEach(async () => {
     credentials: { supported: true, get: vi.fn(async () => { throw new Error("Unexpected credential read"); }), set: vi.fn(async () => {}), delete: vi.fn() },
     createClient: vi.fn(() => { throw new Error("Unexpected IMAP connection"); }),
   });
-  await service.initialize();
-  run = await fixture();
+  let agenda!: AgendaStore;
+  let proposalStore!: ProposalStore;
+  await service.initialize(database => { agenda = new AgendaStore(database); proposalStore = new ProposalStore(database); });
+  run = await fixture(proposalStore, agenda);
 });
 
 afterEach(async () => {
@@ -377,6 +387,19 @@ describe("assistant native session binding", () => {
     expect((await run.controller.snapshot()).assistantMail).toMatchObject({ bindingState: "needs-rebind", automaticDelivery: false });
     await run.request("plugin.assistant-mail.bind", { sessionId: "native-second" });
     expect(store.binding()).toEqual({ ...binding, nativeSessionId: "native-second", sectionId: null, previousSessionIds: ["native-first"] });
+  });
+
+  it("keeps advertising rule proposal browsing when the managed session is archived", async () => {
+    await run.request("plugin.assistant-mail.workspace.initialize", { workspacePath: run.workspace.path });
+    const sessionId = service.binding()!.nativeSessionId!;
+    const ref = await run.proposals.create(sessionId, { kind: "memory.rule_upsert", category: "format", ruleId: "brief", operation: "add", text: "Keep it short.", reason: "User preference" });
+    expect((await run.controller.snapshot()).host.capabilities).toContain(ASSISTANT_MEMORY_PROPOSAL_CAPABILITY);
+    await run.request("session.archive", { sessionId });
+    expect(service.binding()?.nativeSessionId).toBeNull();
+    expect((await run.controller.snapshot()).host.capabilities).toContain(ASSISTANT_MEMORY_PROPOSAL_CAPABILITY);
+    const pending = await run.request<BridgeProposalPage>("assistant.proposal.list", { includeMemory: true });
+    expect(pending.proposals).toEqual([expect.objectContaining(ref)]);
+    await expect(run.request("assistant.proposal.dismiss", { ...ref, includeMemory: true })).resolves.toMatchObject({ proposal: { state: "dismissed" } });
   });
 
   it.each(["session.archive", "session.delete"] as const)("preserves the binding when %s fails in the native broker", async method => {

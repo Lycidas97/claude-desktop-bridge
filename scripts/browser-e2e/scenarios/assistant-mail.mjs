@@ -211,7 +211,8 @@ export async function verifyAssistantMailHistory(page, host, steps, directory, v
 }
 
 export async function verifyAssistantMail(page, host, steps, directory, viewports, baseUrl) {
-  const cards = () => page.locator('.assistant-mail-list > [data-mail-id]');
+  const cards = () => page.locator('.assistant-mail-list [data-mail-id]');
+  const group = (label) => page.locator(".assistant-mail-group > summary").filter({ hasText: label });
   async function openAssistant() {
     await openMobileDrawer(page);
     await page.locator(".mobile-home-catalog").getByRole("button", { name: /^助理(?:，\d+\+? 条未读)?$/u }).click();
@@ -764,6 +765,38 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await proactive.and(page.locator(":not(:checked)")).waitFor();
   await page.locator(".assistant-view-tabs").getByRole("button", { name: "对话", exact: true }).click();
   steps.push("managed opt-in batches two new emails into one native send and shows both independent processing statuses");
+
+  const service = host.nativeApproval.assistantMail.service;
+  const [newest] = service.page({ limit: 1 }).events;
+  const [accountMail, secondPromotion] = service.page({ cursor: String(otherMail.seq), limit: 2 }).events;
+  await page.getByRole("button", { name: "收件", exact: true }).click();
+  const marketing = inbox.locator(`[data-mail-id="${batchMailIds[0]}"]`);
+  await marketing.waitFor();
+  const analysis = { summary: "已分析", suggestions: [], questions: [] };
+  for (const [mailRefId, category] of [[batchMailIds[0], "marketing"], [batchMailIds[1], "verification"],
+    [accountMail.mailRefId, "account"], [secondPromotion.mailRefId, "marketing"]]) {
+    service.updateAnalysis(mailRefId, { ...analysis, category });
+  }
+  await group("营销与垃圾邮件").getByText("2 封", { exact: true }).waitFor();
+  await group("验证码").getByText("1 封", { exact: true }).waitFor();
+  await group("账号注册").getByText("1 封", { exact: true }).waitFor();
+  assert.equal(await inbox.locator(".assistant-mail-group[open]").count(), 0);
+  assert.equal(await marketing.isVisible(), false);
+  await inbox.locator(`[data-mail-id="${newest.mailRefId}"]`).waitFor();
+  await group("营销与垃圾邮件").scrollIntoViewIfNeeded();
+  await page.screenshot({ path: resolve(directory, "mobile-mail-groups.png") });
+  await group("营销与垃圾邮件").press("Enter");
+  await marketing.waitFor();
+  assert.deepEqual(await inbox.locator(".assistant-mail-group[open] [data-mail-id]").evaluateAll(items => items.map(item => item.dataset.mailId)),
+    [batchMailIds[0], secondPromotion.mailRefId], "Active and older mail share one category, newest first");
+  service.updateAnalysis(batchMailIds[1], { ...analysis, category: "other" });
+  await group("验证码").waitFor({ state: "detached" });
+  await inbox.locator(`:scope > [data-mail-id="${batchMailIds[1]}"]`).waitFor();
+  assert.equal(await marketing.isVisible(), true, "A live category update leaves a different expanded group open");
+  await marketing.getByRole("button", { name: "讨论此邮件", exact: true }).click();
+  await reference.waitFor();
+  await reference.getByRole("button", { name: "清除邮件引用" }).click();
+  steps.push("Analysis changes group mail live, groups begin folded, keyboard expansion preserves order and discussion, and other mail returns to the main list");
   const managedMail = host.snapshot.assistantMail;
   const unexpectedTools = [
     "mcp__terminal__run_in_terminal", "mcp__Claude_Browser__preview_start", "mcp__scheduled-tasks__list_scheduled_tasks",
@@ -1017,7 +1050,7 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await eventually(() => cards().count(), 50, "Desktop uses the same mail page and RPC");
   const expandBtnBounds = await page.getByRole("button", { name: "展开侧栏", exact: true }).boundingBox();
   const collapsedHeadingBounds = await page.locator(".assistant-page .desktop-page-heading h1").boundingBox();
-  const collapsedMailBounds = await cards().first().boundingBox();
+  const collapsedMailBounds = await cards().filter({ visible: true }).first().boundingBox();
   assert.ok(expandBtnBounds && collapsedHeadingBounds && collapsedMailBounds, "Collapsed macOS AssistantPage elements have bounding boxes");
   assert.ok(expandBtnBounds.x >= 84, `展开侧栏 clears macOS traffic lights (x=${expandBtnBounds.x})`);
   assert.ok(collapsedHeadingBounds.x >= expandBtnBounds.x + expandBtnBounds.width + 8, `助理 heading clears 展开侧栏 at 860px minWidth (heading.x=${collapsedHeadingBounds.x}, btnRight=${expandBtnBounds.x + expandBtnBounds.width})`);
@@ -1028,7 +1061,13 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await page.evaluate(() => { delete document.documentElement.dataset.macDesktop; });
 
   const headingBounds = await page.locator(".assistant-page .desktop-page-heading h1").boundingBox();
-  const mailBounds = await cards().first().boundingBox();
+  const mailBounds = await cards().filter({ visible: true }).first().boundingBox();
+  await group("营销与垃圾邮件").getByText("2 封", { exact: true }).waitFor();
+  assert.equal(await marketing.isVisible(), false, "Desktop also folds classified mail by default");
+  await group("营销与垃圾邮件").click();
+  await marketing.waitFor();
+  await page.screenshot({ path: resolve(directory, "desktop-mail-group-open.png") });
+  await group("营销与垃圾邮件").click();
   assert.ok(Math.abs(headingBounds.x - mailBounds.x) < 1, "Desktop title aligns with the mail content column");
   await verifyAttachments(page.locator(`.assistant-mail-list [data-mail-id="${desktopAttachmentMail.mailRefId}"]`), "desktop-mail-attachment");
   await capture("desktop-mail");

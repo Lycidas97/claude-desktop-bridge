@@ -2,6 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { ARTIFACT_MAX_BYTES, ASSISTANT_MAIL_SHARED_AUTH_CAPABILITY, ASSISTANT_MEMORY_POLICY, ASSISTANT_SMTP_CAPABILITY, isAssistantWorkspacePolicy, isMailPollInterval, mailAttachmentPreviewKind } from "@bridge/protocol";
 import { AgendaEditError } from "../../../../plugins/assistant-mail/agenda-store.js";
 import { configureSmtp, saveMailAccount } from "../../../../plugins/assistant-mail/proposal-contract.js";
+import { MAIL_TRIAGE_INSTRUCTION } from "../../../../plugins/assistant-mail/tool-contract.js";
 import type {
   BridgeAssistantMailSnapshot,
   BridgeEvent,
@@ -176,6 +177,7 @@ export class AssistantMailCoordinator {
       "绑定：当前托管会话。未结事件（批次、类型、引用）：",
       ...refs.map(({ batchId, kind, eventId }) => `${batchId} ${kind} ${eventId}`),
       ...(nextCursor === undefined ? [] : [`还有更早的未结事件。调用 mail.list_unfinished_triggers({"cursor":${nextCursor}}) 继续读取。`]),
+      ...(event === "SessionStart" && (nextCursor !== undefined || refs.some(ref => ref.kind === "mail.received")) ? [MAIL_TRIAGE_INSTRUCTION] : []),
       ...(memory?.compactContext() ?? []),
     ].join("\n");
   }

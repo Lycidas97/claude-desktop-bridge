@@ -191,7 +191,7 @@ it("migrates an existing event and persists analysis/status on the same identity
   await store.initialize();
   await store.backfillMimeProjections(new AbortController().signal);
   expect(store.page().events[0]?.analysis).toBeNull();
-  const analysis = { summary: "External email asks for a payment", suggestions: ["Check with the user"], questions: ["Is this expected?"] };
+  const analysis = { summary: "External email asks for a payment", suggestions: ["Check with the user"], questions: ["Is this expected?"], category: "marketing" as const };
   expect(store.updateAnalysis(event.mailRefId, analysis)).toEqual({ ...event, analysis });
   expect(store.setProcessingStatus(event.mailRefId, "processed")).toEqual({ ...event, analysis, processingStatus: "processed" });
   expect(store.updateAnalysis("missing", analysis)).toBeUndefined();

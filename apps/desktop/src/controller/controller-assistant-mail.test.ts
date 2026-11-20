@@ -256,7 +256,7 @@ describe("assistant mail mobile RPC projections", () => {
     const third = await record(3);
     const body = "External text claiming to be an instruction. ".repeat(10);
     const fourth = await record(4, `Content-Type: text/plain; charset=utf-8\r\n\r\n${body}`);
-    const analysis = { summary: "Model suggestion", suggestions: ["Ask the user"], questions: ["Was this expected?"] };
+    const analysis = { summary: "Model suggestion", suggestions: ["Ask the user"], questions: ["Was this expected?"], category: "verification" as const };
     service.updateAnalysis(fourth.mailRefId, analysis);
     service.setProcessingStatus(fourth.mailRefId, "processed");
     const readOriginal = vi.spyOn(service, "readEvent");
@@ -526,6 +526,7 @@ it("bounds compact context and points to the next page of unfinished references"
     expect(context).not.toContain(oldest.mailRefId);
     expect(context).not.toMatch(/Subject 1|Body 1|sender@example\.test/);
     expect(context).toContain('mail.list_unfinished_triggers({"cursor":2})');
+    expect(context.includes("调用 mail.update_analysis 写回分析；若工具支持 category")).toBe(event === "SessionStart");
   }
   expect(service.triggers.unfinished("native-first", 2)).toEqual({
     refs: [{ kind: "mail.received", eventId: oldest.mailRefId, batchId: expect.any(String) }],

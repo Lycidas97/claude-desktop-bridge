@@ -28,7 +28,7 @@ import {
   groupProjectSessionFamilies,
 } from "../../lib/project-groups.js";
 import { desktopRuntimeId } from "../../lib/runtime-labels.js";
-import { useAssistantMail } from "../assistant/AssistantMailProvider.js";
+import { useAssistantEntry } from "../assistant/AssistantProposalProvider.js";
 import { EmptyState } from "../common/EmptyState.js";
 import { IconButton } from "../common/IconButton.js";
 import { ThemeMenu } from "../common/ThemeMenu.js";
@@ -76,12 +76,12 @@ export function DesktopAssistantNavButton({
   active: boolean;
   onSelect(): void;
 }) {
-  const assistantMail = useAssistantMail();
-  const unreadCount = assistantMail?.unreadCount ?? 0;
+  const { unread, attention, label } = useAssistantEntry();
   return (
     <button
       className={`sidebar-assistant-row${active ? " active" : ""}`}
       type="button"
+      aria-label={attention ? label : undefined}
       aria-current={active ? "page" : undefined}
       onClick={onSelect}
     >
@@ -89,12 +89,10 @@ export function DesktopAssistantNavButton({
         <Mail size={15} aria-hidden="true" />
         <span>助理</span>
       </span>
-      {unreadCount > 0 && (
+      {(attention || unread > 0) && (
         <span className="sidebar-assistant-unread" aria-hidden="true">
           <i className="sidebar-unread-dot" />
-          <b className="desktop-nav-badge" aria-hidden="true">
-            {unreadCount > 99 ? "99+" : unreadCount}
-          </b>
+          {!attention && <b className="desktop-nav-badge" aria-hidden="true">{unread > 99 ? "99+" : unread}</b>}
         </span>
       )}
     </button>

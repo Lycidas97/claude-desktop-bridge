@@ -240,6 +240,7 @@ export type BridgeCapability =
   | "plugin.assistant-mail.history.v1"
   | "plugin.assistant-mail.triggers.v1"
   | "plugin.assistant-mail.batches.v1"
+  | "plugin.assistant-mail.attention.v1"
   | "system.update.v1";
 
 /**
@@ -1411,6 +1412,7 @@ export type BridgeMethod =
   | "plugin.assistant-mail.batch"
   | "plugin.assistant-mail.history"
   | "plugin.assistant-mail.read"
+  | "plugin.assistant-mail.attention.ack"
   | "plugin.assistant-mail.bind"
   | "plugin.assistant-mail.workspace.initialize"
   | "plugin.assistant-mail.automatic-delivery.set"

@@ -1,4 +1,4 @@
-import type { BridgeAssistantMailSnapshot, BridgeHostSnapshot, BridgeMailCache, BridgeMailCard, BridgeMailDetail, BridgeMailPage, BridgeMethod, BridgeResponse } from "@bridge/protocol";
+import { ASSISTANT_ATTENTION_CAPABILITY, type AssistantAttentionAcknowledgment, type AssistantAttentionItem, type BridgeAssistantMailSnapshot, type BridgeHostSnapshot, type BridgeMailCache, type BridgeMailCard, type BridgeMailDetail, type BridgeMailPage, type BridgeMethod, type BridgeResponse } from "@bridge/protocol";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { mergeMailCards, refreshMailPages } from "../../lib/assistant-mail.js";
 
@@ -12,6 +12,8 @@ export function mailResult<T>(response: BridgeResponse | undefined): T {
 interface AssistantMailState {
   cache: BridgeMailCache;
   unreadCount: number;
+  attention: AssistantAttentionItem[] | undefined;
+  acknowledge(kind: AssistantAttentionAcknowledgment, id: string): Promise<void>;
   accountLabel(accountKey: string): string;
   assistant: BridgeAssistantMailSnapshot | undefined;
   selectedMail: BridgeMailCard | undefined;
@@ -77,7 +79,15 @@ export function AssistantMailProvider({ hostId, snapshot, online, request, loadC
     setReadState(current => current ?? { baselineSeq: Math.max(0, baselineSeq), viewed: new Set() });
   }
 
+  async function acknowledge(kind: AssistantAttentionAcknowledgment, id: string): Promise<void> {
+    mailResult(await request("plugin.assistant-mail.attention.ack", { kind, id }));
+  }
+
   function markViewed({ seq, mailRefId }: BridgeMailCard): void {
+    if (capabilities.includes(ASSISTANT_ATTENTION_CAPABILITY)) {
+      if (online) void acknowledge("mail", mailRefId).catch(reason => setError(reason instanceof Error ? reason.message : "无法记录已看"));
+      return;
+    }
     setReadState(current => !current || seq <= current.baselineSeq || current.viewed.has(mailRefId)
       ? current : { ...current, viewed: new Set(current.viewed).add(mailRefId) });
   }
@@ -193,7 +203,7 @@ export function AssistantMailProvider({ hostId, snapshot, online, request, loadC
   const selectedMail = selection && selection.sessionId === assistant?.binding?.nativeSessionId
     ? cache.cards.find(card => card.mailRefId === selection.card.mailRefId) ?? selection.card : undefined;
   return <AssistantMailContext.Provider value={enabled ? {
-    cache, unreadCount, assistant, canReference, selectedMail,
+    cache, unreadCount, attention: assistant?.attention, acknowledge, assistant, canReference, selectedMail,
     supportsAttachments: capabilities.includes("plugin.assistant-mail.attachments.v1"),
     supportsBatches: capabilities.includes("plugin.assistant-mail.batches.v1"),
     accountLabel: accountKey => {
@@ -209,7 +219,7 @@ export function AssistantMailProvider({ hostId, snapshot, online, request, loadC
     markViewed,
     selectMail: card => {
       if (!canReference) return;
-      markViewed(card);
+      if (!capabilities.includes(ASSISTANT_ATTENTION_CAPABILITY)) markViewed(card);
       setSelection({ sessionId: assistant!.binding!.nativeSessionId!, card });
       onDiscuss?.();
     },

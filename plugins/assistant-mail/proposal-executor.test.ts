@@ -218,6 +218,14 @@ it("does not rebase a manual edit or overwrite a changed local task or event", a
   expect(agenda.listEvents(window).records[0]?.title).toBe("Externally moved");
 });
 
+it("moves the local reminder by the same amount as the approved reschedule", async () => {
+  const event = agenda.saveEvent({ ...meeting, remindAt: "2027-01-04T13:45:00.000Z" });
+  const ref = await service.create("bound-session", { kind: "calendar.reschedule", recordId: event.id,
+    value: { ...meeting, startAt: "2027-01-04T16:00:00.000Z", endAt: "2027-01-04T17:00:00.000Z" } });
+  await expect(service.commit(ref, "desktop")).resolves.toMatchObject({ state: "applied" });
+  expect(agenda.listEvents(window).records[0]).toMatchObject({ remindAt: "2027-01-04T15:45:00.000Z" });
+});
+
 it("conditionally updates a CalDAV member without reconstructing its attendees, and returns conflict on 412", async () => {
   seedRemote();
   const event = agenda.listEvents(window).records[0]!;

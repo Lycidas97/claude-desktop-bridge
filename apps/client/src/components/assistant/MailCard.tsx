@@ -72,18 +72,22 @@ export function MailCard({ card, nativeMessage, onDiscuss, showBatchDelivery = t
       {!card.nativeDelivery.batchId || showBatchDelivery ? <div><dt>原生投递</dt><dd>{DELIVERY_LABELS[card.nativeDelivery.state]}</dd></div> : null}
       <div><dt>业务处理</dt><dd>{PROCESSING_LABELS[card.processingStatus]}</dd></div>
     </dl>
-    {card.analysis && <details><summary>分析结果</summary>
+    {card.analysis && <details onToggle={event => {
+      if (event.currentTarget.open && mail?.attention !== undefined && (card.analysis?.summary || card.analysis?.suggestions?.length || card.analysis?.questions?.length)) mail.markViewed(card);
+    }}><summary>分析结果</summary>
       {card.analysis.summary && <pre>{card.analysis.summary}</pre>}
       {card.analysis.suggestions?.length ? <><h4>建议</h4><ul>{card.analysis.suggestions.map((suggestion, index) => <li key={index}>{suggestion}</li>)}</ul></> : null}
       {card.analysis.questions?.length ? <><h4>问题</h4><ul>{card.analysis.questions.map((question, index) => <li key={index}>{question}</li>)}</ul></> : null}
     </details>}
     {attachmentList}
     <details onToggle={event => {
-      if (!event.currentTarget.open || detail || loading || !mail?.online) return;
+      const disclosure = event.currentTarget;
+      if (!disclosure.open || loading || !mail?.online) return;
+      if (detail) { mail.markViewed(card); return; }
       setLoading(true); setError("");
       void mail.read(card.mailRefId).then(result => {
         setDetail(result);
-        mail.markViewed(card);
+        if (disclosure.open && disclosure.isConnected) mail.markViewed(card);
       })
         .catch(reason => setError(reason instanceof Error ? reason.message : "原文读取失败"))
         .finally(() => setLoading(false));

@@ -937,10 +937,11 @@ export function DesktopSessionConversation({
   headerLeading,
   surface = "project",
   alternateStage,
+  assistantReplyTarget,
   hideComposer,
   conversationDrafts: externalDrafts,
   externalActionError,
-}: Pick<DesktopConversationInput, "snapshot" | "events"> & Pick<ConversationViewProps, "surface" | "alternateStage" | "hideComposer"> & {
+}: Pick<DesktopConversationInput, "snapshot" | "events"> & Pick<ConversationViewProps, "surface" | "alternateStage" | "hideComposer" | "assistantReplyTarget"> & {
   session: BridgeSessionInfo;
   onSelectSession(sessionId: string): void | Promise<void>;
   onForkCreated?(parentSessionId: string, created: BridgeSessionInfo): void;
@@ -975,6 +976,7 @@ export function DesktopSessionConversation({
       variant="desktop"
       surface={surface}
       alternateStage={alternateStage}
+      assistantReplyTarget={assistantReplyTarget}
       hideComposer={hideComposer}
       hostId={hostId}
       session={session}

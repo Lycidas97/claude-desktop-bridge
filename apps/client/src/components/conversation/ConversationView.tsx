@@ -132,6 +132,7 @@ export interface ConversationViewProps {
   onRefresh?: ((sessionId?: string) => Promise<unknown>) | undefined;
   onRetry?: (() => Promise<void>) | undefined;
   history: SessionHistoryState | undefined;
+  latestHistorySync?: "loading" | { error: string; retry(): Promise<void> } | undefined;
   evidence: SessionEvidenceState | undefined;
   openedEvidenceIds?: ReadonlySet<string> | undefined;
   renderEvidence(props: Pick<ComponentProps<typeof EvidencePanel>,
@@ -220,6 +221,7 @@ export function ConversationView({
   onRefresh,
   onRetry,
   history,
+  latestHistorySync,
   evidence,
   openedEvidenceIds,
   renderEvidence,
@@ -833,6 +835,15 @@ export function ConversationView({
       )}
       {history?.hasMore && history.error && (
         <div className="conversation-error-detail" role="alert">{history.error}</div>
+      )}
+      {latestHistorySync === "loading" && (
+        <div className="conversation-loading" role="status"><LoaderCircle className="is-spinning" size={20} />正在同步最新对话…</div>
+      )}
+      {latestHistorySync && latestHistorySync !== "loading" && (
+        <div className="conversation-empty">
+          <strong role="alert">最新对话同步失败：{latestHistorySync.error}</strong>
+          <button type="button" className="secondary-button" disabled={!isOnline || history?.status === "loading"} onClick={() => void latestHistorySync.retry()}>重试同步</button>
+        </div>
       )}
       {history?.status === "loading" && history.items.length === 0 && (
         <div className="conversation-loading"><LoaderCircle className="is-spinning" size={20} />正在加载最新对话…</div>

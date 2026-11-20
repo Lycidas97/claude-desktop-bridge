@@ -64,6 +64,7 @@ export async function openBridgeSession(
   const key = `${crypto?.identity.roomId}:${sessionId}`;
   const inflight = openingSessionsRef.current.get(key);
   if (inflight && inflight.socket === socket) return inflight.task;
+  const readCompletedTurnId = stateRef.current.snapshot?.sessions.find((session) => session.sessionId === sessionId)?.lastCompletedTurnId;
   const task = (async () => {
     setState((current) => ({
       ...current,
@@ -101,7 +102,7 @@ export async function openBridgeSession(
       if (!result.history) throw new Error("电脑未返回会话历史");
       setState((current) => isCurrent()
         ? applySessionResultToState(current, result.session, {
-            history: { sessionId, page: result.history! },
+            history: { sessionId, page: result.history!, readCompletedTurnId },
           })
         : current);
       const eventsAtRequestStart = stateRef.current.events;
@@ -331,6 +332,56 @@ export async function downloadBridgeSessionPathFile(
   }
 }
 
+async function requestBridgeHistoryPage(sendRequest: BridgeSendRequest, sessionId: string, cursor?: string): Promise<BridgeHistoryPage> {
+  const response = await sendRequest("session.history", {
+    sessionId, limit: HISTORY_PAGE_SIZE, ...(cursor ? { cursor } : {}),
+  }, { wait: true, timeoutMs: 25_000 });
+  if (!response?.ok) throw new Error(response?.error?.message ?? "历史加载失败");
+  const result = response.result as { history?: BridgeHistoryPage };
+  if (!result.history) throw new Error("电脑未返回历史");
+  return result.history;
+}
+
+export async function refreshLatestBridgeHistory(
+  { setState, stateRef, cryptoRef, socketRef, sendRequest }: BridgeArtifactsContext,
+  sessionId: string,
+  readCompletedTurnId: string | undefined,
+): Promise<void> {
+  const crypto = cryptoRef.current;
+  const socket = socketRef.current;
+  const isCurrent = () => cryptoRef.current === crypto && socketRef.current === socket;
+  const existingIds = new Set(stateRef.current.histories[sessionId]?.items.map(item => item.id));
+  const pages: BridgeHistoryPage[] = [];
+  let cursor: string | undefined;
+  let page: BridgeHistoryPage;
+  do {
+    page = await requestBridgeHistoryPage(sendRequest, sessionId, cursor);
+    if (!isCurrent()) return;
+    pages.push(page);
+    cursor = page.nextCursor;
+    // Read through a gap rather than showing non-adjacent pages as one timeline.
+  } while (cursor && existingIds.size > 0 && !page.items.some(item => existingIds.has(item.id)));
+  const newestById = new Map(pages.reverse().flatMap(({ items }) => items.map(item => [item.id, item] as const)));
+  const oldest = newestById.keys().next().value;
+  setState((current) => {
+    if (!isCurrent()) return current;
+    const existing = current.histories[sessionId];
+    const overlap = page.hasMore ? existing?.items.findIndex(item => item.id === oldest) ?? -1 : -1;
+    const prefix = overlap >= 0 ? existing!.items.slice(0, overlap).filter(item => !newestById.has(item.id)) : [];
+    return {
+      ...current,
+      histories: {
+        ...current.histories,
+        [sessionId]: {
+          ...(overlap >= 0 ? existing! : projectHistoryPage(page)),
+          items: [...prefix, ...newestById.values()],
+          readCompletedTurnId,
+        },
+      },
+    };
+  });
+}
+
 export async function loadOlderBridgeHistory(
   ctx: BridgeArtifactsContext & {
     loadingHistoryRef: MutableRefObject<Map<string, BridgeTransport | undefined>>;
@@ -356,24 +407,18 @@ export async function loadOlderBridgeHistory(
     },
   }));
   try {
-    const response = await sendRequest("session.history", {
-      sessionId,
-      cursor: requestedCursor,
-      limit: HISTORY_PAGE_SIZE,
-    }, { wait: true, timeoutMs: 25_000 });
-    if (!isCurrent()) return;
-    if (!response?.ok) throw new Error(response?.error?.message ?? "历史加载失败");
-    const result = response.result as { history?: BridgeHistoryPage };
-    if (!result.history) throw new Error("电脑未返回历史");
-    const page = result.history;
+    const page = await requestBridgeHistoryPage(sendRequest, sessionId, requestedCursor);
     setState((stateValue) => {
       if (!isCurrent()) return stateValue;
-      const existingItems = stateValue.histories[sessionId]?.items ?? current.items;
+      const existing = stateValue.histories[sessionId] ?? current;
       return {
         ...stateValue,
         histories: {
           ...stateValue.histories,
-          [sessionId]: projectHistoryPage(page, existingItems),
+          [sessionId]: {
+            ...projectHistoryPage(page, existing.items),
+            ...(existing.readCompletedTurnId ? { readCompletedTurnId: existing.readCompletedTurnId } : {}),
+          },
         },
       };
     });

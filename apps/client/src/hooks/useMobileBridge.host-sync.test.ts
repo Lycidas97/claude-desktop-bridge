@@ -1672,6 +1672,32 @@ describe("mobile history pagination", () => {
     expect(harness.state.localTurns).toEqual([]);
   });
 
+  it("fills a gap from the latest history page without losing the already loaded prefix or its cursor", async () => {
+    harness.state.histories["shared-session"] = { status: "ready", items: [older, recent], hasMore: true, nextCursor: older.id };
+    const between = { ...recent, id: "between", createdAt: 3 };
+    const newest = { ...between, id: "latest-reply", role: "assistant", createdAt: 4 };
+    const updated = { ...recent, text: "Authoritative version" };
+    const first = { ...older, id: "first-uuid", createdAt: 0 };
+    harness.respond = async ({ params }) => ({ history: params.cursor === undefined
+      ? { items: [newest], hasMore: true, nextCursor: newest.id }
+      : params.cursor === newest.id
+        ? { items: [updated, between], hasMore: true, nextCursor: updated.id }
+        : { items: [first], hasMore: false },
+    });
+    const bridge = useMobileBridge();
+    await bridge.refreshLatestHistory("shared-session", "native-completion");
+    expect(harness.state.histories["shared-session"]).toEqual({
+      status: "ready", items: [older, updated, between, newest], hasMore: true, nextCursor: older.id, readCompletedTurnId: "native-completion",
+    });
+    await bridge.loadOlderHistory("shared-session");
+    expect(harness.requests.map(({ request: { method, params } }) => [method, params.cursor])).toEqual([
+      ["session.history", undefined], ["session.history", newest.id], ["session.history", older.id],
+    ]);
+    expect(harness.state.histories["shared-session"]).toEqual({
+      status: "ready", items: [first, older, updated, between, newest], hasMore: false, readCompletedTurnId: "native-completion",
+    });
+  });
+
   it("keeps failed paging data and its error row during retry, then clears the error with the successful prepend", async () => {
     harness.respond = async () => { throw new Error("Network unavailable"); };
     const bridge = useMobileBridge();

@@ -89,6 +89,7 @@ export interface SessionHistoryState {
   nextCursor?: string;
   hasMore: boolean;
   error?: string;
+  readCompletedTurnId?: string | undefined;
 }
 
 export interface SessionEvidenceState {
@@ -1477,6 +1478,7 @@ export interface ApplySessionResultOptions {
   history?: {
     sessionId: string;
     page: BridgeHistoryPage;
+    readCompletedTurnId?: string | undefined;
   } | undefined;
   titleOnly?: boolean | undefined;
   prepend?: boolean | undefined;
@@ -1563,7 +1565,10 @@ export function applySessionResultToState(
   const histories = options.history
     ? {
         ...current.histories,
-        [options.history.sessionId]: projectHistoryPage(options.history.page),
+        [options.history.sessionId]: {
+          ...projectHistoryPage(options.history.page),
+          ...(options.history.readCompletedTurnId ? { readCompletedTurnId: options.history.readCompletedTurnId } : {}),
+        },
       }
     : current.histories;
   if (snapshot === current.snapshot && histories === current.histories) return current;

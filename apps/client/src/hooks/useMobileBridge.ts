@@ -53,6 +53,7 @@ import {
   loadOlderBridgeHistory,
   openBridgeSession,
   previewBridgeArtifact,
+  refreshLatestBridgeHistory,
   syncSessionCommandEvents,
   uploadBridgeSessionFile,
 } from "./bridge/bridge-artifacts.js";
@@ -311,6 +312,11 @@ export function useMobileBridge() {
         transferGaugesRef.current.activeDownloads = Math.max(0, transferGaugesRef.current.activeDownloads - 1);
       }
     },
+    [sendRequest],
+  );
+
+  const refreshLatestHistory = useCallback(
+    (sessionId: string, readCompletedTurnId: string | undefined) => refreshLatestBridgeHistory(artifactCtx, sessionId, readCompletedTurnId),
     [sendRequest],
   );
 
@@ -867,6 +873,7 @@ export function useMobileBridge() {
     setRelayUrl,
     backToHosts,
     openSession,
+    refreshLatestHistory,
     loadOlderHistory,
     loadOlderEvidence,
     loadEvidenceDetails,

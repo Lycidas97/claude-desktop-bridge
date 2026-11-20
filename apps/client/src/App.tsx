@@ -69,6 +69,36 @@ function MobileAssistantConversation({
   ), [assistantMail?.cache.cards, session.sessionId, snapshot?.assistantMail?.binding?.nativeSessionId]);
   const [refreshing, setRefreshing] = useState(false);
   const transcriptVisible = visible && alternateStage == null;
+  const { sessionId, lastCompletedTurnId } = session;
+  const { refreshLatestHistory } = mobile;
+  const history = mobile.state.histories[sessionId];
+  const transcriptOnline = transcriptVisible && mobile.state.connection === "connected" && mobile.state.desktopOnline;
+  const lastHistorySync = useRef<{ online: boolean; turnId: string | undefined } | undefined>(undefined);
+  const [historySync, setHistorySync] = useState<"loading" | { error: string }>();
+  const syncLatestHistory = useCallback(async () => {
+    lastHistorySync.current = { online: true, turnId: lastCompletedTurnId };
+    setHistorySync("loading");
+    try {
+      await refreshLatestHistory(sessionId, lastCompletedTurnId);
+      setHistorySync(undefined);
+    } catch (error) {
+      setHistorySync({ error: error instanceof Error ? error.message : "历史加载失败" });
+    }
+  }, [refreshLatestHistory, sessionId, lastCompletedTurnId]);
+  useEffect(() => {
+    const previous = lastHistorySync.current;
+    if (!transcriptOnline) {
+      if (previous) previous.online = false;
+      return;
+    }
+    if (history?.status !== "ready" || historySync === "loading") return;
+    const coveredTurn = previous ? previous.turnId : history.readCompletedTurnId;
+    if (previous?.online === false || (lastCompletedTurnId && lastCompletedTurnId !== coveredTurn)) {
+      void syncLatestHistory();
+    } else if (!previous) {
+      lastHistorySync.current = { online: true, turnId: lastCompletedTurnId };
+    }
+  }, [history?.status, history?.readCompletedTurnId, historySync, lastCompletedTurnId, syncLatestHistory, transcriptOnline]);
   useEffect(() => {
     if (!transcriptVisible) return;
     return setActiveViewedSession({ hostId: activeHostId, sessionId: session.sessionId });
@@ -103,7 +133,8 @@ function MobileAssistantConversation({
       refreshing={refreshing}
       onRefresh={handleRefresh}
       onRetry={mobile.retryConnection}
-      history={mobile.state.histories[session.sessionId]}
+      history={history}
+      latestHistorySync={historySync === "loading" ? "loading" : historySync && { ...historySync, retry: syncLatestHistory }}
       evidence={mobile.state.evidence[session.sessionId]}
       renderEvidence={(panel) => (
         <EvidencePanel
@@ -480,6 +511,7 @@ function MobileApp({ themeControl }: { themeControl: ThemeControl }) {
                 const boundSession = snapshot?.sessions.find((candidate) => candidate.sessionId === sessionId);
                 return boundSession ? (
                   <MobileAssistantConversation
+                    key={boundSession.sessionId}
                     activeHostId={mobile.state.activeHostId!}
                     session={boundSession}
                     snapshot={snapshot}

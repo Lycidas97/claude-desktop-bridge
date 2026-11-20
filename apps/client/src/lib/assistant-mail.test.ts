@@ -25,6 +25,17 @@ describe("refreshMailPages", () => {
       .toEqual({ cards: [card(3), card(2), card(1)], workspace, changeToken: "after" });
   });
 
+  it("keeps whole-folder counts and recent filed timeline cards separate from inbox pages", async () => {
+    const filed = card(4, { folder: "marketing" });
+    const load = vi.fn<(cursor?: string) => Promise<BridgeMailPage>>()
+      .mockResolvedValueOnce({ cards: [card(3)], nextCursor: "3", folderCounts: { marketing: 51 }, filedTimelineCards: [filed] })
+      .mockResolvedValueOnce({ cards: [card(2)] });
+    const refreshed = await refreshMailPages(load, { cards: [card(2)], changeToken: "before" }, "filed");
+    expect(refreshed).toEqual({ cards: [card(3), card(2)], changeToken: "filed", folderCounts: { marketing: 51 }, filedTimelineCards: [filed] });
+    expect(await refreshMailPages(async () => ({ cards: [card(4), card(3), card(2)], folderCounts: {} }), refreshed, "restored"))
+      .toEqual({ cards: [card(4), card(3), card(2)], changeToken: "restored", folderCounts: {} });
+  });
+
   it("walks through multiple pages of arrivals and refreshes the entire previously loaded range", async () => {
     const current: BridgeMailCache = { cards: [card(6), card(5), card(4)], nextCursor: "4", changeToken: "before" };
     const load = vi.fn<(cursor?: string) => Promise<BridgeMailPage>>()

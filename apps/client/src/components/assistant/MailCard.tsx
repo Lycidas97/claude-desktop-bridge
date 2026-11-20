@@ -1,4 +1,4 @@
-import { ARTIFACT_MAX_BYTES, mailAttachmentPreviewKind, type BridgeHistoryItem, type BridgeMailAttachment, type BridgeMailCard, type BridgeMailDetail } from "@bridge/protocol";
+import { ARTIFACT_MAX_BYTES, MAIL_CATEGORIES, mailAttachmentPreviewKind, type BridgeMailCategory, type BridgeMailFolder, type BridgeHistoryItem, type BridgeMailAttachment, type BridgeMailCard, type BridgeMailDetail } from "@bridge/protocol";
 import { Download, Mail, Paperclip } from "lucide-react";
 import { useState, type MouseEvent } from "react";
 import { downloadMailAttachment } from "../../lib/artifact-download.js";
@@ -10,6 +10,9 @@ import "./assistant-mail.css";
 export const DELIVERY_LABELS: Record<BridgeMailCard["nativeDelivery"]["state"], string> = {
   "not-submitted": "未提交", pending: "待提交", paused: "已暂停", submitting: "提交中", submitted: "已提交", queued: "排队中",
   observed: "原生已观测", uncertain: "不确定", failed: "失败", cancelled: "已撤回",
+};
+export const MAIL_FOLDER_LABELS: Record<BridgeMailCategory, string> = {
+  marketing: "营销与垃圾邮件", verification: "验证码", account: "账号注册", other: "其他",
 };
 const PROCESSING_LABELS = { pending: "待处理", processing: "处理中", processed: "已处理" };
 
@@ -44,9 +47,10 @@ function MailAttachmentRow({ attachment, mailRefId, enabled }: { attachment: Bri
   </li>;
 }
 
-export function MailCard({ card, nativeMessage, onDiscuss, showBatchDelivery = true, junkAction }: {
+export function MailCard({ card, nativeMessage, onDiscuss, showBatchDelivery = true, junkAction, filing }: {
   card: BridgeMailCard; nativeMessage?: BridgeHistoryItem; onDiscuss?(): void; showBatchDelivery?: boolean;
   junkAction?: { disabled: boolean; onMark(event: MouseEvent<HTMLButtonElement>): void } | undefined;
+  filing?: { disabled: boolean; showFolder: boolean; move(folder: BridgeMailFolder): void } | undefined;
 }) {
   const mail = useAssistantMail();
   const accountLabel = mail?.accountLabel(card.accountKey) ?? "邮件插件";
@@ -100,6 +104,16 @@ export function MailCard({ card, nativeMessage, onDiscuss, showBatchDelivery = t
     {nativeMessage && <details className="assistant-mail-native"><summary>关联原生消息</summary><code>{nativeMessage.id}</code><pre>{nativeMessage.text}</pre></details>}
     {mail && <div className="assistant-actions">
       <button type="button" className="assistant-session-link" disabled={!mail.canReference} onClick={() => { mail.selectMail(card); onDiscuss?.(); }}>讨论此邮件</button>
+      {filing && <>
+        {filing.showFolder && card.folder && <small className="assistant-mail-folder-label">{MAIL_FOLDER_LABELS[card.folder]}</small>}
+        {card.folder
+          ? <button type="button" className="assistant-session-link" disabled={filing.disabled} onClick={() => filing.move("inbox")}>收回收件</button>
+          : <select className="assistant-mail-file-select" aria-label="收入分类" value="" disabled={filing.disabled}
+              onChange={event => { if (event.target.value) filing.move(event.target.value as BridgeMailCategory); }}>
+              <option value="">收入分类</option>
+              {MAIL_CATEGORIES.map(category => <option key={category} value={category}>{MAIL_FOLDER_LABELS[category]}</option>)}
+            </select>}
+      </>}
       {junkAction && <button type="button" className="assistant-session-link assistant-mail-junk-action" disabled={junkAction.disabled} onClick={junkAction.onMark}>标为垃圾邮件</button>}
     </div>}
   </article>;

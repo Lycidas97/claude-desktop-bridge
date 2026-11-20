@@ -962,10 +962,10 @@ export function DesktopSessionConversation({
   useEffect(() => controller.mountSession(session.sessionId, hostId), [hostId, session.sessionId]);
 
   const mailCards = useMemo(
-    () => assistantMail?.cache.cards.filter((card) => (
+    () => assistantMail?.timelineCards.filter((card) => (
       (card.nativeDelivery.nativeSessionId ?? snapshot.assistantMail?.binding?.nativeSessionId) === session.sessionId
     )) ?? [],
-    [assistantMail?.cache.cards, session.sessionId, snapshot.assistantMail?.binding?.nativeSessionId],
+    [assistantMail?.timelineCards, session.sessionId, snapshot.assistantMail?.binding?.nativeSessionId],
   );
   const canCommand = snapshot.host.capabilities.includes("session.command.v1");
   const canRename = snapshot.host.capabilities.includes("session.rename.v1");

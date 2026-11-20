@@ -1,6 +1,7 @@
-import { ASSISTANT_MAIL_SHARED_AUTH_CAPABILITY, ASSISTANT_SMTP_CAPABILITY, MAIL_POLL_INTERVALS, type BridgeActionProposal, type BridgeDirectoryListing, type BridgeHostSnapshot, type BridgeMailAccount, type BridgeMailCard, type BridgeMailCategory, type BridgeMethod, type BridgeSessionInfo } from "@bridge/protocol";
-import { Check, ChevronRight, ListChecks, LoaderCircle, RefreshCw, Settings } from "lucide-react";
-import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { ASSISTANT_MAIL_SHARED_AUTH_CAPABILITY, ASSISTANT_SMTP_CAPABILITY, MAIL_CATEGORIES, MAIL_POLL_INTERVALS, type BridgeActionProposal, type BridgeDirectoryListing, type BridgeHostSnapshot, type BridgeMailAccount, type BridgeMailCache, type BridgeMailCard, type BridgeMailCategory, type BridgeMailFolder, type BridgeMailPage, type BridgeMethod, type BridgeSessionInfo } from "@bridge/protocol";
+import { Check, ChevronRight, ListChecks, LoaderCircle, RefreshCw, Search, Settings, X } from "lucide-react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { mergeMailCards, refreshMailPages } from "../../lib/assistant-mail.js";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
 import { formatSessionModelLabel } from "../../lib/conversation-timeline.js";
 import { IconButton } from "../common/IconButton.js";
@@ -17,7 +18,7 @@ import { useAssistantAgenda } from "./AssistantAgendaProvider.js";
 import { pendingProposalCount, useAssistantProposals } from "./AssistantProposalProvider.js";
 import { AssistantAttention } from "./AssistantAttention.js";
 import { ProposalPanel } from "./ProposalPanel.js";
-import { MailCard } from "./MailCard.js";
+import { MAIL_FOLDER_LABELS, MailCard } from "./MailCard.js";
 import { MailReference } from "./MailReference.js";
 import "./assistant-mail.css";
 
@@ -238,9 +239,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
     {displayedView === "agenda" && agenda && <AgendaView />}
     {displayedView === "mail" && mail && <>
       {!session && binding?.nativeSessionId && <MailReference sessionId={binding.nativeSessionId} />}
-      <InboxMailList mail={mail} canMarkJunk={capabilities.includes("plugin.assistant-mail.junk.v1")} onDiscuss={() => setView("conversation")} />
-      {!mail.cache.cards.length && <p className="assistant-mail-empty" role="status">{mail.loading ? "正在读取邮件…" : "暂无已记录邮件"}</p>}
-      {mail.hasOlderMail && <button type="button" className="secondary-button assistant-mail-older" disabled={!mail.online || mail.loading} onClick={() => void mail.loadOlder()}>{mail.loading ? "正在读取…" : "更早邮件"}</button>}
+      <InboxMailList mail={mail} canMarkJunk={!mail.supportsFiling && capabilities.includes("plugin.assistant-mail.junk.v1")} onDiscuss={() => setView("conversation")} />
     </>}
   </div>;
   return <section className={`assistant-page ${mobile ? "assistant-page-mobile" : "desktop-page"}${session ? " has-conversation" : ""}`}>
@@ -294,6 +293,9 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
 
 function InboxMailList({ mail, canMarkJunk, onDiscuss }: { mail: NonNullable<ReturnType<typeof useAssistantMail>>; canMarkJunk: boolean; onDiscuss(): void }) {
   const { cards } = mail.cache;
+  const [searchText, setSearchText] = useState("");
+  const [query, setQuery] = useState("");
+  const [openedFolders, setOpenedFolders] = useState<ReadonlySet<BridgeMailCategory>>(new Set());
   const [lastMarked, setLastMarked] = useState<{ mailRefId: string; subject: string; focusUndo: boolean }>();
   const undoButton = useRef<HTMLButtonElement>(null);
   const [busy, setBusy] = useState(false);
@@ -315,24 +317,57 @@ function InboxMailList({ mail, canMarkJunk, onDiscuss }: { mail: NonNullable<Ret
     } finally { setBusy(false); }
   }
 
-  const groups = new Map<BridgeMailCategory, { label: string; cards: BridgeMailCard[] }>([
-    ["marketing", { label: "营销与垃圾邮件", cards: [] }],
-    ["verification", { label: "验证码", cards: [] }],
-    ["account", { label: "账号注册", cards: [] }],
-  ]);
-  const regular: BridgeMailCard[] = [];
-  for (const card of cards) (groups.get(card.analysis?.category ?? "other")?.cards ?? regular).push(card);
-  const renderCard = (card: BridgeMailCard) => <MailCard key={card.mailRefId} card={card} onDiscuss={onDiscuss}
-    junkAction={canMarkJunk ? { disabled, onMark: event => { void setJunk(card, true, event.detail === 0 ? event.currentTarget : undefined); } } : undefined} />;
+  async function move(mailRefId: string, folder: BridgeMailFolder) {
+    setBusy(true);
+    setError("");
+    try { mailResult(await mail.request("plugin.assistant-mail.filing.set", { mailRefId, folder })); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "无法更新邮件收纳位置。"); }
+    finally { setBusy(false); }
+  }
 
-  return <div className="assistant-mail-list" aria-label="邮件输入">
-    {regular.length < cards.length && <div className="assistant-mail-groups">
-      {[...groups].map(([category, group]) => group.cards.length > 0 && <details className="assistant-mail-group" key={category}>
-        <summary><span>{group.label}</span><small>{group.cards.length} 封</small><ChevronRight size={16} aria-hidden="true" /></summary>
-        <div className="assistant-mail-group-cards">{group.cards.map(renderCard)}</div>
-      </details>)}
-    </div>}
-    {regular.map(renderCard)}
+  const renderCard = (card: BridgeMailCard) => <MailCard key={card.mailRefId} card={card} onDiscuss={onDiscuss}
+    junkAction={canMarkJunk ? { disabled, onMark: event => { void setJunk(card, true, event.detail === 0 ? event.currentTarget : undefined); } } : undefined}
+    filing={mail.supportsFiling ? { disabled, showFolder: Boolean(query), move: folder => { void move(card.mailRefId, folder); } } : undefined} />;
+  const folders = mail.supportsFiling ? MAIL_CATEGORIES : MAIL_CATEGORIES.filter(category => category !== "other");
+  const counts = mail.cache.folderCounts;
+
+  return <>
+    {mail.supportsFiling && <form className="assistant-mail-search" role="search" onSubmit={event => {
+      event.preventDefault(); setQuery(searchText.trim()); setError("");
+    }}>
+      <Search size={16} aria-hidden="true" />
+      <input type="search" aria-label="搜索邮件" placeholder="搜索邮件" maxLength={200} value={searchText} onChange={event => {
+        setSearchText(event.target.value);
+        if (!event.target.value) setQuery("");
+      }} />
+      {query && <button type="button" className="assistant-session-link" aria-label="清除搜索" onClick={() => {
+        setSearchText(""); setQuery(""); setError("");
+      }}><X size={16} aria-hidden="true" /></button>}
+      <button type="submit" className="assistant-session-link" disabled={!mail.online}>搜索</button>
+    </form>}
+    {mail.supportsFiling && error && <p className="assistant-mail-empty" role="alert">{error}</p>}
+    {mail.supportsFiling && query ? <div className="assistant-mail-list" aria-label="搜索结果">
+      <ScopedMailList key={query} mail={mail} query={query} renderCard={renderCard} />
+    </div> : <>
+    <div className="assistant-mail-list" aria-label="邮件输入">
+      {(mail.supportsFiling ? Boolean(Object.keys(counts ?? {}).length) : cards.some(card => card.analysis?.category && card.analysis.category !== "other")) &&
+        <div className="assistant-mail-groups">
+          {folders.map(category => {
+            const grouped = mail.supportsFiling ? [] : cards.filter(card => card.analysis?.category === category);
+            const count = mail.supportsFiling ? counts?.[category] ?? 0 : grouped.length;
+            return count > 0 && <details className="assistant-mail-group" key={category} open={mail.supportsFiling ? openedFolders.has(category) : undefined} onToggle={mail.supportsFiling ? event => {
+              const { open } = event.currentTarget;
+              setOpenedFolders(current => current.has(category) === open ? current
+                : open ? new Set(current).add(category) : new Set([...current].filter(folder => folder !== category)));
+            } : undefined}>
+              <summary><span>{MAIL_FOLDER_LABELS[category]}</span><small>{count} 封</small><ChevronRight size={16} aria-hidden="true" /></summary>
+              <div className="assistant-mail-group-cards">
+                {mail.supportsFiling ? openedFolders.has(category) && <ScopedMailList mail={mail} folder={category} renderCard={renderCard} /> : grouped.map(renderCard)}
+              </div>
+            </details>;
+          })}
+        </div>}
+      {(mail.supportsFiling ? cards.filter(card => !card.folder) : cards.filter(card => !card.analysis?.category || card.analysis.category === "other")).map(renderCard)}
     {canMarkJunk && (lastMarked || error) && <div className="assistant-mail-junk-feedback">
       {error && <span role="alert">{error}</span>}
       {lastMarked && <>
@@ -340,7 +375,53 @@ function InboxMailList({ mail, canMarkJunk, onDiscuss }: { mail: NonNullable<Ret
         <button ref={undoButton} type="button" className="assistant-session-link" disabled={disabled} onClick={() => { void setJunk(lastMarked, false); }}>撤销</button>
       </>}
     </div>}
-  </div>;
+    </div>
+    {!cards.length && !Object.keys(counts ?? {}).length && <p className="assistant-mail-empty" role="status">{mail.loading ? "正在读取邮件…" : "暂无已记录邮件"}</p>}
+    {mail.hasOlderMail && <button type="button" className="secondary-button assistant-mail-older" disabled={!mail.online || mail.loading} onClick={() => void mail.loadOlder()}>{mail.loading ? "正在读取…" : "更早邮件"}</button>}
+    </>}
+  </>;
+}
+
+function ScopedMailList({ mail, folder, query, renderCard }: {
+  mail: NonNullable<ReturnType<typeof useAssistantMail>>; folder?: BridgeMailCategory; query?: string; renderCard(card: BridgeMailCard): ReactNode;
+}) {
+  const { online, request } = mail;
+  const changeToken = mail.assistant?.changeToken ?? "";
+  const [page, setPage] = useState<BridgeMailCache>({ cards: [], changeToken: "" });
+  const pageRef = useRef(page);
+  pageRef.current = page;
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const loadPage = useCallback(async (cursor?: string) => mailResult<{ mailPage: BridgeMailPage }>(await request("plugin.assistant-mail.list", {
+    includeHistory: true, ...(folder ? { folder } : { query }), ...(cursor ? { cursor } : {}),
+  })).mailPage, [request, folder, query]);
+  useEffect(() => {
+    if (!online) return;
+    let current = true;
+    setLoading(true); setError("");
+    void refreshMailPages(loadPage, pageRef.current, changeToken)
+      .then(next => { if (current) setPage(next); })
+      .catch(reason => { if (current) setError(reason instanceof Error ? reason.message : "邮件读取失败"); })
+      .finally(() => { if (current) setLoading(false); });
+    return () => { current = false; };
+  }, [online, loadPage, changeToken]);
+  async function loadMore() {
+    setLoading(true); setError("");
+    try {
+      const next = await loadPage(page.nextCursor);
+      setPage({ ...next, cards: mergeMailCards(page.cards, next.cards), changeToken });
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "邮件读取失败"); }
+    finally { setLoading(false); }
+  }
+  return <>
+    {page.cards.map(renderCard)}
+    {error ? <p className="assistant-mail-empty" role="alert">{error}</p>
+      : !online ? <p className="assistant-mail-empty" role="status">连接电脑后可{query ? "搜索邮件" : "读取分类邮件"}。</p>
+      : loading && !page.cards.length ? <p className="assistant-mail-empty" role="status">正在读取邮件…</p>
+      : !page.cards.length ? <p className="assistant-mail-empty" role="status">{query ? "没有找到匹配的邮件" : "暂无邮件"}</p> : null}
+    {page.nextCursor && <button type="button" className="secondary-button assistant-mail-older" disabled={!online || loading}
+      onClick={() => void loadMore()}>更多邮件</button>}
+  </>;
 }
 
 const RECEIVER_LABELS: Record<BridgeMailAccount["state"], string> = {

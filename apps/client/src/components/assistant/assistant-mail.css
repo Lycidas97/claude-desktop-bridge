@@ -89,6 +89,14 @@
 .assistant-context-usage dd { margin: 0; font-variant-numeric: tabular-nums; }
 .assistant-binding details { margin-top: 12px; font-size: calc(13px * var(--font-scale)); }
 .assistant-mail-list { display: grid; gap: 12px; }
+.assistant-mail-search { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; padding-inline: 12px; border: 1px solid var(--line); border-radius: var(--r-input); background: var(--surface); color: var(--muted); }
+.assistant-mail-search:focus-within { border-color: var(--accent-ink); }
+.assistant-mail-search input { min-width: 0; flex: 1; min-height: 44px; border: 0; background: transparent; color: var(--text); font: inherit; }
+.assistant-mail-search input::-webkit-search-cancel-button { display: none; }
+.assistant-mail-search button { min-width: 44px; display: grid; place-items: center; }
+.assistant-mail-file-select { min-height: 36px; max-width: 100%; color: var(--accent-ink); background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-input); font: inherit; font-size: calc(13px * var(--font-scale)); }
+.assistant-page-mobile .assistant-mail-file-select { min-height: 44px; }
+.assistant-mail-folder-label { color: var(--muted); }
 .assistant-mail-junk-action { color: var(--muted); }
 .assistant-mail-junk-feedback {
   position: sticky;

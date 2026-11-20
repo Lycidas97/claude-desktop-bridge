@@ -48,7 +48,7 @@ const hooks = vi.hoisted(() => ({
   effectIndex: 0, pending: [] as Array<() => void>,
   mountedChildIdentity: undefined as string | undefined,
   readers: [] as any[],
-  mail: undefined as { cache: { cards: never[] }; referenceFor(sessionId: string): string | undefined } | undefined,
+  mail: undefined as { timelineCards: never[]; referenceFor(sessionId: string): string | undefined } | undefined,
 }));
 
 vi.mock("react", async (original) => ({
@@ -2043,7 +2043,7 @@ describe("native structured approvals", () => {
   });
 
   it("shows a referenced quick-reply command error without sending a turn", async () => {
-    hooks.mail = { cache: { cards: [] }, referenceFor: () => "host-mail-reference" };
+    hooks.mail = { timelineCards: [], referenceFor: () => "host-mail-reference" };
     const card = nativePrompt({ kind: "wrap-up", blocked: false, ask: "接下来做什么？", actions: [{ label: "帮助", message: "/help" }] });
     await card.props.onSelectOption("/help");
     await settle();
@@ -2052,7 +2052,7 @@ describe("native structured approvals", () => {
   });
 
   it("carries the current mail reference through a non-blocking native quick reply", async () => {
-    hooks.mail = { cache: { cards: [] }, referenceFor: vi.fn(() => "host-mail-reference") };
+    hooks.mail = { timelineCards: [], referenceFor: vi.fn(() => "host-mail-reference") };
     const card = nativePrompt({ kind: "wrap-up", blocked: false, ask: "接下来做什么？", actions: [{ label: "继续调查", message: "继续调查" }] });
     await card.props.onSelectOption("继续调查");
     await settle();

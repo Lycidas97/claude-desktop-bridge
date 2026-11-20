@@ -64,10 +64,10 @@ function MobileAssistantConversation({
   const assistantMail = useAssistantMail();
   const sessions = snapshot?.sessions ?? [];
   const mailCards = useMemo(() => (
-    assistantMail?.cache.cards.filter((card) => (
+    assistantMail?.timelineCards.filter((card) => (
       (card.nativeDelivery.nativeSessionId ?? snapshot?.assistantMail?.binding?.nativeSessionId) === session.sessionId
     )) ?? []
-  ), [assistantMail?.cache.cards, session.sessionId, snapshot?.assistantMail?.binding?.nativeSessionId]);
+  ), [assistantMail?.timelineCards, session.sessionId, snapshot?.assistantMail?.binding?.nativeSessionId]);
   const [refreshing, setRefreshing] = useState(false);
   const transcriptVisible = visible && alternateStage == null;
   const { sessionId, lastCompletedTurnId } = session;

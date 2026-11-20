@@ -12,10 +12,14 @@ export async function refreshMailPages(load: (cursor?: string) => Promise<Bridge
   let cards: BridgeMailCard[] = [];
   let page: BridgeMailPage;
   let cursor: string | undefined;
+  let firstPage: BridgeMailPage | undefined;
   do {
     page = await load(cursor);
     cards = mergeMailCards(cards, page.cards);
+    firstPage ??= page;
     cursor = page.nextCursor;
   } while (cursor && oldest !== undefined && (!current.nextCursor || page.cards.at(-1)!.seq > oldest));
-  return { cards, changeToken, ...(current.workspace ? { workspace: current.workspace } : {}), ...(cursor ? { nextCursor: cursor } : {}) };
+  return { cards, changeToken,
+    ...(firstPage.folderCounts ? { folderCounts: firstPage.folderCounts } : {}),
+    ...(firstPage.filedTimelineCards ? { filedTimelineCards: firstPage.filedTimelineCards } : {}), ...(current.workspace ? { workspace: current.workspace } : {}), ...(cursor ? { nextCursor: cursor } : {}) };
 }

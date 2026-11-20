@@ -208,6 +208,9 @@ export async function verifyAssistantMailHistory(page, host, steps, directory, v
   await inbox.click();
   const latest = cards.first();
   await latest.getByText("收件记录 26", { exact: true }).waitFor();
+  // Retain coverage of the legacy action and its safe-area undo on older hosts.
+  host.snapshot.host.capabilities = host.snapshot.host.capabilities.filter(value => value !== "plugin.assistant-mail.filing.v1");
+  await host.send({ kind: "snapshot", snapshot: host.snapshot });
   const emulation = await page.context().newCDPSession(page);
   try {
     await emulation.send("Emulation.setSafeAreaInsetsOverride", { insets: { top: 0, right: 0, bottom: 48, left: 0 } });
@@ -800,8 +803,10 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
     service.updateAnalysis(mailRefId, { ...analysis, category });
   }
   await group("营销与垃圾邮件").getByText("2 封", { exact: true }).waitFor();
-  await group("验证码").getByText("1 封", { exact: true }).waitFor();
-  await group("账号注册").getByText("1 封", { exact: true }).waitFor();
+  await inbox.locator(`:scope > [data-mail-id="${batchMailIds[1]}"]`).waitFor({ timeout: 5000 });
+  await inbox.locator(`:scope > [data-mail-id="${accountMail.mailRefId}"]`).waitFor();
+  assert.equal(await group("验证码").count(), 0);
+  assert.equal(await group("账号注册").count(), 0);
   assert.equal(await inbox.locator(".assistant-mail-group[open]").count(), 0);
   assert.equal(await marketing.isVisible(), false);
   await inbox.locator(`[data-mail-id="${newest.mailRefId}"]`).waitFor();
@@ -811,14 +816,29 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await marketing.waitFor();
   assert.deepEqual(await inbox.locator(".assistant-mail-group[open] [data-mail-id]").evaluateAll(items => items.map(item => item.dataset.mailId)),
     [batchMailIds[0], secondPromotion.mailRefId], "Active and older mail share one category, newest first");
-  service.updateAnalysis(batchMailIds[1], { ...analysis, category: "other" });
-  await group("验证码").waitFor({ state: "detached" });
-  await inbox.locator(`:scope > [data-mail-id="${batchMailIds[1]}"]`).waitFor();
-  assert.equal(await marketing.isVisible(), true, "A live category update leaves a different expanded group open");
+  const verification = inbox.locator(`:scope > [data-mail-id="${batchMailIds[1]}"]`);
+  await verification.getByRole("combobox", { name: "收入分类", exact: true }).selectOption("verification");
+  await verification.waitFor({ state: "detached" });
+  await group("验证码").getByText("1 封", { exact: true }).waitFor();
+  assert.equal(await marketing.isVisible(), true, "Another folder stays open after filing a mail");
   await marketing.getByRole("button", { name: "讨论此邮件", exact: true }).click();
   await reference.waitFor();
   await reference.getByRole("button", { name: "清除邮件引用" }).click();
-  steps.push("Analysis changes group mail live, groups begin folded, keyboard expansion preserves order and discussion, and other mail returns to the main list");
+  await page.getByRole("button", { name: "收件", exact: true }).click();
+  const search = page.getByRole("searchbox", { name: "搜索邮件" });
+  await search.fill(secondPromotion.subject);
+  await search.press("Enter");
+  const found = page.getByLabel("搜索结果").locator(`[data-mail-id="${secondPromotion.mailRefId}"]`);
+  await found.getByText("营销与垃圾邮件", { exact: true }).waitFor();
+  await capture("mobile-filed-mail-search");
+  await found.getByRole("button", { name: "收回收件", exact: true }).click();
+  await found.getByRole("combobox", { name: "收入分类", exact: true }).waitFor();
+  service.updateAnalysis(secondPromotion.mailRefId, { ...analysis, category: "marketing" });
+  await page.getByRole("button", { name: "清除搜索", exact: true }).click();
+  await inbox.locator(`:scope > [data-mail-id="${secondPromotion.mailRefId}"]`).waitFor();
+  await group("营销与垃圾邮件").getByText("1 封", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "对话", exact: true }).click();
+  steps.push("Only marketing files automatically; manual filing, search across saved mail, and a durable restore keep the correct counts");
   const managedMail = host.snapshot.assistantMail;
   const unexpectedTools = [
     "mcp__terminal__run_in_terminal", "mcp__Claude_Browser__preview_start", "mcp__scheduled-tasks__list_scheduled_tasks",
@@ -1084,7 +1104,7 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
 
   const headingBounds = await page.locator(".assistant-page .desktop-page-heading h1").boundingBox();
   const mailBounds = await cards().filter({ visible: true }).first().boundingBox();
-  await group("营销与垃圾邮件").getByText("2 封", { exact: true }).waitFor();
+  await group("营销与垃圾邮件").getByText("1 封", { exact: true }).waitFor();
   assert.equal(await marketing.isVisible(), false, "Desktop also folds classified mail by default");
   await group("营销与垃圾邮件").click();
   await marketing.waitFor();

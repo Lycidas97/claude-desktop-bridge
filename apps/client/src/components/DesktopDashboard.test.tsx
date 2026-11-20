@@ -1096,22 +1096,19 @@ describe("desktop conversation parity", () => {
 
   it("compensates scroll anchor when history prepends behind an older leading MailCard", async () => {
     mailContext.current = {
-      cache: {
-        changeToken: "tok",
-        cards: [{
-          seq: 1,
-          mailRefId: "mail-early",
-          accountKey: "acc",
-          mailbox: "INBOX" as const,
-          subject: "Early mail",
-          from: [{ address: "ops@example.com" }],
-          receivedAt: new Date(1).toISOString(),
-          recordedAt: 1,
-          preview: "Early preview",
-          processingStatus: "processed" as const,
-          nativeDelivery: { state: "observed" as const, nativeSessionId: "A" },
-        }],
-      },
+      timelineCards: [{
+        seq: 1,
+        mailRefId: "mail-early",
+        accountKey: "acc",
+        mailbox: "INBOX" as const,
+        subject: "Early mail",
+        from: [{ address: "ops@example.com" }],
+        receivedAt: new Date(1).toISOString(),
+        recordedAt: 1,
+        preview: "Early preview",
+        processingStatus: "processed" as const,
+        nativeDelivery: { state: "observed" as const, nativeSessionId: "A" },
+      }],
       referenceFor: () => undefined,
     };
     history = [
@@ -1585,6 +1582,7 @@ describe("unified desktop and assistant conversation composition", () => {
       loading: false,
       error: "",
       cache: { changeToken: "tok", cards: [] },
+      timelineCards: [],
       refresh: vi.fn(),
       loadOlder: vi.fn(),
       request: apiRequest,
@@ -2649,6 +2647,7 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
     }));
     mailContext.current = {
       cache: { cards: [], changeToken: "tok-2" },
+      timelineCards: [],
       unreadCount: 0,
       assistant: snapshot.assistantMail,
       selectedMail: undefined,

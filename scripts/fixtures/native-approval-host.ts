@@ -643,18 +643,15 @@ export async function startNativeApprovalHost(options: {
     },
     readFixtureProfile: () => readFile(join(workspace!.path, "PROFILE.md"), "utf8"),
     draftProposal: (action: ProposalDraftAction) => callAssistantTool("proposal.create", { action }),
-    async message(message: Record<string, unknown>, completedToolId?: string) {
+    async message(message: Record<string, unknown>, completion?: { type: "tool.completed" | "turn.completed"; itemId: string }) {
       messages.push(message);
       const after = eventLog.latestSeq();
-      // An unrelated runtime refresh can emit "changed" while the file receipt is still being read.
-      const completions = completedToolId ? on(eventLog, "event", { signal: AbortSignal.timeout(15_000) }) : undefined;
-      const changed = completions ? undefined : once(broker, "changed");
+      // A runtime refresh can emit "changed" before the requested completion is recorded.
+      const notifications = completion ? on(eventLog, "event", { signal: AbortSignal.timeout(15_000) }) : on(broker, "changed");
       inspector.emit("event", { type: "message", sessionId: options.sessionId, message });
-      if (completions) {
-        for await (const [event] of completions) {
-          if (event.type === "tool.completed" && event.sessionId === options.sessionId && event.itemId === completedToolId) break;
-        }
-      } else await changed;
+      for await (const [event] of notifications) {
+        if (!completion || (event.type === completion.type && event.sessionId === options.sessionId && event.itemId === completion.itemId)) break;
+      }
       await eventLog.flushDeltas(options.sessionId);
       return eventLog.replay(after);
     },

@@ -297,13 +297,18 @@ export async function verifyNativeQueueActions(page, host, steps, directory, rel
   } }));
   const waitingMessage = page.locator("article.conversation-item.user").filter({ hasText: waitingText });
   await waitingMessage.locator(".delivery-state.session-received").waitFor();
-  for (const message of [
-    { type: "assistant", uuid: "next-reply", message: { content: [{ type: "text", text: "上一轮的最终回复。" }] } },
-    { type: "result", uuid: "correlated-next-result", user_message_uuid: next.receipt.messageId, is_error: false },
-  ]) {
-    const events = await host.nativeApproval.message({ ...message, timestamp: Date.now() });
-    await host.syncNativeQueue({ events, history: await host.nativeApproval.history(), session: host.nativeApproval.session() });
-  }
+  const replyEvents = await host.nativeApproval.message({
+    type: "assistant", uuid: "next-reply", timestamp: Date.now(), message: { content: [{ type: "text", text: "上一轮的最终回复。" }] },
+  });
+  await host.syncNativeQueue({ events: replyEvents, history: await host.nativeApproval.history(), session: host.nativeApproval.session() });
+  // A runtime refresh can notify the fixture before the native result is recorded.
+  const [, resultEvents] = await Promise.all([
+    host.nativeApproval.commands({ kind: "request", requestId: randomUUID(), idempotencyKey: randomUUID(), method: "runtime.refresh", params: {} }),
+    host.nativeApproval.message({
+      type: "result", uuid: "correlated-next-result", user_message_uuid: next.receipt.messageId, is_error: false, timestamp: Date.now(),
+    }, { type: "turn.completed", itemId: next.receipt.messageId }),
+  ]);
+  await host.syncNativeQueue({ events: resultEvents, history: await host.nativeApproval.history(), session: host.nativeApproval.session() });
   await nextMessage.locator(".delivery-state.completed").waitFor();
   assert.equal(host.session.turnState, "running");
   assert.equal(await waitingMessage.locator(".delivery-state.session-received").count(), 1, "Another input's completion preserves the waiting receipt");

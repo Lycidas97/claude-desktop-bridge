@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { AgendaEditError } from "./agenda-store.js";
-import { smtpChannel } from "./proposal-contract.js";
+import { sharedSmtpChannel, smtpChannel } from "./proposal-contract.js";
 import { EventEmitter } from "node:events";
 import { renameSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -24,7 +24,18 @@ export interface MailAccount {
 
 const savedSmtpChannel = smtpChannel.extend({ version: z.uuid() });
 type SavedSmtpChannel = z.output<typeof savedSmtpChannel>;
-type SavedAccount = MailAccount & { enabled: boolean; pollIntervalSeconds: MailPollInterval; smtp?: SavedSmtpChannel };
+type SharedSmtpSettings = z.output<typeof sharedSmtpChannel>;
+type SavedAccount = MailAccount & { enabled: boolean; pollIntervalSeconds: MailPollInterval; smtp?: SavedSmtpChannel; smtpSharedAuth?: true };
+
+function sharedSmtpSettings(smtp: SharedSmtpSettings, user: string) {
+  if (!smtpChannel.shape.user.safeParse(user).success) throw new AgendaEditError("INVALID_PARAMS", "邮箱登录名不能用于 SMTP。");
+  return { ...smtp, user };
+}
+
+function sameSmtp(previous: SavedSmtpChannel, next: z.output<typeof smtpChannel>): boolean {
+  return previous.host === next.host && previous.port === next.port && previous.security === next.security &&
+    previous.user === next.user && previous.from === next.from;
+}
 export type MailAccountStatus = Omit<SavedAccount, "smtp"> & { accountKey: string; state: MailState; errorCode?: string;
   smtp?: Omit<SavedSmtpChannel, "version"> };
 export type MailAccountFailure = { accountKey: string; errorCode: string };
@@ -49,7 +60,7 @@ export class AssistantMailService extends EventEmitter {
   private readonly createClient: (options: ImapFlowOptions) => ImapFlow;
   private readonly accounts = new Map<string, { config: SavedAccount; receiver: MailReceiver }>();
   private readonly removingAccounts = new Map<string, MailReceiver>();
-  private readonly accountMutations = new Map<string, Promise<void>>();
+  private readonly accountMutations = new Map<string, Promise<unknown>>();
   private accountConfigError?: "mail_account_config_unavailable";
   private closed = false;
   private readonly mimeBackfillAbort = new AbortController();
@@ -90,7 +101,8 @@ export class AssistantMailService extends EventEmitter {
         const interval = config.pollIntervalSeconds;
         if (interval !== undefined && !isMailPollInterval(interval)) throw new Error("Invalid saved polling interval");
         return { ...parseAccount(config), enabled: config.enabled, pollIntervalSeconds: interval === undefined ? DEFAULT_MAIL_POLL_INTERVAL : interval,
-          ...(config.smtp ? { smtp: savedSmtpChannel.parse(config.smtp) } : {}) };
+          ...(config.smtp ? { smtp: savedSmtpChannel.parse(config.smtp),
+            ...(config.smtpSharedAuth === true ? { smtpSharedAuth: true as const } : {}) } : {}) };
       });
     } catch {
       this.accountConfigError = "mail_account_config_unavailable";
@@ -133,7 +145,7 @@ export class AssistantMailService extends EventEmitter {
     return { configured: this.accounts.size > 0, unreadCount: this.store.unreadCount() };
   }
 
-  async enable(input: { host: string; port?: number; user: string; password: string }): Promise<void> {
+  async enable(input: { host: string; port?: number | undefined; user: string; password: string; smtp?: SharedSmtpSettings | undefined; createOnly?: true }): Promise<void> {
     if (!this.credentials.supported) throw new Error("mail_credentials_unsupported");
     const config: SavedAccount = { ...parseAccount({ host: input.host, port: input.port ?? 993, user: input.user }), enabled: true,
       pollIntervalSeconds: DEFAULT_MAIL_POLL_INTERVAL };
@@ -141,10 +153,17 @@ export class AssistantMailService extends EventEmitter {
     await this.mutateAccount(key, async () => {
       const existing = this.accounts.get(key);
       if (existing) {
+        if (input.createOnly || input.smtp || existing.config.smtpSharedAuth) {
+          throw new AgendaEditError("CONFLICT", "此邮箱已添加。请在支持共用授权的 Bridge 客户端中打开账号设置。");
+        }
         await this.savePassword(key, input.password);
         if (existing.config.enabled) await this.restartReceiver(key);
         else await this.updateEnabled(key, true);
         return;
+      }
+      if (input.smtp) {
+        config.smtp = { ...sharedSmtpSettings(input.smtp, config.user), version: randomUUID() };
+        config.smtpSharedAuth = true;
       }
       this.saveAccounts([...Array.from(this.accounts.values(), account => account.config), config]);
       const account = this.addAccount(key, config);
@@ -163,46 +182,81 @@ export class AssistantMailService extends EventEmitter {
     });
   }
 
-  replacePassword(accountKey: string, password: string): Promise<void> {
+  replacePassword(accountKey: string, password: string, smtp?: SharedSmtpSettings): Promise<void> {
     return this.mutateAccount(accountKey, async () => {
-      this.requireAccount(accountKey);
-      await this.savePassword(accountKey, password);
+      const { config } = this.requireAccount(accountKey);
+      if (smtp) await this.saveSharedSmtp(accountKey, config, smtp, password);
+      else {
+        if (config.smtpSharedAuth) throw new AgendaEditError("CONFLICT", "此邮箱收发信共用密码。请在新版 Bridge 的账号设置中更新。");
+        await this.savePassword(accountKey, password);
+      }
       await this.restartReceiver(accountKey);
     });
+  }
+
+  private async saveSharedSmtp(key: string, config: SavedAccount, smtp: SharedSmtpSettings, password: string): Promise<void> {
+    const fields = sharedSmtpSettings(smtp, config.user);
+    const { smtp: previous, smtpSharedAuth } = config;
+    if (smtpSharedAuth && previous && sameSmtp(previous, fields)) {
+      await this.savePassword(key, password);
+      return;
+    }
+    const previousPassword = await this.credentials.get(key);
+    // Do not leave the old endpoint on disk while replacing the credential it would read on restart.
+    if (smtpSharedAuth) this.persistSmtp(key, config);
+    let passwordSaved = false;
+    try {
+      await this.savePassword(key, password);
+      passwordSaved = true;
+      this.persistSmtp(key, config, { ...fields, version: randomUUID() }, true);
+      if (previous && !smtpSharedAuth) await this.credentials.delete(`smtp-${previous.version}`);
+    } catch (error) {
+      if (!smtpSharedAuth && config.smtp !== previous) this.persistSmtp(key, config, previous);
+      if (passwordSaved) {
+        if (previousPassword === undefined) await this.credentials.delete(key);
+        else await this.savePassword(key, previousPassword);
+      }
+      if (smtpSharedAuth) this.persistSmtp(key, config, previous, true);
+      throw error;
+    }
+    this.emit("changed");
+  }
+
+  private persistSmtp(key: string, config: SavedAccount, smtp?: SavedSmtpChannel, shared?: true): void {
+    const { smtp: _smtp, smtpSharedAuth: _shared, ...receiving } = config;
+    this.saveAccounts(Array.from(this.accounts, ([accountKey, entry]) => accountKey === key
+      ? { ...receiving, ...(smtp ? { smtp } : {}), ...(shared ? { smtpSharedAuth: shared } : {}) } : entry.config));
+    if (smtp) config.smtp = smtp;
+    else delete config.smtp;
+    if (shared) config.smtpSharedAuth = shared;
+    else delete config.smtpSharedAuth;
   }
 
   setSmtp(accountKey: string, input: z.output<typeof smtpChannel> & { credential: string } | null): Promise<void> {
     return this.mutateAccount(accountKey, async () => {
       if (!this.credentials.supported) throw new Error("mail_credentials_unsupported");
       const { config } = this.requireAccount(accountKey);
-      const previous = config.smtp;
+      const { smtp: previous, smtpSharedAuth } = config;
       let next: SavedSmtpChannel | undefined;
       if (input) {
+        if (smtpSharedAuth) throw new AgendaEditError("UNSUPPORTED", "请更新 Bridge 客户端后修改共用的邮箱授权。");
         const { credential, ...fields } = input;
-        if (previous && previous.host === fields.host && previous.port === fields.port && previous.security === fields.security &&
-          previous.user === fields.user && previous.from === fields.from) {
+        if (previous && sameSmtp(previous, fields)) {
           await this.savePassword(`smtp-${previous.version}`, credential);
           return;
         }
         next = { ...fields, version: randomUUID() };
         await this.savePassword(`smtp-${next.version}`, credential);
       } else if (!previous) return;
-      const persist = (smtp: SavedSmtpChannel | undefined) => {
-        const { smtp: _smtp, ...receiving } = config;
-        this.saveAccounts(Array.from(this.accounts, ([key, entry]) => key === accountKey
-          ? { ...receiving, ...(smtp ? { smtp } : {}) } : entry.config));
-        if (smtp) config.smtp = smtp;
-        else delete config.smtp;
-      };
-      try { persist(next); }
+      try { this.persistSmtp(accountKey, config, next); }
       catch (error) {
         if (next) await this.credentials.delete(`smtp-${next.version}`);
         throw error;
       }
       try {
-        if (previous) await this.credentials.delete(`smtp-${previous.version}`);
+        if (previous && !smtpSharedAuth) await this.credentials.delete(`smtp-${previous.version}`);
       } catch {
-        persist(previous);
+        this.persistSmtp(accountKey, config, previous, smtpSharedAuth);
         if (next) await this.credentials.delete(`smtp-${next.version}`);
         throw new Error("mail_credentials_unavailable");
       }
@@ -215,10 +269,14 @@ export class AssistantMailService extends EventEmitter {
     if (config?.enabled && config.smtp && this.credentials.supported) return { smtp: config.smtp, label: `${config.user} · ${config.host}` };
   }
 
-  async smtpPassword(version: string): Promise<string | undefined> {
-    return this.credentials.get(`smtp-${version}`).catch((error: unknown) => {
-      if (error instanceof Error && error.message === "mail_credentials_unavailable") return undefined;
-      throw error;
+  smtpPassword(key: string, version: string): Promise<string | undefined> {
+    // A shared credential replacement and its channel update are one account operation.
+    return this.mutateAccount(key, async () => {
+      if (this.smtpAccount(key)?.smtp.version !== version) return undefined;
+      return this.credentials.get(this.accounts.get(key)!.config.smtpSharedAuth ? key : `smtp-${version}`).catch((error: unknown) => {
+        if (error instanceof Error && error.message === "mail_credentials_unavailable") return undefined;
+        throw error;
+      });
     });
   }
 
@@ -263,7 +321,7 @@ export class AssistantMailService extends EventEmitter {
     return this.mutateAccount(accountKey, async () => {
       const account = this.requireAccount(accountKey);
       if (!this.credentials.supported) throw new Error("mail_credentials_unsupported");
-      const smtpKey = account.config.smtp && `smtp-${account.config.smtp.version}`;
+      const smtpKey = account.config.smtp && !account.config.smtpSharedAuth ? `smtp-${account.config.smtp.version}` : undefined;
       const smtpPassword = smtpKey ? await this.credentials.get(smtpKey) : undefined;
       this.saveAccounts(Array.from(this.accounts.values()).filter(entry => entry !== account).map(entry => entry.config));
       this.accounts.delete(accountKey);
@@ -359,14 +417,14 @@ export class AssistantMailService extends EventEmitter {
     return { changedCount };
   }
 
-  private async mutateAccount(key: string, mutate: () => Promise<void>): Promise<void> {
+  private async mutateAccount<T>(key: string, mutate: () => Promise<T>): Promise<T> {
     if (this.accountConfigError) throw new Error(this.accountConfigError);
     const previous = this.accountMutations.get(key);
     // A failed operation still releases its turn so the next request can run.
     const pending = (previous?.catch(() => {}) ?? Promise.resolve()).then(mutate);
     this.accountMutations.set(key, pending);
     try {
-      await pending;
+      return await pending;
     } finally {
       if (this.accountMutations.get(key) === pending) this.accountMutations.delete(key);
     }

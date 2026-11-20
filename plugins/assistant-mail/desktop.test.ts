@@ -74,6 +74,114 @@ async function createService(inboxes: Inbox[] = [new Inbox()], supported = true,
   return { service, createClient, credentials };
 }
 
+it("uses one persisted credential for IMAP and SMTP, including after password replacement and restart", async () => {
+  const { service, createClient } = await createService([new Inbox(), new Inbox()]);
+  const smtp = { host: "smtp.example.test", port: 465, security: "tls", from: account.user } as const;
+  await service.enable({ ...account, smtp });
+  const { accountKey } = service.status().accounts[0]!;
+  const version = service.smtpAccount(accountKey)!.smtp.version;
+  expect(service.status().accounts[0]).toMatchObject({ smtpSharedAuth: true, smtp: { ...smtp, user: account.user } });
+  expect([...secrets]).toEqual([[accountKey, account.password]]);
+  expect(createClient.mock.calls[0]).toEqual([expect.objectContaining({ auth: { user: account.user, pass: account.password } })]);
+  expect(await service.smtpPassword(accountKey, version)).toBe(account.password);
+
+  const replacement = "rotated-fixture-value";
+  await service.replacePassword(accountKey, replacement, smtp);
+  expect(service.smtpAccount(accountKey)?.smtp.version).toBe(version);
+  expect(createClient.mock.calls[1]).toEqual([expect.objectContaining({ auth: { user: account.user, pass: replacement } })]);
+  expect(await service.smtpPassword(accountKey, version)).toBe(replacement);
+  expect([...secrets]).toEqual([[accountKey, replacement]]);
+  const saved = await readFile(join(root, "private", "assistant", "accounts.json"), "utf8");
+  expect(saved).not.toContain(replacement);
+  expect(JSON.stringify(service.status())).not.toContain(replacement);
+  await service.close();
+
+  const { service: reopened } = await createService([new Inbox()]);
+  expect(await reopened.smtpPassword(accountKey, version)).toBe(replacement);
+  await reopened.setSmtp(accountKey, null);
+  expect(reopened.smtpAccount(accountKey)).toBeUndefined();
+  expect(reopened.status().accounts[0]).not.toHaveProperty("smtpSharedAuth");
+  expect([...secrets]).toEqual([[accountKey, replacement]]);
+  expect(reopened.status().accounts[0]?.enabled).toBe(true);
+  await reopened.removeAccount(accountKey);
+  expect(secrets.size).toBe(0);
+});
+
+it.each(["update password", "add again"])("requires sending settings before changing a shared credential via %s", async method => {
+  const { service } = await createService([new Inbox(), new Inbox()]);
+  const smtp = { host: "smtp.example.test", port: 465, security: "tls", from: account.user } as const;
+  await service.enable({ ...account, smtp });
+  const { accountKey } = service.status().accounts[0]!;
+  await service.setAccountEnabled(accountKey, false);
+  const password = "receiving-only-fixture";
+  await expect(method === "update password" ? service.replacePassword(accountKey, password) : service.enable({ ...account, password }))
+    .rejects.toMatchObject({ code: "CONFLICT" });
+  expect(service.status().accounts[0]).toMatchObject({ enabled: false, smtpSharedAuth: true });
+  expect([...secrets]).toEqual([[accountKey, account.password]]);
+});
+
+it("never reads a replacement credential for the previous SMTP channel", async () => {
+  const { service, credentials } = await createService([new Inbox(), new Inbox()]);
+  const smtp = { host: "smtp.example.test", port: 465, security: "tls", from: account.user } as const;
+  await service.enable({ ...account, smtp });
+  const { accountKey } = service.status().accounts[0]!;
+  const previous = service.smtpAccount(accountKey)!.smtp;
+  let signalWritten!: () => void;
+  let finishSave!: () => void;
+  const credentialWritten = new Promise<void>(resolve => { signalWritten = resolve; });
+  const allowSave = new Promise<void>(resolve => { finishSave = resolve; });
+  credentials.set.mockImplementationOnce(async (key, password) => {
+    secrets.set(key, password);
+    signalWritten();
+    await allowSave;
+  });
+  const changing = service.replacePassword(accountKey, "new-endpoint-password", { ...smtp, host: "new.example.test" });
+  await credentialWritten;
+  const readingPreviousChannel = service.smtpPassword(accountKey, previous.version);
+  const atInterruption = JSON.parse(await readFile(join(root, "private", "assistant", "accounts.json"), "utf8"));
+  finishSave();
+  await changing;
+  expect(atInterruption[0]).not.toHaveProperty("smtp");
+  expect(await readingPreviousChannel).toBeUndefined();
+  expect(await service.smtpPassword(accountKey, service.smtpAccount(accountKey)!.smtp.version)).toBe("new-endpoint-password");
+});
+
+it("restores the legacy SMTP channel before putting back its separate IMAP password", async () => {
+  const { service, credentials } = await createService();
+  const smtp = { host: "smtp.example.test", port: 465, security: "tls", from: account.user } as const;
+  await service.enable(account);
+  const { accountKey } = service.status().accounts[0]!;
+  await service.setSmtp(accountKey, { ...smtp, user: account.user, credential: "legacy-smtp-value" });
+  const legacyChannel = service.smtpAccount(accountKey)!.smtp;
+  const before = new Map(secrets);
+  const path = join(root, "private", "assistant", "accounts.json");
+  let atRestore;
+  credentials.delete.mockRejectedValueOnce(new Error("mail_credentials_unavailable"));
+  credentials.set.mockImplementation(async (key, password) => {
+    secrets.set(key, password);
+    if (password === account.password) atRestore = JSON.parse(await readFile(path, "utf8"))[0];
+  });
+  await expect(service.replacePassword(accountKey, "new-shared-value", { ...smtp, host: "new.example.test" }))
+    .rejects.toThrow("mail_credentials_unavailable");
+  expect(atRestore).toMatchObject({ smtp: legacyChannel });
+  expect(atRestore).not.toHaveProperty("smtpSharedAuth");
+  expect(secrets).toEqual(before);
+});
+
+it.each(["account settings", "Keychain"])("keeps the existing channel and password when %s cannot be written", async boundary => {
+  const { service, credentials } = await createService();
+  const smtp = { host: "smtp.example.test", port: 465, security: "tls", from: account.user } as const;
+  await service.enable({ ...account, smtp });
+  const { accountKey } = service.status().accounts[0]!;
+  const previous = service.smtpAccount(accountKey)!.smtp;
+  if (boundary === "account settings") await mkdir(join(root, "private", "assistant", "accounts.json.tmp"));
+  else credentials.set.mockRejectedValueOnce(new Error("mail_credentials_unavailable"));
+  await expect(service.replacePassword(accountKey, "unsaved-password", { ...smtp, host: "new.example.test" }))
+    .rejects.toThrow(boundary === "account settings" ? "mail_storage_failed" : "mail_credentials_unavailable");
+  expect(service.smtpAccount(accountKey)?.smtp).toEqual(previous);
+  expect([...secrets]).toEqual([[accountKey, account.password]]);
+});
+
 it("can subscribe before cold-start IMAP catch-up commits its first new mail", async () => {
   const { service: first } = await createService();
   await first.enable(account);

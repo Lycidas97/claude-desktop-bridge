@@ -18,6 +18,7 @@ export function isMailPollInterval(value: unknown): value is MailPollInterval {
   return value === null || MAIL_POLL_INTERVALS.some(seconds => value === seconds);
 }
 
+export const ASSISTANT_MAIL_SHARED_AUTH_CAPABILITY = "plugin.assistant-mail.shared-auth.v1";
 export const ASSISTANT_SMTP_CAPABILITY = "plugin.assistant-mail.smtp.v1";
 
 export interface BridgeSmtpChannel {
@@ -39,6 +40,7 @@ export interface BridgeMailAccount {
   receivingMode?: "polling";
   errorCode?: string;
   smtp?: BridgeSmtpChannel;
+  smtpSharedAuth?: true;
 }
 
 export const ASSISTANT_WORKSPACE_POLICY = "stage1-fenced-workspace";

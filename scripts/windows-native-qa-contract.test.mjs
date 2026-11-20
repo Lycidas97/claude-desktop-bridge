@@ -150,7 +150,7 @@ test("packaged QA reads mail only when declared and keeps automatic delivery clo
   const withoutMail = await runQa(nativeSnapshot());
   assert.equal(withoutMail.requests.includes("plugin.assistant-mail.list"), false);
   const snapshot = nativeSnapshot();
-  snapshot.host.capabilities.push("plugin.assistant-agenda.v1", "plugin.assistant-agenda.day.v1", "plugin.assistant-mail.v1", "plugin.assistant-mail.account.v1", "plugin.assistant-mail.polling.v1", "plugin.assistant-mail.workspace.v1", "plugin.assistant-mail.attachments.v1", "plugin.assistant-mail.history.v1", "plugin.assistant-mail.triggers.v1", "plugin.assistant-mail.batches.v1");
+  snapshot.host.capabilities.push("plugin.assistant-agenda.v1", "plugin.assistant-agenda.day.v1", "plugin.assistant-mail.v1", "plugin.assistant-mail.account.v1", "plugin.assistant-mail.shared-auth.v1", "plugin.assistant-mail.polling.v1", "plugin.assistant-mail.workspace.v1", "plugin.assistant-mail.attachments.v1", "plugin.assistant-mail.history.v1", "plugin.assistant-mail.triggers.v1", "plugin.assistant-mail.batches.v1");
   snapshot.assistantAgenda = { changeToken: "fixture", credentialsSupported: true, sources: [{ id: "local", label: "本地", writable: true, enabled: true, configurable: false, status: "ready" }] };
   snapshot.assistantMail = { bindingState: "unbound", receiverState: "disabled", accounts: [], credentialsSupported: false, changeToken: "fixture", automaticDelivery: false };
   const result = await runQa(snapshot, { "plugin.assistant-mail.list": { ok: true, result: { mailPage: { cards: [] } } } });

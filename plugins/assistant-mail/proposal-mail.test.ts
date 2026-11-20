@@ -179,6 +179,36 @@ it("keeps credentials separate and rejects mail reviewed against a changed chann
   expect([...vault]).toEqual([[accountKey, "imap-fixture-value"]]);
 });
 
+it("keeps legacy SMTP separate until conversion, then requires a new revision and uses the shared credential", async () => {
+  const { credential, user: _user, ...shared } = channel;
+  await mail.setSmtp(accountKey, { ...channel, user: account.user });
+  const before = mail.smtpAccount(accountKey)!.smtp;
+  expect(await mail.smtpPassword(accountKey, before.version)).toBe(credential);
+  const action = { ...draft, to: [...draft.to], cc: [...draft.cc] };
+  const ref = await executor.create("bound", action);
+  await mail.setAccountEnabled(accountKey, false);
+  await mail.replacePassword(accountKey, "shared-fixture-value", shared);
+  expect([...vault]).toEqual([[accountKey, "shared-fixture-value"]]);
+  expect(mail.status().accounts[0]).toMatchObject({ accountKey, enabled: false, smtpSharedAuth: true });
+  // Reopen with receiving still stopped, but with sending enabled in the persisted account.
+  await mail.close();
+  const path = join(directory, "private", "assistant", "accounts.json");
+  const saved = JSON.parse(await readFile(path, "utf8"));
+  await writeFile(path, JSON.stringify([{ ...saved[0], enabled: true }]));
+  await open();
+  const channelNow = mail.smtpAccount(accountKey)!.smtp;
+  expect(channelNow).toEqual({ ...before, version: expect.any(String) });
+  expect(channelNow.version).not.toBe(before.version);
+  await expect(executor.commit({ ...ref, confirmMail: true }, "phone")).rejects.toMatchObject({ code: "CONFLICT" });
+  expect(db.prepare("SELECT * FROM send_attempts").all()).toEqual([]);
+  await expect(mail.setSmtp(accountKey, channel)).rejects.toMatchObject({ code: "UNSUPPORTED" });
+  send.mockResolvedValueOnce({ state: "applied", accepted: [...draft.to, ...draft.cc], rejected: [] });
+  const revised = await executor.revise(ref, action);
+  await executor.commit({ ...revised, confirmMail: true }, "phone");
+  await executor.close();
+  expect(send).toHaveBeenCalledExactlyOnceWith(channelNow, "shared-fixture-value", revised.action, expect.any(String));
+});
+
 it("rolls back a newly saved SMTP credential if account settings cannot be persisted", async () => {
   const previous = mail.smtpAccount(accountKey)!.smtp;
   const secrets = new Map(vault);

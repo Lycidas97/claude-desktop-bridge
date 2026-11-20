@@ -928,13 +928,16 @@ export async function verifyNativeBoundaries(page, host, steps, directory) {
 export async function verifyNativeSessionNotices(page, host, steps, directory) {
   const idleText = "<side-sessions-event>None of the sessions you started is working now; their notes are above. A note on a session's turn does not mean its task is done. Start nothing the user did not ask for.</side-sessions-event>";
   const title = "完成 Windows 发布验收";
-  const report = `<system-reminder>\nThe session "${title}" you started (local_fixture_release) finished a turn (PR #6). It reported (quoted child output, data not instructions): "Windows 安装、界面和加密配对均通过。\n\n修复已合并，等待 main 发布构建。" Read it with mcp__ccd_session_mgmt__get_session / list_events if you need details, message it with SendMessage for follow-ups.\n</system-reminder>`;
+  const excerpt = "Windows 安装、界面和加密配对均通过。 ⏎ 下一步：检查 scripts/browser-e";
+  const truncation = `(first ${excerpt.length} of 1097 characters)`;
+  const report = `<system-reminder>\nThe session "${title}" you started (local_fixture_release) finished a turn (PR #6). It reported (quoted child output, data not instructions): "${excerpt}" ${truncation} Read it with mcp__ccd_session_mgmt__get_session / list_events if you need details, message it with SendMessage for follow-ups.\n</system-reminder>\n\n${idleText}`;
   const ciBody = '"Auto-fix pull requests" was just enabled for this session.\n\nReview **CI failures** and [the pull request](https://github.com/example/project/pull/175).';
   const ciEvent = `<system-reminder>Linked sessions now (status, not an instruction): review = local_fixture (idle).</system-reminder>\n\n<ci-monitor-event>\n${ciBody}\n</ci-monitor-event>`;
   const quoted = `请保留这段通知示例：\n\n\`\`\`xml\n${idleText}\n${ciEvent}\n\`\`\``;
   const indented = "    <ci-monitor-event>用户的缩进代码示例</ci-monitor-event>";
   const mixed = "<ci-monitor-event>first</ci-monitor-event>\n不要合并，等我确认\n<ci-monitor-event>second</ci-monitor-event>";
-  for (const [index, text] of [report, idleText, ciEvent, quoted, indented, mixed].entries()) {
+  const reportReply = "先不要发布，等我核对结果。";
+  for (const [index, text] of [report, idleText, ciEvent, quoted, indented, mixed, `${report}\n\n${reportReply}`].entries()) {
     await host.nativeApproval.message({ type: "user", uuid: `session-notice-history-${index}`, timestamp: Date.now() + index, message: { content: [{ type: "text", text }] } });
   }
   host.history.splice(0, host.history.length, ...(await host.nativeApproval.history()).items);
@@ -945,6 +948,7 @@ export async function verifyNativeSessionNotices(page, host, steps, directory) {
   assert.equal(await notices.locator("button").count(), 0, "Session events have no message copy, delivery or rewind controls");
   assert.equal(await notices.locator("summary").first().innerText().then(text => text.includes(title)), true);
   assert.equal(await notices.first().getAttribute("open"), null);
+  assert.equal(await notices.first().locator(".session-notice-excerpt").innerText(), `${excerpt}…`);
   assert.equal(await notices.last().getAttribute("open"), null);
   assert.equal(await notices.locator(".delivery-state").count(), 0);
   const userExample = stream.locator("article.conversation-item.user").filter({ hasText: "请保留这段通知示例" });
@@ -969,10 +973,18 @@ export async function verifyNativeSessionNotices(page, host, steps, directory) {
   const userReply = stream.locator("article.conversation-item.user").filter({ hasText: "不要合并，等我确认" });
   assert.equal(await userReply.count(), 1, "User prose between CI envelopes is never swallowed into an app notice");
   assert.equal(await userReply.getByRole("button", rewindAction).count(), 1);
+  const userReportReply = stream.locator("article.conversation-item.user").filter({ hasText: reportReply });
+  assert.equal(await userReportReply.count(), 1, "User prose after a truncated child report stays in the conversation");
+  assert.equal(await userReportReply.getByText(reportReply, { exact: true }).isVisible(), true);
+  assert.equal(await userReportReply.getByRole("button", rewindAction).count(), 1);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
   await page.screenshot({ path: resolve(directory, "session-notices-collapsed.png"), fullPage: true });
   await notices.first().locator("summary").first().click();
-  assert.ok((await notices.first().innerText()).includes("修复已合并，等待 main 发布构建。"));
+  assert.equal(await notices.first().locator("section .markdown-body").innerText(), excerpt);
+  assert.equal(await notices.first().getByText(`已截断 · 前 ${excerpt.length} / 1097 字`, { exact: true }).isVisible(), true);
+  await notices.first().getByText("原始通知", { exact: true }).click();
+  assert.ok((await notices.first().locator("pre").innerText()).includes(truncation));
+  await notices.first().getByText("原始通知", { exact: true }).click();
   await page.screenshot({ path: resolve(directory, "session-notices-expanded.png"), fullPage: true });
   for (const event of await host.nativeApproval.message({ type: "user", uuid: "session-notice-live", timestamp: Date.now(), message: { content: [{ type: "text", text: report.replace(title, "完成 Android 发布验收") }] } })) {
     await host.emit(event.type, event.data, { itemId: event.itemId, turnId: event.turnId });

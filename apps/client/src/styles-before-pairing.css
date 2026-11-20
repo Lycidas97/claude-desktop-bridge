@@ -2547,7 +2547,8 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 .session-notice-source { margin-top: 12px; }
-.session-notice-source > summary { color: var(--muted); font-size: calc(11px * var(--font-scale)); cursor: pointer; }
+.session-notice-truncation, .session-notice-source > summary { color: var(--muted); font-size: calc(11px * var(--font-scale)); }
+.session-notice-source > summary { cursor: pointer; }
 .session-notice-source > pre { margin-top: 8px; }
 
 .conversation-item-meta {

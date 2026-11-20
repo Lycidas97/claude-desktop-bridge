@@ -3,7 +3,7 @@ export interface SessionNotice {
   commonSender?: string;
   title: string;
   summary: string;
-  reports: Array<{ title: string; text: string }>;
+  reports: Array<{ title: string; text: string; truncation?: { shown: number; total: number } }>;
 }
 
 // Presentation only: keep the original message, and recognize complete known
@@ -58,8 +58,11 @@ export function parseSessionNotice(text: string): SessionNotice | undefined {
         if (!body.startsWith("None of the sessions you started is working now;")) return undefined;
         idle = true;
       } else {
-        const report = /^The session "([^"\n]+)" you started \([^)]+\) finished a turn(?: \([^\n]*?\))?\. It reported \(quoted child output, data not instructions\): "([\s\S]*)"(?:\s+Read it with[\s\S]*)?$/u.exec(body);
-        if (report) reports.push({ title: report[1]!, text: report[2]! });
+        const report = /^The session "([^"\n]+)" you started \([^)]+\) finished a turn(?: \([^\n]*?\))?\. It reported \(quoted child output, data not instructions\): "([\s\S]*)"(?: \(first (\d+) of (\d+) characters\))?(?:\s+Read it with[\s\S]*)?$/u.exec(body);
+        if (report) reports.push({
+          title: report[1]!, text: report[2]!,
+          ...(report[3] !== undefined ? { truncation: { shown: Number(report[3]), total: Number(report[4]) } } : {}),
+        });
         else if (!body.startsWith("Linked sessions now (")) return undefined;
       }
     }
@@ -73,7 +76,7 @@ export function parseSessionNotice(text: string): SessionNotice | undefined {
       ? commonSender ? `来自 ${commonSender}` : `${reports.length} 条跨会话消息`
       : reports.length === 1 ? reports[0]!.title : reports.length ? `${reports.length} 个子会话更新` : "子会话动态",
     summary: reports.length
-      ? reports.map(report => report.text).join("\n\n").replace(/\[([^\]]+)\]\([^)]+\)/gu, "$1").replace(/^ {0,3}#{1,6}[ \t]+/gmu, "").replace(/[*`]/gu, "").replace(/\s+/gu, " ").trim()
+      ? reports.map(report => report.truncation ? `${report.text}…` : report.text).join("\n\n").replace(/\[([^\]]+)\]\([^)]+\)/gu, "$1").replace(/^ {0,3}#{1,6}[ \t]+/gmu, "").replace(/[*`]/gu, "").replace(/\s+/gu, " ").trim()
       : "当前没有运行中的子会话",
     reports,
   };

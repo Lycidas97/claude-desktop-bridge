@@ -25,6 +25,7 @@ export function SessionNoticeCard({ notice, source, itemId, entering = false, on
           <section key={index}>
             {notice.reports.length > 1 && !notice.commonSender && <strong>{report.title}</strong>}
             <MarkdownText text={report.text} collapsible={false} {...(onFileClick ? { onFileClick } : {})} />
+            {report.truncation && <small className="session-notice-truncation">已截断 · 前 {report.truncation.shown} / {report.truncation.total} 字</small>}
           </section>
         ))}
         {!notice.kind && (notice.reports.length ? (

@@ -134,10 +134,17 @@ export async function serveAssistantMailTools(options: {
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   const connectionPath = join(options.userDataPath, "private", "assistant", "mail-tools.json");
+  const marker = connectionPath + MAIL_TOOLS_STOP_SUFFIX;
+  const publishState = async (state: "running" | "stopped") => {
+    const pending = `${marker}.${process.pid}.tmp`;
+    await writeFile(pending, state, { mode: 0o600 });
+    await rename(pending, marker);
+  };
   try {
     const address = server.address() as { port: number };
     await writeFile(connectionPath, JSON.stringify({ port: address.port, token }), { mode: 0o600 });
     await chmod(connectionPath, 0o600);
+    await publishState("running");
   } catch (error) {
     server.close();
     throw error;
@@ -147,12 +154,6 @@ export async function serveAssistantMailTools(options: {
       server.close(error => error ? reject(error) : resolve());
       server.closeAllConnections();
     });
-    if (stopManagedAdapters) {
-      const marker = connectionPath + MAIL_TOOLS_STOP_SUFFIX;
-      const generation = randomBytes(16).toString("hex");
-      const pending = `${marker}.${generation}.tmp`;
-      await writeFile(pending, generation, { mode: 0o600 });
-      await rename(pending, marker);
-    }
+    if (stopManagedAdapters) await publishState("stopped");
   } };
 }

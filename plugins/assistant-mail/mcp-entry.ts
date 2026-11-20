@@ -14,15 +14,17 @@ if (mode && !managedToken) throw new Error("Managed assistant session token is r
 const server = createMailMcpServer(connectionPath, managedToken, mode === "--managed-memory");
 if (mode) {
   const marker = connectionPath + MAIL_TOOLS_STOP_SUFFIX;
-  const readGeneration = () => {
-    try { return readFileSync(marker, "utf8"); } catch (error) {
+  const checkStopped = () => {
+    try {
+      if (readFileSync(marker, "utf8") === "stopped") process.exit(0);
+    } catch (error) {
       if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
     }
   };
-  const generation = readGeneration();
   const watcher = watch(dirname(marker), { persistent: false }, (_event, name) => {
-    if ((name === null || name === basename(marker)) && readGeneration() !== generation) process.exit(0);
+    if (name === null || name === basename(marker)) checkStopped();
   });
+  checkStopped();
   process.stdin.once("end", () => watcher.close());
 }
 process.stdin.once("end", () => { void server.close(); });

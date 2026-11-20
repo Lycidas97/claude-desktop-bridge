@@ -15,12 +15,14 @@ const timeZone = z.string().min(1).max(128).refine(value => {
   try { new Intl.DateTimeFormat("en", { timeZone: value }); return true; }
   catch (error) { if (error instanceof RangeError) return false; throw error; }
 });
-export const eventInput = z.strictObject({
+const eventFields = {
   title, notes, startAt: timestamp, endAt: timestamp, allDay: z.boolean(), timeZone,
   location: z.string().max(1000).optional(),
-}).refine(({ startAt, endAt, allDay }) => startAt < endAt && [startAt, endAt].every(value => (value.length === 10) === allDay), {
-  message: "The end must follow the start, with matching date or time fields",
-});
+};
+const eventRange = ({ startAt, endAt, allDay }: { startAt: string; endAt: string; allDay: boolean }) =>
+  startAt < endAt && [startAt, endAt].every(value => (value.length === 10) === allDay);
+const eventRangeError = "The end must follow the start, with matching date or time fields";
+export const eventInput = z.strictObject(eventFields).refine(eventRange, eventRangeError);
 const page = {
   cursor: z.string().regex(/^(?:~|[0-9TZ:.-]{10,28})\|[a-f0-9-]{36,64}$/).optional(), limit: z.number().int().min(1).max(100).optional(),
 };
@@ -42,7 +44,7 @@ export const agendaRequests = {
   "plugin.assistant-agenda.event.list": eventPage.extend({ allDayOn: z.iso.date().optional() })
     .refine(query => query.allDayOn ? validDay(query, query.allDayOn) : validWindow(query)),
   "plugin.assistant-agenda.todo.save": z.strictObject({ existing: existing.optional(), value: todoInput }),
-  "plugin.assistant-agenda.event.save": z.strictObject({ existing: existing.optional(), value: eventInput }),
+  "plugin.assistant-agenda.event.save": z.strictObject({ existing: existing.optional(), value: z.strictObject({ ...eventFields, remindAt: instant.optional() }).refine(eventRange, eventRangeError) }),
   "plugin.assistant-agenda.todo.complete": z.strictObject({ ...existing.shape, completed: z.boolean() }),
   "plugin.assistant-agenda.source.add": z.strictObject({ label: title, url: z.url({ protocol: /^https$/ }).max(1500), user: z.string().trim().min(1).max(320).refine(value => !value.includes(":")), credential: secret }),
   "plugin.assistant-agenda.source.credential": z.strictObject({ id, credential: secret }),

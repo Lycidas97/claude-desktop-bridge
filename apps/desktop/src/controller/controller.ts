@@ -148,7 +148,7 @@ export class DesktopController extends EventEmitter {
             });
             this.queuePublish();
           },
-        }, assistantWorkspace)
+        }, assistantWorkspace, assistantAgenda)
       : undefined;
   }
 
@@ -209,7 +209,10 @@ export class DesktopController extends EventEmitter {
       }
       if (event.type !== "runtime.updated" || event.itemId !== "session:subagent-activity") this.queuePublish();
     });
-    this.assistantMailCoordinator?.start();
+    if (this.assistantMailCoordinator) {
+      this.assistantMailCoordinator.start();
+      this.broker.on("assistant.user-reply", this.assistantMailCoordinator.replyReceived);
+    }
     this.assistantAgenda?.on("changed", this.onAgendaChanged);
     this.proposals?.on("changed", this.onProposalsChanged);
     this.broker.on("system.init", (sessionId: string, tools: string[]) => {
@@ -656,7 +659,10 @@ export class DesktopController extends EventEmitter {
   }
 
   async close(): Promise<void> {
-    this.assistantMailCoordinator?.close();
+    if (this.assistantMailCoordinator) {
+      this.broker.off("assistant.user-reply", this.assistantMailCoordinator.replyReceived);
+      this.assistantMailCoordinator.close();
+    }
     this.assistantAgenda?.off("changed", this.onAgendaChanged);
     this.proposals?.off("changed", this.onProposalsChanged);
     this.uploads.close();

@@ -1,0 +1,26 @@
+.assistant-attention {
+  flex: none;
+  align-self: center;
+  box-sizing: border-box;
+  width: min(calc(100% - 32px), 772px);
+  margin: 0 auto 6px;
+  border-block-end: 1px solid var(--line);
+}
+.assistant-attention > summary, .assistant-attention li > button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  color: inherit;
+  cursor: pointer;
+  text-align: start;
+}
+.assistant-attention > summary { list-style: none; font-weight: 600; }
+.assistant-attention > summary::-webkit-details-marker { display: none; }
+.assistant-attention[open] > summary > svg { transform: rotate(90deg); }
+.assistant-attention ul { list-style: none; padding: 0; margin: 0; max-height: min(260px, 32dvh); overflow: auto; }
+.assistant-attention li + li { border-block-start: 1px solid var(--line); }
+.assistant-attention li > button { width: 100%; padding: 6px 0; justify-content: space-between; background: none; border: 0; }
+.assistant-attention li > button > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.assistant-attention li > button > small { flex: none; color: var(--muted); }
+.assistant-attention-original { font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }

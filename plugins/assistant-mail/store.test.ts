@@ -46,6 +46,42 @@ it("ignores historical UIDs on enable and resumes the committed watermark after 
   expect(store.page().events).toEqual([event]);
 });
 
+it("projects the original screening deadline and separates user attention from read and processing state", async () => {
+  store.openMailbox("test-account", "1", 5);
+  const { mailRefId: id, recordedAt } = (await store.record(message()))!;
+  const deadline = recordedAt + 600_000;
+  const analysis = { summary: "screened", suggestions: [], questions: [] };
+  expect(store.attention(false, recordedAt).items).toMatchObject([{ id, reason: "new" }]);
+  expect(store.attention(true, deadline - 1)).toEqual({ items: [], nextAt: deadline });
+  store.setProcessingStatus(id, "processed");
+  store.markRead([id]);
+  expect(store.attention(true, deadline).items).toMatchObject([{ id, reason: "unscreened" }]);
+  store.updateAnalysis(id, { ...analysis, attention: "read" });
+  expect(store.attention(true, deadline).items).toMatchObject([{ id, reason: "read" }]);
+  store.acknowledgeAttention("mail", id);
+  expect(store.attention(false, deadline).items).toEqual([]);
+  store.updateAnalysis(id, { ...analysis, attention: "action" });
+  store.updateAnalysis(id, { ...analysis, summary: "updated" });
+  expect(store.attention(false, deadline).items).toMatchObject([{ id, reason: "action" }]);
+  expect(store.attention(true, deadline).items).toMatchObject([{ id, reason: "action" }]);
+  store.acknowledgeAttention("mail-action", id);
+  store.close();
+  store = new AssistantMailStore(root);
+  await store.initialize();
+  expect(store.attention(true, deadline).items).toEqual([]);
+  expect(store.page().events[0]).toMatchObject({ processingStatus: "processed", hostRead: true });
+});
+
+it("remembers separately acknowledged replies only for the current binding", () => {
+  store.recordReply("current", "first", "First");
+  store.recordReply("current", "second", "Second");
+  store.recordReply("previous", "old", "Old");
+  expect(store.attention(false, 0, "current").items.map(item => item.id)).toEqual(["second", "first"]);
+  store.acknowledgeAttention("reply", "second");
+  expect(store.recordReply("current", "second", "Duplicate")).toBe(false);
+  expect(store.attention(false, 0, "current").items.map(item => item.id)).toEqual(["first"]);
+});
+
 it("deduplicates the full IMAP identity without replacing committed raw content", async () => {
   store.openMailbox("test-account", "1", 5);
   const event = await store.record(message());
@@ -226,7 +262,7 @@ it("creates the assistant business tables and private POSIX files including WAL/
   const database = new DatabaseSync(join(store.directory, "assistant.sqlite"));
   openDatabases.push(database);
   expect(database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all().map(row => row.name))
-    .toEqual(["assistant_binding", "assistant_managed_binding", "imap_history", "imap_watermarks", "mail_events", "trigger_batches", "trigger_deliveries"]);
+    .toEqual(["assistant_attention_ack", "assistant_attention_baseline", "assistant_attention_replies", "assistant_binding", "assistant_managed_binding", "imap_history", "imap_watermarks", "mail_events", "trigger_batches", "trigger_deliveries"]);
   if (process.platform === "win32") return;
   for (const path of [join(root, "private"), store.directory, join(store.directory, "raw-mail")]) {
     expect((await fs.stat(path)).mode & 0o777).toBe(0o700);

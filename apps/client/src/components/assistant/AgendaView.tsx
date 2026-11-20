@@ -5,6 +5,7 @@ import { agendaCalendarDate, agendaInputTime, agendaInstant, agendaTimedRange } 
 import { IconButton } from "../common/IconButton.js";
 import { Sheet } from "../common/Sheet.js";
 import { agendaDeviceZone as deviceZone, useAssistantAgenda } from "./AssistantAgendaProvider.js";
+import { useAssistantMail } from "./AssistantMailProvider.js";
 import "./assistant-agenda.css";
 
 const dayLabel = new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric", weekday: "short" });
@@ -97,6 +98,7 @@ export function AgendaView() {
         </div> : <>
           <small>{record.allDay ? `全天${record.startAt === groupedDay ? "" : ` ${record.startAt}`}${record.endAt === shiftDate(record.startAt, 1) ? "" : ` 至 ${shiftDate(record.endAt, -1)}`}`
             : agendaTimedRange(record.startAt, record.endAt, record.timeZone, deviceZone, groupedDay)}</small>
+          {record.remindAt && <small>提醒 {displayTime(record.remindAt)}</small>}
           {record.location && <small>{record.location}</small>}
           {!!record.attendees?.length && <small>{record.attendees.join("、")}</small>}
         </>}
@@ -179,6 +181,7 @@ function AgendaEditor({ editor, onClose }: { editor: Editor; onClose(): void }) 
   const [end, setEnd] = useState(() => event ? event.allDay ? shiftDate(event.endAt, -1) : agendaInputTime(event.endAt, timeZone) : `${start.slice(0, 10)}T10:00`);
   const title = editor.type === "todo" ? (todo ? "编辑待办" : "新建待办") : (event ? "编辑日程" : "新建日程");
   const record = editor.record;
+  const supportsReminder = useAssistantMail()?.attention !== undefined;
 
   async function save(submission: FormEvent<HTMLFormElement>) {
     submission.preventDefault();
@@ -209,6 +212,8 @@ function AgendaEditor({ editor, onClose }: { editor: Editor; onClose(): void }) 
         if (startAt >= endAt) throw new Error(allDay ? "结束日期不能早于开始日期。" : "结束时间必须晚于开始时间。");
         const location = String(form.get("location")).trim();
         const value: AgendaEventInput = { ...fields, startAt, endAt, timeZone: zone, allDay, ...(location ? { location } : {}) };
+        const reminder = String(form.get("eventReminder") ?? "");
+        if (reminder) value.remindAt = agendaInstant(reminder, deviceZone, event?.remindAt);
         await agenda.mutate("plugin.assistant-agenda.event.save", { existing, value });
         agenda.selectDate(agendaCalendarDate(startAt, allDay));
       }
@@ -256,6 +261,7 @@ function AgendaEditor({ editor, onClose }: { editor: Editor; onClose(): void }) 
             {!timeZones.has(timeZone) && <option value={timeZone}>{timeZone}</option>}
             {[...timeZones].map(zone => <option key={zone} value={zone}>{zone}</option>)}
           </select></label>
+          {supportsReminder && <label>提醒时间<input name="eventReminder" type="datetime-local" defaultValue={event?.remindAt && agendaInputTime(event.remindAt, deviceZone)} /></label>}
           <label>地点<input name="location" maxLength={1000} defaultValue={event?.location} /></label>
         </>}
         <label>备注<textarea name="notes" maxLength={8000} rows={3} defaultValue={record?.notes} /></label>

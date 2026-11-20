@@ -199,15 +199,19 @@ function expandSeries(items: Timing[], fallback: AgendaZone, window: AgendaWindo
   return instances;
 }
 
-function todoFields({ item: { component, zone, endAt }, start, recurrenceId, endAt: periodEnd }: Instance) {
-  const dueAt = periodEnd ?? endAt(start);
+function alarmTime(component: ICAL.Component, zone: AgendaZone, startAt?: string, endAt?: string) {
   const alarm = component.getFirstSubcomponent("valarm")?.getFirstProperty("trigger");
   const trigger = alarm?.getFirstValue();
-  let remindAt = trigger instanceof ICAL.Time ? timestamp(trigger, zone) : undefined;
+  if (trigger instanceof ICAL.Time) return timestamp(trigger, zone);
   if (trigger instanceof ICAL.Duration) {
-    const anchor = alarm?.getFirstParameter("related")?.toUpperCase() === "END" ? dueAt : start && timestamp(start, zone);
-    if (anchor) remindAt = new Date(agendaInstant(anchor, zone) + trigger.toSeconds() * 1000).toISOString();
+    const anchor = alarm?.getFirstParameter("related")?.toUpperCase() === "END" ? endAt : startAt;
+    if (anchor) return new Date(agendaInstant(anchor, zone) + trigger.toSeconds() * 1000).toISOString();
   }
+}
+
+function todoFields({ item: { component, zone, endAt }, start, recurrenceId, endAt: periodEnd }: Instance) {
+  const dueAt = periodEnd ?? endAt(start);
+  const remindAt = alarmTime(component, zone, start && timestamp(start, zone), dueAt);
   const status = text(component, "status", 32)?.toUpperCase();
   const priority = component.getFirstPropertyValue("priority");
   return {
@@ -248,7 +252,8 @@ export function parseAgendaObject(data: string, fallbackZone: AgendaZone, option
       eventRecords.push({
         title: text(component, "summary", 500) || "无标题日程",
         notes: text(component, "description", 8000), location: text(component, "location", 1000),
-        startAt, endAt: end, timeZone: typeof zone === "string" ? zone : zone === utc ? "UTC" : zone.tzid,
+        startAt, endAt: end, remindAt: alarmTime(component, zone, startAt, end),
+        timeZone: typeof zone === "string" ? zone : zone === utc ? "UTC" : zone.tzid,
         allDay: start!.isDate, recurrenceId,
         attendees: component.getAllProperties("attendee").slice(0, 30).map(property =>
           String(property.getFirstParameter("cn") ?? property.getFirstValue()).slice(0, 320)),

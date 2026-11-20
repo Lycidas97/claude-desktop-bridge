@@ -4,6 +4,7 @@ import type {
   AgendaDueDay, AgendaEventInput, AgendaPage, AgendaPageQuery, AgendaRecordIdentity, AgendaTodoInput, AgendaWindow,
   BridgeAgendaEvent, BridgeAgendaSource, BridgeAgendaTodo,
 } from "../../packages/protocol/src/assistant-agenda.js";
+import type { AssistantAttentionItem } from "../../packages/protocol/src/assistant-mail.js";
 import { AgendaExpansionLimitError, parseAgendaObject } from "./agenda-ical.js";
 import { agendaInstant, collectionZone } from "./agenda-time.js";
 
@@ -230,6 +231,62 @@ export class AgendaStore {
     } else this.db.prepare(`INSERT INTO ${table} (id, source_id, revision, value) VALUES (?, 'local', 1, ?)`)
       .run(id, JSON.stringify(record));
     return record;
+  }
+
+  attention(now: number, seen: ReadonlySet<string>) {
+    const items: AssistantAttentionItem[] = [];
+    // Use the same one-year horizon as the agenda's recurring task projection.
+    let nextAt = now + 86_400_000;
+    const window = { from: new Date(now).toISOString(), to: new Date(now + 366 * 86_400_000).toISOString() };
+    const todos = this.db.prepare(`SELECT value FROM todos
+      WHERE status IN ('pending','in-progress') AND (due_at IS NOT NULL OR json_extract(value, '$.remindAt') IS NOT NULL)
+      AND NOT EXISTS (SELECT 1 FROM agenda_caldav_objects object
+        WHERE object.source_id = todos.source_id AND object.href = todos.href AND (object.recurring & 2) != 0)`)
+      .all().map(row => JSON.parse(row.value as string) as BridgeAgendaTodo);
+    for (const row of this.recurringObjects(2)) {
+      try {
+        const { uid, todos: records } = parseAgendaObject(row.data, collectionZone(row.calendar_timezone, this.timeZone), {
+          todos: { limit: 100, closed: 0, date: "" },
+        });
+        for (const record of records) if (record.status === "pending" || record.status === "in-progress") {
+          todos.push({ ...record, ...this.importedIdentity(row, uid, record.recurrenceId) });
+        }
+      } catch (error) { if (!(error instanceof AgendaExpansionLimitError)) throw error; }
+    }
+    for (const { id, title, dueAt, remindAt } of todos) {
+      const at = Math.min(dueAt ? agendaInstant(dueAt, this.timeZone) : Infinity, remindAt ? agendaInstant(remindAt, this.timeZone) : Infinity);
+      if (at <= now) items.push({ kind: "todo", id, title });
+      else nextAt = Math.min(nextAt, at);
+    }
+
+    const events = this.db.prepare(`SELECT value FROM calendar_events WHERE href IS NULL AND json_extract(value, '$.remindAt') IS NOT NULL`)
+      .all().map(row => JSON.parse(row.value as string) as BridgeAgendaEvent);
+    // Read the original iCalendar data: stored projections created before reminders omit VALARM.
+    const remote = this.db.prepare(`SELECT object.source_id, object.href, object.etag, object.data, source.url, source.calendar_timezone
+      FROM agenda_caldav_objects object JOIN assistant_sources source ON source.id = object.source_id
+      WHERE object.data LIKE '%BEGIN:VALARM%'`).iterate() as Iterable<RemoteObject>;
+    for (const row of remote) {
+      try {
+        const { uid, events: records } = parseAgendaObject(row.data, collectionZone(row.calendar_timezone, this.timeZone), {
+          window, allDayZone: this.timeZone,
+        });
+        for (const record of records) if (record.remindAt) events.push({ ...record, ...this.importedIdentity(row, uid, record.recurrenceId) });
+      } catch (error) { if (!(error instanceof AgendaExpansionLimitError)) throw error; }
+    }
+    for (const event of events) {
+      const end = this.eventEnd(event);
+      if (end <= now || !event.remindAt) continue;
+      // A rescheduled occurrence may be a different reminder even when its event ID is unchanged.
+      const id = `${event.id}:${event.remindAt}`;
+      if (seen.has(id)) continue;
+      const at = agendaInstant(event.remindAt, event.timeZone);
+      if (at >= end) continue;
+      if (at <= now) {
+        items.push({ kind: "event", id, title: event.title, startAt: event.startAt });
+        nextAt = Math.min(nextAt, end);
+      } else nextAt = Math.min(nextAt, at);
+    }
+    return { items: items.slice(0, 100), nextAt };
   }
 
   listTodos(query: AgendaPageQuery & { status?: AgendaTodoInput["status"] | undefined; dueOn?: AgendaDueDay | undefined }): AgendaPage<BridgeAgendaTodo> {

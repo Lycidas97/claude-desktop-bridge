@@ -1,6 +1,6 @@
 import { ASSISTANT_MAIL_SHARED_AUTH_CAPABILITY, ASSISTANT_SMTP_CAPABILITY, MAIL_POLL_INTERVALS, type BridgeActionProposal, type BridgeDirectoryListing, type BridgeHostSnapshot, type BridgeMailAccount, type BridgeMethod, type BridgeSessionInfo } from "@bridge/protocol";
 import { Check, ChevronRight, ListChecks, LoaderCircle, RefreshCw, Settings } from "lucide-react";
-import { useEffect, useId, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
 import { formatSessionModelLabel } from "../../lib/conversation-timeline.js";
 import { IconButton } from "../common/IconButton.js";
@@ -14,7 +14,8 @@ import { mailResult, useAssistantMail, type AssistantRequest } from "./Assistant
 import { AgendaSources } from "./AgendaSources.js";
 import { AgendaView } from "./AgendaView.js";
 import { useAssistantAgenda } from "./AssistantAgendaProvider.js";
-import { useAssistantProposals } from "./AssistantProposalProvider.js";
+import { pendingProposalCount, useAssistantProposals } from "./AssistantProposalProvider.js";
+import { AssistantAttention } from "./AssistantAttention.js";
 import { ProposalPanel } from "./ProposalPanel.js";
 import { MailCard } from "./MailCard.js";
 import { MailReference } from "./MailReference.js";
@@ -36,6 +37,23 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
   const [view, setView] = useState<"conversation" | "mail" | "agenda" | "settings" | "proposals">("conversation");
   const [proposalReturn, setProposalReturn] = useState<Exclude<typeof view, "proposals">>("conversation");
   const [selectedProposal, setSelectedProposal] = useState<BridgeActionProposal>();
+  const [replyTarget, setReplyTarget] = useState<string>();
+  const conversation = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const container = conversation.current;
+    if (view !== "conversation" || !replyTarget || !container) return;
+    const reveal = () => {
+      const element = container.querySelector(`article[data-stream-key="${CSS.escape(replyTarget)}"]`);
+      if (!element) return false;
+      element.scrollIntoView({ block: "start" });
+      setReplyTarget(undefined);
+      return true;
+    };
+    if (reveal()) return;
+    const observer = new MutationObserver(() => { if (reveal()) observer.disconnect(); });
+    observer.observe(container, { subtree: true, childList: true });
+    return () => observer.disconnect();
+  }, [view, replyTarget]);
   const [configuring, setConfiguring] = useState(false);
   const [selectedId, setSelectedId] = useState("");
   const [creating, setCreating] = useState(false);
@@ -79,8 +97,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
   const fallbackView = session ? "conversation" : mail ? "mail" : "agenda";
   const displayedView = (view === "conversation" && !session) || (view === "mail" && !mail) || (view === "agenda" && !agenda)
     || (view === "proposals" && !proposals) ? fallbackView : view;
-  const pendingCount = (proposals?.summary.pendingCount ?? 0) + (proposals?.summary.pendingMailCount ?? 0) +
-    (proposals?.supportsMemory ? proposals.summary.pendingMemoryCount ?? 0 : 0);
+  const pendingCount = pendingProposalCount(proposals);
   function openProposals() {
     if (displayedView !== "proposals") { setProposalReturn(displayedView); setSelectedProposal(undefined); }
     setView("proposals");
@@ -260,9 +277,11 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
         <ChevronRight size={16} aria-hidden="true" />
       </button>
     </div>}
+    {displayedView !== "proposals" && <AssistantAttention onReply={itemId => { setView("conversation"); setReplyTarget(itemId); }}
+      onTodo={() => { agenda?.setCalendarOnly(false); agenda?.setAllTodosOpen(true); setView("agenda"); }} />}
     {session ? <>
       {displayedView === "conversation" && <div className="assistant-page-content">{bindingControls}{notices}</div>}
-      <div className="assistant-conversation">{renderConversation(session.sessionId, {
+      <div className="assistant-conversation" ref={conversation}>{renderConversation(session.sessionId, {
         alternateStage: displayedView === "conversation" ? undefined : stage,
         hideComposer: displayedView === "settings" || displayedView === "agenda" || displayedView === "proposals" || workspace?.repairFailed === true,
       })}</div>

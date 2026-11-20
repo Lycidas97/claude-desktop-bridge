@@ -204,7 +204,11 @@ export class ProposalExecutor extends EventEmitter {
         case "todo.update": this.agenda.saveTodo(action.value, { id: action.recordId, revision: baseRevision! }); break;
         case "todo.complete": this.agenda.completeTodo({ id: action.recordId, revision: baseRevision!, completed: true }); break;
         case "calendar.create": this.agenda.saveEvent(action.value); break;
-        case "calendar.reschedule": this.agenda.saveEvent(action.value, { id: action.recordId, revision: baseRevision! }); break;
+        case "calendar.reschedule": {
+          const event = this.agenda.proposalRecord("calendar", action.recordId);
+          this.agenda.saveEvent({ ...action.value, remindAt: event.remindAt }, { id: action.recordId, revision: baseRevision! });
+          break;
+        }
         case "calendar.delete": this.agenda.deleteLocalEvent(action.recordId, baseRevision!); break;
       }
     } catch (error) {

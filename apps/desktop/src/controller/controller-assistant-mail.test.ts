@@ -155,6 +155,23 @@ async function record(uid: number, source = `Content-Type: text/plain; charset=u
 }
 
 describe("assistant mail mobile RPC projections", () => {
+  it("publishes an unscreened reminder at the original ten-minute deadline without waking the phone", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    try {
+      service.setBinding({ assistantId: "assistant", nativeSessionId: "native-first", sectionId: null, previousSessionIds: [],
+        managed: { path: "/offline", policy: "stage1-fenced-workspace", token: "fixture", automaticDelivery: true } });
+      const { mailRefId } = await record(1);
+      expect((await run.publish()).assistantMail?.attention).toEqual([]);
+      run.eventLog.append.mockClear();
+      await vi.advanceTimersByTimeAsync(599_999);
+      expect(run.eventLog.append).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(run.eventLog.append).toHaveBeenLastCalledWith({ origin: "system", type: "plugin.assistant-mail.changed",
+        data: { assistantMail: expect.objectContaining({ attention: [{ kind: "mail", id: mailRefId, title: "Subject 1", reason: "unscreened" }] }) } });
+      service.updateAnalysis(mailRefId, { summary: "nothing to read", suggestions: [], questions: [], attention: "ignore" });
+      expect((await run.publish()).assistantMail?.attention).toEqual([]);
+    } finally { vi.useRealTimers(); }
+  });
   it("requires an explicitly supplied shared credential and saves the complete mailbox in one request", async () => {
     const account = { host: "imap.example.test", user: "test@example.test" };
     const smtp = { host: "smtp.example.test", port: 587, security: "starttls", from: account.user };

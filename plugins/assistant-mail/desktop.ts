@@ -11,7 +11,7 @@ import { ImapFlow, type ImapFlowOptions } from "imapflow";
 import { KeychainMailCredentials, type MailCredentials } from "./credentials.js";
 import { MailReceiver, type MailState } from "./receiver.js";
 import { AssistantMailStore, type AssistantBinding, type MailAnalysis, type MailProcessingStatus } from "./store.js";
-import { DEFAULT_MAIL_POLL_INTERVAL, isMailPollInterval, type BridgeMailAttachmentRef, type MailPollInterval } from "../../packages/protocol/src/assistant-mail.js";
+import { DEFAULT_MAIL_POLL_INTERVAL, isMailPollInterval, type AssistantAttentionAcknowledgment, type BridgeMailAttachmentRef, type MailPollInterval } from "../../packages/protocol/src/assistant-mail.js";
 import { attachmentText, MAIL_TEXT_MAX_BYTES, supportsAttachmentText } from "./attachment-text.js";
 import { MailAttachmentError, parseMail } from "./mime.js";
 export { MailAttachmentError, MailBodyParseError } from "./mime.js";
@@ -399,6 +399,15 @@ export class AssistantMailService extends EventEmitter {
     }
     return { attachment, text: await attachmentText(await this.attachmentBytes(ref, MAIL_TEXT_MAX_BYTES), attachment.mimeType, this.attachmentCMapUrl, attachment.charset) };
   }
+  attention(automatic: boolean, now: number, sessionId?: string) { return this.store.attention(automatic, now, sessionId); }
+  seenCalendarEvents() { return this.store.seenCalendarEvents(); }
+  recordReply(sessionId: string, id: string, title: string) {
+    if (this.store.recordReply(sessionId, id, title)) this.emit("changed");
+  }
+  acknowledgeAttention(kind: AssistantAttentionAcknowledgment, id: string) {
+    if (this.store.acknowledgeAttention(kind, id)) this.emit("changed");
+  }
+
   updateAnalysis(mailRefId: string, analysis: MailAnalysis) {
     const event = this.store.updateAnalysis(mailRefId, analysis);
     if (event) this.emit("changed", true, true);

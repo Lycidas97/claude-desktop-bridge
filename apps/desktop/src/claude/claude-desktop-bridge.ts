@@ -181,6 +181,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
   private readonly projectDirectories = new Map<string, ClaudeProjectDirectory>();
   private readonly sessions = new Map<string, BridgeSessionInfo>();
   private readonly lastCompletedTurns = new Map<string, string>();
+  private readonly replyTurns = new Map<string, { rootId?: string; reply?: { id: string; text: string } }>();
   private readonly permissions = new Map<string, BridgePermissionInfo>();
   private readonly prompts = new Map<string, BridgePendingPrompt>();
   private readonly prPreferences = new Map<string, { onlyOwnPrs: boolean; nextOwnPrArmed: boolean }>();
@@ -956,6 +957,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
       await this.record({ sessionId, origin: "claude-desktop", type: "session.rewound", data: { messageId, scope } });
       this.lastCompletedTurns.delete(sessionId);
       this.messageProjection.delete(sessionId);
+      this.replyTurns.delete(sessionId);
       this.contextStates.set(sessionId, createNativeContextState(this.contextStates.get(sessionId)?.maxTokensByModel));
       this.backgroundTasks.delete(sessionId);
       this.streams.delete(sessionId);
@@ -1712,6 +1714,31 @@ export class ClaudeDesktopBridge extends EventEmitter {
     });
   }
 
+  private observeReply(sessionId: string, message: Record<string, unknown>, error: boolean): void {
+    if (error) { this.replyTurns.delete(sessionId); return; }
+    const visible = visibleMessage(message);
+    if (visible?.role === "user" && typeof message.uuid === "string") {
+      this.replyTurns.set(sessionId, { rootId: message.uuid });
+    } else if (visible?.role === "assistant" && message.isSynthetic !== true) {
+      const body = record(message.message);
+      if (body.model === "<synthetic>" || (Array.isArray(body.content) && body.content.some(block => record(block).type === "tool_use"))) return;
+      const id = typeof body.id === "string" ? body.id : message.uuid;
+      if (typeof id === "string") this.replyTurns.set(sessionId, { ...this.replyTurns.get(sessionId), reply: { id, text: visible.text! } });
+    } else if (message.type === "result" && !message.parent_tool_use_id && message.isSyntheticResult !== true) {
+      const turn = this.replyTurns.get(sessionId);
+      this.replyTurns.delete(sessionId);
+      if (message.is_error !== false || !turn?.reply) return;
+      const roots = [...(Array.isArray(message.user_message_uuids) ? message.user_message_uuids : []), message.user_message_uuid]
+        .filter((value): value is string => typeof value === "string");
+      if (!roots.length && turn.rootId) roots.push(turn.rootId);
+      const text = turn.reply.text.replace(/^【给用户】\s*/u, "");
+      if (text && (roots.some(id => this.historyReceipt(sessionId, id)?.source !== "assistant-trigger") ||
+        (roots.length > 0 && text !== turn.reply.text))) {
+        this.emit("assistant.user-reply", sessionId, turn.reply.id, text);
+      }
+    }
+  }
+
   private async handleEvent(raw: unknown): Promise<void> {
     const event = record(raw);
     if (typeof event.sessionId !== "string") return;
@@ -1731,6 +1758,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
     const sidechain = message.isSidechain === true || (message.parent_tool_use_id && (message.type === "assistant" || message.type === "user" || message.type === "system" || message.type === "stream_event"));
     let compacting: boolean | undefined;
     if (!sidechain) {
+      if (this.listenerCount("assistant.user-reply")) this.observeReply(sessionId, message, event.type === "error" || event.type === "close");
       if (message.type === "system" && message.subtype === "status") {
         if (message.status === "compacting") compacting = true;
         else if (message.status === null) compacting = false;

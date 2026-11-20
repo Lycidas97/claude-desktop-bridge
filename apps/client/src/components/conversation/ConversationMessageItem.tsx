@@ -1,5 +1,6 @@
 import type { BridgeSessionInfo } from "@bridge/protocol";
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useAssistantMail } from "../assistant/AssistantMailProvider.js";
 import { deliveryLabel, formatTime, isQueuedConversationMessage, type ConversationItem } from "../../lib/conversation-timeline.js";
 import { desktopRuntimeId } from "../../lib/runtime-labels.js";
 import { MarkdownText } from "../common/MarkdownText.js";
@@ -53,6 +54,26 @@ export function ConversationMessageItem({
   interactivePrompt,
 }: ConversationMessageItemProps) {
   const [actionsRevealed, setActionsRevealed] = useState(false);
+  const article = useRef<HTMLElement>(null);
+  const mail = useAssistantMail();
+  const replyId = `${item.sessionId}:${item.id}`;
+  const unreadReply = item.role === "assistant" && !item.live && mail?.attention?.some(attention => attention.kind === "reply" && attention.id === replyId);
+  useEffect(() => {
+    const element = article.current;
+    if (!unreadReply || !mail?.online || !element || typeof IntersectionObserver === "undefined") return;
+    const observer = new IntersectionObserver(([entry]) => {
+      if (!entry?.isIntersecting || entry.intersectionRect.height < Math.min(36, entry.boundingClientRect.height) || document.hidden) return;
+      observer.disconnect();
+      void mail.acknowledge("reply", replyId).catch(() => { /* Leave the reminder in place if the host is unreachable. */ });
+    }, { threshold: [0, Math.min(1, 36 / Math.max(1, element.offsetHeight))] });
+    const observeVisible = () => {
+      observer.unobserve(element);
+      if (!document.hidden) observer.observe(element);
+    };
+    observeVisible();
+    document.addEventListener("visibilitychange", observeVisible);
+    return () => { observer.disconnect(); document.removeEventListener("visibilitychange", observeVisible); };
+  }, [unreadReply, mail?.online, replyId]);
   const messageQueued = isQueuedConversationMessage(item, session);
   const delivery = item.delivery === "session-received" && item.queueSettled ? undefined : item.delivery;
   const canActOnQueued = Boolean(
@@ -94,6 +115,7 @@ export function ConversationMessageItem({
 
   return (
     <article
+      ref={article}
       className={`conversation-item ${item.role} ${item.live ? "live" : ""}${entering ? " is-entering" : ""}${latestMessage || actionsRevealed ? " show-message-utilities" : ""}`}
       data-stream-key={item.id}
       tabIndex={hasUtilities && !latestMessage ? 0 : undefined}

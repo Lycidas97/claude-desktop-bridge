@@ -41,7 +41,7 @@ export async function openDesktopAssistant(page, host, baseUrl, requests) {
     claudeDesktop: { state: "running", detail: "隔离 Native 宿主", canLaunch: false, canQuit: true } });
   await page.setViewportSize({ width: 1200, height: 800 });
   await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
-  await page.getByRole("button", { name: "助理", exact: true }).click();
+  await page.getByRole("button", { name: /^助理(?:，有事项待关注)?$/u }).click();
   await page.locator(".assistant-conversation textarea").waitFor();
 }
 

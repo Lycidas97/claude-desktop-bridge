@@ -424,8 +424,9 @@ export async function startNativeApprovalHost(options: {
         canStartTurn: () => broker.capabilities().includes("turn.start"),
         onChanged: snapshot => options.onMailChanged?.(snapshot),
         broker, receipts: state,
-      }, workspace)
+      }, workspace, assistantMail.agenda)
     : undefined;
+  if (assistantMailCoordinator) broker.on("assistant.user-reply", assistantMailCoordinator.replyReceived);
   assistantMailCoordinator?.start();
   assistantMailCoordinator?.startTriggers();
   eventLog.on("event", event => {

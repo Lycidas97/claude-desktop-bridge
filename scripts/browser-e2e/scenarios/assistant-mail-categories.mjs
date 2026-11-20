@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
-import { openDesktopAssistant } from "./assistant-mail.mjs";
+import { fileMailInCategory, openDesktopAssistant } from "./assistant-mail.mjs";
 import { eventually } from "../helpers.mjs";
 
 export async function verifyAssistantMailCategories(page, host, steps, directory, viewports, baseUrl) {
@@ -30,7 +30,7 @@ export async function verifyAssistantMailCategories(page, host, steps, directory
   await eventually(() => manage(page).evaluate(node => node === document.activeElement), true, "Closing management restores focus to its opener");
   await page.getByRole("button", { name: "返回收件" }).click();
   assert.equal(await manage(page).count(), 0, "The inbox does not embed category management");
-  await card(page.locator('[aria-label="邮件输入"]')).getByRole("combobox", { name: "收入分类" }).selectOption({ label: "订单" });
+  await fileMailInCategory(page, card(page.locator('[aria-label="邮件输入"]')), "订单");
   await page.getByRole("button", { name: "已收纳 1 封" }).click();
   await group(page, "订单").locator("summary").click();
   await card(group(page, "订单")).waitFor();

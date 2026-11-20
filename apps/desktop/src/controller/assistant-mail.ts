@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { ARTIFACT_MAX_BYTES, ASSISTANT_MEMORY_POLICY, ASSISTANT_SMTP_CAPABILITY, isAssistantWorkspacePolicy, isMailPollInterval, mailAttachmentPreviewKind } from "@bridge/protocol";
+import { ARTIFACT_MAX_BYTES, ASSISTANT_MAIL_SHARED_AUTH_CAPABILITY, ASSISTANT_MEMORY_POLICY, ASSISTANT_SMTP_CAPABILITY, isAssistantWorkspacePolicy, isMailPollInterval, mailAttachmentPreviewKind } from "@bridge/protocol";
 import { AgendaEditError } from "../../../../plugins/assistant-mail/agenda-store.js";
-import { configureSmtp } from "../../../../plugins/assistant-mail/proposal-contract.js";
+import { configureSmtp, saveMailAccount } from "../../../../plugins/assistant-mail/proposal-contract.js";
 import type {
   BridgeAssistantMailSnapshot,
   BridgeEvent,
@@ -26,6 +26,7 @@ export const ASSISTANT_MAIL_CAPABILITIES = [
   "plugin.assistant-mail.manual-reference.v1",
   "plugin.assistant-mail.account.v1",
   ASSISTANT_SMTP_CAPABILITY,
+  ASSISTANT_MAIL_SHARED_AUTH_CAPABILITY,
   "plugin.assistant-mail.polling.v1",
   "plugin.assistant-mail.attachments.v1",
   "plugin.assistant-mail.history.v1",
@@ -462,7 +463,17 @@ export class AssistantMailCoordinator {
       if (!this.mail.status().credentialsSupported) {
         throw new BridgeRequestError("UNSUPPORTED", "当前电脑不支持存储邮箱凭据。");
       }
-      if (method === "plugin.assistant-mail.account.add") {
+      if (method === "plugin.assistant-mail.account.save") {
+        const { client: _client, ...input } = params;
+        const parsed = saveMailAccount.safeParse(input);
+        if (!parsed.success) throw new BridgeRequestError("INVALID_PARAMS", "请检查邮箱服务器、端口、发件地址和密码。");
+        const { credential, smtp, ...account } = parsed.data;
+        if ("accountKey" in account) {
+          await this.mail.replacePassword(account.accountKey, credential, smtp);
+        } else {
+          await this.mail.enable({ ...account, password: credential, smtp, createOnly: true });
+        }
+      } else if (method === "plugin.assistant-mail.account.add") {
         const { port } = params;
         if (port !== undefined && (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535)) {
           throw new BridgeRequestError("INVALID_PARAMS", "请输入有效的 IMAP 端口。");

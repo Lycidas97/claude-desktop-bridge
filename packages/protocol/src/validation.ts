@@ -122,6 +122,7 @@ const METHODS = new Set([
   "plugin.assistant-mail.workspace.initialize",
   "plugin.assistant-mail.automatic-delivery.set",
   "plugin.assistant-mail.account.add",
+  "plugin.assistant-mail.account.save",
   "plugin.assistant-mail.account.update-credential",
   "plugin.assistant-mail.account.set-enabled",
   "plugin.assistant-mail.account.set-poll-interval",

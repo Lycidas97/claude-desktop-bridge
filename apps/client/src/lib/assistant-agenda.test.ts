@@ -37,6 +37,15 @@ describe("calendar event times", () => {
       .toBe("2026-07-01 00:15 至 2026-07-01 01:15 (Asia/Tokyo)");
   });
 
+  it("omits the date heading from event times without hiding a different day", () => {
+    expect(agendaTimedRange("2026-06-30T14:00:00Z", "2026-06-30T15:00:00Z", "UTC", "UTC", "2026-06-30"))
+      .toBe("14:00 至 15:00");
+    expect(agendaTimedRange("2026-06-30T23:15:00Z", "2026-07-01T00:15:00Z", "UTC", "UTC", "2026-06-30"))
+      .toBe("23:15 至 2026-07-01 00:15");
+    expect(agendaTimedRange("2026-06-30T15:15:00Z", "2026-06-30T16:15:00Z", "Asia/Tokyo", "America/Los_Angeles", "2026-06-30"))
+      .toBe("2026-07-01 00:15 至 2026-07-01 01:15 (Asia/Tokyo)");
+  });
+
   it("opens the device month after saving a timed event and preserves the month of an all-day date", () => {
     vi.stubEnv("TZ", "America/Los_Angeles");
     try {

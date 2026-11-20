@@ -937,14 +937,16 @@ function mergeHistoryPages(
   olderItems: BridgeHistoryItem[],
   existingItems: BridgeHistoryItem[],
 ): BridgeHistoryItem[] {
-  const seen = new Set<string>();
-  const mergedItems: BridgeHistoryItem[] = [];
+  const mergedItems = new Map<string, BridgeHistoryItem>();
   for (const item of [...olderItems, ...existingItems]) {
-    if (seen.has(item.id)) continue;
-    seen.add(item.id);
-    mergedItems.push(item);
+    const previous = mergedItems.get(item.id);
+    if (!previous) mergedItems.set(item.id, item);
+    else if (item.sentFiles && !previous.sentFiles) {
+      // An older page can carry the call while the loaded page carries its file receipt.
+      mergedItems.set(item.id, { ...previous, sentFiles: item.sentFiles, state: "completed" });
+    }
   }
-  return mergedItems;
+  return [...mergedItems.values()];
 }
 
 export function permissionFromEvent(event: BridgeEvent): BridgePermissionInfo | undefined {

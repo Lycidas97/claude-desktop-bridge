@@ -82,6 +82,7 @@ type ConversationDraftsValue = ReturnType<typeof useConversationDrafts>;
 import { ConversationMessageItem } from "./ConversationMessageItem.js";
 import { ConversationToolGroup } from "./ConversationToolGroup.js";
 import { SessionProposalCard } from "./SessionProposalCard.js";
+import { SessionSentFiles } from "./SessionSentFiles.js";
 import { ForkChainBar } from "./ForkChainBar.js";
 import { NativePromptCard } from "./NativePromptCard.js";
 import {
@@ -699,7 +700,7 @@ export function ConversationView({
     openedEvidenceIds,
     inlineProposalLayout: JSON.stringify([
       [...(inlineProposals ?? [])].map(([itemId, { revision, state }]) => [itemId, revision, state]),
-      items.filter(item => item.sessionProposalConfirmed).map(item => item.id),
+      items.filter(item => item.sessionProposalConfirmed || item.sentFiles?.length).map(item => item.id),
     ]),
     timelineStreamKeys,
     streamKeys,
@@ -938,6 +939,11 @@ export function ConversationView({
           return <SessionProposalCard key={item.id} itemId={item.id} proposal={item.sessionProposal}
             {...(hostId ? { hostId } : {})} sessionId={session.sessionId}
             toolUseId={item.toolUseId} toolName={item.toolName || "工具"} summary={item.text}
+            supportsToolDetail={Boolean(snapshot?.host.capabilities.includes("transcript.toolDetail.v1"))} />;
+        }
+        if (item.sentFiles?.length && item.toolUseId) {
+          return <SessionSentFiles key={item.id} item={{ ...item, sentFiles: item.sentFiles }} hostId={hostId} toolUseId={item.toolUseId}
+            onOpenFile={onDownloadSessionFile ? files.openFile : undefined}
             supportsToolDetail={Boolean(snapshot?.host.capabilities.includes("transcript.toolDetail.v1"))} />;
         }
         if (item.sessionNotice) {

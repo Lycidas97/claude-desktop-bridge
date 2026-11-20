@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter, on } from "node:events";
-import { basename, isAbsolute, relative } from "node:path";
+import { realpath } from "node:fs/promises";
+import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 import {
   BRIDGE_EFFORT_LEVELS,
   CLAUDE_UNSECTIONED_PROJECT_ID,
@@ -57,6 +58,7 @@ import {
   extractNativeImageAttachment,
   nativeHistoryItems,
   nativeItemEventDraft,
+  nativeSentFileReceipt,
   type NativeMessageProjection,
 } from "./native-history-projection.js";
 
@@ -990,6 +992,51 @@ export class ClaudeDesktopBridge extends EventEmitter {
       (receipt.messageId === itemId || receipt.previousMessageIds?.includes(itemId)));
   }
 
+  private async nativeSentFiles(sessionId: string, messages: unknown[], live = false) {
+    const receipts = messages.flatMap(message => nativeSentFileReceipt(message) ?? []);
+    if (!receipts.length) return;
+    const cwd = this.executionCwd(sessionId)!;
+    const names = new Map(receipts.map(({ toolUseId }) => [toolUseId,
+      live ? this.options.eventLog.latestItem(sessionId, "tool.started", toolUseId)?.data.toolName : undefined]));
+    const findCalls = (source: unknown[]) => {
+      for (const raw of source) {
+        const message = record(raw);
+        if (message.type !== "assistant" || message.isSidechain === true || message.parent_tool_use_id) continue;
+        const { content } = record(message.message);
+        if (!Array.isArray(content)) continue;
+        for (const rawBlock of content) {
+          const block = record(rawBlock);
+          if (block.type === "tool_use" && typeof block.id === "string" && names.has(block.id)) names.set(block.id, block.name);
+        }
+      }
+    };
+    findCalls(messages);
+    if ([...names.values()].some(name => name === undefined)) {
+      const result = await this.inspector.call("getTranscript", [this.desktopId(sessionId)]);
+      const transcript = Array.isArray(result) ? result : record(result).messages;
+      if (!Array.isArray(transcript)) throw new NativeCallError("Desktop returned an invalid transcript");
+      findCalls(transcript);
+    }
+    const sends = receipts.filter(({ toolUseId }) => names.get(toolUseId) === "SendUserFile");
+    if (!sends.length) return;
+    const canonical = (path: string) => realpath(path).catch((error: NodeJS.ErrnoException) => {
+      if (["ENOENT", "ENOTDIR", "EACCES", "EPERM", "ELOOP"].includes(error.code ?? "")) return undefined;
+      throw error;
+    });
+    const root = await canonical(cwd);
+    const inside = (directory: string, path: string) => {
+      const within = relative(directory, path);
+      return within && within !== ".." && !within.startsWith(`..${sep}`) && !isAbsolute(within);
+    };
+    return new Map(await Promise.all(sends.map(async ({ toolUseId, paths }) => [toolUseId, await Promise.all(paths.map(async path => {
+      const candidate = resolve(cwd, path);
+      const source = root && (inside(cwd, candidate) || inside(root, candidate)) ? await canonical(candidate) : undefined;
+      // Do not send a path that the Markdown link transport would reinterpret.
+      const available = source && root && inside(root, source) && source === source.trim() && !/:\d+(?::\d+)?$/u.test(source);
+      return { name: basename(path) || path, ...(available ? { path: source } : {}) };
+    }))] as const)));
+  }
+
   async history(sessionId: string, cursor?: string, limit = 50, { hydrateModel = false } = {}): Promise<BridgeHistoryPage> {
     const id = this.desktopId(sessionId);
     const read = diagnostics.begin(cursor ? "history.cursor" : "history.initial", { cursor: Boolean(cursor), limit });
@@ -1004,7 +1051,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
       const projection: NativeMessageProjection = { ...(liveProjection.questionAnswers ? { questionAnswers: liveProjection.questionAnswers } : {}) };
       nativeHistoryItems(sessionId, earlierPlanMessages, projection);
       const sessionProposalResults: string[] = [];
-      const items = nativeHistoryItems(sessionId, page.messages, projection, sessionProposalResults);
+      const items = nativeHistoryItems(sessionId, page.messages, projection, sessionProposalResults, await this.nativeSentFiles(sessionId, page.messages));
       const localSubagents = await this.enrichSubagentItems(sessionId, items);
       if (projection.questions?.size || projection.questionAnswers?.size) {
         for (const [toolUseId, question] of projection.questions ?? []) (liveProjection.questions ??= new Map()).set(toolUseId, question);
@@ -1886,13 +1933,15 @@ export class ClaudeDesktopBridge extends EventEmitter {
         if (item.role === "assistant") await this.options.eventLog.flushDeltas(sessionId);
         await this.record(nativeItemEventDraft(sessionId, item, receipt));
       }
+      const sentFilesByTool = await this.nativeSentFiles(sessionId, [event.message], true);
       if (Array.isArray(body.content)) for (const rawBlock of body.content) {
         const block = record(rawBlock);
         if (block.type === "tool_result" && typeof block.tool_use_id === "string") {
+          const sentFiles = sentFilesByTool?.get(block.tool_use_id);
           const tool = this.tools.get(block.tool_use_id);
           this.tools.delete(block.tool_use_id);
           const started = this.options.eventLog.latestItem(sessionId, "tool.started", block.tool_use_id);
-          const rawToolName = tool?.toolName ?? started?.data.toolName;
+          const rawToolName = sentFiles ? "SendUserFile" : tool?.toolName ?? started?.data.toolName;
           const toolName = typeof rawToolName === "string" && rawToolName ? rawToolName : undefined;
           const proposalResult = (!toolName || toolName === "mcp__ccd_session__start_session") && proposalResults.includes(block.tool_use_id);
           if ((toolName || proposalResult) && toolName !== "mcp__ccd_turn__update_plan" && toolName !== "mcp__ccd_turn__wrap_up") {
@@ -1905,6 +1954,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
                 ...(toolName ? { toolName } : {}),
                 text: tool && toolName ? summarizeNativeToolInput(toolName, tool.input) : started?.data.text ?? "",
                 ...(proposalResult ? { sessionProposalResult: true } : {}),
+                ...(sentFiles ? { sentFiles } : {}),
                 ...(block.is_error === true ? { isError: true } : {}),
               },
             });

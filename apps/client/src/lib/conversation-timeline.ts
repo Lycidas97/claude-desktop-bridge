@@ -202,7 +202,7 @@ export function groupTimelineTools(timeline: ConversationTimelineEntry[]): Displ
       result.push({ kind: "background-task", id: runId ? `workflow:${runId}` : entry.item.id, item: entry.item });
       continue;
     }
-    if (entry.kind === "message" && entry.item.role === "tool" && !entry.item.sessionProposalConfirmed) {
+    if (entry.kind === "message" && entry.item.role === "tool" && !entry.item.sessionProposalConfirmed && !entry.item.sentFiles?.length) {
       const prev = result.at(-1);
       if (prev && prev.kind === "tool-group") {
         prev.tools.push(entry.item);
@@ -617,6 +617,8 @@ export function conversationItems(
         ? (typeof event.itemId === "string" && event.itemId.trim() ? event.itemId.trim() : existing?.toolUseId)
         : undefined;
       const isError = event.type === "tool.completed" && event.data.isError === true ? true : existing?.isError;
+      const sentFiles = event.origin === "claude-desktop" && event.type === "tool.completed" && Array.isArray(event.data.sentFiles)
+        ? event.data.sentFiles as BridgeHistoryItem["sentFiles"] : existing?.sentFiles;
       toolByItem.set(id, {
         id: `tool:${id}`,
         sessionId,
@@ -628,11 +630,12 @@ export function conversationItems(
         origin: event.origin,
         ...(toolUseId ? { toolUseId } : {}),
         ...(sessionProposal ? { sessionProposal } : {}),
+        ...(sentFiles?.length ? { sentFiles } : {}),
         ...(isError ? { isError: true } : {}),
         ...(subagent?.state === "unknown" ? {} : {
           state: subagent?.state === "stopped"
             ? "interrupted" as const
-            : subagent?.state ?? (event.type === "tool.completed" ? "completed" as const : "running" as const),
+            : subagent?.state ?? (event.type === "tool.completed" || sentFiles?.length ? "completed" as const : "running" as const),
         }),
         ...(fileChanges?.length ? { fileChanges } : {}),
         ...(subagent ? { subagent } : {}),

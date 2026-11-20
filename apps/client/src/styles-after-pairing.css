@@ -818,6 +818,47 @@
   white-space: nowrap;
 }
 
+.session-sent-files {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 44px;
+  align-items: start;
+  gap: 6px;
+  width: fit-content;
+  max-width: min(100%, 620px);
+}
+
+.session-sent-files ul {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.session-sent-files li > :is(button, div) {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  width: 100%;
+  padding: 6px 11px;
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  background: var(--card-fill);
+  color: var(--text);
+  text-align: left;
+  font: inherit;
+  font-size: calc(13px * var(--font-scale));
+}
+
+.session-sent-files li > button { cursor: pointer; }
+.session-sent-files li > button:hover { background: var(--surface-2); }
+.session-sent-files li > button:focus-visible { outline: 2px solid var(--accent); }
+.session-sent-files li svg { flex: none; color: var(--muted); }
+.session-sent-files li span { flex: 1; overflow-wrap: anywhere; }
+.session-sent-files li small { display: block; color: var(--muted); }
+.session-sent-files .session-sent-files-detail { width: 44px; height: 44px; }
+
 .session-proposal-card {
   display: grid;
   grid-template-columns: 17px minmax(0, 1fr) 44px;

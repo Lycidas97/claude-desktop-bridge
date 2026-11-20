@@ -974,6 +974,8 @@ export interface BridgeHistoryItem {
   /** Desktop observed an idle, drained queue after acknowledging this input. */
   queueSettled?: true;
   attachments?: BridgeHistoryAttachment[];
+  /** Native SendUserFile delivery metadata; path is present only for workspace files. */
+  sentFiles?: { name: string; path?: string }[];
   /**
    * Structured summary for file-change tool items (Codex). Lets clients
    * aggregate edits Codex-style instead of rendering one noisy card each.

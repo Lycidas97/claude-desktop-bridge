@@ -1,5 +1,5 @@
 import { once } from "node:events";
-import { appendFile, rm, mkdir, mkdtemp, readFile, readdir, symlink, writeFile } from "node:fs/promises";
+import { appendFile, rm, mkdir, mkdtemp, readFile, readdir, realpath, symlink, writeFile } from "node:fs/promises";
 import * as platform from "../app/platform.js";
 import { BridgeCrypto, isEncryptedEnvelope, type BridgeArtifactTransferInfo } from "@bridge/protocol";
 import { EvidenceManager } from "../evidence/evidence-manager.js";
@@ -2707,6 +2707,47 @@ describe("Claude native relay", () => {
       expect(older.items).toMatchObject([{ id: call.uuid, createdAt: 10, text: expect.stringContaining(title), sessionProposal: { title } }]);
       f.native.pages.set("", { messages: [call, result], hasMore: false });
       expect(await f.bridge.history("local-native")).toMatchObject({ items: older.items, sessionProposalResults: [call.uuid] });
+    } finally { await f.close(); }
+  });
+
+  it("projects only the native SendUserFile receipt, in split history and on live completion", async () => {
+    const f = await fixture();
+    try {
+      const cwd = join(f.directory, "project");
+      const harnessCwd = join(cwd, "worktree");
+      await mkdir(harnessCwd, { recursive: true });
+      const inside = join(harnessCwd, "报告.md");
+      const outside = join(f.directory, "工作区外.md");
+      await Promise.all([writeFile(inside, "worktree"), writeFile(outside, "outside"), writeFile(join(cwd, "报告.md"), "namesake")]);
+      Object.assign(f.native.sessions[0]!, { cwd, harnessCwd });
+      await f.bridge.refreshRuntime();
+      const call = planMessage("send-call", { files: [outside, "unconfirmed.txt"] }, 10, "SendUserFile");
+      const result = { type: "user", uuid: "send-result", timestamp: 20, message: { content: [{
+        type: "tool_result", tool_use_id: call.uuid, content: [{ type: "text", text: "Files sent" }],
+      }] }, toolUseResult: { attachments: [
+        { path: "报告.md", size: 8, isImage: false },
+        { path: outside, size: 7, isImage: false },
+        { path: join(cwd, "报告.md"), size: 8, isImage: false },
+        { path: "upload-failed.md", size: 100, isImage: false, upload_error: "not delivered" },
+      ] } };
+      const expected = [{ name: "报告.md", path: await realpath(inside) }, { name: "工作区外.md" }, { name: "报告.md" }];
+      f.native.page.messages = [call, result];
+      f.native.pages.set("", { messages: [result], hasMore: true });
+      f.native.pages.set(result.uuid, { messages: [call], hasMore: false });
+      const latest = await f.bridge.history("local-native", undefined, 1);
+      expect(latest.items).toMatchObject([{ id: call.uuid, state: "completed" }]);
+      expect(latest.items[0]?.sentFiles).toEqual(expected);
+      expect((await f.bridge.history("local-native", latest.nextCursor, 1)).items[0]?.sentFiles).toBeUndefined();
+      await f.message(call);
+      const start = f.eventLog.latestItem("local-native", "tool.started", call.uuid);
+      expect(start?.data.sentFiles).toBeUndefined();
+      const reads = f.native.calls.length;
+      await f.message(result);
+      expect(f.eventLog.latestItem("local-native", "tool.completed", call.uuid)?.data.sentFiles).toEqual(expected);
+      expect(f.native.calls.slice(reads).some(({ method }) => method === "getTranscript")).toBe(false);
+      const unrelated = planMessage("other-call", {}, 30, "Read");
+      f.native.pages.set("", { messages: [unrelated, { ...result, message: { content: [{ ...result.message.content[0], tool_use_id: unrelated.uuid }] } }], hasMore: false });
+      expect((await f.bridge.history("local-native")).items[0]?.sentFiles).toBeUndefined();
     } finally { await f.close(); }
   });
 

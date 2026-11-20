@@ -26,6 +26,26 @@ function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
+/** This is Desktop's structured attachment receipt, not the model-visible result text. */
+export function nativeSentFileReceipt(raw: unknown): { toolUseId: string; paths: string[] } | undefined {
+  const message = record(raw);
+  if (message.type !== "user" || message.isSidechain === true || message.parent_tool_use_id) return;
+  const { attachments } = record(message.toolUseResult ?? message.tool_use_result);
+  if (!Array.isArray(attachments)) return;
+  const { content } = record(message.message);
+  if (!Array.isArray(content)) return;
+  const results = content.map(record).filter(block => block.type === "tool_result");
+  const [result] = results;
+  if (results.length !== 1 || typeof result?.tool_use_id !== "string" || result.is_error === true) return;
+  const paths = [...new Set(attachments.slice(0, 32).flatMap(rawAttachment => {
+    const { path, size, isImage, upload_error, project_path, file_uuid } = record(rawAttachment);
+    return typeof path === "string" && path.length > 0 && !path.includes("\0") && typeof size === "number"
+      && typeof isImage === "boolean" && upload_error === undefined && (project_path === undefined || typeof file_uuid === "string")
+      ? [path] : [];
+  }))];
+  if (paths.length) return { toolUseId: result.tool_use_id, paths };
+}
+
 function singleToolResultText(content: unknown): string | undefined {
   if (typeof content === "string") return content;
   const part = Array.isArray(content) && content.length === 1 ? record(content[0]) : undefined;
@@ -56,7 +76,10 @@ export function nativePlanMessages(messages: unknown[]) {
 }
 
 /** Shared by history pages and live events; task state is projected from native messages. */
-export function nativeHistoryItems(sessionId: string, messages: unknown[], projection: NativeMessageProjection = {}, proposalResults?: string[]): BridgeHistoryItem[] {
+export function nativeHistoryItems(
+  sessionId: string, messages: unknown[], projection: NativeMessageProjection = {}, proposalResults?: string[],
+  sentFilesByTool?: ReadonlyMap<string, NonNullable<BridgeHistoryItem["sentFiles"]>>,
+): BridgeHistoryItem[] {
   const items = new Map<string, BridgeHistoryItem>();
   for (const raw of messages) {
     const message = record(raw);
@@ -132,6 +155,14 @@ export function nativeHistoryItems(sessionId: string, messages: unknown[], proje
     if (Array.isArray(body.content)) for (const rawBlock of body.content) {
       const block = record(rawBlock);
       if (message.type === "user" && block.type === "tool_result" && typeof block.tool_use_id === "string") {
+        const sentFiles = sentFilesByTool?.get(block.tool_use_id);
+        if (sentFiles && block.is_error !== true) {
+          const tool = items.get(block.tool_use_id);
+          items.set(block.tool_use_id, {
+            id: block.tool_use_id, sessionId, role: "tool", toolName: "SendUserFile", origin: "claude-desktop",
+            text: tool?.text ?? "SendUserFile", createdAt: tool?.createdAt ?? createdAt, state: "completed", sentFiles,
+          });
+        }
         const result = block.is_error === true ? undefined : singleToolResultText(block.content);
         if (result) {
           const proposalReceipt = readProposalReceipt(result, block.tool_use_id);

@@ -42,6 +42,16 @@ test("applies EXDATE after merging DTSTART, RRULE and RDATE", () => {
   expect(store.listEvents(window).records.map(record => record.startAt)).toEqual(["2027-01-06T09:00:00.000Z"]);
 });
 
+test("queries imported all-day spans by device date and timed entries by instant", () => {
+  sync(object("one-day", ics(...item("VEVENT", "one-day", "DTSTART;VALUE=DATE:20271202", "DTEND;VALUE=DATE:20271203"))),
+    object("multi-day", ics(...item("VEVENT", "multi-day", "DTSTART;VALUE=DATE:20271201", "DTEND;VALUE=DATE:20271203", "RRULE:FREQ=WEEKLY;COUNT=2"))),
+    object("timed", ics(...item("VEVENT", "timed", "DTSTART:20271202T060000Z", "DURATION:PT1H"))));
+  const names = (from: string, to: string, allDayOn: string) => store.listEvents({ from, to, allDayOn }).records.map(record => record.title).sort();
+  expect(names("2027-12-01T08:00:00.000Z", "2027-12-02T08:00:00.000Z", "2027-12-01")).toEqual(["multi-day", "timed"]);
+  expect(names("2027-12-02T08:00:00.000Z", "2027-12-03T08:00:00.000Z", "2027-12-02")).toEqual(["multi-day", "one-day"]);
+  expect(names("2027-12-03T08:00:00.000Z", "2027-12-04T08:00:00.000Z", "2027-12-03")).toEqual([]);
+});
+
 test("retains the ETag of a valid unsupported resource alongside imported events", () => {
   const diary = object("diary", ics(...item("VJOURNAL", "diary", "DTSTART;VALUE=DATE:20270101")));
   const meeting = object("meeting", ics(...item("VEVENT", "meeting", "DTSTART:20270104T090000Z", "DURATION:PT1H")));
@@ -86,7 +96,7 @@ test("pages an old hourly VTODO from its original due date and can seek to a lat
 test("filters recurring task deadlines before paging, including civil dates", () => {
   sync(object("hourly-task", ics(...item("VTODO", "hourly-task", "DTSTART:20140101T090000Z", "DUE:20140101T093000Z", "RRULE:FREQ=HOURLY"))),
     object("date-task", ics(...item("VTODO", "date-task", "DTSTART;VALUE=DATE:20261231", "DUE;VALUE=DATE:20270101", "RRULE:FREQ=DAILY;COUNT=3"))));
-  const dueOn = { date: "2027-01-02", timeZone: "Asia/Tokyo" };
+  const dueOn = { date: "2027-01-02", from: "2027-01-01T15:00:00.000Z", to: "2027-01-02T15:00:00.000Z" };
   const page = store.listTodos({ dueOn, limit: 1 });
   expect(page.records[0]).toMatchObject({ dueAt: "2027-01-01T15:30:00.000Z" });
   const remaining = store.listTodos({ dueOn, cursor: page.nextCursor });

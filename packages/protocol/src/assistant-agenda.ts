@@ -1,9 +1,8 @@
 export const ASSISTANT_AGENDA_CAPABILITY = "plugin.assistant-agenda.v1";
-export const ASSISTANT_AGENDA_DUE_DAY_CAPABILITY = "plugin.assistant-agenda.due-day.v1";
+export const ASSISTANT_AGENDA_DAY_CAPABILITY = "plugin.assistant-agenda.day.v1";
 
-export interface AgendaDueDay {
+export interface AgendaDueDay extends AgendaWindow {
   date: string;
-  timeZone: string;
 }
 
 export interface BridgeAgendaSource {

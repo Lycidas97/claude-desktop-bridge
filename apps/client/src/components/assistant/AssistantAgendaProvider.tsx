@@ -1,4 +1,4 @@
-import { ASSISTANT_AGENDA_CAPABILITY, ASSISTANT_AGENDA_DUE_DAY_CAPABILITY, type AgendaDueDay, type AgendaPage, type AgendaWindow, type BridgeAgendaEvent, type BridgeAgendaSnapshot, type BridgeAgendaTodo, type BridgeHostSnapshot, type BridgeMethod, type BridgeResponse } from "@bridge/protocol";
+import { ASSISTANT_AGENDA_CAPABILITY, ASSISTANT_AGENDA_DAY_CAPABILITY, type AgendaDueDay, type AgendaPage, type AgendaWindow, type BridgeAgendaEvent, type BridgeAgendaSnapshot, type BridgeAgendaTodo, type BridgeHostSnapshot, type BridgeMethod, type BridgeResponse } from "@bridge/protocol";
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { agendaInputTime, rereadAgendaPages } from "../../lib/assistant-agenda.js";
 import type { AssistantRequest } from "./AssistantMailProvider.js";
@@ -13,7 +13,7 @@ function agendaResult<T>(response: BridgeResponse | undefined): T {
   return response.result as T;
 }
 
-function useAgendaPages<T>(method: AgendaList, request: AssistantRequest, online: boolean, token: string, params?: AgendaWindow | { dueOn: AgendaDueDay }) {
+function useAgendaPages<T>(method: AgendaList, request: AssistantRequest, online: boolean, token: string, params?: (AgendaWindow & { allDayOn?: string }) | { dueOn: AgendaDueDay }) {
   const filter = params && JSON.stringify(params);
   const [cache, setCache] = useState<(AgendaPage<T> & { pages: number; filter: string | undefined })>();
   const [loading, setLoading] = useState(false);
@@ -76,9 +76,12 @@ interface AssistantAgendaState {
   todos: ReturnType<typeof useAgendaPages<BridgeAgendaTodo>>;
   events: ReturnType<typeof useAgendaPages<BridgeAgendaEvent>>;
   date: Date;
+  today: string;
+  openToday(): void;
   calendarOnly: boolean;
+  daySupported: boolean;
   setCalendarOnly(value: boolean): void;
-  selectDate(date?: Date): void;
+  selectDate(date: Date): void;
   allTodos: ReturnType<typeof useAgendaPages<BridgeAgendaTodo>>;
   allTodosOpen: boolean;
   setAllTodosOpen(open: boolean): void;
@@ -95,7 +98,10 @@ export function AssistantAgendaProvider({ snapshot, online, request, children }:
   request: AssistantRequest;
   children: ReactNode;
 }) {
-  const [day, setDay] = useState<Date>();
+  const [today, setToday] = useState(() => new Date());
+  const [selectedDay, setSelectedDay] = useState<Date | "today">();
+  const day = selectedDay === "today" ? today : selectedDay;
+  const todayKey = agendaInputTime(today.toISOString(), agendaDeviceZone).slice(0, 10);
   const [month, setMonth] = useState<Date>();
   const [calendarOnly, setCalendarOnly] = useState(false);
   const [allTodosOpen, setAllTodosOpen] = useState(false);
@@ -105,28 +111,41 @@ export function AssistantAgendaProvider({ snapshot, online, request, children }:
   const agenda = mutation && hostAgenda?.changeToken === mutation.base ? mutation.snapshot : hostAgenda;
   const token = agenda?.changeToken ?? "";
   const connected = enabled && online;
-  const dueDaySupported = snapshot?.host.capabilities.includes(ASSISTANT_AGENDA_DUE_DAY_CAPABILITY) === true;
+  const daySupported = snapshot?.host.capabilities.includes(ASSISTANT_AGENDA_DAY_CAPABILITY) === true;
+  const dayKey = day && agendaInputTime(day.toISOString(), agendaDeviceZone).slice(0, 10);
   const date = calendarOnly ? month ?? day : day;
+  useEffect(() => {
+    function refreshToday() { if (!document.hidden) setToday(new Date()); }
+    document.addEventListener("visibilitychange", refreshToday);
+    return () => document.removeEventListener("visibilitychange", refreshToday);
+  }, []);
   const opened = connected && date !== undefined;
-  const events = useAgendaPages<BridgeAgendaEvent>("plugin.assistant-agenda.event.list", request, opened, token, date && {
+  const window = date && {
     from: new Date(date.getFullYear(), date.getMonth(), calendarOnly ? 1 : date.getDate()).toISOString(),
     to: (calendarOnly ? new Date(date.getFullYear(), date.getMonth() + 1, 1)
       : new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1)).toISOString(),
-  });
-  const todos = useAgendaPages<BridgeAgendaTodo>("plugin.assistant-agenda.todo.list", request, opened && !calendarOnly && dueDaySupported, token,
-    day && dueDaySupported ? { dueOn: { date: agendaInputTime(day.toISOString(), agendaDeviceZone).slice(0, 10), timeZone: agendaDeviceZone } } : undefined);
+  };
+  const activeDay = !calendarOnly && dayKey && daySupported ? dayKey : undefined;
+  const events = useAgendaPages<BridgeAgendaEvent>("plugin.assistant-agenda.event.list", request, opened, token,
+    window && { ...window, ...(activeDay ? { allDayOn: activeDay } : {}) });
+  const todos = useAgendaPages<BridgeAgendaTodo>("plugin.assistant-agenda.todo.list", request, opened && Boolean(activeDay), token,
+    activeDay && window ? { dueOn: { ...window, date: activeDay } } : undefined);
   const allTodos = useAgendaPages<BridgeAgendaTodo>("plugin.assistant-agenda.todo.list", request,
-    opened && !calendarOnly && (allTodosOpen || !dueDaySupported), token);
+    opened && !calendarOnly && (dayKey === todayKey || allTodosOpen || !daySupported), token);
 
   return <AssistantAgendaContext.Provider value={enabled ? {
     snapshot: agenda,
     online: connected,
-    todos: dueDaySupported ? todos : allTodos, events,
-    date: date ?? new Date(), calendarOnly, setCalendarOnly, allTodos, allTodosOpen, setAllTodosOpen,
+    todos: daySupported ? todos : allTodos, events, daySupported,
+    date: date ?? today, today: todayKey, calendarOnly, setCalendarOnly, allTodos, allTodosOpen, setAllTodosOpen,
+    openToday() {
+      setToday(new Date());
+      setSelectedDay("today");
+      setCalendarOnly(false);
+    },
     selectDate(next) {
-      if (!next) setDay(current => current ?? new Date());
-      else if (calendarOnly) setMonth(next);
-      else setDay(next);
+      if (calendarOnly) setMonth(next);
+      else setSelectedDay(agendaInputTime(next.toISOString(), agendaDeviceZone).slice(0, 10) === todayKey ? "today" : next);
     },
     async mutate(method, params) {
       if (!connected) throw new Error("电脑离线，连接后再试。");

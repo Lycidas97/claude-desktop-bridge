@@ -66,12 +66,20 @@ test("pages a device day's dated todos before unrelated tasks can consume the pa
     ["Last", "2027-03-15T06:59:59.999Z"], ["After", "2027-03-15T07:00:00.000Z"],
     ["Date only", "2027-03-14"], ["Undated", undefined],
   ] as const) store.saveTodo({ title, dueAt, status: title === "Last" ? "completed" : "pending" });
-  const dueOn = { date: "2027-03-14", timeZone: "America/Los_Angeles" };
+  const dueOn = { date: "2027-03-14", from: "2027-03-14T08:00:00.000Z", to: "2027-03-15T07:00:00.000Z" };
   const first = store.listTodos({ dueOn, limit: 2 });
   expect(first.records.map(record => record.title)).toEqual(["Date only", "Start"]);
   expect(first.nextCursor).toBeDefined();
   expect(store.listTodos({ dueOn, cursor: first.nextCursor }).records.map(record => record.title)).toEqual(["Last"]);
   expect(store.listTodos({ limit: 100 }).records).toHaveLength(57);
+});
+
+test("keeps the last timed task before a device day that skips midnight", () => {
+  const store = testStore();
+  store.saveTodo({ title: "23:30 on September 4", status: "pending", dueAt: "2027-09-05T03:30:00.000Z" });
+  expect(store.listTodos({ dueOn: { date: "2027-09-04", from: "2027-09-04T04:00:00.000Z", to: "2027-09-05T04:00:00.000Z" } }).records.map(record => record.title))
+    .toEqual(["23:30 on September 4"]);
+  expect(store.listTodos({ dueOn: { date: "2027-09-05", from: "2027-09-05T04:00:00.000Z", to: "2027-09-06T03:00:00.000Z" } }).records).toEqual([]);
 });
 
 test("normalizes remote todo status and alarms, preserves identity, and computes availability across overrides", () => {

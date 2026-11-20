@@ -3,6 +3,7 @@
 .agenda-toolbar { flex-wrap: wrap; justify-content: space-between; }
 .agenda-month { gap: 4px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .agenda-actions, .agenda-pagination { flex-wrap: wrap; justify-content: flex-end; margin-top: 8px; }
+.agenda-return-today { margin-right: auto; }
 .agenda-day { margin-top: 16px; }
 .agenda-other-todos { margin-top: 12px; border-top: 1px solid var(--line); }
 .agenda-other-todos summary { display: list-item; align-content: center; cursor: pointer; min-height: 36px; color: var(--muted); }
@@ -32,6 +33,8 @@
 .agenda-source-row { grid-template-columns: minmax(0, 1fr) auto; }
 .agenda-source-row .assistant-account-actions { grid-column: 1 / -1; }
 .assistant-page-mobile .agenda-view :is(.icon-button, .agenda-marker) { width: 44px; height: 44px; }
+.assistant-page-mobile .agenda-other-todos summary { min-height: 44px; }
+.agenda-record-copy .agenda-overdue-label { color: var(--danger-ink); }
 @media (max-width: 480px) {
   .agenda-form-pair { grid-template-columns: minmax(0, 1fr); }
   .agenda-form :is(input:not([type="checkbox"]), select, textarea) { min-height: 44px; font-size: max(16px, calc(13px * var(--font-scale))); }

@@ -822,6 +822,8 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
     agendaFixture.saveTodo({ value: { title: `分页待办 ${index}`, status: "pending", dueAt: new Date(Date.parse(today) - (52 - index) * 86_400_000).toISOString().slice(0, 10) } });
   }
   agendaFixture.saveEvent({ value: { title: "今天的评审", startAt: today, endAt: tomorrow, allDay: true, timeZone: "America/Los_Angeles" } });
+  agendaFixture.saveEvent({ value: { title: "明天的全天日程", startAt: tomorrow,
+    endAt: new Date(Date.parse(tomorrow) + 86_400_000).toISOString().slice(0, 10), allDay: true, timeZone: "UTC" } });
   await page.locator(".assistant-view-tabs").getByRole("button", { name: "议程", exact: true }).click();
   await page.getByRole("button", { name: "新建待办", exact: true }).waitFor();
   assert.equal((await settingsButton.boundingBox()).x, mobileSettingsX, "Mobile assistant settings stays in place on Agenda");
@@ -835,15 +837,18 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await sameDay.getByText("手机创建的待办", { exact: true }).waitFor();
   await sameDay.getByText("今天的评审", { exact: true }).waitFor();
   assert.equal(await sameDay.getByRole("listitem").count(), 2, "Tasks due before this date cannot consume the day page");
-  steps.push("the default agenda shows both same-day records even with 51 earlier pending tasks");
+  const overdue = page.getByRole("list", { name: "已逾期待办", exact: true });
+  await overdue.getByText("分页待办 1", { exact: true }).waitFor();
+  assert.equal(await overdue.getByRole("listitem").count(), 3, "A limited overdue preview is visible without expanding other tasks");
+  steps.push("the default agenda shows both same-day records and a small preview of overdue tasks");
   await page.getByRole("checkbox", { name: "完成 手机创建的待办", exact: true }).click();
-  await eventually(() => agendaFixture.listTodos({ dueOn: { date: today, timeZone: "America/Los_Angeles" } }).records[0]?.status, "completed", "Mobile agenda mutations reach the authenticated controller");
+  await eventually(() => agendaFixture.listTodos({ limit: 100 }).records.find(record => record.title === "手机创建的待办")?.status, "completed", "Mobile agenda mutations reach the authenticated controller");
   await eventually(() => page.getByRole("checkbox", { name: "完成 手机创建的待办", exact: true }).isChecked(), true, "Live agenda change refreshes the mobile checkbox");
   await capture("mobile-agenda");
   await page.locator(".agenda-other-todos summary").click();
   const otherTodos = page.getByRole("list", { name: "其他待办", exact: true });
   const moreTodos = page.getByRole("button", { name: "更多其他待办", exact: true });
-  await eventually(() => otherTodos.getByRole("listitem").count(), 50, "The separate task list opens its first page");
+  await eventually(() => otherTodos.getByRole("listitem").count(), 47, "Other tasks show the remaining first page without duplicating the overdue preview");
   host.mailOffline = true;
   host.socket.close();
   await page.getByText("电脑离线，连接后可同步议程。", { exact: true }).waitFor();
@@ -854,7 +859,7 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await eventually(() => host.resumeBatches.some(batch => batch.includes(lastOfflineChange)), true, "Reconnect replays the last offline agenda change");
   await sameDay.getByText("今天的评审", { exact: true }).waitFor();
   await moreTodos.click();
-  await eventually(() => otherTodos.getByRole("listitem").count(), 52, "Other tasks retain cursor pagination after reconnect");
+  await eventually(() => otherTodos.getByRole("listitem").count(), 49, "Other tasks retain cursor pagination after reconnect");
   await otherTodos.getByText("未安排日期的待办", { exact: true }).waitFor();
   const secondPage = agendaFixture.listTodos({ limit: 100 }).records.find(record => record.title === "分页待办 51");
   agendaFixture.saveTodo({ existing: { id: secondPage.id, revision: secondPage.revision }, value: { title: "第二页已同步", status: "pending", dueAt: secondPage.dueAt } });
@@ -893,9 +898,22 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await agendaView.getByRole("button", { name: "前一天", exact: true }).click();
   await sameDay.getByText("第二页已同步", { exact: true }).waitFor();
   assert.equal(await sameDay.getByText("今天的评审", { exact: true }).count(), 0);
-  await agendaView.getByRole("button", { name: "后一天", exact: true }).click();
+  await agendaView.getByRole("button", { name: "回到今天", exact: true }).click();
   await sameDay.getByText("今天的评审", { exact: true }).waitFor();
-  steps.push("browsing a different calendar month does not change the day view; stepping the day queries both lists");
+  await agendaView.getByRole("button", { name: "后一天", exact: true }).click();
+  await sameDay.getByText("明天的全天日程", { exact: true }).waitFor();
+  assert.equal(await sameDay.getByText("今天的评审", { exact: true }).count(), 0);
+  await page.locator(".assistant-view-tabs").getByRole("button", { name: "收件", exact: true }).click();
+  await page.locator(".assistant-view-tabs").getByRole("button", { name: "议程", exact: true }).click();
+  await sameDay.getByText("今天的评审", { exact: true }).waitFor();
+  steps.push("browsing a different month leaves the selected day intact; the today shortcut and reopening both return to today");
+  await page.clock.setFixedTime(new Date(`${tomorrow}T19:00:00Z`));
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await eventually(() => agendaView.locator(".agenda-month time").getAttribute("datetime"), tomorrow, "The today view follows the new date when the tab becomes visible again");
+  await sameDay.getByText("明天的全天日程", { exact: true }).waitFor();
+  await page.clock.setFixedTime(new Date());
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await sameDay.getByText("今天的评审", { exact: true }).waitFor();
   await agendaView.getByRole("button", { name: "新建日程", exact: true }).click();
   await page.getByLabel("标题", { exact: true }).fill("桌面创建的日程");
   await page.getByRole("button", { name: "保存", exact: true }).click();
@@ -940,13 +958,15 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
 
   const requestsBeforeLegacyAgenda = desktopRequests.length;
   await page.evaluate(host => window.assistantDesktopSnapshot({ host }), { ...host.snapshot.host,
-    capabilities: host.snapshot.host.capabilities.filter(value => !["plugin.assistant-agenda.due-day.v1", "plugin.magpie-quota.v1"].includes(value)) });
+    capabilities: host.snapshot.host.capabilities.filter(value => !["plugin.assistant-agenda.day.v1", "plugin.magpie-quota.v1"].includes(value)) });
   await agendaView.getByRole("button", { name: "按日", exact: true }).click();
   await agendaView.getByRole("button", { name: "更多待办", exact: true }).click();
   await sameDay.getByText("桌面编辑的待办", { exact: true }).waitFor();
   assert.deepEqual(desktopRequests.slice(requestsBeforeLegacyAgenda).filter(request => request.method === "plugin.assistant-agenda.todo.list")
     .map(request => Object.keys(request.params ?? {}).filter(key => key !== "client")), [[], ["cursor"]]);
-  steps.push("an older host gets only the existing unfiltered todo request and cursor");
+  assert.deepEqual(desktopRequests.slice(requestsBeforeLegacyAgenda).filter(request => request.method === "plugin.assistant-agenda.event.list")
+    .map(request => Object.keys(request.params ?? {}).filter(key => key !== "client").sort()), [["from", "to"]]);
+  steps.push("an older host gets only the original event window, unfiltered todo request and cursor");
 
   await page.locator(".assistant-view-tabs").getByRole("button", { name: "收件", exact: true }).click();
   await page.locator(".assistant-view-tabs").getByRole("button", { name: "助理设置", exact: true }).click();

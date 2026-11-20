@@ -25,24 +25,33 @@ function displayTime(value: string, timeZone = deviceZone): string {
 
 export function AgendaView() {
   const agenda = useAssistantAgenda()!;
-  const { events, todos, allTodos, calendarOnly, date } = agenda;
+  const { events, todos, allTodos, calendarOnly, date, today } = agenda;
   const dayId = useId();
   const [editor, setEditor] = useState<Editor>();
   const [completing, setCompleting] = useState<string>();
   const [error, setError] = useState("");
   // The provider keeps opened pages while the Assistant stage is switched away.
-  useEffect(() => { agenda.selectDate(); }, []);
+  useEffect(() => { agenda.openToday(); }, []);
   const sources = new Map(agenda.snapshot?.sources.map(source => [source.id, source]));
   const canCreate = agenda.online && agenda.snapshot?.sources.some(source => source.enabled && source.writable);
   const year = date.getFullYear();
   const month = date.getMonth();
   const selectedDay = agendaInputTime(date.toISOString(), deviceZone).slice(0, 10);
-  const today = agendaInputTime(new Date().toISOString(), deviceZone).slice(0, 10);
-  const entries = events.records.map(record => ({ record, at: agendaInputTime(record.startAt, deviceZone), epoch: record.allDay ? -Infinity : Date.parse(record.startAt) }));
+  const isToday = !calendarOnly && selectedDay === today;
+  const otherTasks = !calendarOnly && (isToday || agenda.allTodosOpen) ? allTodos.records.flatMap(record => {
+    const at = record.dueAt ? agendaInputTime(record.dueAt, deviceZone) : "";
+    if (at.startsWith(selectedDay)) return [];
+    return [{ record, at, overdue: at !== "" && at.slice(0, 10) < today && record.status !== "completed" && record.status !== "cancelled" }];
+  }) : [];
+  const overduePreview = isToday ? otherTasks.filter(entry => entry.overdue).slice(0, 3) : [];
+  const entries = events.records.flatMap(record => {
+    if (!calendarOnly && !agenda.daySupported && record.allDay && (selectedDay < record.startAt || selectedDay >= record.endAt)) return [];
+    return [{ record, at: agendaInputTime(record.startAt, deviceZone), epoch: record.allDay ? -Infinity : Date.parse(record.startAt) }];
+  });
   const dayTodos = calendarOnly ? [] : todos.records.flatMap(record => {
     if (!record.dueAt) return [];
     const at = agendaInputTime(record.dueAt, deviceZone);
-    return at.startsWith(selectedDay) ? [{ record, at, epoch: record.dueAt.length === 10 ? -Infinity : Date.parse(record.dueAt) }] : [];
+    return agenda.daySupported || at.startsWith(selectedDay) ? [{ record, at, epoch: record.dueAt.length === 10 ? -Infinity : Date.parse(record.dueAt) }] : [];
   });
   const days = new Map<string, Array<{ record: BridgeAgendaTodo | BridgeAgendaEvent; at: string }>>();
   for (const entry of [...entries, ...dayTodos].sort((a, b) =>
@@ -68,7 +77,7 @@ export function AgendaView() {
     }
   }
 
-  function row({ record, at }: { record: BridgeAgendaTodo | BridgeAgendaEvent; at: string }, groupedDay?: string) {
+  function row({ record, at, overdue }: { record: BridgeAgendaTodo | BridgeAgendaEvent; at: string; overdue?: boolean }, groupedDay?: string) {
     const source = sources.get(record.sourceId);
     const isTodo = "status" in record;
     const priority = isTodo ? priorityGroup(record.priority) : "";
@@ -80,6 +89,7 @@ export function AgendaView() {
       <div className="agenda-record-copy">
         <strong>{record.title}</strong>
         {isTodo ? <div className="agenda-todo-meta">
+          {overdue && <small className="agenda-overdue-label">已逾期</small>}
           {record.status !== "pending" && record.status !== "completed" && <small>{todoStatuses[record.status]}</small>}
           {at && (groupedDay ? at.length > 10 && <small>截止 {at.slice(11)}</small> : <small>截止 {at.replace("T", " ")}</small>)}
           {record.remindAt && <small>提醒 {displayTime(record.remindAt)}</small>}
@@ -111,6 +121,7 @@ export function AgendaView() {
       </nav>
     </div>
     <div className="agenda-actions">
+      {!calendarOnly && !isToday && <button type="button" className="secondary-button agenda-return-today" onClick={agenda.openToday}>回到今天</button>}
       {!calendarOnly && <button type="button" className="secondary-button" disabled={!canCreate} onClick={() => setEditor({ type: "todo" })}>新建待办</button>}
       <button type="button" className="primary-button" disabled={!canCreate} onClick={() => setEditor({ type: "event" })}>新建日程</button>
     </div>
@@ -120,7 +131,7 @@ export function AgendaView() {
       {page.error && <div className="assistant-actions"><p role="alert">{name}：{page.error}</p><button type="button" className="secondary-button" disabled={!agenda.online || page.loading} onClick={page.retry}>重试{name}</button></div>}
       {page.incomplete && <p role="status">部分重复{name}超出展开上限，未显示。</p>}
     </div>)}
-    {agenda.online && loading && <p role="status">正在同步议程…</p>}
+    {agenda.online && loading && !days.size && <p role="status">正在同步议程…</p>}
     {pages.some(({ page }) => page.hasMore) && <div className="agenda-pagination">
       {pages.map(({ name, page }) => page.hasMore && <button key={name} type="button" className="secondary-button" disabled={!agenda.online || page.loading} onClick={page.loadMore}>更多{name}</button>)}
     </div>}
@@ -130,16 +141,17 @@ export function AgendaView() {
       <h3 id={`${dayId}-${day}`}><time dateTime={day}>{dayLabel.format(new Date(`${day}T00:00`))}</time></h3>
       <ul className="agenda-records" aria-labelledby={`${dayId}-${day}`}>{records.map(entry => row(entry, day))}</ul>
     </div> : <ul key={day} className="agenda-records agenda-day" aria-label="当日议程">{records.map(entry => row(entry, day))}</ul>)}
+    {overduePreview.length > 0 && <div className="agenda-day">
+      <h3 id={`${dayId}-overdue`}>已逾期待办</h3>
+      <ul className="agenda-records" aria-labelledby={`${dayId}-overdue`}>{overduePreview.map(({ record, at }) => row({ record, at }))}</ul>
+    </div>}
     {!calendarOnly && <details className="agenda-other-todos" open={agenda.allTodosOpen} onToggle={event => agenda.setAllTodosOpen(event.currentTarget.open)}>
       <summary>其他待办</summary>
       {agenda.allTodosOpen && <>
         {allTodos.error && <div className="assistant-actions"><p role="alert">{allTodos.error}</p><button type="button" className="secondary-button" disabled={!agenda.online || allTodos.loading} onClick={allTodos.retry}>重试</button></div>}
         {allTodos.incomplete && <p role="status">部分重复待办超出展开上限，未显示。</p>}
         {allTodos.loading && <p role="status">正在读取待办…</p>}
-        <ul className="agenda-records" aria-label="其他待办">{allTodos.records.map(record => {
-          const at = record.dueAt ? agendaInputTime(record.dueAt, deviceZone) : "";
-          return at.startsWith(selectedDay) ? null : row({ record, at });
-        })}</ul>
+        <ul className="agenda-records" aria-label="其他待办">{otherTasks.filter(entry => !overduePreview.includes(entry)).map(entry => row(entry))}</ul>
         {allTodos.hasMore && <button type="button" className="secondary-button" disabled={!agenda.online || allTodos.loading} onClick={allTodos.loadMore}>更多其他待办</button>}
       </>}
     </details>}

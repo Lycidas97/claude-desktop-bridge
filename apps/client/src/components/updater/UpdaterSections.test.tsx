@@ -117,7 +117,7 @@ it("keeps RemoteDesktopUpdaterSection strictly check-only with version, channel 
   expect(text(initialTree)).not.toContain("下载更新");
   expect(text(initialTree)).not.toContain("重启并升级");
 
-  const channelGroup = elements(initialTree).find((el) => el.props["aria-label"] === "远端桌面更新通道")!;
+  const channelGroup = elements(initialTree).find((el) => el.props["aria-label"] === "电脑端更新通道")!;
   const [stableBtn, prereleaseBtn] = elements(channelGroup).filter((el) => el.type === "button");
   stableBtn!.props.onClick();
   expect(onInvoke).not.toHaveBeenCalled();

@@ -671,20 +671,15 @@ describe("Round 4 Client Deliverables", () => {
       expect(hostDetailsHtml).toContain("未开启");
       expect(hostDetailsHtml).toContain("开启调试端口");
 
-      // MobileSettings shows Claude 9229 status + 开启调试端口 + 任务通知 toggle + 授权通知 button
+      // MobileSettings keeps the debug port in the computer's connection settings and shows 任务通知 + 授权通知
       const settingsHtml = renderToStaticMarkup(
         createElement(MobileSettings, {
           themeControl: { theme: "dark", family: "apple", setTheme: vi.fn(), setFamily: vi.fn(), toggleTheme: vi.fn() },
-          claudeRuntime: {
-            desktopName: "Studio Mac",
-            snapshot: snapshotWithClosedInspector as BridgeHostSnapshot,
-            connected: true,
-            onActivate: vi.fn(),
-          },
+          computer: { desktopName: "Studio Mac", onOpen: vi.fn() },
         }),
       );
-      expect(settingsHtml).toContain("Claude 调试端口 (9229)");
-      expect(settingsHtml).toContain("开启调试端口");
+      expect(settingsHtml).toContain("连接与电脑设置");
+      expect(settingsHtml).not.toContain("调试端口");
       expect(settingsHtml).toContain("任务通知");
       expect(settingsHtml).toContain("系统通知未授权");
       expect(settingsHtml).toContain("授权通知");

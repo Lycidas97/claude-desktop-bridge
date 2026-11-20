@@ -239,8 +239,8 @@ function MobileApp({ themeControl }: { themeControl: ThemeControl }) {
   const [pairingOpen, setPairingOpen] = useState(false);
   const [tab, setTab] = useState<MobileTab>("sessions");
   const [computerDetailsHostId, setComputerDetailsHostId] = useState<string>();
-  // Details opened from the home connection banner return home, not to the computer list.
-  const [computerDetailsFromHome, setComputerDetailsFromHome] = useState(false);
+  // Details opened from home or settings return there, not to the computer list.
+  const [computerDetailsReturn, setComputerDetailsReturn] = useState<"sessions" | "settings">();
   const [quotaOpen, setQuotaOpen] = useState(false);
   const [providersOpen, setProvidersOpen] = useState(false);
   const [focusRequest, setFocusRequest] = useState<{ sessionId: string; key: number }>();
@@ -328,11 +328,17 @@ function MobileApp({ themeControl }: { themeControl: ThemeControl }) {
     void openComputer(hostId, sessionId);
   }), [mobile.state.activeHostId, mobile.selectHost]);
 
+  function openComputerDetails(returnTab: "sessions" | "settings"): void {
+    setComputerDetailsHostId(mobile.state.activeHostId);
+    setComputerDetailsReturn(returnTab);
+    setTab("computers");
+  }
+
   function closeComputerDetails(): void {
     setComputerDetailsHostId(undefined);
-    if (!computerDetailsFromHome) return;
-    setComputerDetailsFromHome(false);
-    setTab("sessions");
+    if (!computerDetailsReturn) return;
+    setComputerDetailsReturn(undefined);
+    setTab(computerDetailsReturn);
   }
 
   useEffect(() => registerMobileBackHandler(() => {
@@ -361,7 +367,7 @@ function MobileApp({ themeControl }: { themeControl: ThemeControl }) {
     }
     return false;
   }, -100), [
-    computerDetailsFromHome,
+    computerDetailsReturn,
     computerDetailsHostId,
     mobile.state.hosts.length,
     mobile.state.pairingSync,
@@ -451,11 +457,7 @@ function MobileApp({ themeControl }: { themeControl: ThemeControl }) {
               localTurns={mobile.state.localTurns}
               connectionIssue={mobile.state.connectionIssue}
               quickReconnect={mobile.state.quickReconnect}
-              onInspectConnection={() => {
-                setComputerDetailsHostId(mobile.state.activeHostId);
-                setComputerDetailsFromHome(true);
-                setTab("computers");
-              }}
+              onInspectConnection={() => openComputerDetails("sessions")}
               transportMetrics={mobile.state.transportMetrics}
               pendingOutbound={mobile.state.pendingOutbound}
               themeControl={themeControl}
@@ -580,12 +582,13 @@ function MobileApp({ themeControl }: { themeControl: ThemeControl }) {
           onRetry={mobile.retryConnection}
           onRefresh={mobile.refresh}
           onDesktopAppAction={mobile.controlDesktopApp}
+          onActivateClaude={mobile.activateClaudeRemote}
           remoteUpdate={remoteDesktopUpdate}
           onRemove={async () => {
             await forgetHost(mobile.state.activeHostId!);
             setComputerDetailsHostId(undefined);
           }}
-          {...(computerDetailsFromHome ? { backLabel: "返回会话列表" } : {})}
+          {...(computerDetailsReturn ? { backLabel: computerDetailsReturn === "sessions" ? "返回会话列表" : "返回设置" } : {})}
           onBack={closeComputerDetails}
         />
       ) : (
@@ -597,7 +600,7 @@ function MobileApp({ themeControl }: { themeControl: ThemeControl }) {
           onSelect={openComputer}
           onDetails={(hostId) => {
             setComputerDetailsHostId(hostId);
-            setComputerDetailsFromHome(false);
+            setComputerDetailsReturn(undefined);
             if (hostId !== mobile.state.activeHostId) void mobile.selectHost(hostId);
           }}
           onRemove={forgetHost}
@@ -620,18 +623,12 @@ function MobileApp({ themeControl }: { themeControl: ThemeControl }) {
       ) : (
         <MobileSettings
           themeControl={themeControl}
-          remoteDesktop={remoteDesktopUpdate}
           clientUpdater={clientUpdater}
           {...(mobile.state.activeHostId ? {
-            providers: { desktopName: mobile.state.desktopName ?? "我的电脑", onOpen: () => setProvidersOpen(true) },
-            claudeRuntime: {
-              desktopName: mobile.state.desktopName ?? "我的电脑",
-              snapshot,
-              connected: mobile.state.connection === "connected" && mobile.state.desktopOnline,
-              onActivate: mobile.activateClaudeRemote,
-            },
+            computer: { desktopName: mobile.state.desktopName ?? "我的电脑", onOpen: () => openComputerDetails("settings") },
+            providers: { onOpen: () => setProvidersOpen(true) },
           } : {})}
-          {...(quotaDeclared ? { quota: { desktopName: mobile.state.desktopName ?? "我的电脑", onOpen: () => setQuotaOpen(true) } } : {})}
+          {...(quotaDeclared ? { quota: { onOpen: () => setQuotaOpen(true) } } : {})}
         />
       ))}
       </MagpieQuotaProvider>

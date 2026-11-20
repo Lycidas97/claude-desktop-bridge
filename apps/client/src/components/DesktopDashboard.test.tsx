@@ -2685,6 +2685,8 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
       renderConversation: () => null,
     });
     let assistantTree = assistantRenderer.draw();
+    elements(assistantTree).find((element) => element.type === IconButton && element.props.label === "助理设置")!.props.onClick();
+    assistantTree = assistantRenderer.draw();
     elements(assistantTree).find((element) => element.type === "button" && element.props.children === "新建会话")!.props.onClick();
     assistantTree = assistantRenderer.draw();
     const assistantCreateDialog = elements(assistantTree).find((element) => element.type === SessionCreateDialog)!;

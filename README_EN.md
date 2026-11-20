@@ -104,7 +104,7 @@ Check that the JSON is valid, reopen Desktop, then enable the main-process debug
 **Automatic attempt**: when the macOS background service discovers a new Desktop process, it attempts the same native menu once.
 
 - Allow Bridge under **System Settings → Privacy & Security → Accessibility**, and allow it to control System Events under **Automation** if that entry appears. These are menu automation permissions, separate from JSON file access.
-- An already-open port is skipped. After an actual attempt fails, or you close the debugger manually, Bridge does not try again within that Desktop process, even after Bridge restarts. Use Desktop's native menu directly, or ask the computer to try again from **Settings → Claude debug port (9229)** on the phone; that request is subject to the same account/workspace policies and permissions.
+- An already-open port is skipped. After an actual attempt fails, or you close the debugger manually, Bridge does not try again within that Desktop process, even after Bridge restarts. Use Desktop's native menu directly, or ask the computer to try again from **Settings → Connection and computer settings (设置 → 连接与电脑设置)** → `开启调试端口` on the phone; that request is subject to the same account/workspace policies and permissions.
 - First-time permission prompts and a full restart cycle have not completed end-to-end validation on the installed app.
 
 > [!WARNING]

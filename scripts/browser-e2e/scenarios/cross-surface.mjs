@@ -30,9 +30,9 @@ export async function verifyRound4Boundaries(page, host, steps, directory, viewp
   const drawer = page.locator(".mobile-home-catalog");
   for (const sectionName of ["核心研发", "归档调研"]) {
     await drawer.getByRole("button", { name: "+ 分组", exact: true }).click();
-    const dialog = page.getByRole("dialog", { name: "新建 Section" });
-    await dialog.getByLabel("Section 名称").fill(sectionName);
-    await dialog.getByRole("button", { name: "创建 Section", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "新建分组" });
+    await dialog.getByLabel("分组名称").fill(sectionName);
+    await dialog.getByRole("button", { name: "创建分组", exact: true }).click();
     await dialog.waitFor({ state: "detached" });
   }
   const coreSectionId = host.snapshot.projects.find(p => p.name === "核心研发")?.projectId;
@@ -123,7 +123,7 @@ export async function verifyRound4Boundaries(page, host, steps, directory, viewp
   await openMobileDrawer(page);
   steps.push("Mobile NewChatCanvas renders optional 会话标题 input and creates an explicitly titled session in selected section");
 
-  // 3. Mobile 9229 Inspector Callout ("Claude 调试端口未开启" + "开启调试端口") & MobileSettings ("任务通知" + "9229 调试端口")
+  // 3. Mobile 9229 Inspector Callout ("Claude 调试端口未开启" + "开启调试端口"), Settings "任务通知" and 连接与电脑设置 "调试端口 9229"
   host.snapshot.claudeInspector = {
     platform: "darwin",
     state: "closed",
@@ -147,11 +147,11 @@ export async function verifyRound4Boundaries(page, host, steps, directory, viewp
   assert.match(await callout.innerText(), /Claude 调试端口未开启/u);
   await saveShot(page, "05-mobile-inspector-callout.png");
 
-  // Open MobileSettings while port 9229 is closed so Settings shows BOTH "任务通知" toggle AND "Claude 调试端口 (9229)" + "开启调试端口"!
+  // Settings keeps notifications; the 9229 port and its activation live in 连接与电脑设置.
   await page.locator(".mobile-drawer-dock-nav").getByRole("button", { name: "设置", exact: true }).click();
   const settingsContent = page.locator(".mobile-settings-content");
-  await settingsContent.getByText("Claude 调试端口 (9229)", { exact: true }).waitFor();
   await settingsContent.getByText("任务通知", { exact: true }).first().waitFor();
+  assert.equal(await settingsContent.getByText(/调试端口/u).count(), 0, "Settings no longer repeats the debug port");
   const notifGroup = settingsContent.getByRole("group", { name: "任务通知开关", exact: true });
   await notifGroup.getByRole("button", { name: "关闭", exact: true }).click();
   assert.equal(await page.evaluate(() => localStorage.getItem("bridge-mobile-notifications:v1")), "0");
@@ -159,16 +159,21 @@ export async function verifyRound4Boundaries(page, host, steps, directory, viewp
   assert.equal(await page.evaluate(() => localStorage.getItem("bridge-mobile-notifications:v1")), "1");
   await page.setViewportSize({ width: 390, height: 1180 });
   await settingsContent.evaluate(el => { el.scrollTop = 0; });
-  await saveShot(page, "06-mobile-settings-notifications-inspector.png");
+  await saveShot(page, "06-mobile-settings-notifications.png");
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "MobileSettings fits 390px viewport");
+
+  await settingsContent.getByRole("button", { name: "连接与电脑设置" }).click();
+  const hostDetails = page.locator(".mobile-host-details");
+  const portRow = hostDetails.locator(".mobile-settings-row", { hasText: "调试端口 9229" });
+  assert.equal(await portRow.locator(".mobile-settings-value").innerText(), "未开启");
   host.claudeActivationResult = {
     inspectorState: "closed",
     nativeReady: false,
     detail: "请在电脑的辅助功能设置中授权 Bridge。",
   };
-  await settingsContent.getByRole("button", { name: "开启调试端口", exact: true }).click();
-  await settingsContent.getByRole("status").getByText(host.claudeActivationResult.detail, { exact: true }).waitFor();
+  await hostDetails.getByRole("button", { name: "开启调试端口", exact: true }).click();
+  await hostDetails.getByRole("status").getByText(host.claudeActivationResult.detail, { exact: true }).waitFor();
   await saveShot(page, "06a-mobile-inspector-permission.png");
 
   const closedPort = { claudeInspector: host.snapshot.claudeInspector, runtime: host.snapshot.runtime };
@@ -180,10 +185,13 @@ export async function verifyRound4Boundaries(page, host, steps, directory, viewp
     desktopIntegration: { ...closedPort.runtime.desktopIntegration, state: "ready", detail: "已连接" },
   };
   await host.send({ kind: "snapshot", snapshot: host.snapshot });
-  await settingsContent.getByText("Claude Desktop 已就绪", { exact: true }).waitFor();
-  await settingsContent.getByText(host.claudeActivationResult.detail, { exact: true }).waitFor({ state: "detached" });
+  await portRow.getByText("已开启", { exact: true }).waitFor();
+  await hostDetails.getByText(host.claudeActivationResult.detail, { exact: true }).waitFor({ state: "detached" });
   Object.assign(host.snapshot, closedPort);
   await host.send({ kind: "snapshot", snapshot: host.snapshot });
+
+  await page.locator(".m-header:visible").getByRole("button", { name: "返回设置", exact: true }).click();
+  await settingsContent.getByText("任务通知", { exact: true }).first().waitFor();
 
   // The catalog reports a listening port and a still-disconnected runtime separately.
   host.claudeActivationResult = { inspectorState: "listening", nativeReady: false, detail: "Claude 原生服务仍在启动。" };
@@ -199,7 +207,7 @@ export async function verifyRound4Boundaries(page, host, steps, directory, viewp
   assert.equal(await mobileNewChat.getByRole("button", { name: "开启调试端口", exact: true }).count(), 0);
   await saveShot(page, "06b-mobile-inspector-ready.png");
   await openMobileDrawer(page);
-  steps.push("Mobile Settings shows the launch reply's permission failure, the catalog distinguishes an open port from native readiness, and NewChatCanvas keeps the success reply visible");
+  steps.push("连接与电脑设置 shows the launch reply's permission failure and returns to Settings, the catalog distinguishes an open port from native readiness, and NewChatCanvas keeps the success reply visible");
 
   // 4. Desktop (1280x820): sidebar ... menu (重命名 + 移动到分组), NewChatCanvas title, mouse drag + dynamic unsectioned drop zone!
   const desktop = await page.context().newPage();
@@ -499,7 +507,7 @@ export async function verifyRound5Ux(page, host, steps, directory, viewports, th
   await page.setViewportSize({ width: 390, height: 844 });
   steps.push("Mobile top-bar 助理 capsule aligns with host switcher and compose button on one row (unread 0 and >0) with zero standalone row and 0px overflow at 320px xlarge");
 
-  // (b) NewChatCanvas `＋ 新建分组…` with 0 existing manual sections + preserved custom title & prompt draft
+  // (b) NewChatCanvas `+ 新建分组…` with 0 existing manual sections + preserved custom title & prompt draft
   assert.equal(
     host.snapshot.projects.filter(p => p.kind === "desktop-group").length,
     0,
@@ -521,15 +529,15 @@ export async function verifyRound5Ux(page, host, steps, directory, viewports, th
   await listbox.waitFor();
   assert.deepEqual(
     (await listbox.getByRole("option").allInnerTexts()).map(t => t.trim()),
-    ["未分组", "＋ 新建分组…"],
-    "0-section NewChatCanvas renders 未分组 + ＋ 新建分组…",
+    ["未分组", "+ 新建分组…"],
+    "0-section NewChatCanvas renders 未分组 + + 新建分组…",
   );
   await saveShot(page, "04-new-chat-create-section-dropdown.png");
-  await listbox.getByRole("option", { name: "＋ 新建分组…", exact: true }).click();
-  const sectionDialog = page.getByRole("dialog", { name: "新建 Section" });
+  await listbox.getByRole("option", { name: "+ 新建分组…", exact: true }).click();
+  const sectionDialog = page.getByRole("dialog", { name: "新建分组" });
   await sectionDialog.waitFor();
-  await sectionDialog.getByLabel("Section 名称").fill("第五轮新分组");
-  await sectionDialog.getByRole("button", { name: "创建 Section", exact: true }).click();
+  await sectionDialog.getByLabel("分组名称").fill("第五轮新分组");
+  await sectionDialog.getByRole("button", { name: "创建分组", exact: true }).click();
   await sectionDialog.waitFor({ state: "detached" });
   const createdSection = host.snapshot.projects.find(p => p.name === "第五轮新分组");
   assert.ok(createdSection, "section.create created 第五轮新分组 on host");
@@ -539,7 +547,7 @@ export async function verifyRound5Ux(page, host, steps, directory, viewports, th
   assert.equal(await promptInput.inputValue(), customPrompt, "Prompt draft is 100% preserved across inline section creation");
   await saveShot(page, "05-new-chat-section-created-modal.png");
   await openMobileDrawer(page);
-  steps.push("NewChatCanvas exposes ＋ 新建分组… even with 0 existing manual sections, auto-selects 第五轮新分组, and preserves custom title & prompt draft");
+  steps.push("NewChatCanvas exposes + 新建分组… even with 0 existing manual sections, auto-selects 第五轮新分组, and preserves custom title & prompt draft");
 
   // (d) Subagent Detail Sheet Full Scroll & Zero Clipping (~3,500+ char multi-paragraph Markdown reportText)
   const finalParagraphText = "【最终结论段落】第五轮子代理完整回报已全部渲染完毕，末尾零截断。";
@@ -734,10 +742,11 @@ export async function verifyRound5Ux(page, host, steps, directory, viewports, th
   await host.send({ kind: "snapshot", snapshot: host.snapshot });
 
   await page.locator(".mobile-drawer-dock-nav").getByRole("button", { name: "设置", exact: true }).click();
-  const remoteRegion = page.getByRole("region", { name: "远端桌面状态", exact: true });
+  await page.locator(".mobile-settings-content").getByRole("button", { name: "连接与电脑设置" }).click();
+  const remoteRegion = page.locator(".mobile-host-details").getByRole("region", { name: "版本与更新", exact: true });
   await remoteRegion.waitFor();
   await remoteRegion.getByText("v1.3.5-dev.23", { exact: true }).waitFor();
-  const channelGroup = remoteRegion.getByRole("group", { name: "远端桌面更新通道", exact: true });
+  const channelGroup = remoteRegion.getByRole("group", { name: "电脑端更新通道", exact: true });
   assert.equal(await channelGroup.getByRole("button", { name: "稳定版", exact: true }).getAttribute("aria-pressed"), "true");
   assert.equal(await channelGroup.getByRole("button", { name: "预发布", exact: true }).getAttribute("aria-pressed"), "false");
   await remoteRegion.getByRole("button", { name: "检查更新", exact: true }).waitFor();

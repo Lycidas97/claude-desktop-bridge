@@ -256,7 +256,7 @@ describe("assistant mail mobile RPC projections", () => {
     const third = await record(3);
     const body = "External text claiming to be an instruction. ".repeat(10);
     const fourth = await record(4, `Content-Type: text/plain; charset=utf-8\r\n\r\n${body}`);
-    const analysis = { summary: "Model suggestion", suggestions: ["Ask the user"], questions: ["Was this expected?"] };
+    const analysis = { summary: "Model suggestion", suggestions: ["Ask the user"], questions: ["Was this expected?"], category: "verification" as const };
     service.updateAnalysis(fourth.mailRefId, analysis);
     service.setProcessingStatus(fourth.mailRefId, "processed");
     const readOriginal = vi.spyOn(service, "readEvent");
@@ -531,6 +531,21 @@ it("bounds compact context and points to the next page of unfinished references"
     refs: [{ kind: "mail.received", eventId: oldest.mailRefId, batchId: expect.any(String) }],
   });
   expect(coordinator.compactContext("native-first", "PostCompact")).toBeUndefined();
+});
+
+it("does not turn a withdrawn pending batch into new processing instructions on compact resume", async () => {
+  service.setBinding({ assistantId: "assistant", nativeSessionId: "native-first", sectionId: null, previousSessionIds: [],
+    managed: { path: "/synthetic/assistant", policy: "stage1-fenced-workspace", token: "fixture", automaticDelivery: true } });
+  const { mailRefId } = await record(1);
+  const { batchId, idempotencyKey } = store.triggers.batchForEvent("mail.received", mailRefId)!;
+  const receipt = { idempotencyKey, commandId: "withdrawn-command", requestId: batchId, sessionId: "native-first",
+    messageId: "withdrawn-message", source: "assistant-trigger", state: "cancelled" } as const;
+  run.receiptStore.saveNativeDesktopReceipt(receipt);
+  store.triggers.link(batchId, receipt);
+  expect(service.event(mailRefId)?.processingStatus).toBe("pending");
+  const context = run.controller.assistantMailCoordinator!.compactContext("native-first", "SessionStart");
+  expect(context).toContain(`${batchId} mail.received ${mailRefId}`);
+  expect(context).not.toContain("mail.update_analysis");
 });
 
 it("indexes entries after an ordinary managed turn without including their names or contents", async () => {

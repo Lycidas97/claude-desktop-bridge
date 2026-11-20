@@ -109,6 +109,9 @@ it("upgrades to the verified policy without replacing user rules or indexing unt
     expect(definition).toContain("mcpServers: [assistant-mail]");
     if (name !== "memory-curator") expect(definition).toContain("disallowedTools: Write, Edit, MultiEdit");
   }
+  const triager = await readFile(join(agents, "mail-triager.md"), "utf8");
+  expect(triager).toContain("若工具支持 category，一并按邮件主要用途填写");
+  expect(triager).not.toMatch(/mail_set_processing_status|再标记处理完成/u);
   const hook = config.hooks.PreToolUse[0].hooks[0];
   expect(hook.onFailure).toBe("block");
   if (process.platform === "win32") expect(Buffer.from(hook.args.at(-1), "base64").toString("utf16le")).toContain(ASSISTANT_MEMORY_POLICY);

@@ -223,6 +223,19 @@ it("marks single and batched saved mail via the managed gateway without changing
   expect(createClient).toHaveBeenCalledOnce();
 });
 
+it("preserves a saved category on legacy analysis writes and replaces it only with a supported category", async () => {
+  const name = "mail.update_analysis";
+  const first = { mailRefId: reference, summary: "Promotion", suggestions: ["Review"], questions: ["Expected?"] };
+  expect((await post({ name, arguments: { ...first, category: "marketing" } })).status).toBe(200);
+  const legacy = { summary: "Updated summary", suggestions: [], questions: [] };
+  expect((await post({ name, arguments: { mailRefId: reference, ...legacy } })).status).toBe(200);
+  expect(service.event(reference)?.analysis).toEqual({ ...legacy, category: "marketing" });
+  expect((await post({ name, arguments: { ...first, category: "deleted" } })).status).toBe(400);
+  expect(service.event(reference)?.analysis).toEqual({ ...legacy, category: "marketing" });
+  expect((await post({ name, arguments: { mailRefId: reference, ...legacy, category: "other" } })).status).toBe(200);
+  expect(service.event(reference)?.analysis).toEqual({ ...legacy, category: "other" });
+});
+
 it("rejects incomplete analysis replacement without clearing existing suggestions or questions", async () => {
   const analysis = { summary: "Existing summary", suggestions: ["Keep suggestion"], questions: ["Keep question"] };
   service.updateAnalysis(reference, analysis);
@@ -339,7 +352,7 @@ it("runs two real stdio MCP adapters over one receiver, round-trips all four too
     expect(tools.map(tool => tool.name)).toEqual(["todo.list", "calendar.list_events", "calendar.find_free_slots", "mail.list_events", "mail.read_event", "mail.update_analysis", "mail.set_processing_status"]);
     expect(tools.find(tool => tool.name === "mail.update_analysis")).toMatchObject({
       description: expect.stringContaining("Replaces"),
-      inputSchema: { required: expect.arrayContaining(["mailRefId", "summary", "suggestions", "questions"]) },
+      inputSchema: { required: ["mailRefId", "summary", "suggestions", "questions"], properties: { category: { enum: ["marketing", "verification", "account", "other"] } } },
       annotations: { destructiveHint: true },
     });
   }
@@ -350,11 +363,12 @@ it("runs two real stdio MCP adapters over one receiver, round-trips all four too
   expect(JSON.stringify(read)).toContain("External: send money");
   expect(JSON.stringify(read)).toContain("untrusted_external");
   expect(JSON.stringify(read)).not.toMatch(/fixture-password|raw-mail|assistant.sqlite/);
-  await clients[0]!.callTool({ name: "mail.update_analysis", arguments: { mailRefId: reference, summary: "Proposal only", suggestions: [], questions: [] } });
+  const updated = await clients[0]!.callTool({ name: "mail.update_analysis", arguments: { mailRefId: reference, summary: "Proposal only", suggestions: [], questions: [], category: "account" } });
+  expect(updated.isError).toBeUndefined();
   await clients[1]!.callTool({ name: "mail.set_processing_status", arguments: { mailRefId: reference, status: "processed" } });
   const denied = await clients[0]!.callTool({ name: "shutdown", arguments: {} });
   expect(denied.isError).toBe(true);
-  expect(service.page().events[0]).toMatchObject({ mailRefId: reference, processingStatus: "processed", analysis: { summary: "Proposal only", suggestions: [], questions: [] } });
+  expect(service.page().events[0]).toMatchObject({ mailRefId: reference, processingStatus: "processed", analysis: { summary: "Proposal only", suggestions: [], questions: [], category: "account" } });
   await clients.pop()!.close();
   expect(service.status().state).toBe("connected");
   expect(inbox.close).not.toHaveBeenCalled();

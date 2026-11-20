@@ -1534,7 +1534,7 @@ export function bootstrapStoredBridgeHosts(
   } = refs;
   let active = true;
   void (async () => {
-    diagLog("info", "bridge", "读取本机已配对电脑列表 (bridgeVault.listHosts)â¦");
+    diagLog("info", "bridge", "读取本机已配对电脑列表 (bridgeVault.listHosts)…");
     const hosts = await bridgeVault.listHosts();
     diagLog("info", "bridge", `bridgeVault.listHosts 返回 ${hosts.length} 台电脑`, hosts.map((h) => ({
       roomId: h.roomId,

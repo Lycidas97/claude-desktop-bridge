@@ -694,6 +694,37 @@ export async function verifyNativeBoundaries(page, host, steps, directory) {
   }
   steps.push("successful Native rewind preserves prefill and closes confirmation when subsequent getSession or getTranscriptPage disconnects; each mutation executes once and discarded history stays absent after reload");
 
+  const proposalTool = "mcp__ccd_session__start_session";
+  const proposalTitle = "#457 fork 日历告警";
+  const proposalBackground = "检查旧版日历告警在手机上为什么没有显示。";
+  const proposalCall = tool("calendar-proposal", {
+    title: proposalTitle, background: proposalBackground, prompt: 'Reply "waiting" until the task message arrives.', initiation: "own_initiative",
+  }, proposalTool);
+  for (const event of await host.nativeApproval.message(proposalCall)) await host.emit(event.type, event.data, { itemId: event.itemId });
+  await eventually(() => toolRows.filter({ hasText: proposalTool }).count(), 1, "In-flight proposal calls are still ordinary tools");
+  for (const event of await host.nativeApproval.message({
+    type: "user", uuid: "calendar-proposal-result", message: { content: [{ type: "tool_result", tool_use_id: "calendar-proposal", content: [{
+      type: "text", text: `Proposed "${proposalTitle}" (task_id: task_d6c18845). The user sees a card and nothing runs until they start it — with a click, or by telling you (then call start_session with proposal_id task_d6c18845 and nothing else).`,
+    }] }] },
+  })) await host.emit(event.type, event.data, { itemId: event.itemId });
+  const proposal = stream.getByRole("region", { name: "会话提案", exact: true });
+  await proposal.getByText(proposalTitle, { exact: true }).waitFor({ timeout: 5_000 });
+  await proposal.getByText(proposalBackground, { exact: true }).waitFor();
+  assert.equal(await toolRows.filter({ hasText: proposalTool }).count(), 0, "A proposal card replaces rather than duplicates its tool row");
+  assert.equal(await proposal.getByRole("button", { name: /^(启动|撤回)/ }).count(), 0);
+  await proposal.screenshot({ path: resolve(directory, "native-session-proposal.png"), animations: "disabled" });
+  host.history.splice(0, host.history.length, ...(await host.nativeApproval.history()).items);
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await openMobileSession(page);
+  await proposal.getByText(proposalTitle, { exact: true }).waitFor();
+  assert.equal(await proposal.count(), 1, "Native history and live replay retain a single proposal card");
+  await proposal.getByRole("button", { name: "查看工具详情", exact: true }).click();
+  const proposalDetail = page.getByRole("dialog", { name: proposalTool, exact: true });
+  await proposalDetail.getByText(/task_d6c18845/).waitFor();
+  await proposalDetail.getByRole("button", { name: "关闭工具详情", exact: true }).click();
+  await proposalDetail.waitFor({ state: "hidden" });
+  steps.push("A successful session proposal replaces the live tool row with a read-only card, survives native history reload without duplication, and retains the original tool detail on demand");
+
   await openMobileDrawer(page);
   await page.locator(".mobile-drawer-dock-nav").getByRole("button", { name: "设置", exact: true }).click();
   await page.getByRole("heading", { name: "远端桌面状态", exact: true }).waitFor();

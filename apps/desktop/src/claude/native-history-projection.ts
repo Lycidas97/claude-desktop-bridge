@@ -8,8 +8,9 @@ import type {
 } from "@bridge/protocol";
 import type { NativeDesktopReceipt } from "../controller/conversation-state-store.js";
 import type { BridgeEventDraft } from "../controller/session-event-log.js";
+import { redactEvidenceText } from "../evidence/evidence-manager.js";
 import { applyQuestionAnswers, extractInteractivePrompt, extractToolResultAnswers, updateClaudeTaskPlan, visibleMessage, type QuestionAnswers } from "../transcript/claude-history.js";
-import { summarizeNativeToolInput } from "../transcript/transcript-tool-detail.js";
+import { summarizeNativeToolInput, truncateUtf8 } from "../transcript/transcript-tool-detail.js";
 import { NativeCallError } from "./claude-desktop-inspector.js";
 import { proposalRef } from "../../../../plugins/assistant-mail/proposal-contract.js";
 
@@ -25,10 +26,14 @@ function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
-function readProposalReceipt(content: unknown, toolUseId: string): BridgeHistoryItem["proposalReceipt"] {
+function singleToolResultText(content: unknown): string | undefined {
+  if (typeof content === "string") return content;
   const part = Array.isArray(content) && content.length === 1 ? record(content[0]) : undefined;
-  const text = typeof content === "string" ? content : part?.type === "text" ? part.text : undefined;
-  if (typeof text !== "string" || !text.includes('"proposalId"') || text.length > 1024) return;
+  return part?.type === "text" && typeof part.text === "string" ? part.text : undefined;
+}
+
+function readProposalReceipt(text: string, toolUseId: string): BridgeHistoryItem["proposalReceipt"] {
+  if (!text.includes('"proposalId"') || text.length > 1024) return;
   let decoded: Record<string, unknown>;
   try { decoded = record(JSON.parse(text)); }
   catch (error) { if (error instanceof SyntaxError) return; throw error; }
@@ -127,10 +132,17 @@ export function nativeHistoryItems(sessionId: string, messages: unknown[], proje
     if (Array.isArray(body.content)) for (const rawBlock of body.content) {
       const block = record(rawBlock);
       if (message.type === "user" && block.type === "tool_result" && typeof block.tool_use_id === "string") {
-        const proposalReceipt = block.is_error === true ? undefined : readProposalReceipt(block.content, block.tool_use_id);
-        if (proposalReceipt) {
-          const id = `proposal-receipt:${block.tool_use_id}`;
-          items.set(id, { id, sessionId, role: "tool", text: "", createdAt, origin: "claude-desktop", proposalReceipt });
+        const result = block.is_error === true ? undefined : singleToolResultText(block.content);
+        if (result) {
+          const proposalReceipt = readProposalReceipt(result, block.tool_use_id);
+          if (proposalReceipt) {
+            const id = `proposal-receipt:${block.tool_use_id}`;
+            items.set(id, { id, sessionId, role: "tool", text: "", createdAt, origin: "claude-desktop", proposalReceipt });
+          } else if (/^Proposed "[^\n]*" \(task_id: task_[0-9a-f]+\)\. The user sees a card\b/u.test(result)) {
+            // Separate ID so a result on the newer page cannot shadow the original call.
+            const id = `${block.tool_use_id}:completed`;
+            items.set(id, { id, sessionId, role: "tool", text: "", createdAt, origin: "claude-desktop", sessionProposalResultFor: block.tool_use_id });
+          }
         }
         const answers = extractToolResultAnswers(message);
         const question = projection.questions?.get(block.tool_use_id);
@@ -150,7 +162,21 @@ export function nativeHistoryItems(sessionId: string, messages: unknown[], proje
           projection.plan = plan;
         }
         if (wrapUp) delete projection.plan;
-      } else items.set(block.id, { id: block.id, sessionId, role: "tool", toolName: block.name, text: summarizeNativeToolInput(block.name, block.input), createdAt, origin: "claude-desktop" });
+      } else {
+        const item: BridgeHistoryItem = { id: block.id, sessionId, role: "tool", toolName: block.name, text: summarizeNativeToolInput(block.name, block.input), createdAt, origin: "claude-desktop" };
+        if (message.type === "assistant" && block.name === "mcp__ccd_session__start_session") {
+          const { initiation, title, background, prompt, proposal_id } = record(block.input);
+          if (initiation === "own_initiative" && proposal_id === undefined && typeof title === "string" && title.trim()) {
+            const context = typeof background === "string" && background.trim() ? background : typeof prompt === "string" ? prompt : "";
+            const summary = truncateUtf8(redactEvidenceText(context.trim()), 4_096);
+            item.sessionProposal = {
+              title: truncateUtf8(redactEvidenceText(title.trim()), 256).text,
+              ...(summary.text ? { background: summary.text + (summary.truncated ? "…" : "") } : {}),
+            };
+          }
+        }
+        items.set(block.id, item);
+      }
     }
   }
   return [...items.values()];
@@ -246,6 +272,7 @@ export function nativeItemEventDraft(
       ...(receipt?.source ? { source: receipt.source } : {}),
       ...(receipt?.queueSettled ? { queueSettled: true } : {}),
       ...(item.toolName ? { toolName: item.toolName } : {}),
+      ...(item.sessionProposal ? { sessionProposal: item.sessionProposal } : {}),
       ...(item.interactivePrompt ? { interactivePrompt: item.interactivePrompt } : {}),
       ...(item.taskPlan ? { taskPlan: item.taskPlan, taskPlanSource: "native-main" } : {}),
       ...(item.subagent ? { subagent: item.subagent } : {}),

@@ -1840,6 +1840,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
       const items = nativeHistoryItems(sessionId, [event.message], projection);
       await this.enrichSubagentItems(sessionId, items);
       for (const item of items) {
+        if (item.sessionProposalResultFor) continue; // The live result is carried by tool.completed below.
         const receipt = item.role === "user" ? this.historyReceipt(sessionId, item.id) : undefined;
         if (item.role === "assistant") await this.options.eventLog.flushDeltas(sessionId);
         await this.record(nativeItemEventDraft(sessionId, item, receipt));
@@ -1852,15 +1853,18 @@ export class ClaudeDesktopBridge extends EventEmitter {
           const started = this.options.eventLog.latestItem(sessionId, "tool.started", block.tool_use_id);
           const rawToolName = tool?.toolName ?? started?.data.toolName;
           const toolName = typeof rawToolName === "string" && rawToolName ? rawToolName : undefined;
-          if (toolName && toolName !== "mcp__ccd_turn__update_plan" && toolName !== "mcp__ccd_turn__wrap_up") {
+          const proposalResult = items.some(item => item.sessionProposalResultFor === block.tool_use_id);
+          if ((toolName || proposalResult) && toolName !== "mcp__ccd_turn__update_plan" && toolName !== "mcp__ccd_turn__wrap_up") {
             await this.record({
               sessionId,
               itemId: block.tool_use_id,
               origin: "claude-desktop",
               type: "tool.completed",
               data: {
-                toolName,
-                text: tool ? summarizeNativeToolInput(toolName, tool.input) : started?.data.text ?? "",
+                ...(toolName ? { toolName } : {}),
+                text: tool && toolName ? summarizeNativeToolInput(toolName, tool.input) : started?.data.text ?? "",
+                ...(proposalResult ? { sessionProposalResult: true } : {}),
+                ...(proposalResult && started?.data.sessionProposal ? { sessionProposal: started.data.sessionProposal } : {}),
                 ...(block.is_error === true ? { isError: true } : {}),
               },
             });

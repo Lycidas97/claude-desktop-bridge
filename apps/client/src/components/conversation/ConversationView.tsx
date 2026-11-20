@@ -80,6 +80,7 @@ import { useConversationDrafts } from "./ConversationDraftsProvider.js";
 type ConversationDraftsValue = ReturnType<typeof useConversationDrafts>;
 import { ConversationMessageItem } from "./ConversationMessageItem.js";
 import { ConversationToolGroup } from "./ConversationToolGroup.js";
+import { SessionProposalCard } from "./SessionProposalCard.js";
 import { ForkChainBar } from "./ForkChainBar.js";
 import { NativePromptCard } from "./NativePromptCard.js";
 import {
@@ -903,6 +904,12 @@ export function ConversationView({
           );
         }
         const item = node.item;
+        if (item.sessionProposalConfirmed && item.sessionProposal && item.toolUseId) {
+          return <SessionProposalCard key={item.id} itemId={item.id} proposal={item.sessionProposal}
+            {...(hostId ? { hostId } : {})} sessionId={session.sessionId}
+            toolUseId={item.toolUseId} toolName={item.toolName || "工具"} summary={item.text}
+            supportsToolDetail={Boolean(snapshot?.host.capabilities.includes("transcript.toolDetail.v1"))} />;
+        }
         if (item.sessionNotice) {
           return (
             <SessionNoticeCard

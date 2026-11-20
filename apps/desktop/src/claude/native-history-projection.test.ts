@@ -1,5 +1,50 @@
 import { describe, expect, it } from "vitest";
-import { nativeHistoryItems, type NativeMessageProjection } from "./native-history-projection.js";
+import { nativeHistoryItems, nativeItemEventDraft, type NativeMessageProjection } from "./native-history-projection.js";
+
+describe("native session proposal history", () => {
+  const name = "mcp__ccd_session__start_session";
+  const title = '#457 fork "日历告警"';
+  const background = "检查旧版告警\n\n在隔离夹具重放。";
+  const proposed = `Proposed "${title}" (task_id: task_d6c18845). The user sees a card and nothing runs until they start it.`;
+
+  it("preserves proposal context and confirmation independently across pages", () => {
+    const [call] = nativeHistoryItems("session", [{ type: "assistant", timestamp: 10, message: { content: [{
+      type: "tool_use", id: "call", name, input: { title, background, prompt: "Wait for the brief", initiation: "own_initiative" },
+    }] } }]);
+    const [receipt] = nativeHistoryItems("session", [{ type: "user", timestamp: 20, message: { content: [{
+      type: "tool_result", tool_use_id: "call", content: [{ type: "text", text: proposed }],
+    }] } }]);
+    expect(call).toMatchObject({ id: "call", createdAt: 10, toolName: name, sessionProposal: { title, background } });
+    expect(receipt).toMatchObject({ id: "call:completed", createdAt: 20, text: "", sessionProposalResultFor: "call" });
+    expect(nativeItemEventDraft("session", call!, undefined)).toMatchObject({ type: "tool.started", itemId: "call", data: {
+      sessionProposal: { title, background },
+    } });
+  });
+
+  it("uses the brief for a fork without background, preserves redaction and leaves ordinary starts as tools", () => {
+    const native = (id: string, input: Record<string, unknown>) => ({ type: "assistant", message: { content: [{ type: "tool_use", id, name, input }] } });
+    const [fork, start, accept] = nativeHistoryItems("session", [
+      native("fork", { title, prompt: "token ghp_" + "f".repeat(32), context: "fork", initiation: "own_initiative" }),
+      native("start", { title, background, initiation: "user_asked" }),
+      native("accept", { proposal_id: "task_d6c18845" }),
+    ]);
+    expect(fork?.sessionProposal).toEqual({ title, background: "token [已隐藏令牌]" });
+    expect(start).toMatchObject({ role: "tool", toolName: name });
+    expect(accept).toMatchObject({ role: "tool", toolName: name });
+    expect(start?.sessionProposal).toBeUndefined();
+    expect(accept?.sessionProposal).toBeUndefined();
+  });
+
+  it.each([
+    { content: proposed, is_error: true },
+    { content: `Started session "${title}" (session_id: local-test).` },
+    { content: `Tool printed: ${proposed}` },
+  ])("does not project a confirmation from $content with is_error=$is_error", (result) => {
+    expect(nativeHistoryItems("session", [{ type: "user", message: { content: [{
+      type: "tool_result", tool_use_id: "call", ...result,
+    }] } }])).toEqual([]);
+  });
+});
 
 const questions = [
   { question: "选择检查项目", multiSelect: true, options: [{ label: "构建" }, { label: "类型检查" }, { label: "回归测试" }, { label: "构建, 打包" }] },

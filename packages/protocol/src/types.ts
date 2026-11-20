@@ -987,6 +987,10 @@ export interface BridgeHistoryItem {
   interactivePrompt?: BridgeInteractivePrompt;
   taskPlan?: BridgeTaskPlan;
   proposalReceipt?: ProposalRevisionRef & { toolUseId: string };
+  /** Read-only transcript metadata; never evidence that the proposal is still pending. */
+  sessionProposal?: { title: string; background?: string };
+  /** The matching tool call may be on an older native transcript page. */
+  sessionProposalResultFor?: string;
 }
 
 export interface BridgeFileChangeSummary {

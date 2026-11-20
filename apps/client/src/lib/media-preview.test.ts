@@ -32,8 +32,8 @@ describe("media previews", () => {
   });
 
   it("allows text artifacts without adding them to the image/PDF gallery", () => {
-    const artifact = { id: "text", name: "notes.md", relativePath: "docs/notes.md", kind: "text", availability: "current-file" } as BridgeArtifactManifest;
-    expect(artifactMediaTarget(artifact)).toEqual({ name: "notes.md", kind: "text", artifactId: "text", path: "docs/notes.md" });
+    const artifact = { id: "text", name: "notes.md", relativePath: "docs/notes.md", kind: "text", availability: "current-file", downloadAllowed: false } as BridgeArtifactManifest;
+    expect(artifactMediaTarget(artifact)).toEqual({ name: "notes.md", kind: "text", artifactId: "text", path: "docs/notes.md", downloadAllowed: false });
     expect(mediaArtifacts([{ startedAt: 1, artifacts: [artifact] } as BridgeEvidenceBundle])).toEqual([]);
     expect(artifactMediaTarget({ ...artifact, availability: "blocked" })).toBeUndefined();
   });

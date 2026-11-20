@@ -1,6 +1,6 @@
 import { chromium, _electron } from "playwright-core";
 import assert from "node:assert/strict";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 const output = resolve(import.meta.dirname, "../output/playwright");
@@ -36,6 +36,7 @@ function samplePdf() {
 }
 
 const pdf = samplePdf();
+const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+fmioAAAAASUVORK5CYII=";
 const now = Date.now();
 // Synthetic read-only session. The host advertises media capabilities only.
 const session = { sessionId: "media-session", projectId: "media-project", projectName: "Reports", cwd: "/work/reports", title: "Images and PDF", source: "desktop", ownership: "DESKTOP_OBSERVED", transport: "claude-desktop-native", turnState: "idle", lastActivityAt: now, pendingCount: 0 };
@@ -70,6 +71,16 @@ const browser = packaged
   ? await _electron.launch({ ...(process.env.BRIDGE_ELECTRON_PATH ? { executablePath: process.env.BRIDGE_ELECTRON_PATH } : {}), args: [resolve(output, "electron-media-main.cjs")] })
   : await chromium.launch({ channel: "chrome", headless: true });
 const results = [];
+
+async function verifyDownload(page, filename, original) {
+  const viewer = page.locator(".media-viewer");
+  const save = viewer.getByRole("button", { name: "保存到本地", exact: true });
+  await save.waitFor({ timeout: 5_000 });
+  const [download] = await Promise.all([page.waitForEvent("download", { timeout: 10_000 }), save.click()]);
+  assert.equal(download.suggestedFilename(), filename);
+  assert.deepEqual(await readFile(await download.path()), Buffer.from(original, "base64"));
+  assert.ok(await viewer.isVisible(), "Saving does not close the viewer");
+}
 
 async function verifyMediaGestures(page, media, wide = false) {
   const touch = await page.context().newCDPSession(page);
@@ -127,8 +138,9 @@ try {
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     page.on("console", (message) => { if (message.type() === "error") errors.push(message.text()); });
-    await page.addInitScript(({ snapshot, history, evidence, pdf }) => {
+    await page.addInitScript(({ snapshot, history, evidence, pdf, png }) => {
       const bytes = Uint8Array.from(atob(pdf), (char) => char.charCodeAt(0));
+      const originalImage = Uint8Array.from(atob(png), (char) => char.charCodeAt(0));
       // Keep the unrelated connectivity probe from leaving this local fixture.
       const fetchOriginal = window.fetch;
       window.fetch = (...args) => String(args[0]).endsWith("/health")
@@ -151,14 +163,20 @@ try {
           if (method === "artifact.transfer.open" && params.purpose === "stat") {
             const isSvg = params.artifactId === "svg" || params.path?.endsWith(".svg");
             const isImage = params.artifactId === "image" || params.path?.endsWith(".png");
-            return response({ metadata: { name: isSvg ? "Diagram.svg" : isImage ? "Figure.png" : "Research report.pdf", mimeType: isSvg ? "image/svg+xml" : isImage ? "image/png" : "application/pdf", size: isSvg ? svg.length : isImage ? 1024 : bytes.length } });
+            return response({ metadata: { name: isSvg ? "Diagram.svg" : isImage ? "Figure.png" : "Research report.pdf", mimeType: isSvg ? "image/svg+xml" : isImage ? "image/png" : "application/pdf", size: isSvg ? svg.length : isImage ? originalImage.length : bytes.length } });
           }
           if (method === "artifact.transfer.open") {
-            const isSvg = params.artifactId === "svg" || params.path?.endsWith(".svg");
-            const data = isSvg ? svg : bytes;
+            if (window.__rejectNextMediaTransfer) {
+              window.__rejectNextMediaTransfer = false;
+              return { kind: "response", requestId: "qa", ok: false, error: { message: "文件不可读取" } };
+            }
+            const id = params.artifactId ?? (params.path?.endsWith(".svg") ? "svg" : params.path?.endsWith(".png") ? "image" : "pdf");
+            const { name, mimeType } = evidence.items[0].artifacts.find((artifact) => artifact.id === id);
+            const data = id === "svg" ? svg : id === "image" ? originalImage : bytes;
             const transferId = `qa-${++lease}`;
             transfers.set(transferId, data);
-            return response({ transfer: { transferId, artifactId: isSvg ? "svg" : "pdf", name: isSvg ? "Diagram.svg" : "Research report.pdf", mimeType: isSvg ? "application/octet-stream" : "application/pdf", size: data.length, chunkBytes: 262144, totalChunks: Math.ceil(data.length / 262144), sha256: "qa", expiresAt: Date.now() + 600000 } });
+            const sha256 = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", data)), (byte) => byte.toString(16).padStart(2, "0")).join("");
+            return response({ transfer: { transferId, artifactId: id, name, mimeType, size: data.length, chunkBytes: 262144, totalChunks: Math.ceil(data.length / 262144), sha256, expiresAt: Date.now() + 600000 } });
           }
           if (method === "artifact.transfer.read") {
             const data = transfers.get(params.transferId);
@@ -172,7 +190,7 @@ try {
           return response({});
         },
       };
-    }, { snapshot, history, evidence, pdf });
+    }, { snapshot, history, evidence, pdf, png });
     if (mobile) {
       await page.route("**/src/main.tsx*", (route) => route.fulfill({ contentType: "text/javascript", body: `
         import React from "/node_modules/.vite/deps/react.js";
@@ -234,6 +252,8 @@ try {
     if (mobile) await verifyMediaGestures(page, page.locator(".media-viewer canvas"));
     await page.getByRole("button", { name: "下一页", exact: true }).click();
     await page.waitForFunction(() => !document.querySelector(".media-viewer-status") && document.querySelector('[aria-label="页码"]').value === "2");
+    await verifyDownload(page, "Research report.pdf", pdf);
+    assert.equal(await page.getByRole("spinbutton", { name: "页码" }).inputValue(), "2");
     await page.getByRole("button", { name: "放大", exact: true }).click();
     await page.waitForFunction(() => !document.querySelector(".media-viewer-status"));
     await page.getByRole("button", { name: "旋转页面", exact: true }).click();
@@ -254,6 +274,12 @@ try {
     await page.waitForFunction(() => document.querySelector(".media-viewer img")?.naturalWidth > 0);
     await page.screenshot({ path: `${output}/${packaged ? "electron-" : mobile ? "mobile-" : ""}media-image-${viewport.width}.png` });
     if (mobile) await verifyMediaGestures(page, page.locator(".media-viewer img"));
+    await page.evaluate(() => { window.__rejectNextMediaTransfer = true; });
+    await page.getByRole("button", { name: "保存到本地", exact: true }).click();
+    await page.getByRole("alert").filter({ hasText: "保存失败：文件不可读取" }).waitFor();
+    assert.ok(await page.locator(".media-viewer img").isVisible(), "A save failure does not hide the preview");
+    await verifyDownload(page, "Figure.png", png);
+    assert.equal(await page.getByRole("alert").count(), 0, "Retry clears the save error");
     await page.getByRole("button", { name: "关闭查看器" }).click();
     await page.locator(".media-file.image").filter({ hasText: "Diagram.svg" }).first().click();
     await page.waitForFunction(() => document.querySelector(".media-viewer img")?.naturalWidth > 0 || document.querySelector('.media-viewer [role="alert"]'));
@@ -264,12 +290,14 @@ try {
     await page.locator(".markdown-file-link").filter({ hasText: "Research report" }).click();
     await page.getByRole("button", { name: "下载并预览", exact: true }).click();
     await page.waitForFunction(() => !document.querySelector(".media-viewer-status") && document.querySelector(".media-viewer canvas")?.width > 0);
+    await verifyDownload(page, "Research report.pdf", pdf);
     const markdownOpens = await page.evaluate((offset) => window.__mediaRequests.slice(offset)
       .filter(({ method }) => method === "artifact.transfer.open").map(({ params }) => params), beforeMarkdown);
     assert.deepEqual(markdownOpens, [
       { sessionId: session.sessionId, path: artifacts[0].relativePath, purpose: "stat" },
       { sessionId: session.sessionId, path: artifacts[0].relativePath },
-    ], "Markdown PDF stat and content opens must use the conversation's session and path");
+      { sessionId: session.sessionId, path: artifacts[0].relativePath },
+    ], "Markdown PDF stat, preview and save must use the conversation's session and path");
     await page.keyboard.press("Escape");
     await page.locator(".media-viewer").waitFor({ state: "detached" });
     if (mobile) {

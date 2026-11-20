@@ -1,8 +1,9 @@
-import { AlertTriangle, ChevronLeft, ChevronRight, LoaderCircle, Maximize, RotateCw, X, ZoomIn, ZoomOut } from "lucide-react";
+import { AlertTriangle, ChevronLeft, ChevronRight, Download, LoaderCircle, Maximize, RotateCw, X, ZoomIn, ZoomOut } from "lucide-react";
 import { useEffect, useRef, useState, type CSSProperties, type TouchEvent } from "react";
 import { flushSync } from "react-dom";
 import type { BridgeArtifactPreview } from "@bridge/protocol";
 import type { PDFDocumentProxy, PDFDocumentLoadingTask } from "pdfjs-dist";
+import { saveMediaTarget } from "../../lib/artifact-download.js";
 import { openMediaTransfer, readTextPreview, textPreviewLanguage, type MediaRequest, type MediaTarget } from "../../lib/media-preview.js";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
 import { IconButton } from "../common/IconButton.js";
@@ -38,6 +39,8 @@ export default function MediaViewer({ target, request, onClose }: { target: Medi
   const [{ width, height }, setViewportSize] = useState<Size>({ width: 0, height: 0 });
   const [busy, setBusy] = useState(!target.dataUrl);
   const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
   const [attempt, setAttempt] = useState(0);
   const requestRef = useRef(request);
   requestRef.current = request;
@@ -169,6 +172,18 @@ export default function MediaViewer({ target, request, onClose }: { target: Medi
     return () => { disposed = true; renderTask?.cancel(); };
   }, [pdf, pageNumber, width, pdfZoom, rotation]);
 
+  async function save() {
+    setSaving(true);
+    setSaveError("");
+    try {
+      await saveMediaTarget(target, request);
+    } catch (failure) {
+      setSaveError(failure instanceof Error ? failure.message : "文件保存失败");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   function resetPosition() {
     stageRef.current!.style.removeProperty("--media-x");
     stageRef.current!.style.removeProperty("--media-y");
@@ -276,7 +291,12 @@ export default function MediaViewer({ target, request, onClose }: { target: Medi
       <div className="media-viewer-shell">
         <header>
           <div><span>{target.kind === "pdf" ? "PDF" : target.kind === "text" ? (markdown ? "Markdown" : "文本") : "图片"}</span><h2 id="media-viewer-title">{target.name}</h2></div>
-          <IconButton label="关闭查看器" onClick={onClose}><X size={21} /></IconButton>
+          <div className="media-viewer-actions">
+            {target.kind !== "text" && target.downloadAllowed !== false && <IconButton label="保存到本地" disabled={saving} onClick={() => void save()}>
+              {saving ? <LoaderCircle className="is-spinning" size={20} /> : <Download size={20} />}
+            </IconButton>}
+            <IconButton label="关闭查看器" onClick={onClose}><X size={21} /></IconButton>
+          </div>
         </header>
         <div className="media-viewer-toolbar">
           {target.kind === "text" && (markdown ? <div className="text-preview-tabs" role="tablist" aria-label="Markdown 显示方式">
@@ -322,7 +342,9 @@ export default function MediaViewer({ target, request, onClose }: { target: Medi
               onError={() => { setError("图片无法显示，请重新加载"); setBusy(false); }} />}
           </div>}
         </div>
-        <footer>{target.kind === "text" ? `${text === "" && !busy && !error ? "空文件" : "全文预览"} · ${target.charset?.toUpperCase() ?? "UTF-8"}` : target.kind === "pdf" ? "按需读取页面内容" : "双指或按钮缩放"}</footer>
+        <footer>{saveError ? <span role="alert">保存失败：{saveError}</span> : saving ? <span role="status">正在保存…</span>
+          : target.kind === "text" ? `${text === "" && !busy && !error ? "空文件" : "全文预览"} · ${target.charset?.toUpperCase() ?? "UTF-8"}`
+            : target.kind === "pdf" ? "按需读取页面内容" : "双指或按钮缩放"}</footer>
       </div>
     </dialog>
   );

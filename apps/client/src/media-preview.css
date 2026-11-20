@@ -26,6 +26,7 @@
 .media-viewer-shell { display: grid; height: 100%; min-width: 0; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr) auto; }
 .media-viewer-shell > header { display: flex; justify-content: space-between; align-items: center; padding: 14px 16px; gap: 16px; border-bottom: 1px solid var(--line); background: var(--surface); }
 .media-viewer-shell > header > div { display: flex; align-items: center; min-width: 0; gap: 10px; }
+.media-viewer-shell > header > .media-viewer-actions { flex: none; gap: 4px; }
 .media-viewer-shell > header span { color: var(--muted); font-size: calc(11px * var(--font-scale)); flex-shrink: 0; }
 .media-viewer h2 { margin: 0; font-size: calc(14px * var(--font-scale)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .media-viewer-toolbar, .media-page-controls, .media-zoom-controls { display: flex; align-items: center; gap: 6px; }
@@ -58,6 +59,7 @@
 @media (max-width: 600px) {
   .media-viewer { width: 100vw; height: 100dvh; border: 0; border-radius: 0; }
   .media-viewer-shell > header { padding-top: max(12px, env(safe-area-inset-top)); }
+  .media-viewer-actions .icon-button { width: 44px; height: 44px; }
   .media-viewer-shell > footer { padding-bottom: max(10px, env(safe-area-inset-bottom)); }
   .media-viewer-toolbar { gap: 4px; padding: 6px; }
   .media-viewer-toolbar .icon-button { min-width: 32px; min-height: 36px; padding: 5px; }

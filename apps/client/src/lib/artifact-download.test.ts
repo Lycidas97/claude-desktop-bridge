@@ -1,6 +1,7 @@
 import type { BridgeArtifactTransferInfo, BridgeRequest, BridgeResponse } from "@bridge/protocol";
 import { afterEach, expect, it, vi } from "vitest";
-import { downloadBridgeSessionFile, downloadMailAttachment } from "./artifact-download.js";
+import { downloadBridgeSessionFile, downloadMailAttachment, saveMediaTarget } from "./artifact-download.js";
+import type { MediaTarget } from "./media-preview.js";
 
 const native = vi.hoisted(() => ({
   platform: "android",
@@ -93,6 +94,30 @@ it("downloads a browser file using a blob URL and preserves its extension", asyn
   expect(anchor).toMatchObject({ download: `${"x".repeat(155)}.docx`, href: "blob:report" });
   expect(anchor.click).toHaveBeenCalledOnce();
   expect(native.openFile).not.toHaveBeenCalled();
+});
+
+it.each<{ target: MediaTarget; params: Record<string, unknown> }>([
+  { target: { name: "image.png", kind: "image", artifactId: "image", dataUrl: "data:image/jpeg;base64,cHJldmlldw==" }, params: { artifactId: "image" } },
+  { target: { name: "report.pdf", kind: "pdf", path: " report.pdf:12:3 ", sessionId: "session", resolveRelativeLink: true }, params: { sessionId: "session", path: "report.pdf", resolveRelativeLink: true } },
+  { target: { name: "report.pdf", kind: "pdf", mailAttachment: { mailRefId: "mail", attachmentId: "2" } }, params: { mailAttachment: { mailRefId: "mail", attachmentId: "2" } } },
+  { target: { name: "image.png", kind: "image", sessionId: "session", nativeImage: { messageUuid: "message", imageIndex: 1 }, dataUrl: "blob:cached" }, params: { sessionId: "session", nativeImage: { messageUuid: "message", imageIndex: 1 } } },
+])("saves original Android file bytes from $params", async ({ target, params }) => {
+  native.platform = "android";
+  const request = downloadRequest(target.name);
+  await saveMediaTarget(target, request);
+  expect(request).toHaveBeenNthCalledWith(1, "artifact.transfer.open", params, expect.anything());
+  expect(native.saveFile).toHaveBeenCalledExactlyOnceWith({ name: target.name, chunks: ["YWJj"] });
+  expect(native.writeFile).not.toHaveBeenCalled();
+  expect(native.openFile).not.toHaveBeenCalled();
+  expect(request).toHaveBeenLastCalledWith("artifact.transfer.close", { transferId: "lease" }, expect.anything());
+});
+
+it("saves a local inline attachment without requesting it from the host", async () => {
+  native.platform = "android";
+  const request = vi.fn();
+  await saveMediaTarget({ name: "photo.png", kind: "image", sessionId: "session", dataUrl: "data:image/png;base64,YWJj" }, request);
+  expect(request).not.toHaveBeenCalled();
+  expect(native.saveFile).toHaveBeenCalledExactlyOnceWith({ name: "photo.png", chunks: ["YWJj"] });
 });
 
 it("sends verified mail bytes to the Android save picker without staging or opening a file", async () => {

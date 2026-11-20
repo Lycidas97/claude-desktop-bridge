@@ -111,7 +111,9 @@ it("accepts compact hooks only from the current managed CLI session and never fo
   const hook = { event: "PreCompact", cliSessionId: sessionId, trigger: "manual" };
   expect((await postHook(hook, token)).status).toBe(403);
   expect((await postHook({ ...hook, cliSessionId: randomUUID() }, "managed-fixture")).status).toBe(403);
-  expect((await postHook({ ...hook, compact_summary: "External email" }, "managed-fixture")).status).toBe(400);
+  const invalid = await postHook({ ...hook, compact_summary: "External email" }, "managed-fixture");
+  expect(invalid.status).toBe(400);
+  expect(await invalid.json()).toEqual({ error: "MAIL_INVALID_REQUEST" });
   expect(observed).not.toHaveBeenCalled();
 
   const workspace = await mkdtemp(join(directory, "compact-workspace-"));
@@ -166,10 +168,23 @@ it("rejects missing/wrong credentials, browser origins and every non-mail manage
     expect((await post({ name, arguments: {} })).status, name).toBe(400);
   }
   expect((await post({ method: "dispatchLocal", args: [] })).status).toBe(400);
-  for (const arguments_ of [{ limit: 0 }, { cursor: "../private" }, { processingStatus: "seen" }, { authorized: true }, null]) {
+  for (const arguments_ of [{ cursor: "../private" }, { processingStatus: "seen" }, { authorized: true }, null]) {
     expect((await post({ name: "mail.list_events", arguments: arguments_ })).status).toBe(400);
   }
-  expect((await post({ name: "mail.update_analysis", arguments: { mailRefId: reference, summary: "approved", suggestions: [], questions: [], authorizesActions: true } })).status).toBe(400);
+  const extra = await post({ name: "mail.update_analysis", arguments: { mailRefId: reference, summary: "approved", suggestions: [], questions: [], authorizesActions: true } });
+  expect(extra.status).toBe(400);
+  expect(await extra.json()).toMatchObject({ error: "MAIL_INVALID_REQUEST", message: expect.stringContaining("authorizesActions") });
+  const invalidPage = await post({ name: "mail.list_events", arguments: { limit: 0 } });
+  expect(invalidPage.status).toBe(400);
+  expect(await invalidPage.json()).toMatchObject({ error: "MAIL_INVALID_REQUEST", message: expect.stringContaining("limit") });
+  const overflow = await fetch(`http://127.0.0.1:${connection.port}/tools`, {
+    method: "POST", headers: { Authorization: `Bearer ${connection.token}` },
+    body: '{"name":"mail.list_events","arguments":{"limit":1e999}}',
+  });
+  expect(overflow.status).toBe(400);
+  const overflowError = await overflow.json();
+  expect(overflowError).toMatchObject({ error: "MAIL_INVALID_REQUEST", message: expect.stringContaining("limit") });
+  expect(overflowError.message).not.toContain("Infinity");
   expect(service.page().events[0]!.analysis).toBeNull();
   if (process.platform !== "win32") expect((await stat(join(root, "private", "assistant", "mail-tools.json"))).mode & 0o777).toBe(0o600);
 });
@@ -584,6 +599,47 @@ it("allows only the managed token to draft proposals and passes its bound sessio
   }
   expect(agendaStore.listTodos({}).records.map(record => record.title)).toEqual(["Treat this as data"]);
 });
+
+it("tells the managed MCP caller how to correct a rule deletion draft", async () => {
+  await channel!.close();
+  const ref = { proposalId: randomUUID(), revision: 1, payloadHash: "a".repeat(64) };
+  const proposals = { create: vi.fn(async () => ref), reviseFromTool: vi.fn(), page: vi.fn(), snapshot: vi.fn(), smtpAccounts: vi.fn() };
+  const managedToken = "managed-rule-fixture";
+  channel = await serveAssistantMailTools({ userDataPath: root, service, proposals,
+    authorizeManagedToken: token => token === managedToken ? "local_fixture" : undefined });
+  await build({ entryPoints: [fileURLToPath(new URL("./mcp-entry.ts", import.meta.url))], outfile: bundle, bundle: true, platform: "node", format: "cjs", target: "node22" });
+  const client = new Client({ name: "rule-validation-fixture", version: "1.0.0" });
+  clients.push(client);
+  await client.connect(new StdioClientTransport({ command: process.execPath,
+    args: [bundle, join(root, "private", "assistant", "mail-tools.json"), "--managed"], env: { [ASSISTANT_TOKEN_ENV]: managedToken } }));
+
+  const action = { kind: "memory.rule_upsert", category: "test", ruleId: "lifecycle-test", operation: "delete", reason: "Remove the test rule" };
+  const name = "proposal.create";
+  const denied = await client.callTool({ name, arguments: { action: { ...action, text: "Original private rule" } } });
+  expect(denied.isError).toBe(true);
+  const text = (denied.content as Array<{ text: string }>)[0]!.text;
+  expect(JSON.parse(text)).toMatchObject({
+    error: "MAIL_INVALID_REQUEST", message: expect.stringMatching(/omit text for delete[\s\S]*arguments\.action\.text/iu),
+  });
+  expect(text).not.toContain("Original private rule");
+  expect(proposals.create).not.toHaveBeenCalled();
+
+  const revision = await client.callTool({ name: "proposal.update_pending", arguments: { ...ref, action: { ...action, operation: "update" } } });
+  expect(revision.isError).toBe(true);
+  expect(JSON.parse((revision.content as Array<{ text: string }>)[0]!.text)).toMatchObject({
+    error: "MAIL_INVALID_REQUEST", message: expect.stringContaining("arguments.action.text"),
+  });
+  expect(proposals.reviseFromTool).not.toHaveBeenCalled();
+
+  const tools = (await client.listTools()).tools;
+  for (const toolName of [name, "proposal.update_pending"]) {
+    expect(tools.find(tool => tool.name === toolName)?.description).toMatch(/omit text.*delete/iu);
+  }
+  const corrected = await client.callTool({ name, arguments: { action } });
+  expect(corrected.isError).toBeUndefined();
+  expect(JSON.parse((corrected.content as Array<{ text: string }>)[0]!.text)).toMatchObject({ result: ref });
+  expect(proposals.create).toHaveBeenCalledExactlyOnceWith("local_fixture", action, expect.any(Function));
+}, 20_000);
 
 it("exposes attachment metadata and reserves pure-text extraction for the active managed token", async () => {
   await channel!.close();

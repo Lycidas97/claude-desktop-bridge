@@ -31,6 +31,8 @@ export const saveMailAccount = z.union([
 export const configureSmtp = z.strictObject({ accountKey: mailDraft.accountKey,
   smtp: smtpChannel.extend({ credential: z.string().min(1).max(1800) }).nullable() });
 
+export const MEMORY_RULE_TEXT_REQUIREMENT = "For memory.rule_upsert, omit text for delete; provide text for add and update.";
+
 export const proposalAction = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("todo.create"), sourceId, value: todoInput }),
   z.strictObject({ kind: z.literal("todo.update"), recordId, value: todoInput }),
@@ -45,7 +47,9 @@ export const proposalAction = z.discriminatedUnion("kind", [
     operation: z.enum(["add", "update", "delete"]),
     text: z.string().trim().min(1).max(4_000).optional(),
     reason: z.string().trim().min(1).max(1_000),
-  }).refine(({ operation, text }) => (operation === "delete") === (text === undefined)),
+  }).refine(({ operation, text }) => (operation === "delete") === (text === undefined), {
+    path: ["text"], error: MEMORY_RULE_TEXT_REQUIREMENT,
+  }),
   z.strictObject({ kind: z.literal("mail.reply"), ...mailDraft, mailRefId: z.uuid(), to: recipients.optional(), subject: subject.optional() }),
   z.strictObject({ kind: z.literal("mail.send"), ...mailDraft, to: recipients, subject }),
 ]);

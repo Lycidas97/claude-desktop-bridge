@@ -134,7 +134,12 @@ export async function serveAssistantMailTools(options: {
         const status = error.code === "MAIL_ATTACHMENT_NOT_FOUND" ? 404 : error.code === "MAIL_ATTACHMENT_TOO_LARGE" ? 413 : 422;
         reply(response, status, { error: error.code });
       } else if (error instanceof z.ZodError || error instanceof SyntaxError) {
-        reply(response, 400, { error: "MAIL_INVALID_REQUEST" });
+        reply(response, 400, { error: "MAIL_INVALID_REQUEST",
+          message: !compact && error instanceof z.ZodError ? z.prettifyError({
+            // Zod can include the received value in type errors (for example Infinity).
+            issues: error.issues.map(issue => issue.code === "invalid_type"
+              ? { path: issue.path, message: `Expected ${issue.expected}.` } : issue),
+          }) : undefined });
       } else {
         console.error("Assistant mail tool request failed", error);
         reply(response, 500, { error: "MAIL_TOOL_FAILED" });

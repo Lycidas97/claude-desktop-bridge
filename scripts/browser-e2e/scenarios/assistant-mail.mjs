@@ -234,7 +234,10 @@ export async function verifyAssistantMailHistory(page, host, steps, directory, v
       "The unbound mobile inbox places undo above the system safe area");
     await feedback.getByRole("button", { name: "撤销", exact: true }).click();
     await latest.getByText("收件记录 26", { exact: true }).waitFor();
-  } finally { await emulation.detach(); }
+  } finally {
+    await emulation.send("Emulation.setSafeAreaInsetsOverride", { insets: { top: 0, right: 0, bottom: 0, left: 0 } });
+    await emulation.detach();
+  }
   steps.push("The inbox backfills without a badge and keeps the latest live arrival reversible above a 48px system safe area");
   host.snapshot.host.capabilities = capabilities;
   await host.send({ kind: "snapshot", snapshot: host.snapshot });
@@ -250,8 +253,9 @@ export async function verifyAssistantMailHistory(page, host, steps, directory, v
     const bounds = element.getBoundingClientRect();
     return bounds.top >= 0 && bounds.bottom <= innerHeight;
   });
-  await filing.waitFor();
+  await filedCard.waitFor();
   assert.equal(await filedCard.locator("select").count(), 0, "Mail filing does not open a native select");
+  await filing.waitFor();
   assert.ok((await filing.boundingBox()).height >= 44);
   const beforeCancel = host.requests.filter(request => request.method === "plugin.assistant-mail.filing.set").length;
   await filing.click();
@@ -325,7 +329,31 @@ export async function verifyAssistantMailHistory(page, host, steps, directory, v
   const lineHeight = await longCard.locator(".assistant-mail-preview").evaluate(element => parseFloat(getComputedStyle(element).lineHeight));
   assert.ok(shortBounds && longBounds && longBounds.height - shortBounds.height <= lineHeight * 2 + 1,
     "With identical controls, collapsed cards differ only by the remaining two preview lines");
-  await fileMailInCategory(page, brokenCard, "其他");
+  await page.evaluate(async () => (await import("/src/lib/diagnostics.ts")).setDiagDialogOpen(true));
+  const diagnostics = page.getByRole("dialog", { name: "连接诊断与日志导出" });
+  await diagnostics.getByRole("button", { name: "开启按需记录", exact: true }).click();
+  await diagnostics.getByRole("button", { name: "关闭", exact: true }).click();
+  const floatingLog = page.getByRole("button", { name: "打开连接诊断日志", exact: true });
+  const floatingBounds = await floatingLog.boundingBox();
+  await brokenCard.getByRole("button", { name: "收入分类", exact: true }).click();
+  const otherOption = picker.getByRole("button", { name: "其他", exact: true });
+  await otherOption.click({ trial: true });
+  const bounds = await otherOption.boundingBox();
+  const left = Math.max(bounds.x, floatingBounds.x);
+  const top = Math.max(bounds.y, floatingBounds.y);
+  const right = Math.min(bounds.x + bounds.width, floatingBounds.x + floatingBounds.width);
+  const bottom = Math.min(bounds.y + bounds.height, floatingBounds.y + floatingBounds.height);
+  assert.ok(left < right && top < bottom, "The test point overlaps the diagnostics control's normal position");
+  const x = (left + right) / 2;
+  const y = (top + bottom) / 2;
+  assert.equal(await otherOption.evaluate((button, point) => button.contains(document.elementFromPoint(point.x, point.y)), { x, y }),
+    true, "The category row receives a tap where the diagnostics control would overlap it");
+  await page.mouse.click(x, y);
+  await picker.waitFor({ state: "detached" });
+  await floatingLog.click();
+  await diagnostics.getByRole("button", { name: "停止记录", exact: true }).click();
+  await diagnostics.getByRole("button", { name: "关闭", exact: true }).click();
+  steps.push("The category row receives a tap even at the diagnostics control's normal position, and diagnostics is available again afterward");
   const filedEntry = page.getByRole("button", { name: "已收纳 1 封", exact: true });
   await filedEntry.click();
   const filedView = page.getByRole("region", { name: "已收纳", exact: true });
@@ -366,8 +394,16 @@ export async function verifyAssistantMailHistory(page, host, steps, directory, v
   const secondPageCard = marketing.locator(`[data-mail-id="${promotions.at(-1).mailRefId}"]`);
   await secondPageCard.waitFor();
   await more.waitFor({ state: "detached" });
+  await returnToInbox.click();
+  await filing.press("Enter");
+  await picker.and(page.locator(":focus")).waitFor();
+  await page.keyboard.press("Shift+Tab");
+  await otherOption.and(page.locator(":focus")).waitFor();
   host.socket.close();
   await page.getByText("电脑离线，显示已缓存邮件。", { exact: true }).waitFor();
+  await filing.and(page.locator(":disabled")).waitFor();
+  assert.equal(await picker.count(), 0, "Going offline closes the picker rather than leaving a modal without keyboard focus");
+  await filedTotal.click();
   await returnToInbox.click();
   assert.equal(await filedView.count(), 0, "The retained category is not exposed by the inbox");
   await filedTotal.click();

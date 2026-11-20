@@ -53,18 +53,19 @@ function MailCategoryPicker({ disabled, move }: { disabled: boolean; move(catego
   const [opener, setOpener] = useState<HTMLButtonElement>();
   useEffect(() => {
     if (!opener) return;
+    if (disabled) { setOpener(undefined); return; }
     return registerMobileBackHandler(() => { setOpener(undefined); return true; }, 150);
-  }, [opener]);
+  }, [disabled, opener]);
 
   return <>
     <button type="button" className="assistant-session-link" aria-haspopup="dialog" disabled={disabled} onClick={event => {
       event.currentTarget.focus({ preventScroll: true });
       setOpener(event.currentTarget);
     }}>收入分类</button>
-    {opener && <Sheet title="收入分类" manageFocus onClose={() => setOpener(undefined)}>
-      <div className="m-group">
+    {opener && !disabled && <Sheet title="收入分类" manageFocus onClose={() => setOpener(undefined)}>
+      <div className="m-group assistant-mail-category-options">
         {MAIL_CATEGORIES.map(category => <SheetAction key={category} icon={<Folder size={18} />}
-          label={MAIL_FOLDER_LABELS[category]} disabled={disabled} onClick={() => {
+          label={MAIL_FOLDER_LABELS[category]} onClick={() => {
             setOpener(undefined);
             move(category, opener);
           }} />)}

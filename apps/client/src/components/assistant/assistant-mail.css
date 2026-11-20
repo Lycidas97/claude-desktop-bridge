@@ -96,6 +96,7 @@
 .assistant-mail-search input:focus-visible { outline: 0; }
 .assistant-mail-search input::-webkit-search-cancel-button { display: none; }
 .assistant-mail-search button { min-width: 44px; display: grid; place-items: center; }
+body:has(.assistant-mail-category-options) .diagnostic-floating-entry { display: none; }
 .assistant-mail-folder-label { margin: 8px 0 0; color: var(--muted); font-size: calc(11px * var(--font-scale)); }
 .assistant-mail-close-folder { justify-self: start; }
 .assistant-mail-junk-action { color: var(--muted); }

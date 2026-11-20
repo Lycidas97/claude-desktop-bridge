@@ -5,6 +5,16 @@ import { eventually, openMobileDrawer } from "../helpers.mjs";
 
 export async function verifyAssistantReplies(page, host, steps, directory, serverRoutes) {
   const { sessionId } = host.session;
+  const configuration = host.nativeApproval.configuration;
+  host.nativeApproval.configuration = async request => {
+    const result = await configuration(request);
+    if (request.params.includeBackgroundTasks) {
+      // The scenario models queue and completion updates on the mock session, not the Native fixture.
+      const { turnState, pendingCount, lastCompletedTurnId } = host.session;
+      Object.assign(result.session, { turnState, pendingCount, lastCompletedTurnId });
+    }
+    return result;
+  };
   host.nativeApproval.assistantMail.service.setBinding({ assistantId: randomUUID(), nativeSessionId: sessionId, sectionId: null, previousSessionIds: [] });
   host.snapshot.assistantMail = host.nativeApproval.mailSnapshot();
   await host.send({ kind: "snapshot", snapshot: host.snapshot });

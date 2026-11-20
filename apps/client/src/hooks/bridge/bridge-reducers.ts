@@ -86,6 +86,7 @@ export const HOME_LEARN_FRESHNESS_MS = 3 * 60_000;
 export interface SessionHistoryState {
   status: "idle" | "loading" | "ready" | "error";
   items: BridgeHistoryPage["items"];
+  sessionProposalResults?: string[];
   nextCursor?: string;
   hasMore: boolean;
   error?: string;
@@ -916,11 +917,13 @@ function mergeEvidence(
 
 export function projectHistoryPage(
   page: BridgeHistoryPage,
-  existingItems?: BridgeHistoryPage["items"],
+  existing?: SessionHistoryState,
 ): SessionHistoryState {
+  const sessionProposalResults = new Set([...(page.sessionProposalResults ?? []), ...(existing?.sessionProposalResults ?? [])]);
   return {
     status: "ready",
-    items: existingItems ? mergeHistoryPages(page.items, existingItems) : page.items,
+    items: existing ? mergeHistoryPages(page.items, existing.items) : page.items,
+    ...(sessionProposalResults.size ? { sessionProposalResults: [...sessionProposalResults] } : {}),
     hasMore: page.hasMore,
     ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
   };

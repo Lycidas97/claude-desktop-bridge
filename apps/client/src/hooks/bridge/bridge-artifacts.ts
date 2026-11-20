@@ -368,12 +368,11 @@ export async function loadOlderBridgeHistory(
     const page = result.history;
     setState((stateValue) => {
       if (!isCurrent()) return stateValue;
-      const existingItems = stateValue.histories[sessionId]?.items ?? current.items;
       return {
         ...stateValue,
         histories: {
           ...stateValue.histories,
-          [sessionId]: projectHistoryPage(page, existingItems),
+          [sessionId]: projectHistoryPage(page, stateValue.histories[sessionId] ?? current),
         },
       };
     });

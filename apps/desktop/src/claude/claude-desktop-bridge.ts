@@ -1003,7 +1003,8 @@ export class ClaudeDesktopBridge extends EventEmitter {
       const liveProjection = this.messageProjection.get(sessionId) ?? {};
       const projection: NativeMessageProjection = { ...(liveProjection.questionAnswers ? { questionAnswers: liveProjection.questionAnswers } : {}) };
       nativeHistoryItems(sessionId, earlierPlanMessages, projection);
-      const items = nativeHistoryItems(sessionId, page.messages, projection);
+      const sessionProposalResults: string[] = [];
+      const items = nativeHistoryItems(sessionId, page.messages, projection, sessionProposalResults);
       const localSubagents = await this.enrichSubagentItems(sessionId, items);
       if (projection.questions?.size || projection.questionAnswers?.size) {
         for (const [toolUseId, question] of projection.questions ?? []) (liveProjection.questions ??= new Map()).set(toolUseId, question);
@@ -1073,7 +1074,8 @@ export class ClaudeDesktopBridge extends EventEmitter {
         this.emit("changed");
       }
       diag("history.messages", { messages: items.length });
-      return { sessionId, items, hasMore, ...(nextCursor ? { nextCursor } : {}) };
+      return { sessionId, items, hasMore, ...(nextCursor ? { nextCursor } : {}),
+        ...(sessionProposalResults.length ? { sessionProposalResults } : {}) };
     } finally { read(); }
   }
 
@@ -1876,10 +1878,10 @@ export class ClaudeDesktopBridge extends EventEmitter {
       }
       const projection = this.messageProjection.get(sessionId) ?? {};
       this.messageProjection.set(sessionId, projection);
-      const items = nativeHistoryItems(sessionId, [event.message], projection);
+      const proposalResults: string[] = [];
+      const items = nativeHistoryItems(sessionId, [event.message], projection, proposalResults);
       await this.enrichSubagentItems(sessionId, items);
       for (const item of items) {
-        if (item.sessionProposalResultFor) continue; // The live result is carried by tool.completed below.
         const receipt = item.role === "user" ? this.historyReceipt(sessionId, item.id) : undefined;
         if (item.role === "assistant") await this.options.eventLog.flushDeltas(sessionId);
         await this.record(nativeItemEventDraft(sessionId, item, receipt));
@@ -1892,7 +1894,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
           const started = this.options.eventLog.latestItem(sessionId, "tool.started", block.tool_use_id);
           const rawToolName = tool?.toolName ?? started?.data.toolName;
           const toolName = typeof rawToolName === "string" && rawToolName ? rawToolName : undefined;
-          const proposalResult = items.some(item => item.sessionProposalResultFor === block.tool_use_id);
+          const proposalResult = (!toolName || toolName === "mcp__ccd_session__start_session") && proposalResults.includes(block.tool_use_id);
           if ((toolName || proposalResult) && toolName !== "mcp__ccd_turn__update_plan" && toolName !== "mcp__ccd_turn__wrap_up") {
             await this.record({
               sessionId,
@@ -1903,7 +1905,6 @@ export class ClaudeDesktopBridge extends EventEmitter {
                 ...(toolName ? { toolName } : {}),
                 text: tool && toolName ? summarizeNativeToolInput(toolName, tool.input) : started?.data.text ?? "",
                 ...(proposalResult ? { sessionProposalResult: true } : {}),
-                ...(proposalResult && started?.data.sessionProposal ? { sessionProposal: started.data.sessionProposal } : {}),
                 ...(block.is_error === true ? { isError: true } : {}),
               },
             });

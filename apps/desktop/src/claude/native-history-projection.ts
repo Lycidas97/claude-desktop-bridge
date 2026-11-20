@@ -56,7 +56,7 @@ export function nativePlanMessages(messages: unknown[]) {
 }
 
 /** Shared by history pages and live events; task state is projected from native messages. */
-export function nativeHistoryItems(sessionId: string, messages: unknown[], projection: NativeMessageProjection = {}): BridgeHistoryItem[] {
+export function nativeHistoryItems(sessionId: string, messages: unknown[], projection: NativeMessageProjection = {}, proposalResults?: string[]): BridgeHistoryItem[] {
   const items = new Map<string, BridgeHistoryItem>();
   for (const raw of messages) {
     const message = record(raw);
@@ -138,10 +138,8 @@ export function nativeHistoryItems(sessionId: string, messages: unknown[], proje
           if (proposalReceipt) {
             const id = `proposal-receipt:${block.tool_use_id}`;
             items.set(id, { id, sessionId, role: "tool", text: "", createdAt, origin: "claude-desktop", proposalReceipt });
-          } else if (/^Proposed "[^\n]*" \(task_id: task_[0-9a-f]+\)\. The user sees a card\b/u.test(result)) {
-            // Separate ID so a result on the newer page cannot shadow the original call.
-            const id = `${block.tool_use_id}:completed`;
-            items.set(id, { id, sessionId, role: "tool", text: "", createdAt, origin: "claude-desktop", sessionProposalResultFor: block.tool_use_id });
+          } else if (proposalResults && /^Proposed "[^\n]*" \(task_id: task_[0-9a-f]+\)\. The user sees a card\b/u.test(result)) {
+            proposalResults.push(block.tool_use_id);
           }
         }
         const answers = extractToolResultAnswers(message);

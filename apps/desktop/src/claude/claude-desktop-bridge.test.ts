@@ -2691,6 +2691,25 @@ describe("Claude native relay", () => {
     } finally { await f.close(); }
   });
 
+  it("keeps session proposal results out of legacy-readable history rows on the same or a newer page", async () => {
+    const f = await fixture();
+    try {
+      const title = "检查日历告警";
+      const call = planMessage("calendar-call", { title, initiation: "own_initiative", context: "fork", prompt: "验证旧告警" }, 10, "mcp__ccd_session__start_session");
+      const result = { type: "user", uuid: "calendar-result", timestamp: 20, message: { content: [{
+        type: "tool_result", tool_use_id: call.uuid, content: `Proposed "${title}" (task_id: task_d6c18845). The user sees a card and nothing runs.`,
+      }] } };
+      f.native.pages.set("", { messages: [result], hasMore: true });
+      f.native.pages.set(result.uuid, { messages: [call], hasMore: false });
+      const latest = await f.bridge.history("local-native", undefined, 1);
+      expect(latest).toMatchObject({ items: [], sessionProposalResults: [call.uuid], nextCursor: result.uuid, hasMore: true });
+      const older = await f.bridge.history("local-native", latest.nextCursor, 1);
+      expect(older.items).toMatchObject([{ id: call.uuid, createdAt: 10, text: expect.stringContaining(title), sessionProposal: { title } }]);
+      f.native.pages.set("", { messages: [call, result], hasMore: false });
+      expect(await f.bridge.history("local-native")).toMatchObject({ items: older.items, sessionProposalResults: [call.uuid] });
+    } finally { await f.close(); }
+  });
+
   it("keeps one plan identity when initialization and continuation occupy adjacent native history pages", async () => {
     const f = await fixture();
     try {

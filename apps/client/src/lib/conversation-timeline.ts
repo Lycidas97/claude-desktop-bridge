@@ -347,12 +347,8 @@ export function conversationItems(
     return [task.toolUseId ?? (task.taskId ? subagentItemIds.get(task.taskId) : undefined)
       ?? (subagent ? subagentItemIds.get(subagent.agentId) : undefined) ?? event.itemId ?? event.eventId];
   }));
-  const confirmedSessionProposals = new Set<string>();
+  const confirmedSessionProposals = new Set(history?.sessionProposalResults);
   for (const item of sessionHistory) {
-    if (item.origin === "claude-desktop" && item.sessionProposalResultFor) {
-      confirmedSessionProposals.add(item.sessionProposalResultFor);
-      continue;
-    }
     if (
       (item.role === "user" || item.role === "assistant") &&
       isClaudeTranscriptControlMessage(item.role, item.text)
@@ -574,10 +570,13 @@ export function conversationItems(
       if (hiddenTaskItems.has(id)) continue;
       const existing = toolByItem.get(id) ?? items.get(`tool:${id}`);
       if (event.origin === "claude-desktop" && event.type === "tool.completed") {
-        if (event.itemId && event.data.sessionProposalResult === true) confirmedSessionProposals.add(event.itemId);
+        if (event.itemId && event.data.sessionProposalResult === true) {
+          confirmedSessionProposals.add(event.itemId);
+          if (!existing) continue; // A result does not locate its call in the timeline.
+        }
         if (!existing && !incomingSubagent && !event.data.toolName) continue;
       }
-      const sessionProposal = event.origin === "claude-desktop" && event.data.sessionProposal
+      const sessionProposal = event.origin === "claude-desktop" && event.type === "tool.started" && event.data.sessionProposal
         ? event.data.sessionProposal as BridgeHistoryItem["sessionProposal"] : existing?.sessionProposal;
       const toolName = typeof event.data.toolName === "string" && event.data.toolName
         ? event.data.toolName

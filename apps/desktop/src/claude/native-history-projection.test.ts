@@ -11,11 +11,13 @@ describe("native session proposal history", () => {
     const [call] = nativeHistoryItems("session", [{ type: "assistant", timestamp: 10, message: { content: [{
       type: "tool_use", id: "call", name, input: { title, background, prompt: "Wait for the brief", initiation: "own_initiative" },
     }] } }]);
-    const [receipt] = nativeHistoryItems("session", [{ type: "user", timestamp: 20, message: { content: [{
+    const proposalResults: string[] = [];
+    const resultItems = nativeHistoryItems("session", [{ type: "user", timestamp: 20, message: { content: [{
       type: "tool_result", tool_use_id: "call", content: [{ type: "text", text: proposed }],
-    }] } }]);
+    }] } }], {}, proposalResults);
     expect(call).toMatchObject({ id: "call", createdAt: 10, toolName: name, sessionProposal: { title, background } });
-    expect(receipt).toMatchObject({ id: "call:completed", createdAt: 20, text: "", sessionProposalResultFor: "call" });
+    expect(resultItems).toEqual([]); // Older clients render only items, so no blank row or overwrite.
+    expect(proposalResults).toEqual(["call"]);
     expect(nativeItemEventDraft("session", call!, undefined)).toMatchObject({ type: "tool.started", itemId: "call", data: {
       sessionProposal: { title, background },
     } });
@@ -40,9 +42,11 @@ describe("native session proposal history", () => {
     { content: `Started session "${title}" (session_id: local-test).` },
     { content: `Tool printed: ${proposed}` },
   ])("does not project a confirmation from $content with is_error=$is_error", (result) => {
-    expect(nativeHistoryItems("session", [{ type: "user", message: { content: [{
+    const proposalResults: string[] = [];
+    nativeHistoryItems("session", [{ type: "user", message: { content: [{
       type: "tool_result", tool_use_id: "call", ...result,
-    }] } }])).toEqual([]);
+    }] } }], {}, proposalResults);
+    expect(proposalResults).toEqual([]);
   });
 });
 

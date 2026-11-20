@@ -79,6 +79,8 @@ export async function verifyAssistantReplies(page, host, steps, directory, relay
   });
   const reading = stream.locator(`[data-stream-key="${readingKey}"]`);
   const readingBefore = (await reading.boundingBox()).y;
+  const hiddenReply = { ...reply, id: "assistant-middle-reply", text: "补回阅读位置之前的回复", createdAt: host.history[0].createdAt + 500 };
+  host.history.splice(1, 0, hiddenReply);
   const nextGate = Promise.withResolvers();
   host.historyGate = nextGate.promise;
   host.session.lastCompletedTurnId = "assistant-next-result";
@@ -95,5 +97,34 @@ export async function verifyAssistantReplies(page, host, steps, directory, relay
     readingStable: Math.abs(readingLoading - readingBefore) <= 4 && Math.abs(readingAfter - readingBefore) <= 4,
     noticeInViewport,
   }, { bottomSyncStable: true, bottomFailureStable: true, readingStable: true, noticeInViewport: true });
-  steps.push("Latest-history sync and retry stay visible without shifting the timeline, both at the bottom and while reading older messages");
+  steps.push("Latest-history sync and retry stay visible without shifting the timeline, including a reply inserted above the reading anchor");
+
+  delete host.session.lastCompletedTurnId;
+  await host.send({ kind: "snapshot", snapshot: host.snapshot });
+  await page.locator(".assistant-page").getByRole("button", { name: "返回", exact: true }).click();
+  const navigationReply = { ...reply, id: "assistant-navigation-reply", text: "切回助理时补读的回复", createdAt: Date.now() };
+  host.history.push(navigationReply);
+  await page.locator(".drawer-assistant-capsule").click();
+  await stream.getByText(navigationReply.text, { exact: true }).waitFor();
+
+  const foregroundReply = { ...reply, id: "assistant-foreground-reply", text: "回到前台时补读的回复", createdAt: Date.now() };
+  host.history.push(foregroundReply);
+  const snapshotReads = host.requests.filter(request => request.method === "snapshot.get").length;
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await eventually(() => host.requests.filter(request => request.method === "snapshot.get").length, snapshotReads + 1,
+    "The already-connected WebView runs its foreground sync");
+  await stream.getByText(foregroundReply.text, { exact: true }).waitFor();
+  assert.equal(host.requests.filter(request => request.method === "session.open").length, 1);
+  steps.push("An older host with no completion marker recovers replies on tab return and foreground wake without reopening the session");
+
+  const manuallyRead = { ...reply, id: "assistant-manual-reply", text: "手动同步恢复的回复", createdAt: Date.now() };
+  host.history.push(manuallyRead);
+  host.failHistoryOnce = true;
+  Object.assign(host.session, { lastCompletedTurnId: "assistant-manual-result", turnState: "queued", pendingCount: 1 });
+  await host.emit("runtime.updated", { replaceSession: true, session: host.session });
+  await alert.waitFor();
+  await assistant.getByRole("button", { name: "同步状态", exact: true }).click();
+  await stream.getByText(manuallyRead.text, { exact: true }).waitFor();
+  await alert.waitFor({ state: "hidden" });
+  steps.push("A successful manual session sync clears the automatic read error");
 }

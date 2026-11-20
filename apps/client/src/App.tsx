@@ -72,19 +72,23 @@ function MobileAssistantConversation({
   const { sessionId, lastCompletedTurnId } = session;
   const { refreshLatestHistory } = mobile;
   const history = mobile.state.histories[sessionId];
+  const readCompletedTurnId = history?.readCompletedTurnId;
   const transcriptOnline = transcriptVisible && mobile.state.connection === "connected" && mobile.state.desktopOnline;
-  const lastHistorySync = useRef<{ online: boolean; turnId: string | undefined } | undefined>(undefined);
-  const [historySync, setHistorySync] = useState<"loading" | { error: string }>();
+  const foregroundRevision = mobile.state.foregroundRevision;
+  const lastHistorySync = useRef<{ online: boolean; turnId: string | undefined; foregroundRevision: number | undefined } | undefined>(
+    history?.status === "ready" ? { online: false, turnId: readCompletedTurnId, foregroundRevision } : undefined,
+  );
+  const [historySync, setHistorySync] = useState<"loading" | { error: string; readCompletedTurnId: string | undefined }>();
   const syncLatestHistory = useCallback(async () => {
-    lastHistorySync.current = { online: true, turnId: lastCompletedTurnId };
+    lastHistorySync.current = { online: true, turnId: lastCompletedTurnId, foregroundRevision };
     setHistorySync("loading");
     try {
       await refreshLatestHistory(sessionId, lastCompletedTurnId);
       setHistorySync(undefined);
     } catch (error) {
-      setHistorySync({ error: error instanceof Error ? error.message : "历史加载失败" });
+      setHistorySync({ error: error instanceof Error ? error.message : "历史加载失败", readCompletedTurnId });
     }
-  }, [refreshLatestHistory, sessionId, lastCompletedTurnId]);
+  }, [refreshLatestHistory, sessionId, lastCompletedTurnId, foregroundRevision, readCompletedTurnId]);
   useEffect(() => {
     const previous = lastHistorySync.current;
     if (!transcriptOnline) {
@@ -92,13 +96,15 @@ function MobileAssistantConversation({
       return;
     }
     if (history?.status !== "ready" || historySync === "loading") return;
-    const coveredTurn = previous ? previous.turnId : history.readCompletedTurnId;
-    if (previous?.online === false || (lastCompletedTurnId && lastCompletedTurnId !== coveredTurn)) {
+    if (historySync && historySync.readCompletedTurnId !== readCompletedTurnId) setHistorySync(undefined);
+    const coveredTurn = previous ? previous.turnId : readCompletedTurnId;
+    if ((previous && (!previous.online || previous.foregroundRevision !== foregroundRevision))
+      || (lastCompletedTurnId && lastCompletedTurnId !== coveredTurn)) {
       void syncLatestHistory();
     } else if (!previous) {
-      lastHistorySync.current = { online: true, turnId: lastCompletedTurnId };
+      lastHistorySync.current = { online: true, turnId: lastCompletedTurnId, foregroundRevision };
     }
-  }, [history?.status, history?.readCompletedTurnId, historySync, lastCompletedTurnId, syncLatestHistory, transcriptOnline]);
+  }, [history?.status, readCompletedTurnId, historySync, lastCompletedTurnId, foregroundRevision, syncLatestHistory, transcriptOnline]);
   useEffect(() => {
     if (!transcriptVisible) return;
     return setActiveViewedSession({ hostId: activeHostId, sessionId: session.sessionId });

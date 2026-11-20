@@ -146,6 +146,7 @@ export interface MobileBridgeState {
   desktopName: string | undefined;
   connection: SocketState;
   desktopOnline: boolean;
+  foregroundRevision?: number;
   snapshot: BridgeHostSnapshot | undefined;
   snapshotSeq: number;
   permissions: BridgePermissionInfo[];

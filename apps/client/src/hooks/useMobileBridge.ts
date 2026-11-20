@@ -236,9 +236,14 @@ export function useMobileBridge() {
 
   useEffect(() => onNativePushWake(() => reconnectAndResume()), [reconnectAndResume]);
 
-  useEffect(() => subscribeNetworkAndVisibilityWake(reconnectAndResume), [reconnectAndResume]);
-
-  useEffect(() => subscribeCapacitorAppWake(reconnectAndResume), [reconnectAndResume]);
+  const onForeground = useCallback((networkChanged = false) => {
+    if (!networkChanged && socketRef.current?.state === "connected") {
+      setState((current) => ({ ...current, foregroundRevision: (current.foregroundRevision ?? 0) + 1 }));
+    }
+    reconnectAndResume(networkChanged);
+  }, [reconnectAndResume]);
+  useEffect(() => subscribeNetworkAndVisibilityWake(onForeground), [onForeground]);
+  useEffect(() => subscribeCapacitorAppWake(onForeground), [onForeground]);
 
   const pair = useCallback(
     (pairing: PairingBundle): Promise<boolean> => pairBridgeHost(

@@ -100,11 +100,15 @@ export async function openBridgeSession(
       if (!response?.ok) throw new Error(response?.error?.message ?? "会话打开失败");
       const result = response.result as { history?: BridgeHistoryPage; session?: BridgeSessionInfo };
       if (!result.history) throw new Error("电脑未返回会话历史");
-      setState((current) => isCurrent()
-        ? applySessionResultToState(current, result.session, {
-            history: { sessionId, page: result.history!, readCompletedTurnId },
-          })
-        : current);
+      setState((current) => {
+        if (!isCurrent()) return current;
+        const liveCompletion = current.snapshot?.sessions.find((session) => session.sessionId === sessionId)?.lastCompletedTurnId;
+        // The open response can contain a session captured before a newer native completion arrived.
+        const session = result.session && liveCompletion && liveCompletion !== readCompletedTurnId
+          ? { ...result.session, lastCompletedTurnId: liveCompletion }
+          : result.session;
+        return applySessionResultToState(current, session, { history: { sessionId, page: result.history!, readCompletedTurnId } });
+      });
       const eventsAtRequestStart = stateRef.current.events;
       void sendRequest("evidence.list", { sessionId, limit: 12 }, {
         wait: true,
@@ -342,6 +346,11 @@ async function requestBridgeHistoryPage(sendRequest: BridgeSendRequest, sessionI
   return result.history;
 }
 
+function isTranscriptMessage(item: BridgeHistoryPage["items"][number]): boolean {
+  // Projected plans and tool summaries can reuse IDs across disjoint Native pages.
+  return (item.role === "user" || item.role === "assistant") && !item.taskPlan;
+}
+
 export async function refreshLatestBridgeHistory(
   { setState, stateRef, cryptoRef, socketRef, sendRequest }: BridgeArtifactsContext,
   sessionId: string,
@@ -350,7 +359,7 @@ export async function refreshLatestBridgeHistory(
   const crypto = cryptoRef.current;
   const socket = socketRef.current;
   const isCurrent = () => cryptoRef.current === crypto && socketRef.current === socket;
-  const existingIds = new Set(stateRef.current.histories[sessionId]?.items.map(item => item.id));
+  const existingIds = new Set(stateRef.current.histories[sessionId]?.items.filter(isTranscriptMessage).map(item => item.id));
   const pages: BridgeHistoryPage[] = [];
   let cursor: string | undefined;
   let page: BridgeHistoryPage;
@@ -360,9 +369,9 @@ export async function refreshLatestBridgeHistory(
     pages.push(page);
     cursor = page.nextCursor;
     // Read through a gap rather than showing non-adjacent pages as one timeline.
-  } while (cursor && existingIds.size > 0 && !page.items.some(item => existingIds.has(item.id)));
+  } while (cursor && existingIds.size > 0 && !page.items.some(item => isTranscriptMessage(item) && existingIds.has(item.id)));
   const newestById = new Map(pages.reverse().flatMap(({ items }) => items.map(item => [item.id, item] as const)));
-  const oldest = newestById.keys().next().value;
+  const oldest = page.items.find(isTranscriptMessage)?.id;
   setState((current) => {
     if (!isCurrent()) return current;
     const existing = current.histories[sessionId];

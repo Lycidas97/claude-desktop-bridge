@@ -1,6 +1,6 @@
 import type { BridgeCrypto, BridgeEvent, BridgeHostSnapshot, BridgeRequest, BridgeResponse, BridgeSessionInfo, DecryptedEnvelope, EncryptedEnvelope, ServerFrame, SocketState } from "@bridge/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { INITIAL_STATE, useMobileBridge } from "./useMobileBridge.js";
+import { applyIncomingEventsToState, INITIAL_STATE, useMobileBridge } from "./useMobileBridge.js";
 import { createBridgeTestStore, type HarnessStore } from "./useMobileBridge.test-harness.js";
 import { bridgeVault } from "../lib/vault.js";
 import {
@@ -1670,6 +1670,40 @@ describe("mobile history pagination", () => {
     expect(harness.state.histories["shared-session"]).toEqual({ status: "ready", items: [older, recent], hasMore: false });
     expect(harness.addOutbox).not.toHaveBeenCalled();
     expect(harness.state.localTurns).toEqual([]);
+  });
+
+  it("keeps a completion published while the old session.open page is in flight", async () => {
+    const session = { sessionId: recent.sessionId, lastCompletedTurnId: "old" } as BridgeSessionInfo;
+    harness.state.snapshot = { ...snapshot("A"), sessions: [session] };
+    const response = deferred<Record<string, unknown>>();
+    harness.respond = request => request.method === "session.open" ? response.promise : Promise.resolve({});
+    const bridge = useMobileBridge();
+    const opening = bridge.openSession(session.sessionId);
+    await vi.waitFor(() => expect(harness.requests).toHaveLength(1));
+    harness.store!.setState(current => applyIncomingEventsToState(current, [{
+      eventId: "completion-published", seq: 1, timestamp: 3, origin: "claude-desktop", sessionId: session.sessionId,
+      type: "runtime.updated", data: { replaceSession: true, session: { ...session, lastCompletedTurnId: "new" } },
+    }]));
+    response.resolve({ session, history: { items: [recent], hasMore: false } });
+    await opening;
+    expect(harness.state.snapshot.sessions[0].lastCompletedTurnId).toBe("new");
+    expect(harness.state.histories[session.sessionId].readCompletedTurnId).toBe("old");
+  });
+
+  it("reads the next page when only a projected task plan overlaps", async () => {
+    const plan = { ...older, id: "plan:shared", role: "assistant", taskPlan: { id: "shared", updatedAt: 1 } };
+    const updatedPlan = { ...plan, taskPlan: { ...plan.taskPlan, updatedAt: 4 } };
+    const missing = { ...recent, id: "missing-reply", role: "assistant", createdAt: 3 };
+    const newest = { ...recent, id: "newest", createdAt: 5 };
+    harness.state.histories[recent.sessionId] = { status: "ready", items: [older, plan, recent], hasMore: true, nextCursor: older.id };
+    harness.respond = async ({ params }) => ({ history: params.cursor === undefined
+      ? { items: [updatedPlan, newest], hasMore: true, nextCursor: "native-newer-page" }
+      : { items: [recent, missing], hasMore: true, nextCursor: recent.id },
+    });
+    const bridge = useMobileBridge();
+    await bridge.refreshLatestHistory(recent.sessionId, "native-completion");
+    expect(harness.requests.map(({ request }) => request.params.cursor)).toEqual([undefined, "native-newer-page"]);
+    expect(harness.state.histories[recent.sessionId]).toMatchObject({ items: [older, recent, missing, updatedPlan, newest], nextCursor: older.id });
   });
 
   it("fills a gap from the latest history page without losing the already loaded prefix or its cursor", async () => {

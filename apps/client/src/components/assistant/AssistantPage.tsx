@@ -14,7 +14,8 @@ import { mailResult, useAssistantMail, type AssistantRequest } from "./Assistant
 import { AgendaSources } from "./AgendaSources.js";
 import { AgendaView } from "./AgendaView.js";
 import { useAssistantAgenda } from "./AssistantAgendaProvider.js";
-import { useAssistantProposals } from "./AssistantProposalProvider.js";
+import { pendingProposalCount, useAssistantProposals } from "./AssistantProposalProvider.js";
+import { AssistantAttention } from "./AssistantAttention.js";
 import { ProposalPanel } from "./ProposalPanel.js";
 import { MailCard } from "./MailCard.js";
 import { MailReference } from "./MailReference.js";
@@ -26,7 +27,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
   active?: boolean;
   headerLeading?: ReactNode | undefined;
   onOpenSession(sessionId: string): void;
-  renderConversation(sessionId: string, stage: Pick<ConversationViewProps, "alternateStage" | "hideComposer">): ReactNode;
+  renderConversation(sessionId: string, stage: Pick<ConversationViewProps, "alternateStage" | "hideComposer" | "assistantReplyTarget">): ReactNode;
 }) {
   const mail = useAssistantMail();
   const agenda = useAssistantAgenda();
@@ -36,6 +37,8 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
   const [view, setView] = useState<"conversation" | "mail" | "agenda" | "settings" | "proposals">("conversation");
   const [proposalReturn, setProposalReturn] = useState<Exclude<typeof view, "proposals">>("conversation");
   const [selectedProposal, setSelectedProposal] = useState<BridgeActionProposal>();
+  const [replyTarget, setReplyTarget] = useState<ConversationViewProps["assistantReplyTarget"]>();
+  const [replyError, setReplyError] = useState("");
   const [configuring, setConfiguring] = useState(false);
   const [selectedId, setSelectedId] = useState("");
   const [creating, setCreating] = useState(false);
@@ -58,7 +61,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
     if (selectedProposal) setSelectedProposal(undefined);
     else setView(proposalReturn);
   }
-  useEffect(() => { if (active) { setView("conversation"); setSelectedProposal(undefined); } }, [active]);
+  useEffect(() => { if (active) { setView("conversation"); setSelectedProposal(undefined); setReplyTarget(undefined); setReplyError(""); } }, [active]);
   useEffect(() => {
     if (active && mobile && view === "proposals" && proposals) {
       return registerMobileBackHandler(() => { backFromProposals(); return true; }, 110);
@@ -79,8 +82,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
   const fallbackView = session ? "conversation" : mail ? "mail" : "agenda";
   const displayedView = (view === "conversation" && !session) || (view === "mail" && !mail) || (view === "agenda" && !agenda)
     || (view === "proposals" && !proposals) ? fallbackView : view;
-  const pendingCount = (proposals?.summary.pendingCount ?? 0) + (proposals?.summary.pendingMailCount ?? 0) +
-    (proposals?.supportsMemory ? proposals.summary.pendingMemoryCount ?? 0 : 0);
+  const pendingCount = pendingProposalCount(proposals);
   function openProposals() {
     if (displayedView !== "proposals") { setProposalReturn(displayedView); setSelectedProposal(undefined); }
     setView("proposals");
@@ -260,10 +262,19 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
         <ChevronRight size={16} aria-hidden="true" />
       </button>
     </div>}
+    {displayedView === "conversation" && (replyTarget || replyError) && <div className="assistant-page-content assistant-mail-feedback">
+      {replyError ? <p role="alert">{replyError}</p> : <p role="status">正在查找回复…</p>}
+    </div>}
+    {displayedView !== "proposals" && <AssistantAttention onReply={itemId => {
+      setView("conversation"); setReplyError("");
+      setReplyTarget({ itemId, done(error) { setReplyTarget(undefined); setReplyError(error ?? ""); } });
+    }}
+      onTodo={() => { agenda?.setCalendarOnly(false); agenda?.setAllTodosOpen(true); setView("agenda"); }} />}
     {session ? <>
       {displayedView === "conversation" && <div className="assistant-page-content">{bindingControls}{notices}</div>}
       <div className="assistant-conversation">{renderConversation(session.sessionId, {
         alternateStage: displayedView === "conversation" ? undefined : stage,
+        assistantReplyTarget: replyTarget,
         hideComposer: displayedView === "settings" || displayedView === "agenda" || displayedView === "proposals" || workspace?.repairFailed === true,
       })}</div>
     </> : stage()}

@@ -1620,6 +1620,27 @@ describe("Claude native relay", () => {
     } finally { await f.close(); }
   });
 
+  it("announces only user replies and explicit deliveries from background turns", async () => {
+    const f = await fixture();
+    const received = vi.fn();
+    f.bridge.on("assistant.user-reply", received);
+    try {
+      for (const [index, text] of ["筛选完毕", "【给用户】请查看预算"].entries()) {
+        const receipt = await f.bridge.startTurn({ ...input, requestId: `background-${index}`, idempotencyKey: `background-${index}`, origin: "system", source: "assistant-trigger" });
+        await f.message({ type: "user", uuid: receipt.messageId, message: { content: input.text } });
+        await f.message({ type: "assistant", uuid: `background-reply-${index}`, message: { content: [{ type: "text", text }] } });
+        await f.message({ type: "result", uuid: `background-result-${index}`, user_message_uuid: receipt.messageId, is_error: false });
+      }
+      await f.message({ type: "user", uuid: "user-root", message: { content: "请给我结果" } });
+      await f.message({ type: "assistant", uuid: "native-reply", message: { id: "visible-reply", content: [{ type: "text", text: "用户请求的结果" }] } });
+      await f.message({ type: "result", uuid: "result", is_error: false });
+      expect(received.mock.calls).toEqual([
+        [input.sessionId, "background-reply-1", "请查看预算"],
+        [input.sessionId, "visible-reply", "用户请求的结果"],
+      ]);
+    } finally { await f.close(); }
+  });
+
   it("does not mark failed, synthetic, or child results as completed", async () => {
     const f = await fixture();
     try {

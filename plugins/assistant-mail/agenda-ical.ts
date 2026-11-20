@@ -202,20 +202,20 @@ function expandSeries(items: Timing[], fallback: AgendaZone, window: AgendaWindo
 function alarmTime(component: ICAL.Component, zone: AgendaZone, startAt?: string, endAt?: string) {
   const alarm = component.getFirstSubcomponent("valarm")?.getFirstProperty("trigger");
   if (!alarm) return;
-  let trigger;
-  try { trigger = alarm.getFirstValue(); }
-  catch (error) {
+  try {
+    const trigger = alarm.getFirstValue();
+    if (trigger instanceof ICAL.Time) return timestamp(trigger, zone);
+    if (trigger instanceof ICAL.Duration) {
+      const anchor = alarm.getFirstParameter("related")?.toUpperCase() === "END" ? endAt : startAt;
+      if (!anchor) return;
+      const at = agendaInstant(anchor, zone);
+      return trigger.weeks || trigger.days ? durationEnd(wallClock(at, zone), trigger, zone)
+        : new Date(at + trigger.toSeconds() * 1000).toISOString();
+    }
+  } catch (error) {
+    if (error instanceof RangeError && error.message === "Invalid time value") return;
     if (error instanceof Error && /^(?:invalid (?:date-time|duration) value:|Could not extract integer from )/u.test(error.message)) return;
     throw error;
-  }
-  if (trigger instanceof ICAL.Time) return timestamp(trigger, zone);
-  if (trigger instanceof ICAL.Duration) {
-    const anchor = alarm.getFirstParameter("related")?.toUpperCase() === "END" ? endAt : startAt;
-    if (!anchor) return;
-    const at = agendaInstant(anchor, zone);
-    if (trigger.weeks || trigger.days) return durationEnd(wallClock(at, zone), trigger, zone);
-    const reminder = new Date(at + trigger.toSeconds() * 1000);
-    return Number.isFinite(reminder.getTime()) ? reminder.toISOString() : undefined;
   }
 }
 

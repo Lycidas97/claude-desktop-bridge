@@ -138,6 +138,7 @@ test.each([
   "TRIGGER;VALUE=DATE-TIME:20270313",
   "TRIGGER;VALUE=DATE-TIME:20270313TAB0000Z",
   "TRIGGER:-PT2500000000H",
+  "TRIGGER:-P1DT2500000000H",
 ])("ignores a malformed legacy VEVENT alarm %s without losing the event", malformed => {
   const database = new DatabaseSync(":memory:");
   closers.push(() => database.close());
@@ -158,6 +159,7 @@ test.each([
 
 test.each([
   ["-P1D", "2027-03-13T17:00:00.000Z"],
+  ["-P1DT2H", "2027-03-13T15:00:00.000Z"],
   ["-PT24H", "2027-03-13T16:00:00.000Z"],
 ])("applies %s in the event time zone across the DST change", (trigger, remindAt) => {
   const store = testStore();

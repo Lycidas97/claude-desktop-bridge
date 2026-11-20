@@ -244,8 +244,18 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
     const attachmentCard = card.getByRole("region", { name: "邮件附件" });
     await attachmentCard.getByText("6 个附件", { exact: true }).waitFor();
     await card.getByText("原文", { exact: true }).click();
-    await card.getByText("Fixture mail with attachments.", { exact: true }).last().waitFor();
+    await card.locator("details[open] pre").filter({ hasText: /^Fixture mail with attachments\.$/u }).waitFor();
     assert.equal(await card.locator("details[open] .assistant-attachments").count(), 0);
+    const nextCard = card.locator("+ article[data-mail-id]");
+    const expandedBounds = await card.boundingBox();
+    const nextBounds = await nextCard.boundingBox();
+    assert.ok(expandedBounds && nextBounds && nextBounds.y - (expandedBounds.y + expandedBounds.height) >= 8,
+      "Visible space separates the expanded mail from the next card");
+    assert.ok(await card.evaluate(element => {
+      const style = getComputedStyle(element);
+      return style.borderStyle === "solid" && parseFloat(style.borderWidth) > 0 && parseFloat(style.borderRadius) > 0 &&
+        style.backgroundColor !== "rgba(0, 0, 0, 0)";
+    }), "The expanded mail has a full rounded border and a visible surface");
     await card.getByText("原文", { exact: true }).click();
     await attachmentCard.getByRole("button", { name: "预览 notes.txt", exact: true }).click();
     await page.getByRole("heading", { name: "下载大文件预览？", exact: true }).waitFor();

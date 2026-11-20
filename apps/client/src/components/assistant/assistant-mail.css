@@ -88,9 +88,9 @@
 .assistant-context-usage { margin: 0 0 12px; color: var(--muted); }
 .assistant-context-usage dd { margin: 0; font-variant-numeric: tabular-nums; }
 .assistant-binding details { margin-top: 12px; font-size: calc(13px * var(--font-scale)); }
-.assistant-mail-list { display: grid; gap: 0; border-top: 1px solid var(--line); }
+.assistant-mail-list { display: grid; gap: 12px; }
 .assistant-mail-card { min-width: 0; max-width: 100%; padding: 16px; border: 1px solid var(--card-border); border-radius: var(--r-card); background: var(--card-fill); box-shadow: var(--card-hi); color: var(--text); overflow-wrap: anywhere; }
-.assistant-mail-list > .assistant-mail-card { padding: 15px 0; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; box-shadow: none; }
+.assistant-mail-list .assistant-mail-card { border-color: var(--line); }
 .assistant-mail-card > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--muted); font-size: calc(11px * var(--font-scale)); }
 .assistant-mail-groups { min-width: 0; margin-bottom: 8px; }
 .assistant-mail-group { border-bottom: 1px solid var(--line); }

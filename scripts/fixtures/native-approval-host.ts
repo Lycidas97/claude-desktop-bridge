@@ -424,8 +424,12 @@ export async function startNativeApprovalHost(options: {
         canStartTurn: () => broker.capabilities().includes("turn.start"),
         onChanged: snapshot => options.onMailChanged?.(snapshot),
         broker, receipts: state,
-      }, workspace)
+      }, workspace, assistantMail.agenda)
     : undefined;
+  if (assistantMailCoordinator) {
+    broker.on("assistant.user-reply", assistantMailCoordinator.replyReceived);
+    broker.on("assistant.replies-rewound", assistantMailCoordinator.repliesRewound);
+  }
   assistantMailCoordinator?.start();
   assistantMailCoordinator?.startTriggers();
   eventLog.on("event", event => {
@@ -588,7 +592,8 @@ export async function startNativeApprovalHost(options: {
       return { projects: broker.listProjects(), sessions: broker.listSessions() };
     },
     files: (request: BridgeRequest) => controller.handleRequest(request, "mobile", options.deviceId),
-    history: () => broker.history(options.sessionId),
+    history: (limit?: number) => broker.history(options.sessionId, undefined, limit),
+    appendHistory(entries: Array<Record<string, unknown>>) { messages.push(...entries); },
     session: () => structuredClone(broker.session(options.sessionId)!),
     receipts: () => state.listNativeDesktopReceipts(),
     queuedReply(enabled: boolean) { reportQueued = enabled; },

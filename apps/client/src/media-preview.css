@@ -26,6 +26,7 @@
 .media-viewer-shell { display: grid; height: 100%; min-width: 0; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr) auto; }
 .media-viewer-shell > header { display: flex; justify-content: space-between; align-items: center; padding: 14px 16px; gap: 16px; border-bottom: 1px solid var(--line); background: var(--surface); }
 .media-viewer-shell > header > div { display: flex; align-items: center; min-width: 0; gap: 10px; }
+.media-viewer-shell > header > .media-viewer-actions { flex: none; gap: 4px; }
 .media-viewer-shell > header span { color: var(--muted); font-size: calc(11px * var(--font-scale)); flex-shrink: 0; }
 .media-viewer h2 { margin: 0; font-size: calc(14px * var(--font-scale)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .media-viewer-toolbar, .media-page-controls, .media-zoom-controls { display: flex; align-items: center; gap: 6px; }
@@ -53,11 +54,13 @@
 .media-viewer-status { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 24px; text-align: center; color: var(--muted); background: var(--bg); font-size: calc(13px * var(--font-scale)); z-index: 1; }
 .media-viewer-status progress { width: min(240px, 100%); height: 6px; accent-color: var(--accent); }
 .media-viewer-shell > footer { padding: 10px 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: calc(11px * var(--font-scale)); }
+.media-viewer-shell > footer [role="alert"] { color: var(--danger-ink); font-size: calc(13px * var(--font-scale)); }
 .media-viewer-loading { position: fixed; z-index: 200; inset: 0; display: grid; place-items: center; background: var(--scrim); color: var(--text); }
 .conversation-image-preview { display: block; padding: 0; border: 0; background: none; cursor: zoom-in; }
 @media (max-width: 600px) {
   .media-viewer { width: 100vw; height: 100dvh; border: 0; border-radius: 0; }
   .media-viewer-shell > header { padding-top: max(12px, env(safe-area-inset-top)); }
+  .media-viewer-actions .icon-button { width: 44px; height: 44px; }
   .media-viewer-shell > footer { padding-bottom: max(10px, env(safe-area-inset-bottom)); }
   .media-viewer-toolbar { gap: 4px; padding: 6px; }
   .media-viewer-toolbar .icon-button { min-width: 32px; min-height: 36px; padding: 5px; }

@@ -83,6 +83,21 @@ beforeEach(() => {
 afterEach(() => { for (const store of stores.values()) store.effects.forEach(effect => effect.cleanup?.()); vi.unstubAllGlobals(); });
 
 describe("local evidence preview precedence", () => {
+  it("opens a cached evidence image in the shared viewer and retains its original-file reference", async () => {
+    props.online = false;
+    props.state!.items[0]!.artifacts = [{ ...file, kind: "image", name: "output.png", previewMode: "image", downloadAllowed: false }];
+    props.previews.cached = { ...props.previews.cached!, mode: "image", mimeType: "image/jpeg", encoding: "base64", data: "YWJj" };
+    draw();
+    const button = elements().find(element => element.type === IconButton && element.props.label === "打开 output.png 的缓存预览")!;
+    button.props.onClick(); draw(); await settle();
+    expect(request).not.toHaveBeenCalled();
+    expect(elements().find(element => element.props.target)?.props.target).toEqual({
+      name: "output.png", kind: "image", artifactId: "cached", path: "output.custom", downloadAllowed: false,
+      dataUrl: "data:image/jpeg;base64,YWJj",
+    });
+    expect(elements().some(element => element.props.className === "artifact-preview-dialog")).toBe(false);
+  });
+
   it.each([
     { online: false, availability: "expired", previewMode: "text", kind: "text" },
     { online: true, availability: "current-file", previewMode: "text", kind: "text" },

@@ -5,15 +5,9 @@ import type {
   BridgeArtifactTransferChunk,
   BridgeArtifactTransferInfo,
   BridgeMailAttachmentRef,
-  BridgeRequest,
   BridgeResponse,
 } from "@bridge/protocol";
-
-type RequestArtifact = (
-  method: BridgeRequest["method"],
-  params: Record<string, unknown>,
-  options?: { wait?: boolean; timeoutMs?: number },
-) => Promise<BridgeResponse | undefined>;
+import { mediaFileParams, type MediaRequest, type MediaTarget } from "./media-preview.js";
 
 const BridgeFiles = registerPlugin<{
   openFile(options: { path: string; mimeType: string }): Promise<void>;
@@ -64,7 +58,7 @@ function delay(ms: number): Promise<void> {
 }
 
 async function readChunkWithResume(
-  request: RequestArtifact,
+  request: MediaRequest,
   transfer: BridgeArtifactTransferInfo,
   index: number,
 ): Promise<BridgeArtifactTransferChunk> {
@@ -99,10 +93,22 @@ async function sha256Hex(chunks: Uint8Array[]): Promise<string> {
   return [...digest].map((value) => value.toString(16).padStart(2, "0")).join("");
 }
 
+function downloadInBrowser(filename: string, chunks: Uint8Array[], mimeType: string): void {
+  const blob = new Blob(chunks.map((chunk) => Uint8Array.from(chunk).buffer), { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  setTimeout(() => URL.revokeObjectURL(url), 30_000);
+}
+
 async function runArtifactTransfer(
   openParams: Record<string, unknown>,
-  request: RequestArtifact,
+  request: MediaRequest,
+  mode: "open" | "save",
   onProgress: (progress: number) => void,
+  expectedSha256?: string,
 ): Promise<void> {
   const opened = unwrap<{ transfer: BridgeArtifactTransferInfo }>(await request(
     "artifact.transfer.open",
@@ -112,7 +118,7 @@ async function runArtifactTransfer(
   const transfer = opened.transfer;
   const chunks: Uint8Array[] = [];
   const native = Capacitor.getPlatform() === "android";
-  const saveOnly = "mailAttachment" in openParams;
+  const saveOnly = mode === "save";
   const filename = safeFilename(transfer.name);
   const saveChunks = native && saveOnly ? [] as string[] : undefined;
   const nativePath = `bridge-evidence/${transfer.transferId}/${filename}`;
@@ -121,6 +127,9 @@ async function runArtifactTransfer(
   let bufferedBytes = 0;
   activeDownloadsCount += 1;
   try {
+    if (expectedSha256 !== undefined && transfer.sha256 !== expectedSha256) {
+      throw new Error("文件已更改，请重新打开预览后再保存");
+    }
     for (let index = 0; index < transfer.totalChunks; index += 1) {
       const chunk = await readChunkWithResume(request, transfer, index);
       if (chunk.transferId !== transfer.transferId || chunk.index !== index) {
@@ -157,16 +166,7 @@ async function runArtifactTransfer(
       else await BridgeFiles.openFile({ path: nativePath, mimeType: transfer.mimeType });
       return;
     }
-    const blob = new Blob(
-      chunks.map((chunk) => Uint8Array.from(chunk).buffer),
-      { type: saveOnly ? "application/octet-stream" : transfer.mimeType },
-    );
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = filename;
-    anchor.click();
-    setTimeout(() => URL.revokeObjectURL(url), 30_000);
+    downloadInBrowser(filename, chunks, saveOnly ? "application/octet-stream" : transfer.mimeType);
   } finally {
     activeDownloadsCount = Math.max(0, activeDownloadsCount - 1);
     activeDownloadsCachedBytes = Math.max(0, activeDownloadsCachedBytes - bufferedBytes);
@@ -186,22 +186,40 @@ async function runArtifactTransfer(
 
 export async function downloadBridgeArtifact(
   artifact: BridgeArtifactManifest,
-  request: RequestArtifact,
+  request: MediaRequest,
   onProgress: (progress: number) => void,
 ): Promise<void> {
-  await runArtifactTransfer({ artifactId: artifact.id }, request, onProgress);
+  await runArtifactTransfer({ artifactId: artifact.id }, request, "open", onProgress);
 }
 
 export async function downloadBridgeSessionFile(
   sessionId: string,
   filePath: string,
-  request: RequestArtifact,
+  request: MediaRequest,
   onProgress: (progress: number) => void,
   resolveRelativeLink?: true,
 ): Promise<void> {
-  await runArtifactTransfer({ sessionId, path: filePath, ...(resolveRelativeLink ? { resolveRelativeLink } : {}) }, request, onProgress);
+  await runArtifactTransfer({ sessionId, path: filePath, ...(resolveRelativeLink ? { resolveRelativeLink } : {}) }, request, "open", onProgress);
 }
 
-export async function downloadMailAttachment(mailAttachment: BridgeMailAttachmentRef, request: RequestArtifact, onProgress: (progress: number) => void): Promise<void> {
-  await runArtifactTransfer({ mailAttachment }, request, onProgress);
+export async function downloadMailAttachment(mailAttachment: BridgeMailAttachmentRef, request: MediaRequest, onProgress: (progress: number) => void): Promise<void> {
+  await runArtifactTransfer({ mailAttachment }, request, "save", onProgress);
+}
+
+export async function saveMediaTarget(
+  target: MediaTarget,
+  request: MediaRequest,
+  onProgress: (progress: number) => void,
+  expectedSha256?: string,
+): Promise<void> {
+  if (target.dataUrl?.startsWith("data:") && !target.artifactId && !target.mailAttachment && !target.path) {
+    // Inline conversation attachments already carry their original Base64 bytes.
+    const data = target.dataUrl.slice(target.dataUrl.indexOf(",") + 1);
+    const name = safeFilename(target.name);
+    onProgress(1);
+    if (Capacitor.getPlatform() === "android") await BridgeFiles.saveFile({ name, chunks: [data] });
+    else downloadInBrowser(name, [base64Bytes(data)], "application/octet-stream");
+    return;
+  }
+  await runArtifactTransfer(mediaFileParams(target), request, "save", onProgress, expectedSha256);
 }

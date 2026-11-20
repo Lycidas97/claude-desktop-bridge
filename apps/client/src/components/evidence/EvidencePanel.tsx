@@ -402,15 +402,20 @@ export function EvidencePanel({
   function openItemPreview(item: SessionOutputFileItem): void {
     setError("");
     const artifact = item.artifact;
-    if (artifact && previews[artifact.id]) {
-      setSelectedArtifact(artifact);
-      return;
-    }
     const media = artifact
       ? artifactMediaTarget(artifact)
       : (item.changeKind !== "deleted" && sessionId && mediaKind(item.filePath)
           ? { name: item.name, kind: mediaKind(item.filePath)!, sessionId, path: item.filePath }
           : undefined);
+    const cached = artifact && previews[artifact.id];
+    if (media?.kind === "image" && cached?.mode === "image" && cached.encoding === "base64") {
+      openMedia({ ...media, dataUrl: `data:${cached.mimeType};base64,${cached.data}` });
+      return;
+    }
+    if (artifact && cached) {
+      setSelectedArtifact(artifact);
+      return;
+    }
     if (media) {
       openMedia(media);
       return;

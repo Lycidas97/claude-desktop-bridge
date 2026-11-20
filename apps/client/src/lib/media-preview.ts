@@ -19,6 +19,7 @@ export interface MediaTarget {
   name: string;
   kind: "image" | "pdf" | "text";
   artifactId?: string;
+  downloadAllowed?: false;
   mailAttachment?: BridgeMailAttachmentRef;
   charset?: string;
   sessionId?: string;
@@ -28,7 +29,8 @@ export interface MediaTarget {
   nativeImage?: BridgeNativeImageRef;
 }
 
-export function mediaFileParams(target: Pick<MediaTarget, "artifactId" | "sessionId" | "path" | "resolveRelativeLink" | "mailAttachment">) {
+export function mediaFileParams(target: Pick<MediaTarget, "artifactId" | "sessionId" | "path" | "resolveRelativeLink" | "mailAttachment" | "nativeImage">) {
+  if (target.nativeImage) return { sessionId: target.sessionId, nativeImage: target.nativeImage };
   if (target.mailAttachment) return { mailAttachment: target.mailAttachment };
   return target.artifactId ? { artifactId: target.artifactId } : {
     sessionId: target.sessionId,
@@ -89,7 +91,10 @@ export function artifactMediaTarget(artifact: BridgeArtifactManifest): MediaTarg
     ? artifact.kind : mediaKind(artifact.name) ?? (artifact.previewMode === "text" || artifact.previewMode === "diff" ? "text" : undefined);
   if (!kind || artifact.changeKind === "deleted" || artifact.availability === "blocked"
     || artifact.availability === "expired") return undefined;
-  return { name: artifact.name, kind, artifactId: artifact.id, path: artifact.relativePath };
+  return {
+    name: artifact.name, kind, artifactId: artifact.id, path: artifact.relativePath,
+    ...(artifact.downloadAllowed === false ? { downloadAllowed: false } : {}),
+  };
 }
 
 export function mediaArtifacts(bundles: BridgeEvidenceBundle[]): BridgeArtifactManifest[] {
@@ -126,8 +131,7 @@ export async function openMediaTransfer(target: MediaTarget, request: MediaReque
   const { transfer } = unwrap<{ transfer: BridgeArtifactTransferInfo }>(await request(
     "artifact.transfer.open",
     {
-      ...(target.nativeImage ? { sessionId: target.sessionId, nativeImage: target.nativeImage }
-        : mediaFileParams(target)),
+      ...mediaFileParams(target),
       ...(target.kind === "text" ? { purpose: "text-preview" } : {}),
     },
     { wait: true, timeoutMs: 60_000 },

@@ -234,11 +234,61 @@ it("allows only a managed assistant to move a mail without overriding the user's
   expect((await post({ ...move, arguments: { mailRefId: randomUUID(), folder: "verification" } }, managedToken)).status).toBe(404);
   expect(await (await post(move, managedToken)).json()).toMatchObject({ result: { changed: true } });
   expect(service.event(reference)).toMatchObject({ folder: "verification", analysis: null, processingStatus: "pending" });
+  const restore = { name: "mail.move", arguments: { mailRefId: reference, folder: "inbox" } };
+  expect((await post(restore)).status).toBe(403);
+  service.setFolder(reference, "account", "user");
+  expect(await (await post(restore, managedToken)).json()).toMatchObject({ result: { changed: false } });
+  expect(service.event(reference)?.folder).toBe("account");
   service.setFolder(reference, "inbox", "user");
   expect(await (await post(move, managedToken)).json()).toMatchObject({ result: { changed: false } });
   expect(service.event(reference)).not.toHaveProperty("folder");
+  service.setJunk(reference, true);
+  expect(await (await post(restore, managedToken)).json()).toMatchObject({ result: { changed: false } });
+  expect(service.event(reference)?.folder).toBe("marketing");
   expect(inbox.messageFlagsAdd).not.toHaveBeenCalled();
 });
+
+it("restores assistant-filed mail to the inbox via managed stdio MCP", async () => {
+  const managedToken = "managed-mail-restore-fixture";
+  await channel!.close();
+  channel = await serveAssistantMailTools({ userDataPath: root, service,
+    authorizeManagedToken: token => token === managedToken ? "local_fixture" : undefined });
+  await build({ entryPoints: [fileURLToPath(new URL("./mcp-entry.ts", import.meta.url))], outfile: bundle, bundle: true, platform: "node", format: "cjs", target: "node22" });
+  const client = new Client({ name: "mail-restore-fixture", version: "1.0.0" });
+  clients.push(client);
+  await client.connect(new StdioClientTransport({ command: process.execPath,
+    args: [bundle, join(root, "private", "assistant", "mail-tools.json"), "--managed"], env: { [ASSISTANT_TOKEN_ENV]: managedToken } }));
+  const move = async (folder: string, changed: boolean) => {
+    const result = await client.callTool({ name: "mail.move", arguments: { mailRefId: reference, folder } });
+    expect(result.content).toEqual([{ type: "text", text: JSON.stringify({ source: MAIL_SOURCE, result: { changed } }) }]);
+    expect(result.isError).toBeUndefined();
+  };
+
+  const analysis = { summary: "Promotion for review", suggestions: ["Review"], questions: [], category: "marketing" as const };
+  service.updateAnalysis(reference, analysis);
+  service.setProcessingStatus(reference, "processed");
+  service.markRead([reference]);
+  const original = (await service.read(reference))!.source;
+  await move("verification", true);
+  const { folder, ...restored } = service.event(reference)!;
+  expect(folder).toBe("verification");
+  expect(service.page({}, true, "inbox").events).toEqual([]);
+
+  const changed = vi.fn();
+  service.on("changed", changed);
+  await move("inbox", true);
+  expect(service.page({}, true, "inbox").events).toEqual([restored]);
+  expect(service.folderCounts(true)).toEqual({});
+  await move("inbox", false);
+  expect(changed.mock.calls).toEqual([[true]]);
+  service.updateAnalysis(reference, { ...analysis, summary: "Updated promotion analysis" });
+  expect(service.page({}, true, "inbox").events).toMatchObject([{ mailRefId: reference, analysis: { category: "marketing" } }]);
+  expect((await service.read(reference))!.source).toEqual(original);
+  expect(inbox.messageFlagsAdd).not.toHaveBeenCalled();
+  expect((await client.listTools()).tools.find(tool => tool.name === "mail.move")).toMatchObject({
+    inputSchema: { properties: { folder: { enum: ["inbox", "marketing", "verification", "account", "other"] } } },
+  });
+}, 20_000);
 
 it("preserves a saved category on legacy analysis writes and replaces it only with a supported category", async () => {
   const name = "mail.update_analysis";

@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import type { AgendaEventInput, AgendaTodoInput, BridgeAgendaSnapshot } from "../../packages/protocol/src/assistant-agenda.js";
 import { AgendaCalendarDataError, AgendaEditError, AgendaStore } from "./agenda-store.js";
 import { CalDavError, readCalDav } from "./caldav.js";
-import type { eventList, freeSlotQuery, todoList } from "./agenda-contract.js";
+import type { agendaRequests, freeSlotQuery } from "./agenda-contract.js";
 import type { z } from "zod";
 
 export interface AgendaCredentials {
@@ -40,8 +40,8 @@ export class AssistantAgendaService extends EventEmitter {
     await Promise.allSettled(jobs.map(job => job.task));
   }
 
-  listTodos(query: z.output<typeof todoList>) { return this.store.listTodos(query); }
-  listEvents(query: z.output<typeof eventList>) { return this.store.listEvents(query); }
+  listTodos(query: z.output<typeof agendaRequests["plugin.assistant-agenda.todo.list"]>) { return this.store.listTodos(query); }
+  listEvents(query: z.output<typeof agendaRequests["plugin.assistant-agenda.event.list"]>) { return this.store.listEvents(query); }
   freeSlots(query: z.output<typeof freeSlotQuery>) { return this.store.freeSlots(query); }
 
   saveTodo(input: { value: AgendaTodoInput; existing?: { id: string; revision: number } | undefined }) {

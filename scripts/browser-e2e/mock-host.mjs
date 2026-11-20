@@ -398,7 +398,7 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
     if (assistantMail) {
       snapshot.host.capabilities.push(...host.nativeApproval.mailCapabilities(), "workspace.upload.v1");
       snapshot.assistantMail = host.nativeApproval.mailSnapshot();
-      snapshot.host.capabilities.push("plugin.assistant-agenda.v1");
+      snapshot.host.capabilities.push("plugin.assistant-agenda.v1", "plugin.assistant-agenda.day.v1");
       snapshot.assistantAgenda = host.nativeApproval.assistantMail.agenda.snapshot();
       if (options.proposals) {
         snapshot.host.capabilities.push(ASSISTANT_PROPOSAL_CAPABILITY, ASSISTANT_MEMORY_PROPOSAL_CAPABILITY);

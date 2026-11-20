@@ -36,7 +36,6 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
   const [view, setView] = useState<"conversation" | "mail" | "agenda" | "settings" | "proposals">("conversation");
   const [proposalReturn, setProposalReturn] = useState<Exclude<typeof view, "proposals">>("conversation");
   const [selectedProposal, setSelectedProposal] = useState<BridgeActionProposal>();
-  const [agendaTab, setAgendaTab] = useState<"todos" | "calendar">("todos");
   const [configuring, setConfiguring] = useState(false);
   const [selectedId, setSelectedId] = useState("");
   const [creating, setCreating] = useState(false);
@@ -233,7 +232,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
       request={mail.request}
     />}
     {displayedView === "settings" && agenda && <AgendaSources />}
-    {displayedView === "agenda" && agenda && <AgendaView tab={agendaTab} onTabChange={setAgendaTab} />}
+    {displayedView === "agenda" && agenda && <AgendaView />}
     {displayedView === "mail" && mail && <>
       {!session && binding?.nativeSessionId && <MailReference sessionId={binding.nativeSessionId} />}
       <div className="assistant-mail-list" aria-label="邮件输入">{mail.cache.cards.map(card => <MailCard key={card.mailRefId} card={card} onDiscuss={() => setView("conversation")} />)}</div>

@@ -1068,15 +1068,18 @@ export async function startBridgeConnection(
       socket.registerPushToken(push.platform, push.token);
     }
   };
-  const reportConnectionTimeout = (issue: MobileConnectionIssue) => {
-    setState((current) => ({
-      ...current,
-      desktopOnline: false,
-      connectionIssue: issue,
-      quickReconnect: current.quickReconnect?.status === "pending"
-        ? { status: "failed", message: issue.message }
-        : current.quickReconnect,
-    }));
+  const reportConnectionTimeout = (fallback: MobileConnectionIssue) => {
+    setState((current) => {
+      const issue = current.connectionIssue?.code === "pairing-invalid" ? current.connectionIssue : fallback;
+      return {
+        ...current,
+        desktopOnline: false,
+        connectionIssue: issue,
+        quickReconnect: current.quickReconnect?.status === "pending"
+          ? { status: "failed", message: issue.message }
+          : current.quickReconnect,
+      };
+    });
   };
   const unreachable: MobileConnectionIssue = {
     code: "unreachable",
@@ -1907,7 +1910,7 @@ export async function forgetBridgeHost(
   cryptoByRoomRef.current.delete(roomId);
   setState((current) => {
     const hosts = current.hosts.filter((host) => host.roomId !== roomId);
-    return active
+    return current.activeHostId === roomId
       ? clearActiveHostState(current, { hosts })
       : { ...current, hosts };
   });

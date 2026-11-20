@@ -310,11 +310,15 @@ it("requires the managed stdio token and rereads the descriptor port after the g
   expect(missing.status).toBe(1);
   expect(missing.stderr).toContain("Managed assistant session token is required");
   const sessionToken = "fixture-session";
+  await channel!.close();
+  channel = await serveAssistantMailTools({ userDataPath: root, service,
+    authorizeManagedToken: token => token === sessionToken ? "local_fixture" : undefined });
+  connection = MailToolConnection.parse(JSON.parse(await readFile(descriptor, "utf8")));
   const client = new Client({ name: "fixture-managed", version: "1.0.0" });
   clients.push(client);
   await client.connect(new StdioClientTransport({ command: process.execPath, args, env: { [ASSISTANT_TOKEN_ENV]: sessionToken } }));
   const request = { name: "mail.list_events", arguments: {} };
-  expect((await client.callTool(request)).isError).toBe(true);
+  expect((await client.callTool(request)).isError).toBeUndefined();
   const onManagedCall = vi.fn();
   // Keep the first listener up until a different port has been allocated.
   const oldChannel = channel!;
@@ -337,6 +341,21 @@ it("requires the managed stdio token and rereads the descriptor port after the g
   expect(marked.isError).toBeUndefined();
   expect(service.event(reference)).toMatchObject({ hostRead: true, processingStatus: "pending" });
 }, 20000);
+
+it.each(["--managed", "--managed-memory"])("exits %s when Bridge closes its gateway while stdio is still open", async mode => {
+  await channel!.close();
+  channel = await serveAssistantMailTools({ userDataPath: root, service,
+    authorizeManagedToken: token => token === "managed-fixture" ? "local-managed" : undefined });
+  await build({ entryPoints: [fileURLToPath(new URL("./mcp-entry.ts", import.meta.url))], outfile: bundle, bundle: true, platform: "node", format: "cjs", target: "node22" });
+  const client = new Client({ name: "shutdown-fixture", version: "1.0.0" });
+  const exited = new Promise<boolean>(resolve => { client.onclose = () => resolve(true); });
+  clients.push(client);
+  await client.connect(new StdioClientTransport({ command: process.execPath,
+    args: [bundle, join(root, "private", "assistant", "mail-tools.json"), mode], env: { [ASSISTANT_TOKEN_ENV]: "managed-fixture" } }));
+  await channel.close(true);
+  channel = undefined;
+  expect(await Promise.race([exited, delay(3_000, false)])).toBe(true);
+}, 20_000);
 
 it("runs two real stdio MCP adapters over one receiver, round-trips all four tools and closes independently", async () => {
   const compilation = await build({ entryPoints: [fileURLToPath(new URL("./mcp-entry.ts", import.meta.url))], outfile: bundle, bundle: true, platform: "node", format: "cjs", target: "node22", metafile: true });

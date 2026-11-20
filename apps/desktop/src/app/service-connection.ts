@@ -25,7 +25,7 @@ interface ServiceAddress { port: number; token: string; protocol: number }
 export async function serveDesktopService(options: {
   addressPath: string;
   controller: ServiceController;
-  shutdown(): void;
+  shutdown(reason: "stop" | "update"): void;
 }): Promise<{ close(): Promise<void>; hasConnectedClients(): boolean }> {
   const resources = new ServiceResources();
   const token = randomBytes(32).toString("hex");
@@ -63,7 +63,7 @@ export async function serveDesktopService(options: {
             if (!Array.isArray(request.args)) throw new Error("Invalid request arguments");
             if (request.method === "shutdown") {
               if (request.args.length) throw new Error("Unexpected shutdown arguments");
-              client.send(JSON.stringify({ kind: "response", id, result: null }), () => options.shutdown());
+              client.send(JSON.stringify({ kind: "response", id, result: null }), () => options.shutdown("stop"));
               return;
             }
             if (!SERVICE_METHODS.includes(request.method as ServiceMethod)) throw new Error("Unknown service method");
@@ -99,7 +99,7 @@ export async function serveDesktopService(options: {
     const event = (value: unknown) => broadcast("event", value);
     const quitForUpdate = () => {
       broadcast("quit-for-update", null);
-      setTimeout(() => options.shutdown(), 100).unref?.();
+      setTimeout(() => options.shutdown("update"), 100).unref?.();
     };
     resources.defer("Controller subscriptions", () => {
       options.controller.off("snapshot", snapshot);

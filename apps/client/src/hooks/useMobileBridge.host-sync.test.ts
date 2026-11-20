@@ -1779,22 +1779,24 @@ describe("mobile history pagination", () => {
     expect(history).toMatchObject({ items: [recent, missing, updatedPlan, newest], nextCursor: "native-older-cursor" });
   });
 
-  it("fills a gap from the latest history page without losing the already loaded prefix or its cursor", async () => {
-    harness.state.histories["shared-session"] = { status: "ready", items: [older, recent], hasMore: true, nextCursor: older.id };
+  it("fills a gap without losing the loaded prefix, its cursor, or proposal results from any page", async () => {
+    harness.state.histories["shared-session"] = { status: "ready", items: [older, recent], hasMore: true,
+      nextCursor: older.id, sessionProposalResults: ["prefix-call"] };
     const between = { ...recent, id: "between", createdAt: 3 };
     const newest = { ...between, id: "latest-reply", role: "assistant", createdAt: 4 };
     const updated = { ...recent, text: "Authoritative version" };
     const first = { ...older, id: "first-uuid", createdAt: 0 };
     harness.respond = async ({ params }) => ({ history: params.cursor === undefined
-      ? { items: [newest], hasMore: true, nextCursor: newest.id }
+      ? { items: [newest], hasMore: true, nextCursor: newest.id, sessionProposalResults: ["newest-call"] }
       : params.cursor === newest.id
-        ? { items: [updated, between], hasMore: true, nextCursor: updated.id }
-        : { items: [first], hasMore: false },
+        ? { items: [updated, between], hasMore: true, nextCursor: updated.id, sessionProposalResults: ["overlap-call"] }
+        : { items: [first], hasMore: false, sessionProposalResults: ["older-call"] },
     });
     const bridge = useMobileBridge();
     await bridge.refreshLatestHistory("shared-session", "native-completion");
     expect(harness.state.histories["shared-session"]).toEqual({
       status: "ready", items: [older, updated, between, newest], hasMore: true, nextCursor: older.id, latestRead: { sequence: 1, completedTurnId: "native-completion" },
+      sessionProposalResults: expect.arrayContaining(["prefix-call", "newest-call", "overlap-call"]),
     });
     await bridge.loadOlderHistory("shared-session");
     expect(harness.requests.map(({ request: { method, params } }) => [method, params.cursor])).toEqual([
@@ -1802,6 +1804,24 @@ describe("mobile history pagination", () => {
     ]);
     expect(harness.state.histories["shared-session"]).toEqual({
       status: "ready", items: [first, older, updated, between, newest], hasMore: false, latestRead: { sequence: 1, completedTurnId: "native-completion" },
+      sessionProposalResults: expect.arrayContaining(["prefix-call", "newest-call", "overlap-call", "older-call"]),
+    });
+  });
+
+  it("keeps proposal confirmations with the retained history when a manual reopen fails", async () => {
+    const history = harness.state.histories[recent.sessionId];
+    history.sessionProposalResults = ["retained-call"];
+    const response = deferred<Record<string, unknown>>();
+    harness.respond = () => response.promise;
+    const opening = useMobileBridge().openSession(recent.sessionId);
+    await vi.waitFor(() => expect(harness.requests).toHaveLength(1));
+    expect.soft(harness.state.histories[recent.sessionId]).toMatchObject({
+      status: "loading", items: [recent], sessionProposalResults: ["retained-call"],
+    });
+    response.reject(new Error("History unavailable"));
+    await opening;
+    expect(harness.state.histories[recent.sessionId]).toMatchObject({
+      status: "error", items: [recent], sessionProposalResults: ["retained-call"],
     });
   });
 

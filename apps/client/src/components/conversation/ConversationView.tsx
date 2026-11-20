@@ -81,6 +81,7 @@ import { useConversationDrafts } from "./ConversationDraftsProvider.js";
 type ConversationDraftsValue = ReturnType<typeof useConversationDrafts>;
 import { ConversationMessageItem } from "./ConversationMessageItem.js";
 import { ConversationToolGroup } from "./ConversationToolGroup.js";
+import { SessionProposalCard } from "./SessionProposalCard.js";
 import { ForkChainBar } from "./ForkChainBar.js";
 import { NativePromptCard } from "./NativePromptCard.js";
 import {
@@ -483,10 +484,16 @@ export function ConversationView({
       toolGroupKeysRef.current = { sessionId: session.sessionId, byToolId: new Map() };
     }
     const { byToolId } = toolGroupKeysRef.current;
+    const groups = displayNodes.filter(node => node.kind === "tool-group");
+    // When a proposal splits a group, reserve each new group's own key before reusing cached ones.
+    const currentIds = new Set(groups.map(node => node.id));
+    const claimed = new Set<string>();
     const keys = new Map<string, string>();
-    for (const node of displayNodes) {
-      if (node.kind !== "tool-group") continue;
-      const stableKey = node.tools.map((tool) => byToolId.get(tool.id)).find(Boolean) ?? node.id;
+    for (const node of groups) {
+      const stableKey = node.tools.map(tool => byToolId.get(tool.id)).find(key => (
+        key && !claimed.has(key) && (key === node.id || !currentIds.has(key))
+      )) ?? node.id;
+      claimed.add(stableKey);
       for (const tool of node.tools) byToolId.set(tool.id, stableKey);
       keys.set(node.id, stableKey);
     }
@@ -690,7 +697,10 @@ export function ConversationView({
     streamVisible: !isAssistant || (visible && !transcriptHidden),
     history,
     openedEvidenceIds,
-    inlineProposalLayout: JSON.stringify([...(inlineProposals ?? [])].map(([itemId, { revision, state }]) => [itemId, revision, state])),
+    inlineProposalLayout: JSON.stringify([
+      [...(inlineProposals ?? [])].map(([itemId, { revision, state }]) => [itemId, revision, state]),
+      items.filter(item => item.sessionProposalConfirmed).map(item => item.id),
+    ]),
     timelineStreamKeys,
     streamKeys,
     onLoadOlderHistory,
@@ -924,6 +934,12 @@ export function ConversationView({
           );
         }
         const item = node.item;
+        if (item.sessionProposalConfirmed && item.sessionProposal && item.toolUseId) {
+          return <SessionProposalCard key={item.id} itemId={item.id} proposal={item.sessionProposal}
+            {...(hostId ? { hostId } : {})} sessionId={session.sessionId}
+            toolUseId={item.toolUseId} toolName={item.toolName || "工具"} summary={item.text}
+            supportsToolDetail={Boolean(snapshot?.host.capabilities.includes("transcript.toolDetail.v1"))} />;
+        }
         if (item.sessionNotice) {
           return (
             <SessionNoticeCard

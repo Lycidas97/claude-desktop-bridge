@@ -989,6 +989,8 @@ export interface BridgeHistoryItem {
   interactivePrompt?: BridgeInteractivePrompt;
   taskPlan?: BridgeTaskPlan;
   proposalReceipt?: ProposalRevisionRef & { toolUseId: string };
+  /** Read-only transcript metadata; never evidence that the proposal is still pending. */
+  sessionProposal?: { title: string; background?: string };
 }
 
 export interface BridgeFileChangeSummary {
@@ -1002,6 +1004,8 @@ export interface BridgeFileChangeSummary {
 export interface BridgeHistoryPage {
   sessionId: string;
   items: BridgeHistoryItem[];
+  /** Successful proposal receipts on this page. The matching calls may be on older pages. */
+  sessionProposalResults?: string[];
   nextCursor?: string;
   hasMore: boolean;
 }

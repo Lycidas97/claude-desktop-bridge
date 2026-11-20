@@ -78,6 +78,7 @@ export async function openBridgeSession(
           items: current.histories[sessionId]?.items ?? [],
           hasMore: current.histories[sessionId]?.hasMore ?? false,
           ...(current.histories[sessionId]?.latestRead ? { latestRead: current.histories[sessionId]!.latestRead } : {}),
+          ...(current.histories[sessionId]?.sessionProposalResults ? { sessionProposalResults: current.histories[sessionId]!.sessionProposalResults } : {}),
           ...(current.histories[sessionId]?.nextCursor
             ? { nextCursor: current.histories[sessionId].nextCursor }
             : {}),
@@ -146,6 +147,7 @@ export async function openBridgeSession(
             items: current.histories[sessionId]?.items ?? [],
             hasMore: current.histories[sessionId]?.hasMore ?? false,
             ...(current.histories[sessionId]?.latestRead ? { latestRead: current.histories[sessionId]!.latestRead } : {}),
+          ...(current.histories[sessionId]?.sessionProposalResults ? { sessionProposalResults: current.histories[sessionId]!.sessionProposalResults } : {}),
             ...(current.histories[sessionId]?.nextCursor ? { nextCursor: current.histories[sessionId]!.nextCursor } : {}),
             error: error instanceof Error ? error.message : "会话打开失败",
           },
@@ -380,6 +382,7 @@ export async function refreshLatestBridgeHistory(
     // Read through a gap rather than showing non-adjacent pages as one timeline.
   } while (cursor && existingIds.size > 0 && !page.items.some(item => isTranscriptMessage(item) && existingIds.has(item.id)));
   const newestById = new Map(pages.reverse().flatMap(({ items }) => items.map(item => [item.id, item] as const)));
+  const refreshedProposalResults = pages.flatMap(page => page.sessionProposalResults ?? []);
   const oldest = page.items.find(isTranscriptMessage)?.id;
   setState((current) => {
     if (!isCurrent()) return current;
@@ -389,6 +392,9 @@ export async function refreshLatestBridgeHistory(
     const overlap = page.hasMore ? existing?.items.findIndex(item => item.id === oldest) ?? -1 : -1;
     const prefix = overlap >= 0 ? existing!.items.slice(0, overlap).filter(item => !newestById.has(item.id)) : [];
     const history = overlap >= 0 ? { ...existing! } : projectHistoryPage(page);
+    if (refreshedProposalResults.length) {
+      history.sessionProposalResults = [...new Set([...(history.sessionProposalResults ?? []), ...refreshedProposalResults])];
+    }
     if (history.status === "error") {
       history.status = "ready";
       delete history.error;
@@ -442,7 +448,7 @@ export async function loadOlderBridgeHistory(
         histories: {
           ...stateValue.histories,
           [sessionId]: {
-            ...projectHistoryPage(page, existing.items),
+            ...projectHistoryPage(page, existing),
             ...(existing.latestRead ? { latestRead: existing.latestRead } : {}),
           },
         },

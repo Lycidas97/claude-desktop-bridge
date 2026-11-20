@@ -694,6 +694,79 @@ export async function verifyNativeBoundaries(page, host, steps, directory) {
   }
   steps.push("successful Native rewind preserves prefill and closes confirmation when subsequent getSession or getTranscriptPage disconnects; each mutation executes once and discarded history stays absent after reload");
 
+  const proposalTool = "mcp__ccd_session__start_session";
+  const proposalTitle = "#457 fork 日历告警";
+  const proposalBackground = "检查旧版日历告警在手机上为什么没有显示。先用隔离夹具重放旧版日程和告警，再核对当前版本的快照。只检查显示链路，不修改真实日程或调整通知设置。完成后记录复现步骤、触发条件和验证结果。";
+  const proposalCall = tool("calendar-proposal", {
+    title: proposalTitle, background: proposalBackground, context: "fresh", prompt: "先复现旧版日历告警，再核对手机上的显示。", initiation: "own_initiative",
+  }, proposalTool);
+  const proposalTools = stream.locator(".conversation-tool-group").filter({ has: page.locator(".conversation-tool-row").filter({ hasText: proposalTool }) });
+  for (const message of [tool("calendar-a-read", { file_path: "/fixture/calendar.ts" }, "Read"), proposalCall]) {
+    for (const event of await host.nativeApproval.message(message)) await host.emit(event.type, event.data, { itemId: event.itemId });
+  }
+  await proposalTools.locator("summary").click();
+  for (const event of await host.nativeApproval.message(tool("calendar-z-grep", { pattern: "fixture-calendar" }, "Grep"))) {
+    await host.emit(event.type, event.data, { itemId: event.itemId });
+  }
+  await proposalTools.locator("summary").getByText(/3 个工具/).waitFor();
+  assert.equal(await proposalTools.getAttribute("open"), "", "Appending a tool preserves the expanded group");
+  for (let index = 0; index < 10; index++) {
+    for (const event of await host.nativeApproval.message({ type: "assistant", uuid: `proposal-scroll-${index}`, timestamp: Date.now(), message: {
+      content: [{ type: "text", text: `已经阅读的日历记录 ${index}：保留标题、日期和旧版告警触发条件以便复核。\n\n同时对照手机里显示的日期与时间，确认告警与对应日程出现在同一天。` }],
+    } })) await host.emit(event.type, event.data, { itemId: event.itemId });
+  }
+  const readingRow = stream.locator('[data-stream-key="proposal-scroll-1"]');
+  await stream.locator('[data-stream-key="proposal-scroll-9"]').waitFor();
+  const { readingOffset, remainingScroll } = await readingRow.evaluate(async (row) => {
+    await Promise.all(row.getAnimations().map(animation => animation.finished));
+    const container = row.parentElement;
+    container.scrollTop += row.getBoundingClientRect().top - container.getBoundingClientRect().top - 10;
+    container.dispatchEvent(new Event("scroll"));
+    return { readingOffset: Math.round(row.getBoundingClientRect().top - container.getBoundingClientRect().top),
+      remainingScroll: container.scrollHeight - container.scrollTop - container.clientHeight };
+  });
+  assert.ok(remainingScroll > 4, "The reader is not following the bottom before the proposal result");
+  await eventually(() => toolRows.filter({ hasText: proposalTool }).count(), 1, "In-flight proposal calls are still ordinary tools");
+  for (const event of await host.nativeApproval.message({
+    type: "user", uuid: "calendar-proposal-result", message: { content: [{ type: "tool_result", tool_use_id: "calendar-proposal", content: [{
+      type: "text", text: `Proposed "${proposalTitle}" (task_id: task_d6c18845). The user sees a card and nothing runs until they start it — with a click, or by telling you (then call start_session with proposal_id task_d6c18845 and nothing else).`,
+    }] }] },
+  })) await host.emit(event.type, event.data, { itemId: event.itemId });
+  const proposal = stream.getByRole("region", { name: "会话提案", exact: true });
+  await proposal.getByText(proposalTitle, { exact: true }).waitFor({ timeout: 5_000 });
+  await proposal.getByText(proposalBackground, { exact: true }).waitFor();
+  assert.equal(await readingRow.evaluate(row => Math.round(row.getBoundingClientRect().top - row.parentElement.getBoundingClientRect().top)), readingOffset, "The reader stays at the same offset when a tool above becomes a proposal card");
+  const beforeProposal = stream.locator('[data-stream-key="tool-group:tool:calendar-a-read"]');
+  const afterProposal = stream.locator('[data-stream-key="tool-group:tool:calendar-z-grep"]');
+  assert.equal(await beforeProposal.getAttribute("open"), "", "The original left group stays open after the split");
+  assert.equal(await afterProposal.getAttribute("open"), null, "The new right group is independent");
+  assert.equal(await toolRows.filter({ hasText: proposalTool }).count(), 0, "A proposal card replaces rather than duplicates its tool row");
+  assert.equal(await proposal.getByRole("button", { name: /^(启动|撤回)/ }).count(), 0);
+  const background = proposal.locator(".session-proposal-background > summary");
+  const visibleLines = () => background.locator("span").evaluate(span => Math.round(span.clientHeight / parseFloat(getComputedStyle(span).lineHeight)));
+  assert.equal(await visibleLines(), 3, "Long proposal backgrounds start as a three-line preview");
+  await proposal.screenshot({ path: resolve(directory, "native-session-proposal.png"), animations: "disabled" });
+  await background.click();
+  assert.ok(await visibleLines() > 3, "Tapping the background reveals the full text");
+  await proposal.screenshot({ path: resolve(directory, "native-session-proposal-expanded.png"), animations: "disabled" });
+  await background.press("Enter");
+  assert.equal(await visibleLines(), 3, "Keyboard activation collapses the background again");
+  const proposalPage = await host.nativeApproval.history();
+  host.history.splice(0, host.history.length, ...proposalPage.items);
+  const mockHistoryPage = host.historyPage;
+  host.historyPage = (cursor, limit) => ({ ...mockHistoryPage(cursor, limit), ...(!cursor ? { sessionProposalResults: proposalPage.sessionProposalResults } : {}) });
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await openMobileSession(page);
+  await proposal.getByText(proposalTitle, { exact: true }).waitFor();
+  assert.equal(await proposal.count(), 1, "Native history and live replay retain a single proposal card");
+  await proposal.getByRole("button", { name: "查看工具详情", exact: true }).click();
+  const proposalDetail = page.getByRole("dialog", { name: proposalTool, exact: true });
+  await proposalDetail.getByText(/task_d6c18845/).waitFor();
+  await proposalDetail.getByRole("button", { name: "关闭工具详情", exact: true }).click();
+  await proposalDetail.waitFor({ state: "hidden" });
+  host.historyPage = mockHistoryPage;
+  steps.push("A successful session proposal splits the original tool group without duplicate keys or moving the reader, survives history reload, and retains the original tool detail on demand");
+
   await openMobileDrawer(page);
   await page.locator(".mobile-drawer-dock-nav").getByRole("button", { name: "设置", exact: true }).click();
   await page.getByRole("heading", { name: "远端桌面状态", exact: true }).waitFor();

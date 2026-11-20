@@ -170,4 +170,26 @@ export async function verifyAssistantReplies(page, host, steps, directory, serve
   await host.emit("runtime.updated", { replaceSession: true, session: host.session });
   await stream.getByText(afterOpenFailure.text, { exact: true }).waitFor();
   steps.push("A later completion recovers missing history after a failed manual open with cached messages");
+
+  const beforeOverlappingReads = latestReads();
+  const beforeLeaving = Promise.withResolvers();
+  host.historyGate = beforeLeaving.promise;
+  const firstReply = { ...reply, id: "assistant-before-leaving", text: "切走前的助理回复", createdAt: Date.now() };
+  host.history.push(firstReply);
+  host.session.lastCompletedTurnId = "assistant-before-leaving-result";
+  await host.emit("runtime.updated", { replaceSession: true, session: host.session });
+  await eventually(latestReads, beforeOverlappingReads + 1, "The first catch-up starts before leaving");
+
+  const afterReturning = Promise.withResolvers();
+  host.historyGate = afterReturning.promise;
+  await page.locator(".assistant-page").getByRole("button", { name: "返回", exact: true }).click();
+  await page.locator(".drawer-assistant-capsule").click();
+  await eventually(latestReads, beforeOverlappingReads + 2, "Reopening the view starts a second catch-up");
+  beforeLeaving.resolve();
+  await stream.getByText(firstReply.text, { exact: true }).waitFor();
+  const secondReply = { ...reply, id: "assistant-before-return", text: "切回后补读的助理回复", createdAt: Date.now() };
+  host.history.push(secondReply);
+  afterReturning.resolve();
+  await stream.getByText(secondReply.text, { exact: true }).waitFor();
+  steps.push("Returning during a pending catch-up keeps both replies when the reads finish in order");
 }

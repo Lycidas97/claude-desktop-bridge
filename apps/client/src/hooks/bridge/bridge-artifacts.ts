@@ -49,8 +49,10 @@ export interface BridgeArtifactsContext {
   sendRequest: BridgeSendRequest;
 }
 
+type LatestHistoryReadContext = BridgeArtifactsContext & { historyReadSequenceRef: MutableRefObject<number> };
+
 export async function openBridgeSession(
-  ctx: BridgeArtifactsContext & {
+  ctx: LatestHistoryReadContext & {
     openedSessionRef: MutableRefObject<string | undefined>;
     openingSessionsRef: MutableRefObject<Map<string, { socket: BridgeTransport | undefined; task: Promise<void> }>>;
   },
@@ -64,6 +66,7 @@ export async function openBridgeSession(
   const key = `${crypto?.identity.roomId}:${sessionId}`;
   const inflight = openingSessionsRef.current.get(key);
   if (inflight && inflight.socket === socket) return inflight.task;
+  const sequence = ++ctx.historyReadSequenceRef.current;
   const readCompletedTurnId = stateRef.current.snapshot?.sessions.find((session) => session.sessionId === sessionId)?.lastCompletedTurnId;
   const task = (async () => {
     setState((current) => ({
@@ -109,7 +112,7 @@ export async function openBridgeSession(
           ? { ...result.session, lastCompletedTurnId: liveCompletion }
           : result.session;
         return applySessionResultToState(current, session, { history: {
-          sessionId, page: result.history!, latestRead: { completedTurnId: readCompletedTurnId },
+          sessionId, page: result.history!, latestRead: { sequence, completedTurnId: readCompletedTurnId },
         } });
       });
       const eventsAtRequestStart = stateRef.current.events;
@@ -357,15 +360,15 @@ function isTranscriptMessage(item: BridgeHistoryPage["items"][number]): boolean 
 }
 
 export async function refreshLatestBridgeHistory(
-  { setState, stateRef, cryptoRef, socketRef, sendRequest }: BridgeArtifactsContext,
+  { setState, stateRef, cryptoRef, socketRef, sendRequest, historyReadSequenceRef }: LatestHistoryReadContext,
   sessionId: string,
   readCompletedTurnId: string | undefined,
 ): Promise<void> {
   const crypto = cryptoRef.current;
   const socket = socketRef.current;
   const isCurrent = () => cryptoRef.current === crypto && socketRef.current === socket;
-  const startingHistory = stateRef.current.histories[sessionId];
-  const existingIds = new Set(startingHistory?.items.filter(isTranscriptMessage).map(item => item.id));
+  const sequence = ++historyReadSequenceRef.current;
+  const existingIds = new Set(stateRef.current.histories[sessionId]?.items.filter(isTranscriptMessage).map(item => item.id));
   const pages: BridgeHistoryPage[] = [];
   let cursor: string | undefined;
   let page: BridgeHistoryPage;
@@ -381,8 +384,8 @@ export async function refreshLatestBridgeHistory(
   setState((current) => {
     if (!isCurrent()) return current;
     const existing = current.histories[sessionId];
-    // A newer latest-page read (including a manual open) already replaced this window.
-    if (existing?.latestRead !== startingHistory?.latestRead) return current;
+    // Discard this response only if a later-started read has already committed.
+    if (existing?.latestRead && existing.latestRead.sequence > sequence) return current;
     const overlap = page.hasMore ? existing?.items.findIndex(item => item.id === oldest) ?? -1 : -1;
     const prefix = overlap >= 0 ? existing!.items.slice(0, overlap).filter(item => !newestById.has(item.id)) : [];
     const history = overlap >= 0 ? { ...existing! } : projectHistoryPage(page);
@@ -397,7 +400,7 @@ export async function refreshLatestBridgeHistory(
         [sessionId]: {
           ...history,
           items: [...prefix, ...newestById.values()],
-          latestRead: { completedTurnId: readCompletedTurnId },
+          latestRead: { sequence, completedTurnId: readCompletedTurnId },
         },
       },
     };

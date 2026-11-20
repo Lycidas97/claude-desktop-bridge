@@ -89,7 +89,7 @@ export interface SessionHistoryState {
   nextCursor?: string;
   hasMore: boolean;
   error?: string;
-  latestRead?: { completedTurnId: string | undefined };
+  latestRead?: { sequence: number; completedTurnId: string | undefined };
 }
 
 export interface SessionEvidenceState {

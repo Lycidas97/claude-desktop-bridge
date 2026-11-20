@@ -261,7 +261,7 @@ export function useMobileBridge() {
 
   const backToHosts = useCallback(() => backToBridgeHosts(transportRefs), []);
 
-  const artifactCtx = { setState, stateRef, cryptoRef, socketRef, sendRequest };
+  const artifactCtx = { setState, stateRef, cryptoRef, socketRef, sendRequest, historyReadSequenceRef: transportRefs.historyReadSequenceRef };
 
   const openSession = useCallback(
     (sessionId: string) => openBridgeSession({ ...artifactCtx, openedSessionRef, openingSessionsRef }, sessionId),

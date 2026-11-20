@@ -1667,7 +1667,7 @@ describe("mobile history pagination", () => {
       ["evidence.list", expect.anything()],
       ["session.history", expect.objectContaining({ sessionId: "shared-session", cursor: "recent-uuid", limit: 50 })],
     ]);
-    expect(harness.state.histories["shared-session"]).toEqual({ status: "ready", items: [older, recent], hasMore: false, latestRead: { completedTurnId: undefined } });
+    expect(harness.state.histories["shared-session"]).toEqual({ status: "ready", items: [older, recent], hasMore: false, latestRead: { sequence: 1, completedTurnId: undefined } });
     expect(harness.addOutbox).not.toHaveBeenCalled();
     expect(harness.state.localTurns).toEqual([]);
   });
@@ -1705,6 +1705,36 @@ describe("mobile history pagination", () => {
     expect(harness.state.histories[recent.sessionId].items).toEqual([recent, reply]);
   });
 
+  it.each(["in order", "newest first"])("keeps both replies when overlapping catch-up reads finish %s", async order => {
+    const firstResponse = deferred<Record<string, unknown>>();
+    const secondResponse = deferred<Record<string, unknown>>();
+    const firstReply = { ...recent, id: "reply-while-visible", role: "assistant", createdAt: 3 };
+    const secondReply = { ...firstReply, id: "reply-while-away", createdAt: 4 };
+    harness.respond = vi.fn().mockReturnValueOnce(firstResponse.promise).mockReturnValueOnce(secondResponse.promise);
+    const bridge = useMobileBridge();
+    const firstRead = bridge.refreshLatestHistory(recent.sessionId, "first-completion");
+    await vi.waitFor(() => expect(harness.requests).toHaveLength(1));
+    const secondRead = bridge.refreshLatestHistory(recent.sessionId, "second-completion");
+    await vi.waitFor(() => expect(harness.requests).toHaveLength(2));
+
+    const firstPage = { history: { items: [recent, firstReply], hasMore: false } };
+    const secondPage = { history: { items: [recent, firstReply, secondReply], hasMore: false } };
+    if (order === "in order") {
+      firstResponse.resolve(firstPage);
+      await firstRead;
+      expect(harness.state.histories[recent.sessionId].items).toEqual([recent, firstReply]);
+      secondResponse.resolve(secondPage);
+    } else {
+      secondResponse.resolve(secondPage);
+      await secondRead;
+      firstResponse.resolve(firstPage);
+    }
+    await Promise.all([firstRead, secondRead]);
+    expect(harness.state.histories[recent.sessionId]).toMatchObject({
+      items: [recent, firstReply, secondReply], latestRead: { sequence: 2, completedTurnId: "second-completion" },
+    });
+  });
+
   it("reads the next page when only a projected task plan overlaps", async () => {
     const plan = { ...older, id: "plan:shared", role: "assistant", taskPlan: { id: "shared", updatedAt: 1 } };
     const updatedPlan = { ...plan, taskPlan: { ...plan.taskPlan, updatedAt: 4 } };
@@ -1736,14 +1766,14 @@ describe("mobile history pagination", () => {
     const bridge = useMobileBridge();
     await bridge.refreshLatestHistory("shared-session", "native-completion");
     expect(harness.state.histories["shared-session"]).toEqual({
-      status: "ready", items: [older, updated, between, newest], hasMore: true, nextCursor: older.id, latestRead: { completedTurnId: "native-completion" },
+      status: "ready", items: [older, updated, between, newest], hasMore: true, nextCursor: older.id, latestRead: { sequence: 1, completedTurnId: "native-completion" },
     });
     await bridge.loadOlderHistory("shared-session");
     expect(harness.requests.map(({ request: { method, params } }) => [method, params.cursor])).toEqual([
       ["session.history", undefined], ["session.history", newest.id], ["session.history", older.id],
     ]);
     expect(harness.state.histories["shared-session"]).toEqual({
-      status: "ready", items: [first, older, updated, between, newest], hasMore: false, latestRead: { completedTurnId: "native-completion" },
+      status: "ready", items: [first, older, updated, between, newest], hasMore: false, latestRead: { sequence: 1, completedTurnId: "native-completion" },
     });
   });
 

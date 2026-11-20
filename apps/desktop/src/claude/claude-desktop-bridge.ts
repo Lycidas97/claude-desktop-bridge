@@ -992,33 +992,10 @@ export class ClaudeDesktopBridge extends EventEmitter {
       (receipt.messageId === itemId || receipt.previousMessageIds?.includes(itemId)));
   }
 
-  private async nativeSentFiles(sessionId: string, messages: unknown[], live = false) {
+  private async nativeSentFileReceipts(sessionId: string, messages: unknown[]): Promise<BridgeHistoryPage["sessionFileReceipts"]> {
     const receipts = messages.flatMap(message => nativeSentFileReceipt(message) ?? []);
     if (!receipts.length) return;
     const cwd = this.executionCwd(sessionId)!;
-    const names = new Map(receipts.map(({ toolUseId }) => [toolUseId,
-      live ? this.options.eventLog.latestItem(sessionId, "tool.started", toolUseId)?.data.toolName : undefined]));
-    const findCalls = (source: unknown[]) => {
-      for (const raw of source) {
-        const message = record(raw);
-        if (message.type !== "assistant" || message.isSidechain === true || message.parent_tool_use_id) continue;
-        const { content } = record(message.message);
-        if (!Array.isArray(content)) continue;
-        for (const rawBlock of content) {
-          const block = record(rawBlock);
-          if (block.type === "tool_use" && typeof block.id === "string" && names.has(block.id)) names.set(block.id, block.name);
-        }
-      }
-    };
-    findCalls(messages);
-    if ([...names.values()].some(name => name === undefined)) {
-      const result = await this.inspector.call("getTranscript", [this.desktopId(sessionId)]);
-      const transcript = Array.isArray(result) ? result : record(result).messages;
-      if (!Array.isArray(transcript)) throw new NativeCallError("Desktop returned an invalid transcript");
-      findCalls(transcript);
-    }
-    const sends = receipts.filter(({ toolUseId }) => names.get(toolUseId) === "SendUserFile");
-    if (!sends.length) return;
     const unavailable = (error: NodeJS.ErrnoException) => {
       if (["ENOENT", "ENOTDIR", "EACCES", "EPERM", "ELOOP"].includes(error.code ?? "")) return undefined;
       throw error;
@@ -1030,13 +1007,15 @@ export class ClaudeDesktopBridge extends EventEmitter {
       const within = relative(directory, path);
       return within && within !== ".." && !within.startsWith(`..${sep}`) && !isAbsolute(within);
     };
-    return new Map(await Promise.all(sends.map(async ({ toolUseId, paths }) => [toolUseId, await Promise.all(paths.map(async path => {
+    return Object.fromEntries(await Promise.all(receipts.map(async ({ toolUseId, files }) => [toolUseId, await Promise.all(files.map(async ({ path, local }) => {
+      const name = basename(path) || path;
+      if (!local) return { name };
       const candidate = resolve(cwd, path);
       const source = root && (inside(cwd, candidate) || inside(root, candidate)) ? await realpath(candidate).catch(unavailable) : undefined;
       // Do not send a path that the Markdown link transport would reinterpret.
       const check = source && root && projectRoot && inside(root, source) && source === sessionFileLinkPath(source)
         ? await workspaceTransferMetadata(projectRoot, source).catch(unavailable) : undefined;
-      return { name: basename(path) || path, ...(source && check && "metadata" in check ? { path: source } : {}) };
+      return { name, ...(source && check && "metadata" in check ? { path: source } : {}) };
     }))] as const)));
   }
 
@@ -1054,7 +1033,8 @@ export class ClaudeDesktopBridge extends EventEmitter {
       const projection: NativeMessageProjection = { ...(liveProjection.questionAnswers ? { questionAnswers: liveProjection.questionAnswers } : {}) };
       nativeHistoryItems(sessionId, earlierPlanMessages, projection);
       const sessionProposalResults: string[] = [];
-      const items = nativeHistoryItems(sessionId, page.messages, projection, sessionProposalResults, await this.nativeSentFiles(sessionId, page.messages));
+      const items = nativeHistoryItems(sessionId, page.messages, projection, sessionProposalResults);
+      const sessionFileReceipts = await this.nativeSentFileReceipts(sessionId, page.messages);
       const localSubagents = await this.enrichSubagentItems(sessionId, items);
       if (projection.questions?.size || projection.questionAnswers?.size) {
         for (const [toolUseId, question] of projection.questions ?? []) (liveProjection.questions ??= new Map()).set(toolUseId, question);
@@ -1125,6 +1105,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
       }
       diag("history.messages", { messages: items.length });
       return { sessionId, items, hasMore, ...(nextCursor ? { nextCursor } : {}),
+        ...(sessionFileReceipts ? { sessionFileReceipts } : {}),
         ...(sessionProposalResults.length ? { sessionProposalResults } : {}) };
     } finally { read(); }
   }
@@ -1936,18 +1917,18 @@ export class ClaudeDesktopBridge extends EventEmitter {
         if (item.role === "assistant") await this.options.eventLog.flushDeltas(sessionId);
         await this.record(nativeItemEventDraft(sessionId, item, receipt));
       }
-      const sentFilesByTool = await this.nativeSentFiles(sessionId, [event.message], true);
+      const sessionFileReceipts = await this.nativeSentFileReceipts(sessionId, [event.message]);
       if (Array.isArray(body.content)) for (const rawBlock of body.content) {
         const block = record(rawBlock);
         if (block.type === "tool_result" && typeof block.tool_use_id === "string") {
-          const sentFiles = sentFilesByTool?.get(block.tool_use_id);
           const tool = this.tools.get(block.tool_use_id);
           this.tools.delete(block.tool_use_id);
           const started = this.options.eventLog.latestItem(sessionId, "tool.started", block.tool_use_id);
-          const rawToolName = sentFiles ? "SendUserFile" : tool?.toolName ?? started?.data.toolName;
+          const rawToolName = tool?.toolName ?? started?.data.toolName;
           const toolName = typeof rawToolName === "string" && rawToolName ? rawToolName : undefined;
+          const sentFiles = !toolName || toolName === "SendUserFile" ? sessionFileReceipts?.[block.tool_use_id] : undefined;
           const proposalResult = (!toolName || toolName === "mcp__ccd_session__start_session") && proposalResults.includes(block.tool_use_id);
-          if ((toolName || proposalResult) && toolName !== "mcp__ccd_turn__update_plan" && toolName !== "mcp__ccd_turn__wrap_up") {
+          if ((toolName || proposalResult || sentFiles) && toolName !== "mcp__ccd_turn__update_plan" && toolName !== "mcp__ccd_turn__wrap_up") {
             await this.record({
               sessionId,
               itemId: block.tool_use_id,

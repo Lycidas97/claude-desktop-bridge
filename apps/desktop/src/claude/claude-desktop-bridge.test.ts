@@ -2722,6 +2722,7 @@ describe("Claude native relay", () => {
       await Promise.all([
         writeFile(inside, "worktree"), writeFile(outside, "outside"), writeFile(join(cwd, "报告.md"), "namesake"),
         writeFile(join(harnessCwd, ".env.example"), "EXAMPLE=fixture"), writeFile(large, ""),
+        writeFile(join(harnessCwd, "同名上传.pdf"), "different local file"),
       ]);
       await truncate(large, ARTIFACT_MAX_BYTES + 1);
       Object.assign(f.native.sessions[0]!, { cwd, harnessCwd });
@@ -2735,17 +2736,19 @@ describe("Claude native relay", () => {
         { path: join(cwd, "报告.md"), size: 8, isImage: false },
         { path: ".env.example", size: 15, isImage: false },
         { path: "large.apk", size: 20, isImage: false }, // Grew after being shared; the current size governs transport.
+        { path: "同名上传.pdf", size: 13, isImage: false, file_uuid: "uploaded-file-id" },
+        { path: "project-only.pdf", size: 32, isImage: false, project_path: "项目文件夹/project-only.pdf" },
         { path: "upload-failed.md", size: 100, isImage: false, upload_error: "not delivered" },
       ] } };
       const expected = [{ name: "报告.md", path: await realpath(inside) }, { name: "工作区外.md" }, { name: "报告.md" },
-        { name: ".env.example" }, { name: "large.apk" }];
-      f.native.page.messages = [call, result];
+        { name: ".env.example" }, { name: "large.apk" }, { name: "同名上传.pdf" }, { name: "project-only.pdf" }];
       f.native.pages.set("", { messages: [result], hasMore: true });
       f.native.pages.set(result.uuid, { messages: [call], hasMore: false });
       const latest = await f.bridge.history("local-native", undefined, 1);
-      expect(latest.items).toMatchObject([{ id: call.uuid, state: "completed" }]);
-      expect(latest.items[0]?.sentFiles).toEqual(expected);
-      expect((await f.bridge.history("local-native", latest.nextCursor, 1)).items[0]?.sentFiles).toBeUndefined();
+      expect(latest).toMatchObject({ items: [], nextCursor: result.uuid, sessionFileReceipts: { [call.uuid]: expected } });
+      const older = await f.bridge.history("local-native", latest.nextCursor, 1);
+      expect(older.items).toMatchObject([{ id: call.uuid, createdAt: 10, toolName: "SendUserFile" }]);
+      expect(older.sessionFileReceipts).toBeUndefined();
       await f.message(call);
       const start = f.eventLog.latestItem("local-native", "tool.started", call.uuid);
       expect(start?.data.sentFiles).toBeUndefined();
@@ -2754,8 +2757,27 @@ describe("Claude native relay", () => {
       expect(f.eventLog.latestItem("local-native", "tool.completed", call.uuid)?.data.sentFiles).toEqual(expected);
       expect(f.native.calls.slice(reads).some(({ method }) => method === "getTranscript")).toBe(false);
       const unrelated = planMessage("other-call", {}, 30, "Read");
-      f.native.pages.set("", { messages: [unrelated, { ...result, message: { content: [{ ...result.message.content[0], tool_use_id: unrelated.uuid }] } }], hasMore: false });
-      expect((await f.bridge.history("local-native")).items[0]?.sentFiles).toBeUndefined();
+      await f.message(unrelated);
+      await f.message({ ...result, message: { content: [{ ...result.message.content[0], tool_use_id: unrelated.uuid }] } });
+      expect(f.eventLog.latestItem("local-native", "tool.completed", unrelated.uuid)?.data.sentFiles).toBeUndefined();
+    } finally { await f.close(); }
+  });
+
+  it("returns ordinary history without reading the full transcript for a split file receipt", async () => {
+    const f = await fixture();
+    try {
+      const recent = { type: "assistant", uuid: "plain-message", timestamp: 20, message: { content: [{ type: "text", text: "Ordinary history" }] } };
+      const receipt = { type: "user", uuid: "send-file-receipt", timestamp: 30, message: { content: [{
+        type: "tool_result", tool_use_id: "older-send-file", content: "File sent",
+      }] }, tool_use_result: { attachments: [{ path: "uploaded.txt", size: 1, isImage: false, file_uuid: "upload-id" }] } };
+      f.native.pages.set("", { messages: [recent, receipt], hasMore: true });
+      const original = f.native.call.bind(f.native);
+      vi.spyOn(f.native, "call").mockImplementation((method, args) => method === "getTranscript"
+        ? Promise.reject(new NativeCallError("Full transcript unavailable")) : original(method, args));
+      expect(await f.bridge.history("local-native", undefined, 2)).toMatchObject({
+        items: [{ id: recent.uuid, text: "Ordinary history" }], hasMore: true, nextCursor: recent.uuid,
+        sessionFileReceipts: { "older-send-file": [{ name: "uploaded.txt" }] },
+      });
     } finally { await f.close(); }
   });
 

@@ -11,6 +11,7 @@ import type {
   BridgeHostSnapshot,
   BridgeInteractivePrompt,
   BridgeSessionInfo,
+  BridgeSentFile,
   BridgeSubagentSummary,
   BridgeTaskPlan,
 } from "@bridge/protocol";
@@ -34,6 +35,7 @@ export interface ConversationItem extends BridgeHistoryItem {
   commandId?: string;
   toolUseId?: string;
   sessionProposalConfirmed?: true;
+  sentFiles?: BridgeSentFile[];
   isError?: boolean;
   error?: string;
   live?: boolean;
@@ -348,6 +350,7 @@ export function conversationItems(
       ?? (subagent ? subagentItemIds.get(subagent.agentId) : undefined) ?? event.itemId ?? event.eventId];
   }));
   const confirmedSessionProposals = new Set(history?.sessionProposalResults);
+  const sentFilesByTool = new Map(Object.entries(history?.sessionFileReceipts ?? {}));
   for (const item of sessionHistory) {
     if (
       (item.role === "user" || item.role === "assistant") &&
@@ -570,6 +573,10 @@ export function conversationItems(
       if (hiddenTaskItems.has(id)) continue;
       const existing = toolByItem.get(id) ?? items.get(`tool:${id}`);
       if (event.origin === "claude-desktop" && event.type === "tool.completed") {
+        if (event.itemId && Array.isArray(event.data.sentFiles)) {
+          if (!sentFilesByTool.has(event.itemId)) sentFilesByTool.set(event.itemId, event.data.sentFiles as BridgeSentFile[]);
+          if (!existing) continue; // A receipt alone must not create a tool row at the completion time.
+        }
         if (event.itemId && event.data.sessionProposalResult === true) {
           confirmedSessionProposals.add(event.itemId);
           if (!existing) continue; // A result does not locate its call in the timeline.
@@ -617,8 +624,6 @@ export function conversationItems(
         ? (typeof event.itemId === "string" && event.itemId.trim() ? event.itemId.trim() : existing?.toolUseId)
         : undefined;
       const isError = event.type === "tool.completed" && event.data.isError === true ? true : existing?.isError;
-      const sentFiles = event.origin === "claude-desktop" && event.type === "tool.completed" && Array.isArray(event.data.sentFiles)
-        ? event.data.sentFiles as BridgeHistoryItem["sentFiles"] : existing?.sentFiles;
       toolByItem.set(id, {
         id: `tool:${id}`,
         sessionId,
@@ -630,12 +635,11 @@ export function conversationItems(
         origin: event.origin,
         ...(toolUseId ? { toolUseId } : {}),
         ...(sessionProposal ? { sessionProposal } : {}),
-        ...(sentFiles?.length ? { sentFiles } : {}),
         ...(isError ? { isError: true } : {}),
         ...(subagent?.state === "unknown" ? {} : {
           state: subagent?.state === "stopped"
             ? "interrupted" as const
-            : subagent?.state ?? (event.type === "tool.completed" || sentFiles?.length ? "completed" as const : "running" as const),
+            : subagent?.state ?? (event.type === "tool.completed" ? "completed" as const : "running" as const),
         }),
         ...(fileChanges?.length ? { fileChanges } : {}),
         ...(subagent ? { subagent } : {}),
@@ -743,8 +747,13 @@ export function conversationItems(
     });
   }
   const sorted = [...items.values()].flatMap((item): ConversationItem[] => {
-    if (item.role === "tool" && item.origin === "claude-desktop" && item.sessionProposal && item.toolUseId
-      && !item.isError && confirmedSessionProposals.has(item.toolUseId)) return [{ ...item, state: "completed", sessionProposalConfirmed: true }];
+    if (item.role === "tool" && item.origin === "claude-desktop" && item.toolUseId && !item.isError) {
+      if (item.sessionProposal && confirmedSessionProposals.has(item.toolUseId)) return [{ ...item, state: "completed", sessionProposalConfirmed: true }];
+      if (item.toolName === "SendUserFile") {
+        const sentFiles = sentFilesByTool.get(item.toolUseId);
+        if (sentFiles?.length) return [{ ...item, state: "completed", sentFiles }];
+      }
+    }
     if (item.role !== "user") return [item];
     const sessionNotice = !item.attachments?.length ? parseSessionNotice(item.text) : undefined;
     if (sessionNotice) return [{ ...item, sessionNotice }];

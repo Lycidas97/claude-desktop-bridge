@@ -86,6 +86,7 @@ export const HOME_LEARN_FRESHNESS_MS = 3 * 60_000;
 export interface SessionHistoryState {
   status: "idle" | "loading" | "ready" | "error";
   items: BridgeHistoryPage["items"];
+  sessionFileReceipts?: BridgeHistoryPage["sessionFileReceipts"];
   sessionProposalResults?: string[];
   nextCursor?: string;
   hasMore: boolean;
@@ -926,6 +927,8 @@ export function projectHistoryPage(
     status: "ready",
     items: existing ? mergeHistoryPages(page.items, existing.items) : page.items,
     ...(sessionProposalResults.size ? { sessionProposalResults: [...sessionProposalResults] } : {}),
+    ...(existing?.sessionFileReceipts || page.sessionFileReceipts
+      ? { sessionFileReceipts: { ...page.sessionFileReceipts, ...existing?.sessionFileReceipts } } : {}),
     hasMore: page.hasMore,
     ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
   };
@@ -937,16 +940,14 @@ function mergeHistoryPages(
   olderItems: BridgeHistoryItem[],
   existingItems: BridgeHistoryItem[],
 ): BridgeHistoryItem[] {
-  const mergedItems = new Map<string, BridgeHistoryItem>();
+  const seen = new Set<string>();
+  const mergedItems: BridgeHistoryItem[] = [];
   for (const item of [...olderItems, ...existingItems]) {
-    const previous = mergedItems.get(item.id);
-    if (!previous) mergedItems.set(item.id, item);
-    else if (item.sentFiles && !previous.sentFiles) {
-      // An older page can carry the call while the loaded page carries its file receipt.
-      mergedItems.set(item.id, { ...previous, sentFiles: item.sentFiles, state: "completed" });
-    }
+    if (seen.has(item.id)) continue;
+    seen.add(item.id);
+    mergedItems.push(item);
   }
-  return [...mergedItems.values()];
+  return mergedItems;
 }
 
 export function permissionFromEvent(event: BridgeEvent): BridgePermissionInfo | undefined {

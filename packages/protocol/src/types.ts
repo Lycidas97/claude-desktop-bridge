@@ -974,8 +974,6 @@ export interface BridgeHistoryItem {
   /** Desktop observed an idle, drained queue after acknowledging this input. */
   queueSettled?: true;
   attachments?: BridgeHistoryAttachment[];
-  /** Native SendUserFile delivery metadata; path is present only for workspace files. */
-  sentFiles?: { name: string; path?: string }[];
   /**
    * Structured summary for file-change tool items (Codex). Lets clients
    * aggregate edits Codex-style instead of rendering one noisy card each.
@@ -1003,9 +1001,17 @@ export interface BridgeFileChangeSummary {
   movePath?: string;
 }
 
+export interface BridgeSentFile {
+  name: string;
+  /** Present only for a confirmed local file eligible for workspace transfer. */
+  path?: string;
+}
+
 export interface BridgeHistoryPage {
   sessionId: string;
   items: BridgeHistoryItem[];
+  /** Attachment receipts by tool use ID; the SendUserFile calls may be on an older page. */
+  sessionFileReceipts?: Record<string, BridgeSentFile[]>;
   /** Successful proposal receipts on this page. The matching calls may be on older pages. */
   sessionProposalResults?: string[];
   nextCursor?: string;

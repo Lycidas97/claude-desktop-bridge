@@ -1,11 +1,11 @@
-import type { BridgeHistoryItem } from "@bridge/protocol";
+import type { BridgeHistoryItem, BridgeSentFile } from "@bridge/protocol";
 import { Braces, File, ChevronRight } from "lucide-react";
 import { useState } from "react";
 import { IconButton } from "../common/IconButton.js";
 import { ToolCallDetailSheet } from "./ToolCallDetailSheet.js";
 
 export function SessionSentFiles({ item, toolUseId, hostId, isMobile, onOpenFile, supportsToolDetail }: {
-  item: BridgeHistoryItem & { sentFiles: NonNullable<BridgeHistoryItem["sentFiles"]> };
+  item: BridgeHistoryItem & { sentFiles: BridgeSentFile[] };
   toolUseId: string;
   hostId: string;
   isMobile: boolean;

@@ -27,7 +27,7 @@ function record(value: unknown): Record<string, unknown> {
 }
 
 /** This is Desktop's structured attachment receipt, not the model-visible result text. */
-export function nativeSentFileReceipt(raw: unknown): { toolUseId: string; paths: string[] } | undefined {
+export function nativeSentFileReceipt(raw: unknown): { toolUseId: string; files: { path: string; local: boolean }[] } | undefined {
   const message = record(raw);
   if (message.type !== "user" || message.isSidechain === true || message.parent_tool_use_id) return;
   const { attachments } = record(message.toolUseResult ?? message.tool_use_result);
@@ -37,13 +37,15 @@ export function nativeSentFileReceipt(raw: unknown): { toolUseId: string; paths:
   const results = content.map(record).filter(block => block.type === "tool_result");
   const [result] = results;
   if (results.length !== 1 || typeof result?.tool_use_id !== "string" || result.is_error === true) return;
-  const paths = [...new Set(attachments.slice(0, 32).flatMap(rawAttachment => {
-    const { path, size, isImage, upload_error, project_path, file_uuid } = record(rawAttachment);
-    return typeof path === "string" && path.length > 0 && !path.includes("\0") && typeof size === "number"
-      && typeof isImage === "boolean" && upload_error === undefined && (project_path === undefined || typeof file_uuid === "string")
-      ? [path] : [];
-  }))];
-  if (paths.length) return { toolUseId: result.tool_use_id, paths };
+  const files = attachments.slice(0, 32).flatMap(rawAttachment => {
+    const { path, size, isImage, upload_error, project_path, file_uuid, pathValidated } = record(rawAttachment);
+    if (typeof path !== "string" || !path || path.includes("\0") || typeof size !== "number"
+      || typeof isImage !== "boolean" || upload_error !== undefined) return [];
+    // Native replaces path with file_name for uploaded references and may omit pathValidated in serialized receipts.
+    const local = project_path === undefined && (pathValidated === true || (pathValidated === undefined && file_uuid === undefined));
+    return [{ path, local }];
+  });
+  if (files.length) return { toolUseId: result.tool_use_id, files };
 }
 
 function singleToolResultText(content: unknown): string | undefined {
@@ -76,10 +78,7 @@ export function nativePlanMessages(messages: unknown[]) {
 }
 
 /** Shared by history pages and live events; task state is projected from native messages. */
-export function nativeHistoryItems(
-  sessionId: string, messages: unknown[], projection: NativeMessageProjection = {}, proposalResults?: string[],
-  sentFilesByTool?: ReadonlyMap<string, NonNullable<BridgeHistoryItem["sentFiles"]>>,
-): BridgeHistoryItem[] {
+export function nativeHistoryItems(sessionId: string, messages: unknown[], projection: NativeMessageProjection = {}, proposalResults?: string[]): BridgeHistoryItem[] {
   const items = new Map<string, BridgeHistoryItem>();
   for (const raw of messages) {
     const message = record(raw);
@@ -155,14 +154,6 @@ export function nativeHistoryItems(
     if (Array.isArray(body.content)) for (const rawBlock of body.content) {
       const block = record(rawBlock);
       if (message.type === "user" && block.type === "tool_result" && typeof block.tool_use_id === "string") {
-        const sentFiles = sentFilesByTool?.get(block.tool_use_id);
-        if (sentFiles && block.is_error !== true) {
-          const tool = items.get(block.tool_use_id);
-          items.set(block.tool_use_id, {
-            id: block.tool_use_id, sessionId, role: "tool", toolName: "SendUserFile", origin: "claude-desktop",
-            text: tool?.text ?? "SendUserFile", createdAt: tool?.createdAt ?? createdAt, state: "completed", sentFiles,
-          });
-        }
         const result = block.is_error === true ? undefined : singleToolResultText(block.content);
         if (result) {
           const proposalReceipt = readProposalReceipt(result, block.tool_use_id);

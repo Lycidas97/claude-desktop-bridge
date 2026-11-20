@@ -399,7 +399,9 @@ export async function verifyNativeBoundaries(page, host, steps, directory) {
   const catalogRow = page.locator(`.mobile-home-catalog [data-session-id="${sessionId}"]`);
   await eventually(() => catalogRow.locator(".session-state-dot.running").count(), 1, "Catalog row dot reflects running background subagent when main turn is idle");
   await eventually(() => catalogRow.locator(".session-row-status.running").innerText(), "后台子代理", "Catalog row badge displays running background subagent");
-  host.history.push(...(await host.nativeApproval.history()).items);
+  const nativePage = await host.nativeApproval.history();
+  host.history.push(...nativePage.items);
+  host.sessionFileReceipts = nativePage.sessionFileReceipts;
   // This fixture has no on-disk task transcript, so provide the tray separately.
   const backgroundTasks = [{
     id: "boundary-bg-call", kind: "subagent", taskId: "boundary-bg-subagent", toolUseId: "boundary-bg-call",

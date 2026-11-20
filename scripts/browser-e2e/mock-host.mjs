@@ -138,6 +138,7 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
       assert.ok(end >= 0, "History cursors must refer to the oldest item in the preceding page");
       const start = Math.max(0, end - limit);
       return { sessionId, items: history.slice(start, end), hasMore: start > 0,
+        ...(!cursor && host.sessionFileReceipts ? { sessionFileReceipts: host.sessionFileReceipts } : {}),
         ...(start > 0 ? { nextCursor: history[start].id } : {}) };
     },
     async emit(type, data, options = {}) {
@@ -154,6 +155,7 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
     },
     async syncNativeQueue(update, { pushEvents = true } = {}) {
       history.splice(0, history.length, ...update.history.items);
+      host.sessionFileReceipts = update.history.sessionFileReceipts;
       for (const key of ["turnState", "ownership", "pendingCount", "pendingCommandIds", "allowedActions", "isCompacting"]) session[key] = update.session[key];
       snapshot.projects[0].pendingCount = session.pendingCount;
       snapshot.projects[0].runningCount = session.turnState === "running" ? 1 : 0;

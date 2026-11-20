@@ -31,6 +31,13 @@ export async function verifyAssistantAttention(page, host, steps, directory, vie
   await eventually(label, lit, "Classified mail lights the entry; routine marketing does not");
   assert.equal(await entry.locator(".desktop-nav-badge").count(), 0, "The new entry is a dot, not an unread count");
   await entry.click();
+  await page.getByRole("button", { name: "收件", exact: true }).click();
+  const unreadCard = page.locator(`.assistant-mail-list [data-mail-id="${worth.mailRefId}"]`);
+  await unreadCard.getByText("状态", { exact: true }).click();
+  await unreadCard.getByText("待处理", { exact: true }).waitFor();
+  assert.equal(host.requests.some(request => request.method === "plugin.assistant-mail.read" && request.params.mailRefId === worth.mailRefId), false);
+  assert.equal(host.requests.some(request => request.method === "plugin.assistant-mail.attention.ack" && request.params.id === worth.mailRefId), false);
+  assert.ok(host.snapshot.assistantMail.attention.some(item => item.id === worth.mailRefId), "Opening status leaves the host attention item intact");
   await attention.locator("summary").click();
   await attention.getByText("值得看", { exact: true }).waitFor();
   assert.equal(await attention.locator("li").count(), 1, "Opening Assistant does not acknowledge a mail");

@@ -185,9 +185,16 @@ export async function verifyAssistantMailHistory(page, host, steps, directory, v
   const inbox = page.getByRole("button", { name: "收件", exact: true });
   const cards = page.locator(".assistant-mail-list > [data-mail-id]");
   const older = page.getByRole("button", { name: "更早邮件", exact: true });
+  const returnToInbox = page.getByRole("button", { name: "返回收件", exact: true });
+  const emptyFiledEntry = page.getByRole("button", { name: "已收纳 0 封", exact: true });
 
   await assistant.click();
   await inbox.click();
+  await emptyFiledEntry.press("Enter");
+  await page.getByText("暂无已收纳邮件", { exact: true }).waitFor();
+  assert.ok(await returnToInbox.evaluate(button => button === document.activeElement), "Opening the empty view focuses its Back button");
+  await page.keyboard.press("Enter");
+  await eventually(() => emptyFiledEntry.evaluate(button => button === document.activeElement), true, "Keyboard Back returns focus to the entry");
   await eventually(() => cards.count(), 20, "An unimported 25-message INBOX loads its latest 20 mails");
   await cards.first().getByText("收件记录 25", { exact: true }).waitFor();
   await cards.last().getByText("收件记录 6", { exact: true }).waitFor();
@@ -265,7 +272,7 @@ export async function verifyAssistantMailHistory(page, host, steps, directory, v
   const longPreview = await host.nativeApproval.assistantMail.deliver(1, Buffer.from(
     `Content-Type: text/plain; charset=utf-8\r\n\r\n${"A real message with enough words to wrap naturally. ".repeat(48)}`,
   ));
-  const inboxList = page.locator(".assistant-mail-list");
+  const inboxList = page.getByLabel("邮件输入", { exact: true });
   const brokenCard = inboxList.locator(`[data-mail-id="${brokenPreview.mailRefId}"]`);
   const longCard = inboxList.locator(`[data-mail-id="${longPreview.mailRefId}"]`);
   const compactPreview = async (card, long = false) => {
@@ -285,21 +292,62 @@ export async function verifyAssistantMailHistory(page, host, steps, directory, v
   assert.ok(shortBounds && longBounds && longBounds.height - shortBounds.height <= lineHeight * 2 + 1,
     "With identical controls, collapsed cards differ only by the remaining two preview lines");
   await brokenCard.getByRole("combobox", { name: "收入分类", exact: true }).selectOption("other");
-  const other = page.locator(".assistant-mail-group > summary").filter({ hasText: "其他" });
+  const filedEntry = page.getByRole("button", { name: "已收纳 1 封", exact: true });
+  await filedEntry.click();
+  const filedView = page.getByRole("region", { name: "已收纳", exact: true });
+  const other = filedView.locator(".assistant-mail-group > summary").filter({ hasText: "其他" });
   await other.getByText("1 封", { exact: true }).waitFor();
   await other.click();
-  await compactPreview(brokenCard);
+  const filedBrokenCard = filedView.locator(`[data-mail-id="${brokenPreview.mailRefId}"]`);
+  await compactPreview(filedBrokenCard);
+  await filedBrokenCard.getByRole("button", { name: "收回收件", exact: true }).click();
+  await filedView.getByRole("status").filter({ hasText: "暂无已收纳邮件" }).waitFor();
+  await page.getByRole("button", { name: "返回收件", exact: true }).click();
+  await page.getByRole("button", { name: "已收纳 0 封", exact: true }).waitFor();
+  await brokenCard.waitFor();
+  await feedback.getByRole("button", { name: "撤销", exact: true }).click();
+  await filedEntry.waitFor();
+  await brokenCard.waitFor({ state: "detached" });
+  steps.push("Restoring the last filed mail leaves a stable empty view; undo still works after returning to the inbox and restores both placements and counts");
   const search = page.getByRole("searchbox", { name: "搜索邮件" });
   await search.fill(brokenPreview.subject);
   await search.press("Enter");
   await compactPreview(page.getByLabel("搜索结果").locator(`[data-mail-id="${brokenPreview.mailRefId}"]`));
   await page.screenshot({ path: resolve(directory, "mobile-mail-compact-preview.png"), fullPage: true });
   steps.push("Synthetic malformed plaintext suppresses blank lines and email-template residue; long text clips at the rendered line budget in inbox, folder and search cards");
+
+  await page.getByRole("button", { name: "清除搜索", exact: true }).click();
+  const { service } = host.nativeApproval.assistantMail;
+  await host.nativeApproval.assistantMail.deliver(51);
+  const promotions = service.page({ limit: 51 }).events;
+  for (const { mailRefId } of promotions) {
+    service.updateAnalysis(mailRefId, { summary: "已分析", suggestions: [], questions: [], category: "marketing" });
+  }
+  const filedTotal = page.getByRole("button", { name: "已收纳 52 封", exact: true });
+  await filedTotal.click();
+  const marketing = filedView.locator(".assistant-mail-group").filter({ hasText: "营销与垃圾邮件" });
+  await marketing.locator("summary").first().click();
+  const more = marketing.getByRole("button", { name: "更多邮件", exact: true });
+  await more.click();
+  const secondPageCard = marketing.locator(`[data-mail-id="${promotions.at(-1).mailRefId}"]`);
+  await secondPageCard.waitFor();
+  await more.waitFor({ state: "detached" });
+  host.socket.close();
+  await page.getByText("电脑离线，显示已缓存邮件。", { exact: true }).waitFor();
+  await returnToInbox.click();
+  assert.equal(await filedView.count(), 0, "The retained category is not exposed by the inbox");
+  await filedTotal.click();
+  assert.equal(await secondPageCard.isVisible(), true, "Reopening an expanded category offline retains the second page");
+  assert.equal(await more.count(), 0, "The exhausted cursor stays exhausted");
+  steps.push("Returning to the inbox and reopening the same category offline retains both loaded pages and their exhausted cursor");
 }
 
 export async function verifyAssistantMail(page, host, steps, directory, viewports, baseUrl) {
   const cards = () => page.locator('.assistant-mail-list [data-mail-id]');
-  const group = (label) => page.locator(".assistant-mail-group > summary").filter({ hasText: label });
+  const filedView = page.getByRole("region", { name: "已收纳", exact: true });
+  const filedEntry = count => page.getByRole("button", { name: `已收纳 ${count} 封`, exact: true });
+  const backToInbox = page.getByRole("button", { name: "返回收件", exact: true });
+  const group = label => page.locator(".assistant-mail-group > summary").filter({ hasText: label });
   async function openAssistant() {
     await openMobileDrawer(page);
     await page.locator(".mobile-home-catalog").getByRole("button", { name: /^助理(?:，\d+\+? 条未读)?$/u }).click();
@@ -834,7 +882,7 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   host.partialMailPage = true;
   await page.getByRole("button", { name: "收件", exact: true }).click();
   await page.getByRole("button", { name: "刷新邮件列表", exact: true }).click();
-  const inbox = page.locator(".assistant-mail-list");
+  const inbox = page.getByLabel("邮件输入", { exact: true });
   await inbox.locator(`article[data-mail-id="${batchMailIds[1]}"]`).waitFor();
   assert.equal(await inbox.locator(`article[data-mail-id="${batchMailIds[0]}"]`).count(), 0, "Inbox has only half the batch");
   await page.locator(".assistant-view-tabs").getByRole("button", { name: "对话", exact: true }).click();
@@ -874,26 +922,37 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
     [accountMail.mailRefId, "account"], [secondPromotion.mailRefId, "marketing"]]) {
     service.updateAnalysis(mailRefId, { ...analysis, category });
   }
-  await group("营销与垃圾邮件").getByText("2 封", { exact: true }).waitFor();
+  await marketing.waitFor({ state: "detached" });
+  assert.equal(await group("营销与垃圾邮件").count(), 0, "The inbox does not embed filed categories");
   await inbox.locator(`:scope > [data-mail-id="${batchMailIds[1]}"]`).waitFor({ timeout: 5000 });
   await inbox.locator(`:scope > [data-mail-id="${accountMail.mailRefId}"]`).waitFor();
+  assert.equal(await filedView.count(), 0);
+  await inbox.locator(`[data-mail-id="${newest.mailRefId}"]`).waitFor();
+  await filedEntry(2).scrollIntoViewIfNeeded();
+  await page.screenshot({ path: resolve(directory, "mobile-mail-inbox.png") });
+  await filedEntry(2).press("Enter");
+  await filedView.waitFor();
+  assert.equal(await inbox.count(), 0, "Filed view replaces the inbox instead of extending it");
+  await eventually(() => backToInbox.evaluate(button => button === document.activeElement), true, "Opening the filed view focuses its Back button");
   assert.equal(await group("验证码").count(), 0);
   assert.equal(await group("账号注册").count(), 0);
-  assert.equal(await inbox.locator(".assistant-mail-group[open]").count(), 0);
-  assert.equal(await marketing.isVisible(), false);
-  await inbox.locator(`[data-mail-id="${newest.mailRefId}"]`).waitFor();
-  await group("营销与垃圾邮件").scrollIntoViewIfNeeded();
-  await page.screenshot({ path: resolve(directory, "mobile-mail-groups.png") });
+  await group("营销与垃圾邮件").getByText("2 封", { exact: true }).waitFor();
   await group("营销与垃圾邮件").press("Enter");
-  await marketing.waitFor();
-  assert.deepEqual(await inbox.locator(".assistant-mail-group[open] [data-mail-id]").evaluateAll(items => items.map(item => item.dataset.mailId)),
+  const filedMarketing = filedView.locator(`[data-mail-id="${batchMailIds[0]}"]`);
+  await filedMarketing.waitFor();
+  assert.deepEqual(await filedView.locator(".assistant-mail-group[open] [data-mail-id]").evaluateAll(items => items.map(item => item.dataset.mailId)),
     [batchMailIds[0], secondPromotion.mailRefId], "Active and older mail share one category, newest first");
-  const verification = inbox.locator(`:scope > [data-mail-id="${batchMailIds[1]}"]`);
+  await capture("mobile-filed-mail");
+  assert.equal(await page.evaluate(async () => (await import("/src/lib/mobile-back-navigation.ts")).dispatchMobileBack()), true);
+  await inbox.waitFor();
+  await eventually(() => filedEntry(2).evaluate(button => button === document.activeElement), true, "Android Back returns focus to the filed entry");
+  const verification = inbox.locator(`[data-mail-id="${batchMailIds[1]}"]`);
   await verification.getByRole("combobox", { name: "收入分类", exact: true }).selectOption("verification");
   await verification.waitFor({ state: "detached" });
+  await filedEntry(3).click();
   await group("验证码").getByText("1 封", { exact: true }).waitFor();
-  assert.equal(await marketing.isVisible(), true, "Another folder stays open after filing a mail");
-  await marketing.getByRole("button", { name: "讨论此邮件", exact: true }).click();
+  await group("验证码").click();
+  await filedView.locator(`[data-mail-id="${batchMailIds[1]}"]`).getByRole("button", { name: "讨论此邮件", exact: true }).click();
   await reference.waitFor();
   await reference.getByRole("button", { name: "清除邮件引用" }).click();
   await page.getByRole("button", { name: "收件", exact: true }).click();
@@ -908,9 +967,9 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   service.updateAnalysis(secondPromotion.mailRefId, { ...analysis, category: "marketing" });
   await page.getByRole("button", { name: "清除搜索", exact: true }).click();
   await inbox.locator(`:scope > [data-mail-id="${secondPromotion.mailRefId}"]`).waitFor();
-  await group("营销与垃圾邮件").getByText("1 封", { exact: true }).waitFor();
+  await filedEntry(2).waitFor();
   await page.getByRole("button", { name: "对话", exact: true }).click();
-  steps.push("Only marketing files automatically; manual filing, search across saved mail, and a durable restore keep the correct counts");
+  steps.push("Only marketing files automatically; the inbox and filed view are separate, Back restores the inbox, and global search identifies filed mail before a durable restore");
   const managedMail = host.snapshot.assistantMail;
   const unexpectedTools = [
     "mcp__terminal__run_in_terminal", "mcp__Claude_Browser__preview_start", "mcp__scheduled-tasks__list_scheduled_tasks",
@@ -1182,12 +1241,15 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
 
   const headingBounds = await page.locator(".assistant-page .desktop-page-heading h1").boundingBox();
   const mailBounds = await cards().filter({ visible: true }).first().boundingBox();
+  assert.equal(await filedView.count(), 0);
+  assert.equal(await group("营销与垃圾邮件").count(), 0, "Desktop inbox does not embed filed categories either");
+  await filedEntry(2).click();
   await group("营销与垃圾邮件").getByText("1 封", { exact: true }).waitFor();
-  assert.equal(await marketing.isVisible(), false, "Desktop also folds classified mail by default");
   await group("营销与垃圾邮件").click();
-  await marketing.waitFor();
-  await page.screenshot({ path: resolve(directory, "desktop-mail-group-open.png") });
-  await group("营销与垃圾邮件").click();
+  await filedMarketing.waitFor();
+  await page.screenshot({ path: resolve(directory, "desktop-filed-mail.png") });
+  await backToInbox.click();
+  await inbox.waitFor();
   assert.ok(Math.abs(headingBounds.x - mailBounds.x) < 1, "Desktop title aligns with the mail content column");
   await verifyAttachments(page.locator(`.assistant-mail-list [data-mail-id="${desktopAttachmentMail.mailRefId}"]`), "desktop-mail-attachment");
   await capture("desktop-mail");

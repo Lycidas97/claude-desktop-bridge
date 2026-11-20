@@ -45,7 +45,7 @@ export async function verifyMobileSafeArea(page, steps, directory, viewports) {
   steps.push(`会话: env(safe-area-inset-bottom) 0 → 48px changes composer padding ${composerPaddings[0]} → ${composerPaddings[1]}px`);
 
   for (const [tab, selector, height] of [
-    ["电脑", ".host-browser", 190],
+    ["电脑", ".host-browser", 150],
     ["设置", ".mobile-settings-content", 460],
   ]) {
     await page.setViewportSize({ width: 375, height });

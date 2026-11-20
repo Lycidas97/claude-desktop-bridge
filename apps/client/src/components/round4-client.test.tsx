@@ -652,7 +652,7 @@ describe("Round 4 Client Deliverables", () => {
       const calloutEl = elements(wsTree).find((el) => el.type === MobileInspectorCallout)!;
       expect(calloutEl.props.onActivate).toBe(onActivateClaude);
 
-      // MobileHostDetails shows 9229 调试端口 status + 开启调试端口 button
+      // MobileHostDetails shows 调试端口 9229 status + 开启调试端口 button
       const hostDetailsHtml = renderToStaticMarkup(
         createElement(MobileHostDetails, {
           activeHostId: "host-desktop",
@@ -667,7 +667,7 @@ describe("Round 4 Client Deliverables", () => {
           onBack: vi.fn(),
         }),
       );
-      expect(hostDetailsHtml).toContain("9229 调试端口");
+      expect(hostDetailsHtml).toContain("调试端口 9229");
       expect(hostDetailsHtml).toContain("未开启");
       expect(hostDetailsHtml).toContain("开启调试端口");
 
@@ -690,7 +690,7 @@ describe("Round 4 Client Deliverables", () => {
       expect(settingsHtml).toContain("授权通知");
     });
 
-    it("renders 助理 capsule inside mobile-drawer-topbar and supports ＋ 新建分组… inside NewChatCanvas without losing drafts", async () => {
+    it("renders 助理 capsule inside mobile-drawer-topbar and supports + 新建分组… inside NewChatCanvas without losing drafts", async () => {
       const createdSection = {
         projectId: "sec-new",
         name: "新研究组",
@@ -788,7 +788,7 @@ describe("Round 4 Client Deliverables", () => {
       expect(catalogHtml).not.toContain("sidebar-assistant-row");
 
       // 2. NewChatCanvas shows 所属分组 even with 0 existing manual groups when section.create.v1 is supported,
-      //    opens SectionCreateDialog on ＋ 新建分组…, auto-selects created.projectId, and preserves all form drafts.
+      //    opens SectionCreateDialog on + 新建分组…, auto-selects created.projectId, and preserves all form drafts.
       hooks.slots = [];
       hooks.effects = [];
       hooks.pending = [];
@@ -830,25 +830,25 @@ describe("Round 4 Client Deliverables", () => {
       canvasTree = drawCanvas();
 
       const sectionMenu = elements(canvasTree).find((el) => el.type === SelectMenu && el.props.ariaLabel === "所属分组")!;
-      expect(sectionMenu.props.options).toContainEqual({ value: "__create_section__", label: "＋ 新建分组…" });
+      expect(sectionMenu.props.options).toContainEqual({ value: "__create_section__", label: "+ 新建分组…" });
       expect(sectionMenu.props.value).toBe("");
 
-      // Select ＋ 新建分组… -> keeps selectedProjectId "" while opening SectionCreateDialog
+      // Select + 新建分组… -> keeps selectedProjectId "" while opening SectionCreateDialog
       sectionMenu.props.onChange("__create_section__");
       canvasTree = drawCanvas();
       expect(elements(canvasTree).find((el) => el.type === SelectMenu && el.props.ariaLabel === "所属分组")!.props.value).toBe("");
-      const createDialog = elements(canvasTree).find((el) => el.props["aria-label"] === "新建 Section")!;
+      const createDialog = elements(canvasTree).find((el) => el.props["aria-label"] === "新建分组")!;
       expect(createDialog).toBeDefined();
 
-      elements(createDialog).find((el) => el.props["aria-label"] === "Section 名称")!.props.onChange({ target: { value: "  新研究组  " } });
+      elements(createDialog).find((el) => el.props["aria-label"] === "分组名称")!.props.onChange({ target: { value: "  新研究组  " } });
       canvasTree = drawCanvas();
-      const activeDialog = elements(canvasTree).find((el) => el.props["aria-label"] === "新建 Section")!;
+      const activeDialog = elements(canvasTree).find((el) => el.props["aria-label"] === "新建分组")!;
       await elements(activeDialog).find((el) => el.type === "form")!.props.onSubmit({ preventDefault: vi.fn() });
       await Promise.resolve();
       canvasTree = drawCanvas();
 
       expect(onCreateSection).toHaveBeenCalledExactlyOnceWith("新研究组");
-      expect(elements(canvasTree).find((el) => el.props["aria-label"] === "新建 Section")).toBeUndefined();
+      expect(elements(canvasTree).find((el) => el.props["aria-label"] === "新建分组")).toBeUndefined();
       const updatedMenu = elements(canvasTree).find((el) => el.type === SelectMenu && el.props.ariaLabel === "所属分组")!;
       expect(updatedMenu.props.value).toBe("sec-new");
       expect(elements(canvasTree).find((el) => el.props["aria-label"] === "会话标题")!.props.value).toBe("保留标题草稿");

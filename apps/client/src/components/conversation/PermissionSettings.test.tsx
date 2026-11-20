@@ -261,7 +261,7 @@ describe("native Claude session configuration", () => {
     const draw = () => render(() => <SessionConfigurationDialog {...props} />);
     draw(); await settle();
     let tree = draw();
-    const select = elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "Desktop 授权模式")!;
+    const select = elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "权限模式")!;
     select.props.onChange("bypassPermissions"); tree = draw();
     button(tree, "保存配置").props.onClick(); tree = draw();
     expect(confirmation(tree).props.open).toBe(true);
@@ -279,7 +279,7 @@ describe("native Claude session configuration", () => {
       const draw = () => render(() => <SessionConfigurationDialog {...props} />);
       draw(); await settle();
       let tree = draw();
-      elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "Desktop 授权模式")!
+      elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "权限模式")!
         .props.onChange("bypassPermissions");
       tree = draw();
       button(tree, "保存配置").props.onClick();
@@ -289,7 +289,7 @@ describe("native Claude session configuration", () => {
       expect(workspaceBack).not.toHaveBeenCalled();
       tree = draw();
       expect(confirmation(tree).props.open).toBe(false);
-      expect(elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "Desktop 授权模式")!.props.value).toBe("bypassPermissions");
+      expect(elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "权限模式")!.props.value).toBe("bypassPermissions");
       expect(props.onSave).not.toHaveBeenCalled();
       expect(props.onClose).not.toHaveBeenCalled();
       expect(dispatchMobileBack()).toBe(true);

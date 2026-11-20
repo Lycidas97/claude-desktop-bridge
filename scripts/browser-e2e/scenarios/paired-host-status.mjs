@@ -90,7 +90,7 @@ export async function verifyPairedHostStatus(page, previousHost, host, steps, di
   await current.click();
   const pairingLink = page.getByRole("textbox", { name: "配对链接" });
   await pairingLink.waitFor({ timeout: 3_000 });
-  await page.getByRole("button", { name: "返回主机列表" }).click();
+  await page.getByRole("button", { name: "返回电脑列表" }).click();
   await page.getByRole("button", { name: "重新配对", exact: true }).click({ timeout: 3_000 });
   await pairingLink.waitFor({ timeout: 3_000 });
   await page.screenshot({ path: resolve(directory, "repair-pairing-screen.png") });

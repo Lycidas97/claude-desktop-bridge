@@ -69,7 +69,7 @@ export function resolveClaudeRemoteActivationDetail(
   ) {
     if (inspector?.startup?.detail) return inspector.startup.detail;
   }
-  return snapshot?.runtime.desktopIntegration.detail || "点击远程启动 Claude 并开启 9229 调试端口";
+  return snapshot?.runtime.desktopIntegration.detail || "点击远程启动 Claude 并开启调试端口 9229";
 }
 
 export interface MobileInspectorCalloutProps {

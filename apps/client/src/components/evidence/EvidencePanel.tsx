@@ -244,7 +244,7 @@ export function EvidencePanel({
         })
         .catch((loadError: unknown) => {
           if (!mountedRef.current || !activeBundleIdsRef.current.has(bundleId)) return;
-          const message = loadError instanceof Error ? loadError.message : "产出文件详情加载失败";
+          const message = loadError instanceof Error ? loadError.message : "成果详情加载失败";
           setDetailPages((previous) => ({
             ...previous,
             [bundleId]: {
@@ -298,7 +298,7 @@ export function EvidencePanel({
       })
       .catch((loadError: unknown) => {
         if (!mountedRef.current || !activeBundleIdsRef.current.has(bundleId)) return;
-        const message = loadError instanceof Error ? loadError.message : "产出文件详情加载失败";
+        const message = loadError instanceof Error ? loadError.message : "成果详情加载失败";
         setDetailPages((previous) => {
           const existing = previous[bundleId];
           if (!existing) return previous;
@@ -454,7 +454,7 @@ export function EvidencePanel({
       return (
         <div className="evidence-empty">
           <LoaderCircle className="is-spinning" size={20} />
-          <strong>正在读取产出文件</strong>
+          <strong>正在读取成果</strong>
         </div>
       );
     }
@@ -462,7 +462,7 @@ export function EvidencePanel({
       return (
         <div className="evidence-empty">
           <AlertTriangle size={20} />
-          <strong>产出文件暂时无法读取</strong>
+          <strong>成果暂时无法读取</strong>
         </div>
       );
     }
@@ -484,14 +484,14 @@ export function EvidencePanel({
       return (
         <div className="evidence-empty">
           <FileDiff size={22} />
-          <strong>连接主机后可读取产出文件</strong>
+          <strong>连接电脑后可读取成果</strong>
         </div>
       );
     }
     return (
       <div className="evidence-empty">
         <FileDiff size={22} />
-        <strong>这个会话还没有产出文件</strong>
+        <strong>这个会话还没有成果</strong>
         {state?.hasMore && (
           <button
             type="button"
@@ -500,7 +500,7 @@ export function EvidencePanel({
             onClick={() => void onLoadMore()}
           >
             {state.status === "loading" && <LoaderCircle className="is-spinning" size={14} />}
-            加载更早记录
+            加载更多
           </button>
         )}
       </div>
@@ -522,7 +522,7 @@ export function EvidencePanel({
           <button
             type="button"
             className="file-changes-more"
-            aria-label="重试加载产出文件"
+            aria-label="重试加载成果"
             disabled={!online || anyDetailsLoading}
             onClick={retryFailedBundleLoads}
           >
@@ -530,10 +530,9 @@ export function EvidencePanel({
           </button>
         </div>
       )}
-      {!online && <div className="evidence-offline">主机离线 · 已缓存预览仍可打开</div>}
+      {!online && <div className="evidence-offline">电脑离线 · 已缓存预览仍可打开</div>}
 
       <header className="evidence-list-header">
-        <span className="evidence-list-heading">产出文件 · 按最近更新排序</span>
         <span className="evidence-list-count">共 {outputFiles.length} 个文件</span>
       </header>
 
@@ -679,28 +678,16 @@ export function EvidencePanel({
 
       {(bundleWithMoreArtifacts || state?.hasMore) && (
         <div className="evidence-panel-footer">
-          {bundleWithMoreArtifacts && (
-            <button
-              type="button"
-              className="load-older-button"
-              disabled={!online || anyDetailsLoading}
-              onClick={() => loadMoreBundleArtifacts(bundleWithMoreArtifacts.id)}
-            >
-              {anyDetailsLoading && <LoaderCircle className="is-spinning" size={15} />}
-              加载更多产出文件
-            </button>
-          )}
-          {state?.hasMore && (
-            <button
-              type="button"
-              className="load-older-button"
-              disabled={state.status === "loading"}
-              onClick={() => void onLoadMore()}
-            >
-              {state.status === "loading" && <LoaderCircle className="is-spinning" size={15} />}
-              加载更早成果
-            </button>
-          )}
+          {/* One control: finish the loaded batch's files first, then older batches. */}
+          <button
+            type="button"
+            className="load-older-button"
+            disabled={bundleWithMoreArtifacts ? !online || anyDetailsLoading : state?.status === "loading"}
+            onClick={() => bundleWithMoreArtifacts ? loadMoreBundleArtifacts(bundleWithMoreArtifacts.id) : void onLoadMore()}
+          >
+            {(bundleWithMoreArtifacts ? anyDetailsLoading : state?.status === "loading") && <LoaderCircle className="is-spinning" size={15} />}
+            加载更多
+          </button>
         </div>
       )}
 
@@ -784,7 +771,7 @@ export function EvidencePanel({
 
       <ConfirmationDialog
         open={Boolean(pendingDownload)}
-        title={variant === "desktop" ? "确认下载产出文件？" : "确认下载文件到手机？"}
+        title={variant === "desktop" ? "确认下载文件？" : "确认下载文件到手机？"}
         description={pendingDownload
           ? `即将从电脑下载「${pendingDownload.name}」（${pendingDownload.relativePath}${pendingDownload.size > 0 ? ` · ${formatBytes(pendingDownload.size)}` : ""}）到当前设备。`
           : ""}

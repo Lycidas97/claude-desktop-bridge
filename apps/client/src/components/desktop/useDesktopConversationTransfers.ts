@@ -48,7 +48,7 @@ export function useDesktopConversationTransfers(latestRef: RefObject<TransferInp
     artifact: BridgeArtifactManifest,
     targetHostId = latestRef.current.snapshot.host.hostId,
   ): Promise<void> {
-    const transferRequest = createHostBoundTransferRequest(targetHostId, "主机已切换，文件传输已取消");
+    const transferRequest = createHostBoundTransferRequest(targetHostId, "电脑已切换，文件传输已取消");
     setHostTransfer(targetHostId, artifact.id, 0);
     try {
       await downloadBridgeArtifact(
@@ -72,7 +72,7 @@ export function useDesktopConversationTransfers(latestRef: RefObject<TransferInp
     resolveRelativeLink?: true,
   ): Promise<void> {
     const transferKey = `file:${filePath}`;
-    const transferRequest = createHostBoundTransferRequest(targetHostId, "主机已切换，文件传输已取消");
+    const transferRequest = createHostBoundTransferRequest(targetHostId, "电脑已切换，文件传输已取消");
     setHostTransfer(targetHostId, transferKey, 0);
     try {
       await downloadBridgeSessionFile(
@@ -92,7 +92,7 @@ export function useDesktopConversationTransfers(latestRef: RefObject<TransferInp
   }
 
   const uploadFile: UploadFileHandler = async (sessionId, file, onProgress, signal) => {
-    const transferRequest = createHostBoundTransferRequest(latestRef.current.snapshot.host.hostId, "主机已切换，文件上传已取消");
+    const transferRequest = createHostBoundTransferRequest(latestRef.current.snapshot.host.hostId, "电脑已切换，文件上传已取消");
     activeUploadsRef.current += 1;
     try {
       return await uploadSessionFile(transferRequest, sessionId, file, onProgress, signal);

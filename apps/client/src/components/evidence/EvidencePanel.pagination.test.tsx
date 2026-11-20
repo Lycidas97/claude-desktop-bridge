@@ -235,14 +235,13 @@ describe("deduplicated chronological output-file evidence list", () => {
     draw();
     await settle();
     expect(loadDetails.mock.calls).toEqual([["evidence", "artifacts"]]);
-    expect(text()).toContain("产出文件 · 按最近更新排序");
     expect(text()).toContain("共 30 个文件");
     expect(text()).toContain("file-first-0.txt");
     expect(text()).not.toContain("工具与命令");
     expect(elements().some((element) => element.type === "details")).toBe(false);
 
     const moreButton = elements().find(
-      (element) => element.type === "button" && text(element.props.children).includes("加载更多产出文件"),
+      (element) => element.type === "button" && text(element.props.children).includes("加载更多"),
     )!;
     expect(moreButton).toBeDefined();
     moreButton.props.onClick();
@@ -312,7 +311,7 @@ describe("deduplicated chronological output-file evidence list", () => {
 
     props = { ...props, online: false };
     draw();
-    expect(text()).toContain("主机离线 · 已缓存预览仍可打开");
+    expect(text()).toContain("电脑离线 · 已缓存预览仍可打开");
     expect(text()).toContain("file-first-0.txt");
   });
 

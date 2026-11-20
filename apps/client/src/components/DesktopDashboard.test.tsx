@@ -307,14 +307,14 @@ describe("desktop session header", () => {
     Object.assign(snapshot.sessions[0]!, { model: "model-id", modelDisplayName: "Claude Opus 5.5 custom model", effort: "high", nativePermissionMode: "auto" });
     snapshot.sessions[0]!.allowedActions!.canConfigure = canConfigure;
     await openSessions();
-    expect(textContent(tree).replace(/\s+/gu, " ")).toContain("Claude Opus 5.5 custom model · High · Auto");
+    expect(textContent(tree).replace(/\s+/gu, " ")).toContain("Claude Opus 5.5 custom model · 高 · 自动模式");
     expect(elements(tree).some(element => element.props["aria-label"] === "会话设置")).toBe(canConfigure);
     const updated = { ...snapshot, sessions: [{ ...snapshot.sessions[0]!, nativePermissionMode: "dontAsk" as const }] };
     tree = sessions.draw({ ...sessionsProps, snapshot: updated });
-    expect(textContent(tree).replace(/\s+/gu, " ")).toContain("Claude Opus 5.5 custom model · High · Don't Ask");
+    expect(textContent(tree).replace(/\s+/gu, " ")).toContain("Claude Opus 5.5 custom model · 高 · 仅允许已批准");
     const bypassed = { ...snapshot, sessions: [{ ...snapshot.sessions[0]!, nativePermissionMode: "bypassPermissions" as const }] };
     tree = sessions.draw({ ...sessionsProps, snapshot: bypassed });
-    expect(textContent(tree).replace(/\s+/gu, " ")).toContain("Claude Opus 5.5 custom model · High · Bypass");
+    expect(textContent(tree).replace(/\s+/gu, " ")).toContain("Claude Opus 5.5 custom model · 高 · 完全授权");
     expect(elements(tree).some(element => typeof element.props.className === "string" && element.props.className.includes("is-bypass"))).toBe(true);
     expect(apiRequest).not.toHaveBeenCalled();
   });
@@ -1994,7 +1994,7 @@ describe("unified desktop and assistant conversation composition", () => {
         },
       },
     });
-    await expect(artifactDownloadPromise).rejects.toThrow("主机已切换");
+    await expect(artifactDownloadPromise).rejects.toThrow("电脑已切换");
     standaloneTree = standalone.draw();
     expect(collectDiagnosticsStateSnapshot().desktopConversations).toMatchObject({ artifactTransfersCount: 1 });
 
@@ -2019,7 +2019,7 @@ describe("unified desktop and assistant conversation composition", () => {
     await settle();
     standaloneTree = standalone.draw();
     expect(collectDiagnosticsStateSnapshot().desktopConversations).toMatchObject({ artifactTransfersCount: 0 });
-    expect(elements(standaloneTree).some((element) => element.props.role === "alert" && textContent(element).includes("主机已切换"))).toBe(true);
+    expect(elements(standaloneTree).some((element) => element.props.role === "alert" && textContent(element).includes("电脑已切换"))).toBe(true);
 
     // Neither host-2 nor host-1 receives read or close with stale transferIds after the host switch
     expect(host2Api).not.toHaveBeenCalled();
@@ -2155,10 +2155,10 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
     tree = sessions.draw();
     expect(elements(tree).some((element) => element.props.className === "project-group-empty" && element.props.children === "此分组暂无会话")).toBe(true);
 
-    // Create section via 项目 micro-header + 分组 -> 新建 Section modal (auto-expanded via revealedEmptySectionKey)
+    // Create section via 项目 micro-header + 分组 -> 新建分组 modal (auto-expanded via revealedEmptySectionKey)
     elements(tree).find((element) => element.type === "button" && element.props.children === "+ 分组")!.props.onClick();
     tree = sessions.draw();
-    const sectionInput = elements(tree).find((element) => element.props["aria-label"] === "Section 名称")!;
+    const sectionInput = elements(tree).find((element) => element.props["aria-label"] === "分组名称")!;
     sectionInput.props.onChange({ target: { value: "Experiments" } });
     tree = sessions.draw();
     apiRequest.mockResolvedValueOnce({
@@ -2178,7 +2178,7 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
         },
       },
     });
-    const sectionDialog = elements(tree).find((element) => element.props["aria-label"] === "新建 Section")!;
+    const sectionDialog = elements(tree).find((element) => element.props["aria-label"] === "新建分组")!;
     const sectionForm = elements(sectionDialog).find((element) => element.type === "form")!;
     sectionForm.props.onSubmit({ preventDefault: vi.fn() });
     await settle();

@@ -3,9 +3,9 @@ import { LoaderCircle, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
 import { IconButton } from "../common/IconButton.js";
+import { PERMISSION_MODE_LABELS } from "../session/session-labels.js";
 
 const DIALOG_TITLES: Partial<Record<BridgeSessionCommandResult["action"], string>> = { help: "会话命令", permissions: "会话权限", resume: "恢复会话" };
-const MODE_LABELS: Record<BridgeSDKPermissionMode, string> = { default: "标准授权", acceptEdits: "自动接受编辑", plan: "计划模式", dontAsk: "仅允许已批准", auto: "自动判断", bypassPermissions: "完全授权" };
 const RULES = ["allow", "ask", "deny"] as const;
 
 export interface SessionPermissionsActions {
@@ -55,7 +55,7 @@ export function SessionPermissionsEditor({ onLoadPermissions, onSavePermissions,
   return <div className="session-permissions-editor">
     <div className="session-command-body">
     {loading ? <div className="session-configuration-loading"><LoaderCircle className="is-spinning" size={18} />正在读取会话权限</div> : permissions && <>
-      <div className="session-permission-status">当前生效：{MODE_LABELS[permissions.mode]}</div>
+      <div className="session-permission-status">当前生效：{PERMISSION_MODE_LABELS[permissions.mode]}</div>
       <fieldset className="session-permission-field"><legend>当前会话覆盖 · 每行一条规则</legend>
         {RULES.map(kind => <label className="session-model-field" key={kind}><span>{kind}</span>
           <textarea aria-label={`会话 ${kind} 规则`} rows={3} value={rules[kind]} disabled={!permissions.canConfigure || saving}

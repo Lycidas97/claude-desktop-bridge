@@ -2034,13 +2034,6 @@
   border-bottom: 1px solid var(--line);
 }
 
-.evidence-list-heading {
-  color: var(--muted);
-  font-size: calc(12px * var(--font-scale));
-  font-weight: 600;
-  letter-spacing: 0.01em;
-}
-
 .evidence-list-count {
   flex: none;
   color: var(--muted);

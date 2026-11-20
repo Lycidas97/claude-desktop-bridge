@@ -80,7 +80,7 @@ export function DesktopDashboard({ themeControl }: { themeControl: ThemeControl 
     return (
       <div className="desktop-loading">
         <BrandMark />
-        <span>正在准备会话主机</span>
+        <span>正在准备会话</span>
       </div>
     );
   }

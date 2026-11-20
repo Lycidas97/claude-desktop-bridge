@@ -196,7 +196,7 @@ export function MagpieModelQuota({ model }: { model: QuotaModel }) {
   return <details className="magpie-quota-model">
     <summary>{modelQuotaLabel(snapshot, model)}{loading ? " · 刷新中" : error || !enabled ? " · 上次数据" : ""}</summary>
     {match.status === "routing"
-      ? <p>自动路由会选择多个渠道，请在“设置 → Magpie 额度”查看各渠道账号。</p>
+      ? <p>自动路由会选择多个渠道，请在「设置 → Magpie 额度」查看各渠道账号。</p>
       : <QuotaAccounts accounts={match.accounts} now={Date.now()} />}
   </details>;
 }

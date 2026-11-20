@@ -421,7 +421,7 @@ export function MobileSessionCatalog({
           {!snapshot && online && (
             <EmptyState
               icon={<LoaderCircle className="is-spinning" size={20} />}
-              title="正在同步主机状态"
+              title="正在同步电脑状态"
             />
           )}
 

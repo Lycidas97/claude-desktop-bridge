@@ -129,7 +129,7 @@ export function DiagnosticFloatingEntry({ desktopSnapshot }: { desktopSnapshot?:
       link.click();
       document.body.removeChild(link);
       setTimeout(() => URL.revokeObjectURL(url), 5_000);
-      setStatusNotice(`已触发下载: ${filename}`);
+      setStatusNotice(`已触发下载：${filename}`);
     } catch {
       const copied = copyTextFallback(text);
       setStatusNotice(copied ? "导出已转为复制到剪贴板" : "请在下方文本框长按全选复制");
@@ -139,7 +139,7 @@ export function DiagnosticFloatingEntry({ desktopSnapshot }: { desktopSnapshot?:
   async function handleProbe(): Promise<void> {
     if (probing) return;
     setProbing(true);
-    setStatusNotice("正在探测中继连通性...");
+    setStatusNotice("正在探测中继连通性…");
     try {
       await runRelayConnectivityProbe(desktopSnapshot?.host.relayUrl);
       const text = await buildDiagnosticReportText(desktopSnapshot);
@@ -153,15 +153,15 @@ export function DiagnosticFloatingEntry({ desktopSnapshot }: { desktopSnapshot?:
   async function handleRepair(): Promise<void> {
     if (repairing) return;
     setRepairing(true);
-    setStatusNotice("正在清理旧缓存并重置私有中继路由...");
+    setStatusNotice("正在清理旧缓存并重置私有中继路由…");
     try {
       await repairVaultAndReconnect();
-      setStatusNotice("修复完成，正在重新加载...");
+      setStatusNotice("修复完成，正在重新加载…");
       setTimeout(() => {
         window.location.reload();
       }, 400);
     } catch (error) {
-      setStatusNotice(`修复失败: ${error instanceof Error ? error.message : String(error)}`);
+      setStatusNotice(`修复失败：${error instanceof Error ? error.message : String(error)}`);
       setRepairConfirmOpen(false);
       setRepairing(false);
     }
@@ -205,8 +205,8 @@ export function DiagnosticFloatingEntry({ desktopSnapshot }: { desktopSnapshot?:
               <div>
                 <h2>连接诊断与按需日志</h2>
                 <span className="diagnostic-meta">
-                  {BUILD_DIAG_TAG} · 状态: {conn} / 电脑{desktopOnline ? "在线" : "未就绪"}
-                  {!desktopSnapshot && <> · 缓存消息: {String(idbInfo.messagesCount ?? "?")}</>}
+                  {BUILD_DIAG_TAG} · 状态：{conn} / 电脑{desktopOnline ? "在线" : "未就绪"}
+                  {!desktopSnapshot && <> · 缓存消息：{String(idbInfo.messagesCount ?? "?")}</>}
                 </span>
               </div>
               <IconButton label="关闭" onClick={() => {
@@ -237,7 +237,7 @@ export function DiagnosticFloatingEntry({ desktopSnapshot }: { desktopSnapshot?:
                   分享/导出 .log
                 </button>
                 <button type="button" className="secondary-button" onClick={() => void handleProbe()} disabled={probing}>
-                  {probing ? "探测中..." : "探测中继"}
+                  {probing ? "探测中…" : "探测中继"}
                 </button>
                 <button type="button" className="secondary-button" onClick={() => clearDiagEntries()}>
                   清空
@@ -251,7 +251,7 @@ export function DiagnosticFloatingEntry({ desktopSnapshot }: { desktopSnapshot?:
                     此操作影响手机保存的所有电脑：清空全部缓存消息和待发送消息，重置所有电脑的中继连接路由，并重新加载应用。
                   </p>
                   <button type="button" className="danger-button" onClick={() => setRepairConfirmOpen(true)} disabled={repairing}>
-                    {repairing ? "修复中..." : "清理所有电脑缓存并重连…"}
+                    {repairing ? "修复中…" : "清理所有电脑缓存并重连…"}
                   </button>
                 </details>
               )}

@@ -1118,7 +1118,7 @@ describe("mobile session creation", () => {
     modelMenu().props.onChange("claude-opus-4-7"); draw();
     const effortBtn = elements(tree).find(element => element.type === "button" && element.props.children === "极高")!;
     effortBtn.props.onClick(); draw();
-    const permissionMenu = () => elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "授权模式")!;
+    const permissionMenu = () => elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "权限模式")!;
     permissionMenu().props.onChange("bypassPermissions"); draw();
     const confirmBypass = elements(tree).find(element => element.type === ConfirmationDialog && element.props.title === "启用完全授权")!;
     expect(confirmBypass.props.open).toBe(true);
@@ -1128,8 +1128,10 @@ describe("mobile session creation", () => {
     expect(permissionMenu().props.value).toBe("plan");
     const styleMenu = elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "输出风格")!;
     expect(styleMenu.props.value).toBe("");
-    expect(styleMenu.props.options).toContainEqual({ value: "default", label: "默认" });
-    styleMenu.props.onChange("default");
+    // One 默认 keeps Claude Desktop's own choice; no second explicit "default" entry.
+    expect(styleMenu.props.options.map((option: { value: string; label: string }) => option.value)).toEqual(["", "Learning", "Personal notes"]);
+    expect(styleMenu.props.options[0]).toEqual({ value: "", label: "默认" });
+    styleMenu.props.onChange("Personal notes");
     draw();
 
     // A Native session still on "default" can project the selected picker ID as its fallback label.
@@ -1140,7 +1142,7 @@ describe("mobile session creation", () => {
     expect(props.onCreateSession).toHaveBeenCalledWith("/tmp/project-2", undefined, "claude-desktop", "project-2");
     expect(callOrder).toEqual([
       "create:/tmp/project-2:project-2",
-      "configure:created-1:claude-opus-4-7:xhigh:plan:default",
+      "configure:created-1:claude-opus-4-7:xhigh:plan:Personal notes",
       "send:created-1:跨入口保留的新建草稿",
     ]);
   });
@@ -1248,7 +1250,7 @@ describe("mobile session creation", () => {
     startNewChatFromDrawer();
     elements(tree).find(element => element.type === "textarea" && element.props["aria-label"] === "给 Claude 发指令")!
       .props.onChange({ target: { value: "待配置后发送的首条消息" } });
-    elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "授权模式")!.props.onChange("plan");
+    elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "权限模式")!.props.onChange("plan");
     draw();
     await form().props.onSubmit({ preventDefault() {} });
     await settle();
@@ -1304,7 +1306,7 @@ describe("mobile session creation", () => {
     const newChatTextarea = () => elements(tree).find(element => element.type === "textarea" && element.props["aria-label"] === "给 Claude 发指令")!;
     newChatTextarea().props.onChange({ target: { value: "必须在计划模式下执行的敏感指令" } });
     draw();
-    elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "授权模式")!.props.onChange("plan");
+    elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "权限模式")!.props.onChange("plan");
     draw();
 
     // First submit hits WORKSPACE_TRUST_REQUIRED; second plain submit must STILL NOT pass trustWorkspace=true!
@@ -1332,14 +1334,14 @@ describe("mobile session creation", () => {
     expect(props.onCreateSession).toHaveBeenNthCalledWith(3, "/tmp/project", undefined, "claude-desktop", undefined, true);
     expect(props.onSendTurn).not.toHaveBeenCalled();
     expect(input().props.value).toBe("必须在计划模式下执行的敏感指令");
-    expect(elements(tree).some(el => el.props.role === "alert" && nodeText(el).includes("所选授权模式未生效"))).toBe(true);
+    expect(elements(tree).some(el => el.props.role === "alert" && nodeText(el).includes("所选权限模式未生效"))).toBe(true);
   });
 });
 
 describe("mobile section creation", () => {
   let create: ReturnType<typeof vi.fn>;
   const createAction = () => elements(tree).find(element => element.type === "button" && element.props.children === "+ 分组");
-  const dialog = () => elements(tree).find(element => element.props.role === "dialog" && element.props["aria-label"] === "新建 Section");
+  const dialog = () => elements(tree).find(element => element.props.role === "dialog" && element.props["aria-label"] === "新建分组");
   const nameInput = () => elements(dialog()).find(element => element.type === "input")!;
   const submitButton = () => elements(dialog()).find(element => element.type === "button" && element.props.type === "submit")!;
   function enable(capable = true) {

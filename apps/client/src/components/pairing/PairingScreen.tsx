@@ -81,7 +81,7 @@ export function PairingScreen({
   return (
     <main className="pairing-shell">
       <header className="pairing-header pairing-nav">
-        {onCancel && <IconButton label="返回主机列表" onClick={onCancel}><ArrowLeft size={19} /></IconButton>}
+        {onCancel && <IconButton label="返回电脑列表" onClick={onCancel}><ArrowLeft size={19} /></IconButton>}
         <BrandMark />
       </header>
       <section className="pairing-panel" aria-labelledby="pair-title">

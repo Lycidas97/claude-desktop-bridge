@@ -179,7 +179,7 @@ Remote reads are subject to workspace and sensitive-path checks. Pairing does no
 - **File preview fails**: check that the file is still readable in the workspace and not a sensitive path, and whether the 1 MiB size confirmation or the 20 MiB transfer limit blocks it.
 - **No immediate notification while locked**: check system notification permission. Online local notifications are separate from background push. Android FCM needs separate application and service credentials; a minimal relay setup does not guarantee immediate lock-screen wakeups.
 
-For further investigation, export diagnostics from desktop **Settings → Diagnostics and About (设置 → 诊断与关于)**; on the phone, open **Settings → Connection diagnostics and logs (设置 → 连接诊断与日志)**. When reporting a problem, include versions, platform, steps and the exact error, but leave out pairing links, keys and conversation content. Report reproducible issues in [Issues](https://github.com/Lycidas97/claude-desktop-bridge/issues).
+For further investigation, export diagnostics from desktop **Settings → Diagnostics and support (设置 → 诊断与支持)**; on the phone, open **Settings → Connection diagnostics and logs (设置 → 连接诊断与日志)**. When reporting a problem, include versions, platform, steps and the exact error, but leave out pairing links, keys and conversation content. Report reproducible issues in [Issues](https://github.com/Lycidas97/claude-desktop-bridge/issues).
 
 ## Documentation and development
 

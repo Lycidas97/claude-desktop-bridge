@@ -268,7 +268,7 @@ export function isQueuedConversationMessage(item: ConversationItem, session: Bri
 export function deliveryLabel(state: BridgeDeliveryState): string {
   if (state === "local-saved") return "已保存到手机";
   if (state === "relay-received") return "已送达中继，等待电脑接收";
-  if (state === "host-received") return "主机已接收";
+  if (state === "host-received") return "电脑已接收";
   if (state === "submitted") return "已提交，等待执行";
   if (state === "waiting-confirmation") return "等待电脑允许接收";
   if (state === "session-received") return "已接收";
@@ -666,7 +666,7 @@ export function conversationItems(
         role: "system",
         text: event.type === "prompt.resolved"
           ? `${event.data.resolvedByName}回答了 Desktop 提示`
-          : `${event.data.resolvedByName}${event.data.enabled === true ? "开启" : "关闭"}了${event.data.target === "own-prs" ? "仅我的 PR" : event.data.target === "next-pr" ? "下一个 PR 布防" : "PR Auto-fix"}`,
+          : `${event.data.resolvedByName}${event.data.enabled === true ? "开启" : "关闭"}了${event.data.target === "own-prs" ? "仅我的 PR" : event.data.target === "next-pr" ? "跟踪下一个 PR" : "PR Auto-fix"}`,
         createdAt: event.timestamp,
         origin: "system",
       });

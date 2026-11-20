@@ -292,7 +292,7 @@ function MobileApp({ themeControl }: { themeControl: ThemeControl }) {
       allowOffline: false,
       timeoutMs: 45_000,
     });
-    if (!response?.ok) throw new Error(response?.error?.message ?? "远端桌面更新指令执行失败");
+    if (!response?.ok) throw new Error(response?.error?.message ?? "电脑端更新指令执行失败");
     return response.result as BridgeUpdaterSnapshot;
   }, [request]);
   const remoteDesktopUpdate = useMemo<RemoteDesktopUpdateControl | undefined>(() => {

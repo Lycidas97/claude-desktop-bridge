@@ -100,7 +100,7 @@ describe("PR Auto-fix disclosure", () => {
     expect(checkbox).toBeDefined();
     expect(checkbox!.props.checked).toBe(true);
     expect(checkbox!.props.disabled).toBe(true);
-    expect(elements(reopened).find(element => element.type === "button" && text(element) === "已布防下一个 PR")!.props.disabled).toBe(true);
+    expect(elements(reopened).find(element => element.type === "button" && text(element) === "正在跟踪下一个 PR")!.props.disabled).toBe(true);
     expect(onRead).toHaveBeenCalledTimes(1);
   });
 
@@ -112,7 +112,7 @@ describe("PR Auto-fix disclosure", () => {
       onRead: vi.fn().mockResolvedValue({ ...state, prs: [] }), onSet, onWriteBusyChange };
     renderPr(props);
     await Promise.resolve();
-    elements(renderPr(props)).find(element => element.type === "button" && text(element) === "布防下一个 PR")!.props.onClick();
+    elements(renderPr(props)).find(element => element.type === "button" && text(element) === "跟踪下一个 PR")!.props.onClick();
     expect(onWriteBusyChange).toHaveBeenLastCalledWith(true);
     rejectWrite(new Error("Desktop 拒绝延迟写入"));
     await Promise.resolve();
@@ -137,13 +137,13 @@ describe("PR Auto-fix disclosure", () => {
     tree = renderPr(props);
     expect(onSet).toHaveBeenLastCalledWith({ sessionId: "session-1", target: "own-prs", enabled: true });
     expect(elements(tree).find(element => element.type === "input")!.props.checked).toBe(true);
-    elements(tree).find(element => element.type === "button" && text(element) === "布防下一个 PR")!.props.onClick();
+    elements(tree).find(element => element.type === "button" && text(element) === "跟踪下一个 PR")!.props.onClick();
     await Promise.resolve();
     tree = renderPr(props);
     expect(onSet).toHaveBeenLastCalledWith({ sessionId: "session-1", target: "next-pr", enabled: true });
     expect(text(tree)).toContain("Desktop 拒绝布防");
     expect(elements(tree).find(element => element.type === "input")!.props.checked).toBe(true);
-    expect(elements(tree).find(element => element.type === "button" && text(element) === "布防下一个 PR")!.props.disabled).toBe(false);
+    expect(elements(tree).find(element => element.type === "button" && text(element) === "跟踪下一个 PR")!.props.disabled).toBe(false);
     expect(onRead).toHaveBeenCalledTimes(1);
   });
 
@@ -200,11 +200,11 @@ describe("PR Auto-fix disclosure", () => {
     open(render());
     await Promise.resolve();
     let tree = render();
-    elements(tree).find(element => element.type === "button" && text(element) === "布防下一个 PR")!.props.onClick();
+    elements(tree).find(element => element.type === "button" && text(element) === "跟踪下一个 PR")!.props.onClick();
     await Promise.resolve();
     tree = render();
     expect(onSet).toHaveBeenCalledWith({ sessionId: "session-1", target: "next-pr", enabled: true });
-    expect(elements(tree).find(element => element.type === "button" && text(element) === "布防下一个 PR")!.props.disabled).toBe(false);
+    expect(elements(tree).find(element => element.type === "button" && text(element) === "跟踪下一个 PR")!.props.disabled).toBe(false);
     expect(text(tree)).toContain("Desktop 拒绝布防");
   });
 
@@ -231,9 +231,9 @@ describe("PR Auto-fix disclosure", () => {
     const props = { session, supported: true, online: true, onRead, onSet };
     open(renderPr(props));
     await Promise.resolve();
-    expect(elements(renderPr(props)).find(element => element.type === "button" && text(element) === "已布防下一个 PR")!.props.disabled).toBe(true);
+    expect(elements(renderPr(props)).find(element => element.type === "button" && text(element) === "正在跟踪下一个 PR")!.props.disabled).toBe(true);
     const next = renderPr({ ...props, session: { ...session, prAutoFix: { onlyOwnPrs: true, nextOwnPrArmed: false } } });
-    expect(elements(next).find(element => element.type === "button" && text(element) === "布防下一个 PR")!.props.disabled).toBe(false);
+    expect(elements(next).find(element => element.type === "button" && text(element) === "跟踪下一个 PR")!.props.disabled).toBe(false);
     expect(onRead).toHaveBeenCalledTimes(1);
     expect(onSet).not.toHaveBeenCalled();
   });
@@ -249,7 +249,7 @@ describe("PR Auto-fix disclosure", () => {
       data: { error: "Native 布防已失效", state },
     };
     const next = renderPr({ ...props, events: [event] });
-    expect(elements(next).find(element => element.type === "button" && text(element) === "布防下一个 PR")!.props.disabled).toBe(false);
+    expect(elements(next).find(element => element.type === "button" && text(element) === "跟踪下一个 PR")!.props.disabled).toBe(false);
     expect(text(next)).toContain("Native 布防已失效");
     expect(onRead).toHaveBeenCalledTimes(1);
     expect(onSet).not.toHaveBeenCalled();

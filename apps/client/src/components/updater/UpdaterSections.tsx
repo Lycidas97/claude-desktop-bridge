@@ -75,9 +75,9 @@ export function DesktopUpdaterSection({
   const releaseHref = safeReleaseHref(updater.releaseUrl);
 
   return (
-    <section className="provider-settings-profile" aria-label="版本更新">
+    <section className="provider-settings-profile" aria-label="版本与更新">
       <div className="settings-section-heading">
-        <h3>版本更新</h3>
+        <h3>版本与更新</h3>
         <span className={hasAvailableUpdate ? "updater-badge-available" : undefined}>
           {formatDesktopUpdaterPhase(updater)}
         </span>
@@ -203,14 +203,14 @@ export function RemoteDesktopUpdaterSection({
     <section className="mobile-settings-group" aria-labelledby={headingId}>
       <h2 id={headingId}>{heading}</h2>
       <div className="mobile-settings-row">
-        <span>桌面端版本</span>
+        <span>电脑端版本</span>
         <span className="mobile-settings-value">v{remote.hostVersion}</span>
       </div>
       <div className="mobile-settings-row">
         <span>更新状态</span>
         <span className={`mobile-settings-value ${updater?.phase === "available" || updater?.phase === "ready" ? "updater-badge-available" : ""}`}>
           {!remote.supported
-            ? "旧版桌面端不支持远程检查"
+            ? "旧版电脑端不支持远程检查"
             : !remote.connected
               ? "离线"
               : formatDesktopUpdaterPhase(updater)}

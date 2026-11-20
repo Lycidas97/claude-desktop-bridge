@@ -670,9 +670,9 @@ export async function verifySectionManage(page, host, steps, directory) {
 
   async function createSectionFromDirectory(name) {
     await drawer.getByRole("button", { name: "+ 分组", exact: true }).click();
-    const dialog = page.getByRole("dialog", { name: "新建 Section" });
-    await dialog.getByLabel("Section 名称").fill(name);
-    await dialog.getByRole("button", { name: "创建 Section", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "新建分组" });
+    await dialog.getByLabel("分组名称").fill(name);
+    await dialog.getByRole("button", { name: "创建分组", exact: true }).click();
     await dialog.waitFor({ state: "detached" });
   }
 

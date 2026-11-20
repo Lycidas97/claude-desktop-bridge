@@ -10,7 +10,7 @@ import { SelectMenu } from "../common/SelectMenu.js";
 import type { ConversationViewProps } from "../conversation/ConversationView.js";
 import { formatContextTokens } from "../conversation/SessionActivityIndicator.js";
 import { MobilePageHeader } from "../mobile/MobilePageHeader.js";
-import { effortLabel } from "../session/SessionConfigurationDialog.js";
+import { effortLabel } from "../session/session-labels.js";
 import { SessionCreateDialog } from "../session/SessionCreateDialog.js";
 import { mailResult, useAssistantMail, type AssistantRequest } from "./AssistantMailProvider.js";
 import { AgendaSources } from "./AgendaSources.js";
@@ -559,7 +559,7 @@ function MailAccounts({ accounts, configUnavailable, credentialsSupported, onlin
       const state = account.enabled ? account.state : "disabled";
       const failure = account.enabled && account.errorCode ? RECEIVER_ERRORS.get(account.errorCode) : undefined;
       const status = supportsPolling && state === "connected"
-        ? account.receivingMode === "polling" ? "轮询中" : "已连接（IDLE）"
+        ? account.receivingMode === "polling" ? "定时轮询" : "实时接收"
         : supportsPolling && account.errorCode === "mail_idle_unsupported" && state === "unsupported"
           ? "不支持持续收件，轮询已关闭"
           : failure?.label ?? RECEIVER_LABELS[state];

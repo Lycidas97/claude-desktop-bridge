@@ -1295,14 +1295,6 @@ button.mobile-settings-row:active { background: var(--surface-2); }
   padding: 16px max(var(--m-gutter), env(safe-area-inset-right)) max(28px, env(safe-area-inset-bottom)) max(var(--m-gutter), env(safe-area-inset-left));
 }
 
-.host-browser-section-head {
-  padding: 0 2px 8px;
-  border-bottom: 1px solid var(--line);
-  color: var(--muted);
-  font-size: var(--m-fs-footnote);
-  font-weight: 600;
-}
-
 .mobile-app-shell .host-rows {
   border: 0;
   border-radius: 0;

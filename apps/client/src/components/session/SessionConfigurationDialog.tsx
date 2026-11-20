@@ -15,36 +15,13 @@ import { ConfirmationDialog } from "../common/ConfirmationDialog.js";
 import { IconButton } from "../common/IconButton.js";
 import { SelectMenu } from "../common/SelectMenu.js";
 import { formatContextPercentage, formatContextTokens } from "../conversation/SessionActivityIndicator.js";
-
-const EFFORT_LABELS: Record<string, string> = {
-  none: "关闭",
-  minimal: "最小",
-  low: "低",
-  medium: "中",
-  high: "高",
-  xhigh: "极高",
-  max: "最大",
-  ultra: "超高",
-};
-
-export function effortLabel(value: string): string {
-  return Object.hasOwn(EFFORT_LABELS, value) ? EFFORT_LABELS[value]! : value;
-}
+import { PERMISSION_MODE_OPTIONS, effortLabel } from "./session-labels.js";
 
 export function modelEffortLevels(model: BridgeModelInfo | undefined, fallback: readonly BridgeEffort[]): readonly BridgeEffort[] {
   return model?.supportsEffort === false ? []
     : model?.declaredEffortLevels ? model.supportedEffortLevels ?? []
     : model?.supportedEffortLevels?.length ? model.supportedEffortLevels : fallback;
 }
-
-export const PERMISSION_MODE_OPTIONS: ReadonlyArray<{ value: BridgeSDKPermissionMode; label: string }> = [
-  { value: "default", label: "默认" },
-  { value: "acceptEdits", label: "允许文件修改" },
-  { value: "plan", label: "计划模式" },
-  { value: "auto", label: "自动模式" },
-  { value: "dontAsk", label: "不询问" },
-  { value: "bypassPermissions", label: "完全授权" },
-];
 
 export interface SessionConfigurationChange {
   model?: string | null;
@@ -218,7 +195,7 @@ export function SessionConfigurationDialog({
                   onChange={setModel}
                 />
                 {(selectedModel?.description || !configuration?.modelsComplete) && (
-                  <small>{selectedModel?.description || "仅显示当前主机已发现的模型"}</small>
+                  <small>{selectedModel?.description || "仅显示当前电脑已发现的模型"}</small>
                 )}
               </div>
             )}
@@ -247,9 +224,9 @@ export function SessionConfigurationDialog({
 
             {configurablePermission && (
               <div className="session-model-field">
-                <span>Desktop 授权模式</span>
+                <span>权限模式</span>
                 <SelectMenu<BridgeSDKPermissionMode>
-                  ariaLabel="Desktop 授权模式"
+                  ariaLabel="权限模式"
                   value={nativePermissionMode ?? configurablePermission}
                   options={PERMISSION_MODE_OPTIONS}
                   onChange={(nextMode) => setNativePermissionMode(nextMode)}

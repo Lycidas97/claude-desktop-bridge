@@ -272,7 +272,7 @@ export function MobileHostDetails({
           );
         })}
         <div className="mobile-settings-row">
-          <span>9229 调试端口</span>
+          <span>调试端口 9229</span>
           <span className="mobile-settings-value">
             {desktopOnline && snapshot ? claudeStatus.portLabel : "等待连接"}
           </span>
@@ -300,7 +300,7 @@ export function MobileHostDetails({
       <ConfirmationDialog
         open={Boolean(quitDesktopTarget)}
         title={`退出电脑上的 ${quitDesktopTarget ? desktopRuntimeName(quitDesktopTarget) : ""}？`}
-        description={`${quitDesktopTarget ? desktopRuntimeName(quitDesktopTarget) : ""} 窗口会关闭，Bridge 主机仍保持在线，可继续管理已接管的远程会话。`}
+        description={`${quitDesktopTarget ? desktopRuntimeName(quitDesktopTarget) : ""} 窗口会关闭，Bridge 仍保持在线，可继续管理已接管的远程会话。`}
         confirmLabel={`退出 ${quitDesktopTarget ? desktopRuntimeName(quitDesktopTarget) : ""}`}
         busy={desktopAction?.action === "quit"}
         danger
@@ -312,7 +312,7 @@ export function MobileHostDetails({
       <ConfirmationDialog
         open={removeOpen}
         title="移除这台电脑？"
-        description={`将清除“${desktopName}”在手机上的密钥和消息；电脑在线时也会同步撤销这台手机的权限。`}
+        description={`将清除「${desktopName}」在手机上的密钥和消息；电脑在线时也会同步撤销这台手机的权限。`}
         confirmLabel="移除电脑"
         danger
         busy={removing}

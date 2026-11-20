@@ -34,12 +34,8 @@ import {
 import { MobilePageHeader } from "../mobile/MobilePageHeader.js";
 import "./new-chat-canvas.css";
 import { SectionCreateDialog, type SectionCreateState } from "./SectionCreateDialog.js";
-import {
-  PERMISSION_MODE_OPTIONS,
-  effortLabel,
-  modelEffortLevels,
-  type SessionConfigurationChange,
-} from "./SessionConfigurationDialog.js";
+import { modelEffortLevels, type SessionConfigurationChange } from "./SessionConfigurationDialog.js";
+import { PERMISSION_MODE_OPTIONS, effortLabel } from "./session-labels.js";
 
 export const NEW_CHAT_DRAFT_SESSION_ID = "__new__";
 const CREATE_SECTION_OPTION_VALUE = "__create_section__";
@@ -426,7 +422,7 @@ export function NewChatCanvas({
     setSectionCreate({ ...sectionCreate, busy: true, error: "" });
     try {
       const created = await onCreateSection(sectionCreate.name.trim());
-      if (!created) throw new Error("Section 未创建，请重试。");
+      if (!created) throw new Error("分组未创建，请重试。");
       setCreatedGroups((current) => [
         created,
         ...current.filter((candidate) => candidate.projectId !== created.projectId),
@@ -439,7 +435,7 @@ export function NewChatCanvas({
       setSectionCreate({
         ...sectionCreate,
         busy: false,
-        error: reason instanceof Error ? reason.message : "Section 创建失败",
+        error: reason instanceof Error ? reason.message : "分组创建失败",
       });
     }
   }
@@ -555,7 +551,7 @@ export function NewChatCanvas({
               && applied?.nativePermissionMode !== undefined
               && applied.nativePermissionMode !== change.permissionMode
             ) {
-              configurationError = "所选授权模式未生效，请检查会话设置后再发送。";
+              configurationError = "所选权限模式未生效，请检查会话设置后再发送。";
             }
           } catch (configReason) {
             configurationError = (configReason instanceof Error && configReason.message) || "会话配置应用失败。";
@@ -691,7 +687,7 @@ export function NewChatCanvas({
                     { value: "", label: CLAUDE_UNSECTIONED_PROJECT_NAME },
                     ...(groupUnavailable ? [{ value: selectedProjectId, label: "分组已不可用", disabled: true }] : []),
                     ...manualGroups.map((project) => ({ value: project.projectId, label: project.name })),
-                    ...(canCreateSection ? [{ value: CREATE_SECTION_OPTION_VALUE, label: "＋ 新建分组…" }] : []),
+                    ...(canCreateSection ? [{ value: CREATE_SECTION_OPTION_VALUE, label: "+ 新建分组…" }] : []),
                   ]}
                   onChange={(nextGroupId) => {
                     if (nextGroupId === CREATE_SECTION_OPTION_VALUE) {
@@ -741,7 +737,7 @@ export function NewChatCanvas({
               <SelectMenu
                 ariaLabel="模型"
                 value={model}
-                placeholder={configLoading ? "正在读取模型…" : "跟随 Claude Desktop 默认"}
+                placeholder={configLoading ? "正在读取模型…" : "默认"}
                 disabled={!connected || locked || modelOptions.length === 0}
                 options={modelOptions.map((candidate) => ({
                   value: candidate.value,
@@ -773,9 +769,9 @@ export function NewChatCanvas({
             )}
 
             <div className="new-chat-config-row">
-              <span className="new-chat-config-label">授权模式</span>
+              <span className="new-chat-config-label">权限模式</span>
               <SelectMenu<BridgeSDKPermissionMode>
-                ariaLabel="授权模式"
+                ariaLabel="权限模式"
                 value={permissionMode}
                 disabled={!connected || locked}
                 options={PERMISSION_MODE_OPTIONS}
@@ -791,8 +787,8 @@ export function NewChatCanvas({
                   value={outputStyle}
                   disabled={!connected || locked}
                   options={[
-                    { value: "", label: "跟随 Claude Desktop" },
-                    ...[...new Set(["default", ...outputStyles])].map((style) => ({ value: style, label: style === "default" ? "默认" : style })),
+                    { value: "", label: "默认" },
+                    ...outputStyles.filter((style) => style !== "default").map((style) => ({ value: style, label: style })),
                   ]}
                   onChange={setOutputStyle}
                 />

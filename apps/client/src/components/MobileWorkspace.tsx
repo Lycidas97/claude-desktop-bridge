@@ -361,7 +361,7 @@ export function MobileWorkspace({
     options?: { clearSearch?: boolean | undefined },
   ): Promise<BridgeProjectInfo> {
     const project = await onCreateSection!(rawName.trim());
-    if (!project) throw new Error("Section 未创建，请重试。");
+    if (!project) throw new Error("分组未创建，请重试。");
     sectionManage.revealEmptySections();
     registerCreatedSection(project.projectId, options);
     return project;
@@ -377,7 +377,7 @@ export function MobileWorkspace({
       setSectionCreate({
         ...sectionCreate,
         busy: false,
-        error: reason instanceof Error ? reason.message : "Section 创建失败",
+        error: reason instanceof Error ? reason.message : "分组创建失败",
       });
     }
   }

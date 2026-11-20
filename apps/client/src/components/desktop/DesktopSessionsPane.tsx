@@ -66,7 +66,7 @@ export type DesktopWorkspaceTab = "sessions" | "assistant" | "settings";
 export function connectionLabel(snapshot: DesktopControlSnapshot): string {
   if (snapshot.host.version.startsWith("0.2.")) return "需要升级";
   if (snapshot.connection === "connecting" || snapshot.connection === "reconnecting") return "正在重连";
-  if (snapshot.connection !== "connected") return "主机离线";
+  if (snapshot.connection !== "connected") return "电脑离线";
   if (snapshot.transport?.path === "direct") return "直连";
   if (snapshot.transport?.path === "public-relay") return "安全中继";
   return "局域网连接";
@@ -326,7 +326,7 @@ export function DesktopSessions({
       method: "section.create",
       params: { name: rawName.trim() },
     }));
-    if (!project) throw new Error("Section 未创建，请重试。");
+    if (!project) throw new Error("分组未创建，请重试。");
     sectionManage.revealEmptySections();
     registerCreatedSection(project.projectId, options);
     await onRefreshSnapshot();
@@ -343,7 +343,7 @@ export function DesktopSessions({
       setSectionCreate({
         ...sectionCreate,
         busy: false,
-        error: reason instanceof Error ? reason.message : "Section 创建失败",
+        error: reason instanceof Error ? reason.message : "分组创建失败",
       });
     }
   }

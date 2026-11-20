@@ -93,7 +93,7 @@ export function SessionPrBar({ session, events, supported, online, onRead, onSet
             <button type="button" className="message-copy-button"
               disabled={!available || Boolean(busy) || !state?.capabilities.nextPr || preferences.nextOwnPrArmed === undefined || preferences.nextOwnPrArmed}
               onClick={() => void update({ sessionId: session.sessionId, target: "next-pr", enabled: true })}>
-              {preferences.nextOwnPrArmed ? "已布防下一个 PR" : "布防下一个 PR"}
+              {preferences.nextOwnPrArmed ? "正在跟踪下一个 PR" : "跟踪下一个 PR"}
             </button>
           </div>
         )}

@@ -129,11 +129,11 @@ test("packaged QA accepts a disconnected Native snapshot and checks live IPC con
   assert.ok(result.ui.includes("Claude 接入"));
   assert.ok(result.ui.includes("调试连接监测"));
   assert.ok(result.ui.includes("连接与启动"));
-  assert.ok(result.ui.includes("诊断与关于"));
+  assert.ok(result.ui.includes("诊断与支持"));
   assert.ok(result.ui.some(label => String(label).includes("后台诊断记录")));
   assert.ok(result.ui.includes('dt:text-is("原生中转") + dd'));
   assert.ok(result.ui.includes("已就绪"));
-  assert.ok(result.ui.includes("版本更新"));
+  assert.ok(result.ui.includes("版本与更新"));
 });
 
 test("packaged QA checks Windows Alt guidance and historical startup record independently", async () => {

@@ -443,7 +443,7 @@ describe("mobile workspace directory", () => {
           allowedActions: { canSend: true, canSteer: true, canInterrupt: false, canConfigure, canSwitchProvider: false, canContinueOfficial: false },
         }] },
       }));
-      expect(html.replace(/<[^>]+>/gu, "")).toContain("Claude Opus 5.5 custom model · High · Plan");
+      expect(html.replace(/<[^>]+>/gu, "")).toContain("Claude Opus 5.5 custom model · 高 · 计划模式");
       expect(html.includes('aria-label="会话设置"')).toBe(canConfigure);
       expect(html).toContain("Desktop 未切换为「完全授权」");
     } finally { stateSpy.mockReset(); }

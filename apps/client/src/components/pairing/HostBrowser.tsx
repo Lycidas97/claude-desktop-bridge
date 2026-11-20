@@ -107,9 +107,6 @@ export function HostBrowser({
       />
 
       <section className="host-browser" aria-label="已配对的电脑">
-        <header className="host-browser-section-head">
-          <span>已授权主机 · {hosts.length}</span>
-        </header>
         <div className="host-rows">
           {hosts.map((host) => {
             const isCurrent = host.roomId === activeHostId;
@@ -201,7 +198,7 @@ export function HostBrowser({
       <ConfirmationDialog
         open={Boolean(removeCandidate)}
         title="移除这台电脑？"
-        description={`将清除“${removeCandidate?.desktopName ?? "这台电脑"}”在手机上的密钥和消息；电脑在线时也会同步撤销这台手机的权限。`}
+        description={`将清除「${removeCandidate?.desktopName ?? "这台电脑"}」在手机上的密钥和消息；电脑在线时也会同步撤销这台手机的权限。`}
         confirmLabel="移除电脑"
         danger
         busy={removing}

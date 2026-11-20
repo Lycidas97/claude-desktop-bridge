@@ -1534,9 +1534,9 @@ export function bootstrapStoredBridgeHosts(
   } = refs;
   let active = true;
   void (async () => {
-    diagLog("info", "bridge", "读取本机已配对主机列表 (bridgeVault.listHosts)...");
+    diagLog("info", "bridge", "读取本机已配对电脑列表 (bridgeVault.listHosts)â¦");
     const hosts = await bridgeVault.listHosts();
-    diagLog("info", "bridge", `bridgeVault.listHosts 返回 ${hosts.length} 台主机`, hosts.map((h) => ({
+    diagLog("info", "bridge", `bridgeVault.listHosts 返回 ${hosts.length} 台电脑`, hosts.map((h) => ({
       roomId: h.roomId,
       relayUrl: h.relayUrl,
       desktopRelayUrl: h.desktopRelayUrl,
@@ -1825,7 +1825,7 @@ export function backToBridgeHosts(
 ): void {
   const { setState } = refs;
   teardownActiveTransport(refs, {
-    rejectPendingReason: "已返回主机列表",
+    rejectPendingReason: "已返回电脑列表",
     clearPairingSyncTimer: true,
   });
   writeLastActiveHost();

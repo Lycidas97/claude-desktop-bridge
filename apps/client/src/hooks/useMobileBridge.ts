@@ -517,7 +517,7 @@ export function useMobileBridge() {
 
   const createSection = useCallback(async (name: string): Promise<BridgeProjectInfo | undefined> => {
     const response = await sendRequest("section.create", { name }, { allowOffline: false, wait: true });
-    if (!response?.ok) throw new Error(response?.error?.message ?? "Section 创建失败");
+    if (!response?.ok) throw new Error(response?.error?.message ?? "分组创建失败");
     const { project } = response.result as { project?: BridgeProjectInfo };
     if (project) setState((current) => applyProjectCatalogPatchToState(current, { upsertProject: project }));
     return project;

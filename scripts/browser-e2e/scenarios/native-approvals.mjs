@@ -8,7 +8,7 @@ async function verifySessionHeader(page, host, steps, directory, baseUrl) {
   const session = host.snapshot.sessions.find(session => session.sessionId === sessionId);
   const profile = { ...host.nativeApproval.profile(), modelDisplayName: "Claude Opus 5.5 · custom-model-identifier-with-a-long-unbroken-name-1234567890", effort: "high" };
   host.nativeApproval.profile = () => profile;
-  const modes = { default: "Manual", acceptEdits: "Accept Edits", bypassPermissions: "Bypass", plan: "Plan", auto: "Auto", dontAsk: "Don't Ask" };
+  const modes = { default: "逐个确认", acceptEdits: "自动接受编辑", bypassPermissions: "完全授权", plan: "计划模式", auto: "自动模式", dontAsk: "仅允许已批准" };
   const accessibility = await page.context().newCDPSession(page);
   async function accessibleProfile() {
     const { root } = await accessibility.send("DOM.getDocument");
@@ -21,8 +21,8 @@ async function verifySessionHeader(page, host, steps, directory, baseUrl) {
     profile.nativePermissionMode = mode;
     Object.assign(session, profile);
     await host.send({ kind: "snapshot", snapshot: host.snapshot });
-    await eventually(() => page.locator(".m-header .session-profile-summary").textContent(), `${profile.modelDisplayName} · High · ${label}`, "The header shows the current mode with the complete model and effort");
-    await eventually(accessibleProfile, { name: "会话设置", description: `${profile.modelDisplayName} · High · ${label}` }, "Mobile settings announce the current snapshot profile");
+    await eventually(() => page.locator(".m-header .session-profile-summary").textContent(), `${profile.modelDisplayName} · 高 · ${label}`, "The header shows the current mode with the complete model and effort");
+    await eventually(accessibleProfile, { name: "会话设置", description: `${profile.modelDisplayName} · 高 · ${label}` }, "Mobile settings announce the current snapshot profile");
   }
   const notice = page.getByRole("status", { name: "Desktop 会话授权变更", exact: true });
   for (const state of ["requested", "not-applied", "confirmed"]) {
@@ -30,7 +30,7 @@ async function verifySessionHeader(page, host, steps, directory, baseUrl) {
     Object.assign(session, profile);
     await host.send({ kind: "snapshot", snapshot: host.snapshot });
     await eventually(() => notice.count(), state === "confirmed" ? 0 : 1, `Permission notice state ${state}`);
-    assert.ok((await page.locator(".m-header .session-profile-summary").textContent()).includes("Don't Ask"), "A requested mode never replaces the observed header mode");
+    assert.ok((await page.locator(".m-header .session-profile-summary").textContent()).includes("仅允许已批准"), "A requested mode never replaces the observed header mode");
   }
   async function checkProfileLayout(summary, surface, { metaText, stacked, modelEllipsized, canConfigure }) {
     const layout = await summary.evaluate(element => {
@@ -60,13 +60,13 @@ async function verifySessionHeader(page, host, steps, directory, baseUrl) {
   profile.modelDisplayName = "bridge/gpt-6.2-sol";
   Object.assign(session, profile);
   await host.send({ kind: "snapshot", snapshot: host.snapshot });
-  await eventually(() => mobileSummary.textContent(), "bridge/gpt-6.2-sol · High · Don't Ask", "The mobile header receives the model label");
-  await checkProfileLayout(mobileSummary, "Mobile 375px", { metaText: "High · Don't Ask", stacked: true, modelEllipsized: false, canConfigure: true });
+  await eventually(() => mobileSummary.textContent(), "bridge/gpt-6.2-sol · 高 · 仅允许已批准", "The mobile header receives the model label");
+  await checkProfileLayout(mobileSummary, "Mobile 375px", { metaText: "高 · 仅允许已批准", stacked: true, modelEllipsized: false, canConfigure: true });
   await page.screenshot({ path: resolve(directory, "mobile-header-375.png"), fullPage: true });
   profile.modelDisplayName = longModelName;
   Object.assign(session, profile);
   await host.send({ kind: "snapshot", snapshot: host.snapshot });
-  await eventually(() => mobileSummary.textContent(), `${longModelName} · High · Don't Ask`, "The mobile header receives the long model label");
+  await eventually(() => mobileSummary.textContent(), `${longModelName} · 高 · 仅允许已批准`, "The mobile header receives the long model label");
   for (const width of [375, 320]) {
     await page.setViewportSize({ width, height: 812 });
     for (const font of ["standard", "larger"]) {
@@ -76,7 +76,7 @@ async function verifySessionHeader(page, host, steps, directory, baseUrl) {
         await host.send({ kind: "snapshot", snapshot: host.snapshot });
         await eventually(() => page.getByRole("button", { name: "会话设置", exact: true }).count(), canConfigure ? 1 : 0, "Settings availability changes only the header action");
         await checkProfileLayout(mobileSummary, `Mobile ${width}px ${font} configure=${canConfigure}`, {
-          metaText: "High · Don't Ask", stacked: true, modelEllipsized: true, canConfigure,
+          metaText: "高 · 仅允许已批准", stacked: true, modelEllipsized: true, canConfigure,
         });
       }
     }
@@ -110,10 +110,10 @@ async function verifySessionHeader(page, host, steps, directory, baseUrl) {
     }, { canConfigure, mode, sessionId });
     await eventually(() => page.getByRole("button", { name: "会话设置", exact: true }).count(), canConfigure ? 1 : 0, "Desktop retains a read-only header when settings are unavailable");
     const summary = page.locator(".desktop-conversation .session-profile-summary");
-    await eventually(() => summary.textContent(), `${profile.modelDisplayName} · High · ${modes[mode]}`, "Desktop receives updated mode without a configuration read");
-    if (canConfigure) await eventually(accessibleProfile, { name: "会话设置", description: `${profile.modelDisplayName} · High · ${modes[mode]}` }, "Desktop settings announce the current snapshot profile");
+    await eventually(() => summary.textContent(), `${profile.modelDisplayName} · 高 · ${modes[mode]}`, "Desktop receives updated mode without a configuration read");
+    if (canConfigure) await eventually(accessibleProfile, { name: "会话设置", description: `${profile.modelDisplayName} · 高 · ${modes[mode]}` }, "Desktop settings announce the current snapshot profile");
     await checkProfileLayout(summary, `Desktop configure=${canConfigure}`, {
-      metaText: `High · ${modes[mode]}`, stacked: false, modelEllipsized: true, canConfigure,
+      metaText: `高 · ${modes[mode]}`, stacked: false, modelEllipsized: true, canConfigure,
     });
   }
   await accessibility.detach();
@@ -309,7 +309,7 @@ export async function verifyNativeApprovals(page, host, steps, directory, baseUr
   for (const mode of ["bypassPermissions", "auto"]) {
     await page.getByRole("button", { name: "会话设置", exact: true }).click();
     const configuration = page.getByRole("dialog", { name: originalTitle, exact: true });
-    await selectCustomOption(page, configuration.getByLabel("Desktop 授权模式"), mode);
+    await selectCustomOption(page, configuration.getByLabel("权限模式", { exact: true }), mode);
     await configuration.getByRole("button", { name: "保存配置", exact: true }).click();
     if (mode === "bypassPermissions") {
       await page.getByRole("alertdialog", { name: "启用完全授权", exact: true }).getByRole("button", { name: "启用完全授权", exact: true }).click();
@@ -318,9 +318,9 @@ export async function verifyNativeApprovals(page, host, steps, directory, baseUr
     assert.equal(host.nativeApproval.permissionMode(), mode);
     assert.deepEqual(host.nativeApproval.calls.filter(call => call.method === "setPermissionMode").at(-1).args, [sessionId, mode]);
     assert.equal(await page.getByRole("status", { name: "Desktop 会话授权变更", exact: true }).count(), 0, "Confirmed permission changes leave no persistent banner");
-    await eventually(async () => (await page.locator(".m-header .session-profile-summary").innerText()).includes(mode === "auto" ? "Auto" : "Bypass"), true, "The updated Native snapshot reaches the header");
+    await eventually(async () => (await page.locator(".m-header .session-profile-summary").innerText()).includes(mode === "auto" ? "自动模式" : "完全授权"), true, "The updated Native snapshot reaches the header");
     await page.getByRole("button", { name: "会话设置", exact: true }).click();
-    await eventually(() => customSelectValue(configuration.getByLabel("Desktop 授权模式")), mode, "Configuration reflects the native Desktop mode");
+    await eventually(() => customSelectValue(configuration.getByLabel("权限模式", { exact: true })), mode, "Configuration reflects the native Desktop mode");
     await page.screenshot({ path: resolve(directory, `native-mode-${mode}.png`), fullPage: true });
     await configuration.getByRole("button", { name: "关闭", exact: true }).click();
     assert.equal(host.snapshot.host.defaultPermissionMode, undefined);
@@ -473,7 +473,7 @@ export async function verifyNativePromptsPr(page, host, steps, directory, baseUr
   await menuTrigger.press("Enter");
   const menu = page.getByRole("dialog", { name: originalTitle, exact: true });
   const menuOwn = menu.getByRole("checkbox", { name: "仅我的 PR", exact: true });
-  const next = menu.getByRole("button", { name: "布防下一个 PR", exact: true });
+  const next = menu.getByRole("button", { name: "跟踪下一个 PR", exact: true });
   await eventually(() => menuOwn.isEnabled(), true, "Opening session actions reads Native PR preferences");
   await menu.getByText("PR Auto-fix", { exact: true }).waitFor();
   assert.equal(await menu.evaluate(element => document.activeElement === element), true, "Mobile actions focus the sheet after keyboard opening");
@@ -501,7 +501,7 @@ export async function verifyNativePromptsPr(page, host, steps, directory, baseUr
   await eventually(() => menuOwn.isChecked(), true, "Only-own-PR preference reflects Native readback without a bound PR");
   await eventually(() => next.isEnabled(), true, "PR preference update completes before the next action");
   await next.click();
-  await eventually(() => menu.getByRole("button", { name: "已布防下一个 PR", exact: true }).isDisabled(), true, "Next-PR branch latch reflects Native readback without offering an unsupported cancel action");
+  await eventually(() => menu.getByRole("button", { name: "正在跟踪下一个 PR", exact: true }).isDisabled(), true, "Next-PR branch latch reflects Native readback without offering an unsupported cancel action");
   assert.deepEqual(host.nativeApproval.dialogs().prefs, { onlyOwnPrs: true, nextOwnPrArmed: true });
   assert.deepEqual(host.nativeApproval.calls.findLast(call => call.method === "armAutoFixOnNextPr").args, [sessionId, "feature/owned"]);
   await page.screenshot({ path: resolve(directory, "native-no-pr-preferences.png"), fullPage: true });
@@ -541,7 +541,7 @@ export async function verifyNativePromptsPr(page, host, steps, directory, baseUr
   assert.equal(await desktopMenu.getByText("PR Auto-fix", { exact: true }).count(), 1, "Desktop labels the feature once in the session actions sheet");
   assert.equal(await desktopMenu.getByRole("button", { name: "刷新 PR 状态", exact: true }).count(), 0);
   assert.equal(await desktopOwn.isChecked(), true, "Desktop sees the preference saved by the phone");
-  assert.equal(await desktopMenu.getByRole("button", { name: "已布防下一个 PR", exact: true }).isDisabled(), true);
+  assert.equal(await desktopMenu.getByRole("button", { name: "正在跟踪下一个 PR", exact: true }).isDisabled(), true);
   await rejectPendingPrWrite(desktop, desktopMenu, desktopOwn);
   assert.equal(await desktopOwn.isChecked(), true, "Desktop retains Native state after the delayed rejection");
   await desktopOwn.click();

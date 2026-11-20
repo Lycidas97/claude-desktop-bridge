@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import { chromium } from "playwright-core";
 import { buildPairingUrl } from "../packages/protocol/dist/index.js";
 import { startRelayServer } from "../apps/relay/dist/server.js";
+import { MemoryRelayStore } from "../apps/relay/dist/store.js";
 import {
   root, serve, remotePreview, projectGroupingPreview, sectionCreatePreview, nativePromptsPreview, assistantMailPreview, nativePreview, sessionId,
 } from "./browser-e2e/config.mjs";
@@ -43,6 +44,7 @@ const results = [];
 const infrastructureErrors = [];
 const hosts = new Set();
 const relayPeers = new Map();
+const relayStore = new MemoryRelayStore();
 let relay;
 let vite;
 let browser;
@@ -174,7 +176,7 @@ async function runScenario(theme, scenario, mockHostRuntime) {
     else if (scenario === "assistant-replies") await verifyAssistantReplies(page, host, steps, directory, serverRoutes);
     else if (scenario === "assistant-proposals") await verifyAssistantProposals(page, host, steps, directory, viewports, baseUrl);
     else if (scenario === "incoming-file") await verifyIncomingFile(page, host, firstHost, steps, directory);
-    else if (scenario === "paired-host-status") await verifyPairedHostStatus(page, firstHost, host, steps, directory, serverRoutes);
+    else if (scenario === "paired-host-status") await verifyPairedHostStatus(page, firstHost, host, steps, directory, serverRoutes, relayStore);
     else if (scenario === "mobile-safe-area") await verifyMobileSafeArea(page, steps, directory, viewports);
     else if (scenario === "session-catalog") await verifySessionCatalog(page, host, steps, directory, viewports, baseUrl);
     else if (scenario === "desktop-diagnostics") await verifyDesktopDiagnostics(page, host, steps, baseUrl);
@@ -266,7 +268,7 @@ try {
   // Vite must not read a developer's .env or inherit production VITE_* values.
   for (const key of Object.keys(inheritedVite)) delete process.env[key];
   relay = await startRelayServer({
-    host: "127.0.0.1", port: 0, roomCreationsPerIpPerHour: 1000,
+    host: "127.0.0.1", port: 0, roomCreationsPerIpPerHour: 1000, store: relayStore,
     pushDispatcher: { wake: async () => false },
     logger: { info() {}, warn() {}, error: (...args) => infrastructureErrors.push(args.join(" ")) },
   });

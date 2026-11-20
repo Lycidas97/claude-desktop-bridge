@@ -57,8 +57,36 @@ describe("MailCard plain text rendering", () => {
     expect(html).not.toMatch(/<(?:style|object|video|a|img|iframe|script)\b/u);
     expect(html).toContain("<h4>建议</h4><ul><li>&lt;object");
     expect(html).toContain("<h4>问题</h4><ul><li>&lt;video");
-    expect(html).toContain("已处理");
-    expect(html).toContain("未提交");
+  });
+
+  it("keeps processing and delivery status inside the original disclosure", () => {
+    const html = renderToStaticMarkup(createElement(MailCard, { card: card({ processingStatus: "processed" }) }));
+    const [collapsed, original] = html.split("<summary>原文</summary>");
+
+    expect(collapsed).not.toMatch(/已处理|输入|已记录|原生投递|业务处理|未提交|未自动发给助理/u);
+    expect(original).toContain("已处理");
+    expect(original).toContain("未自动发给助理");
+    expect(original).not.toContain("已记录");
+  });
+
+  it.each<[BridgeMailCard["nativeDelivery"]["state"], string | undefined]>([
+    ["not-submitted", undefined], ["pending", "等待助理"], ["paused", undefined],
+    ["submitting", "等待助理"], ["submitted", "等待助理"], ["queued", "等待助理"],
+    ["observed", undefined], ["uncertain", undefined], ["failed", "没能发给助理"], ["cancelled", undefined],
+  ])("shows only the relevant collapsed hint for delivery state %s", (state, hint) => {
+    const html = renderToStaticMarkup(createElement(MailCard, { card: card({ nativeDelivery: { state } }) }));
+    const [collapsed] = html.split("<summary>原文</summary>");
+
+    expect(collapsed?.match(/等待助理|处理中|没能发给助理/gu) ?? []).toEqual(hint ? [hint] : []);
+  });
+
+  it("shows active processing once even when delivery also has a hint", () => {
+    const html = renderToStaticMarkup(createElement(MailCard, { card: card({
+      processingStatus: "processing", nativeDelivery: { state: "queued" },
+    }) }));
+    const [collapsed] = html.split("<summary>原文</summary>");
+
+    expect(collapsed?.match(/等待助理|处理中|没能发给助理/gu)).toEqual(["处理中"]);
   });
 
   it("keeps the correlated native message ID and text escaped in its own disclosure", () => {

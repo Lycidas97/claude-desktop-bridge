@@ -460,10 +460,13 @@ export class AssistantMailStore {
 
   setFolder(mailRefId: string, folder: BridgeMailFolder, source: "user" | "assistant"): boolean | undefined {
     const db = this.db();
-    const row = db.prepare("SELECT user_junk, filing FROM mail_events WHERE mail_ref_id = ?")
-      .get(mailRefId) as Pick<EventRow, "user_junk" | "filing"> | undefined;
+    const row = db.prepare(`SELECT user_junk, filing, (${mailFolder}) AS folder FROM mail_events WHERE mail_ref_id = ?`)
+      .get(mailRefId) as (Pick<EventRow, "user_junk" | "filing"> & { folder: BridgeMailFolder }) | undefined;
     if (!row) return undefined;
-    if (source === "assistant" && (row.user_junk === 1 || row.filing?.startsWith("user:"))) return false;
+    if (source === "assistant") {
+      if (row.user_junk === 1 || row.filing?.startsWith("user:")) return false;
+      if (folder === "inbox" && row.folder === "inbox") return false;
+    }
     const filing = source === "user" ? `user:${folder}` : folder;
     if (row.user_junk === 0 && row.filing === filing) return false;
     db.prepare("UPDATE mail_events SET user_junk = 0, filing = ? WHERE mail_ref_id = ?").run(filing, mailRefId);

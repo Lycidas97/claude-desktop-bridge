@@ -117,6 +117,14 @@ it("pages and searches saved folders independently and keeps an explicit restore
   expect(store.page({}, true, "legacy").events.map(event => event.mailRefId)).toContain(junk.mailRefId);
 });
 
+it("keeps mail already in the inbox eligible for its first classification", async () => {
+  store.openMailbox("test-account", "1", 5);
+  const { mailRefId } = (await store.record(message()))!;
+  expect(store.setFolder(mailRefId, "inbox", "assistant")).toBe(false);
+  expect(store.updateAnalysis(mailRefId, { summary: "Promotion", suggestions: [], questions: [], category: "marketing" }))
+    .toMatchObject({ folder: "marketing" });
+});
+
 it("remembers separately acknowledged replies only for the current binding", () => {
   store.recordReply("current", "first", "First");
   store.recordReply("current", "second", "Second");

@@ -826,7 +826,6 @@ export function MobileWorkspace({
             {menuSession.projectId !== managedProjectId && <SheetAction
               icon={<SquarePen size={19} />}
               label="新建会话"
-              detail="使用当前目录与分组"
               disabled={sessionActionBusy || !snapshot || !online}
               onClick={() => startNewChat(menuSession.projectId, menuSession.cwd, menuSession.sessionId)}
             />}
@@ -834,7 +833,6 @@ export function MobileWorkspace({
               icon={sessionView === "evidence" ? <MessageSquare size={19} /> : <PackageCheck size={19} />}
               label={sessionView === "evidence" ? "返回对话" : `成果${evidenceCount > 0 ? ` ${evidenceCount}` : ""}`}
               disabled={sessionActionBusy}
-              detail={sessionView === "evidence" ? "回到对话记录" : "查看产出文件与最新快照"}
               onClick={() => {
                 setSessionView(sessionView === "evidence" ? "conversation" : "evidence");
                 setMenuSessionId(undefined);

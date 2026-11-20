@@ -135,10 +135,7 @@ export function MobileSettings({
             {quota && (
               <button type="button" className="mobile-settings-row" onClick={quota.onOpen}>
                 <Gauge size={18} aria-hidden="true" />
-                <div>
-                  <strong>Magpie 额度</strong>
-                  <small>各账号剩余额度与重置时间</small>
-                </div>
+                <div><strong>Magpie 额度</strong></div>
                 <ChevronRight size={18} aria-hidden="true" />
               </button>
             )}
@@ -193,12 +190,9 @@ export function MobileSettings({
         )}
         {remoteDesktop && <RemoteDesktopUpdaterSection remote={remoteDesktop} heading="远端桌面状态" />}
         <AppearanceSettings themeControl={themeControl} />
-        <SettingsGroup title="任务通知" titleId="mobile-notifications-title">
+        <SettingsGroup title="通知" titleId="mobile-notifications-title">
           <div className="mobile-settings-row">
-            <span>
-              <strong>任务通知</strong>
-              <small>后台或浏览其他会话时提醒任务完成与待授权</small>
-            </span>
+            <span><strong>任务通知</strong></span>
             <div className="segmented mobile-settings-compact-segmented" role="group" aria-label="任务通知开关">
               <button
                 type="button"

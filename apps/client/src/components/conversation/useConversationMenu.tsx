@@ -295,7 +295,6 @@ export function useConversationMenu({ hostId, draftKey, previousDraftKeyRef, ses
                 icon={sessionView === "evidence" ? <MessageSquare size={19} /> : <PackageCheck size={19} />}
                 label={sessionView === "evidence" ? "返回对话" : `成果${evidenceCount > 0 ? ` ${evidenceCount}` : ""}`}
                 disabled={actionBusy}
-                detail={sessionView === "evidence" ? "回到对话记录" : "文件变更、产物与图片"}
                 onClick={() => {
                   onToggleView();
                   setInternalMenuOpen(false);

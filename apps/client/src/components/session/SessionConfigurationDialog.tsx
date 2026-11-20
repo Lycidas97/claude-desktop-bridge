@@ -6,7 +6,7 @@ import {
   type BridgeSessionConfiguration,
   type BridgeSessionInfo,
 } from "@bridge/protocol";
-import { LoaderCircle, Settings2, X } from "lucide-react";
+import { LoaderCircle, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { MagpieModelQuota, useOptionalMagpieQuota } from "../../../../../plugins/magpie-quota/client.js";
 import { modelQuotaLabel } from "../../../../../plugins/magpie-quota/presentation.js";
@@ -199,10 +199,7 @@ export function SessionConfigurationDialog({
     >
       <section className="session-configuration-dialog" role="dialog" aria-modal="true" aria-labelledby="session-configuration-title">
         <header>
-          <div>
-            <span><Settings2 size={15} />会话设置</span>
-            <h2 id="session-configuration-title">{session.title}</h2>
-          </div>
+          <h2 id="session-configuration-title">{session.title}</h2>
           <IconButton label="关闭" onClick={onClose}><X size={19} /></IconButton>
         </header>
 
@@ -227,16 +224,8 @@ export function SessionConfigurationDialog({
                   }))}
                   onChange={setModel}
                 />
-                <small>
-                  {selectedModel?.description
-                    || (!configuration?.modelsComplete
-                      ? "仅显示当前主机已发现的模型"
-                      : sanitizeModelDisplayName(model, selectedModel?.resolvedModel))}
-                </small>
-                {configuration && (
-                  <small>
-                    配置来源：{{ bridge: "当前会话", "claude-desktop": "Claude Desktop", project: "项目配置", default: "电脑默认" }[configuration.modelSource]}
-                  </small>
+                {(selectedModel?.description || !configuration?.modelsComplete) && (
+                  <small>{selectedModel?.description || "仅显示当前主机已发现的模型"}</small>
                 )}
               </div>
             )}

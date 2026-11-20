@@ -605,10 +605,8 @@ describe("mobile session deletion confirmation", () => {
       expect(confirmation.props.description).toContain("从 Claude Desktop 中删除「Session A」会话");
       expect(confirmation.props.description).not.toContain("原生会话与文件不受影响");
       expect(confirmation.props.description).not.toContain("从 Bridge 列表中删除");
-      expect(action.props.detail).toBe("删除 Claude Desktop 中的会话");
     } else {
       expect(confirmation.props.description).toBe("从 Bridge 列表中删除「Session A」？对应 Desktop 应用中的原生会话与文件不受影响；Bridge 中的会话配置、排队与授权记录会被清除，此操作不可恢复。");
-      expect(action.props.detail).toBe("仅从 Bridge 移除，Desktop 原会话保留");
     }
     expect(confirmation.props.description).toContain("此操作不可恢复");
     confirmation.props.onCancel(); draw();

@@ -422,7 +422,6 @@ export function MobileSessionCatalog({
             <EmptyState
               icon={<LoaderCircle className="is-spinning" size={20} />}
               title="正在同步主机状态"
-              description="已保存的会话会在连接恢复后自动出现。"
             />
           )}
 
@@ -446,7 +445,7 @@ export function MobileSessionCatalog({
               : snapshot?.runtime.state === "ready" || snapshot?.runtime.state === "working";
             if (searchQuery) {
               return (
-                <EmptyState title="没有匹配的会话" description="换一个关键词试试。" />
+                <EmptyState title="没有匹配的会话" />
               );
             }
             if (online && claudeDesktopReady) {
@@ -456,9 +455,7 @@ export function MobileSessionCatalog({
               return (
                 <EmptyState
                   title={archivedSessions.length > 0 ? "暂无活跃会话" : "暂无会话"}
-                  description={archivedSessions.length > 0
-                    ? canCreate ? "当前会话均已归档，可开始新对话或查看下方已归档会话。" : "当前会话均已归档，可查看下方已归档会话。"
-                    : canCreate ? "当前电脑上尚未创建会话，可随时开始新的对话。" : "当前电脑上尚未创建会话，请在 Claude Desktop 中创建会话。"}
+                  {...(canCreate ? {} : { description: "请在 Claude Desktop 中创建会话。" })}
                   action={canCreate && (
                     <button
                       type="button"
@@ -479,7 +476,7 @@ export function MobileSessionCatalog({
               return (
                 <EmptyState
                   title="未检测到 Claude Desktop"
-                  description="请在电脑端打开 Claude Desktop。启动后 Bridge 将自动建立连接。"
+                  description="请在电脑端打开 Claude Desktop。"
                   action={(
                     <button
                       type="button"
@@ -500,7 +497,7 @@ export function MobileSessionCatalog({
               <EmptyState
                 icon={connecting && <LoaderCircle className="is-spinning" size={20} />}
                 title={connecting ? "正在连接电脑" : connection === "connected" ? "电脑端 Bridge 离线" : "当前未连接电脑"}
-                description={connecting ? "连接恢复后将自动同步会话列表。" : connection === "connected" ? "请确认电脑端 Bridge 正在运行并已连接网络。" : "请检查网络或连接设置，连接恢复后将自动同步。"}
+                {...(connecting ? {} : { description: connection === "connected" ? "请确认电脑端 Bridge 正在运行并已连接网络。" : "请检查网络或连接设置。" })}
                 action={(
                   <button
                     type="button"

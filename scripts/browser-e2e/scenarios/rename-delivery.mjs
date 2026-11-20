@@ -91,7 +91,6 @@ export async function verifyRename(page, host, entry, steps) {
       },
     });
     await page.locator(".session-catalog-loading strong", { hasText: "暂无会话" }).waitFor();
-    await page.locator(".session-catalog-loading span", { hasText: "当前电脑上尚未创建会话，可随时开始新的对话。" }).waitFor();
     await page.locator(".session-catalog-loading").getByRole("button", { name: "新建会话", exact: true }).click();
     const newChatCanvas = page.locator(".new-chat-canvas");
     await newChatCanvas.waitFor();
@@ -111,7 +110,7 @@ export async function verifyRename(page, host, entry, steps) {
       },
     });
     await page.locator(".session-catalog-loading strong", { hasText: "未检测到 Claude Desktop" }).waitFor();
-    await page.locator(".session-catalog-loading span", { hasText: "请在电脑端打开 Claude Desktop。启动后 Bridge 将自动建立连接。" }).waitFor();
+    await page.locator(".session-catalog-loading span", { hasText: "请在电脑端打开 Claude Desktop。" }).waitFor();
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     await page.locator(".session-catalog-loading").getByRole("button", { name: "检查连接", exact: true }).click();
     await page.getByRole("heading", { name: "连接与同步", exact: true }).waitFor();

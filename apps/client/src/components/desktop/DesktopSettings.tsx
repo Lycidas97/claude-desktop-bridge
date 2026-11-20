@@ -183,7 +183,6 @@ export function DesktopDevices({
           className="desktop-page-empty"
           icon={<Smartphone size={22} aria-hidden="true" />}
           title="还没有配对手机"
-          description="点击右上角「添加手机」生成十分钟有效的配对二维码。"
         />
       )}
       <ConfirmationDialog

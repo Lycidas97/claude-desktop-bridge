@@ -649,15 +649,12 @@ export function DesktopSessions({
 
             {searchQuery ? (
               grouped.length === 0 && (
-                <EmptyState title="没有匹配的会话" description="换一个关键词试试。" />
+                <EmptyState title="没有匹配的会话" />
               )
             ) : (
               !hasActiveSessions && (
                 <EmptyState
                   title={snapshot.runtime.desktopIntegration.state === "ready" ? "暂无活跃会话" : "未检测到 Claude Desktop"}
-                  {...(snapshot.projects.length > 0
-                    ? { description: `已配置 ${snapshot.projects.length} 个项目分组，开始提问后自动归入对应目录` }
-                    : {})}
                   action={(
                     <button
                       type="button"

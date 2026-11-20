@@ -225,16 +225,12 @@ describe("MobileSessionCatalog empty states", () => {
 
     const box = emptyStateBox()!;
     expect(elements(box).find((el) => el.type === "strong")?.props.children).toBe("没有匹配的会话");
-    expect(elements(box).find((el) => el.type === "span")?.props.children).toBe("换一个关键词试试。");
     expect(elements(box).find((el) => el.type === "button")).toBeUndefined();
   });
 
   it("shows ready empty state and opens unified NewChatCanvas from primary button when Desktop is online with 0 sessions", () => {
     const box = emptyStateBox()!;
     expect(elements(box).find((el) => el.type === "strong")?.props.children).toBe("暂无会话");
-    expect(elements(box).find((el) => el.type === "span")?.props.children).toBe(
-      "当前电脑上尚未创建会话，可随时开始新的对话。",
-    );
     expect(elements(tree).some((el) => el.type === NewChatCanvas)).toBe(false);
 
     const createButton = elements(box).find((el) => el.type === "button")!;
@@ -386,7 +382,7 @@ describe("MobileSessionCatalog empty states", () => {
     const box = emptyStateBox()!;
     expect(elements(box).find((el) => el.type === "strong")?.props.children).toBe("未检测到 Claude Desktop");
     expect(elements(box).find((el) => el.type === "span")?.props.children).toBe(
-      "请在电脑端打开 Claude Desktop。启动后 Bridge 将自动建立连接。",
+      "请在电脑端打开 Claude Desktop。",
     );
     const inspectButton = elements(box).find((el) => el.type === "button")!;
     expect(inspectButton.props.className).toContain("secondary-button");

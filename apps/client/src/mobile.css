@@ -1362,13 +1362,6 @@ button.mobile-settings-row:active { background: var(--surface-2); }
   cursor: pointer;
 }
 
-.host-browser-hint {
-  margin: 16px 2px 0;
-  color: var(--muted);
-  font-size: var(--m-fs-footnote);
-  line-height: 1.65;
-}
-
 /* ---- Permission alerts & Conversation banners ---- */
 
 .mobile-app-shell .permission-dock-slot.has-attention { padding: 8px var(--m-gutter); }

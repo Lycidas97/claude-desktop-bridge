@@ -437,6 +437,15 @@
   min-height: 26px;
 }
 
+.mobile-home-catalog.is-flat-tree .session-family-chevron::before {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  /* Cover the title's 6px end padding and the chevron's 1px gap, not the text. */
+  inset-inline-start: -7px;
+  inline-size: var(--m-touch);
+}
+
 
 .mobile-home-catalog.is-flat-tree .mobile-fork-group.collapsed {
   padding: 0 6px 0 30px;

@@ -35,7 +35,7 @@ export function agendaInputTime(instant: string, timeZone: string): string {
   return instant.length === 10 ? instant : formatAgendaTime(instant, agendaTimeFormatter(timeZone));
 }
 
-export function agendaTimedRange(startAt: string, endAt: string, timeZone: string, deviceZone: string): string {
+export function agendaTimedRange(startAt: string, endAt: string, timeZone: string, deviceZone: string, displayDate?: string): string {
   let displayZone = timeZone;
   let formatter: Intl.DateTimeFormat;
   try {
@@ -46,8 +46,10 @@ export function agendaTimedRange(startAt: string, endAt: string, timeZone: strin
     displayZone = deviceZone;
     formatter = agendaTimeFormatter(displayZone);
   }
-  const start = formatAgendaTime(startAt, formatter).replace("T", " ");
-  const end = formatAgendaTime(endAt, formatter).replace("T", " ");
+  const [start, end] = [startAt, endAt].map(instant => {
+    const wall = formatAgendaTime(instant, formatter);
+    return wall.slice(0, 10) === displayDate ? wall.slice(11) : wall.replace("T", " ");
+  });
   return `${start} 至 ${end}${timeZone === deviceZone ? "" : ` (${displayZone})`}`;
 }
 

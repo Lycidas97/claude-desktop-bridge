@@ -1,4 +1,9 @@
 export const ASSISTANT_AGENDA_CAPABILITY = "plugin.assistant-agenda.v1";
+export const ASSISTANT_AGENDA_DAY_CAPABILITY = "plugin.assistant-agenda.day.v1";
+
+export interface AgendaDueDay extends AgendaWindow {
+  date: string;
+}
 
 export interface BridgeAgendaSource {
   id: string;

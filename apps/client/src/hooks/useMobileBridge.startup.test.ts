@@ -182,6 +182,34 @@ describe("startup and network recovery", () => {
     expect(saved.some(message => message.payload.kind === "snapshot" && message.payload.snapshot.host.hostId === pairing.hostId)).toBe(true);
   });
 
+  it.each(["getHost", "listMessages"] as const)("keeps only the latest same-host retry connected when %s is slow", async read => {
+    const bridge = mount();
+    await vi.waitFor(() => expect(bridgeVault.saveMessage).toHaveBeenCalledOnce());
+    const initial = LocalWebSocket.instances[0]!;
+    let finishFirstRead!: () => void;
+    if (read === "getHost") {
+      vi.mocked(bridgeVault.getHost).mockImplementationOnce(() => new Promise(resolve => {
+        finishFirstRead = () => resolve(harness.hosts[0]);
+      }));
+    } else {
+      vi.mocked(bridgeVault.listMessages).mockImplementationOnce(() => new Promise(resolve => {
+        finishFirstRead = () => resolve([...harness.messages]);
+      }));
+    }
+
+    const firstRetry = bridge.retryConnection();
+    await vi.waitFor(() => expect(finishFirstRead).toBeDefined());
+    await bridge.retryConnection();
+    const latest = LocalWebSocket.instances.at(-1)!;
+    expect(initial.readyState).toBe(LocalWebSocket.CLOSED);
+    expect(latest.readyState).toBe(LocalWebSocket.OPEN);
+
+    finishFirstRead();
+    await firstRetry;
+    expect(LocalWebSocket.instances).toHaveLength(2);
+    expect(latest.readyState).toBe(LocalWebSocket.OPEN);
+  });
+
   it("reconnects once when Android reports online before publishing the new interface type", async () => {
     mount();
     await vi.waitFor(() => expect(bridgeVault.saveMessage).toHaveBeenCalled());

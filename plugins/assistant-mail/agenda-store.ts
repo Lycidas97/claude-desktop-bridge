@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type {
-  AgendaEventInput, AgendaPage, AgendaPageQuery, AgendaRecordIdentity, AgendaTodoInput, AgendaWindow,
+  AgendaDueDay, AgendaEventInput, AgendaPage, AgendaPageQuery, AgendaRecordIdentity, AgendaTodoInput, AgendaWindow,
   BridgeAgendaEvent, BridgeAgendaSource, BridgeAgendaTodo,
 } from "../../packages/protocol/src/assistant-agenda.js";
 import { AgendaExpansionLimitError, parseAgendaObject } from "./agenda-ical.js";
@@ -29,6 +29,13 @@ const objectKey = (...parts: string[]) => createHash("sha256").update(JSON.strin
 function makePage<T>(records: T[], limit: number, key: (record: T) => string): AgendaPage<T> {
   const page = records.slice(0, limit);
   return { records: page, ...(records.length > page.length ? { nextCursor: key(page[page.length - 1]!) } : {}) };
+}
+
+// Include civil DATE values while expanding timed recurrences in the device window.
+function includeCivilDate(window: AgendaWindow, date: string): AgendaWindow {
+  const start = `${date}T00:00:00.000Z`;
+  const end = new Date(Date.parse(start) + 86_400_000).toISOString();
+  return { from: start < window.from ? start : window.from, to: end > window.to ? end : window.to };
 }
 
 export class AgendaStore {
@@ -225,13 +232,18 @@ export class AgendaStore {
     return record;
   }
 
-  listTodos(query: AgendaPageQuery & { status?: AgendaTodoInput["status"] | undefined }): AgendaPage<BridgeAgendaTodo> {
+  listTodos(query: AgendaPageQuery & { status?: AgendaTodoInput["status"] | undefined; dueOn?: AgendaDueDay | undefined }): AgendaPage<BridgeAgendaTodo> {
     const limit = query.limit ?? 50;
     const [closed = "0", date = "", id = ""] = query.cursor?.split("|") ?? [];
+    const window = query.dueOn;
+    const day = window?.date;
+    const recurrenceWindow = window && includeCivilDate(window, window.date);
     const rows = this.db.prepare(`SELECT value FROM todos WHERE (? IS NULL OR status = ?) AND (${todoOrder}) > (?, ?, ?)
+      AND (? IS NULL OR due_at = ? OR (length(due_at) > 10 AND due_at >= ? AND due_at < ?))
       AND NOT EXISTS (SELECT 1 FROM agenda_caldav_objects object
         WHERE object.source_id = todos.source_id AND object.href = todos.href AND (object.recurring & 2) != 0)
-      ORDER BY ${todoOrder} LIMIT ?`).all(query.status ?? null, query.status ?? null, Number(closed), date, id, limit + 1);
+      ORDER BY ${todoOrder} LIMIT ?`).all(query.status ?? null, query.status ?? null, Number(closed), date, id,
+        day ?? null, day ?? null, window?.from ?? null, window?.to ?? null, limit + 1);
     // NUL sorts before the time suffix, matching SQLite's date-only vs date-time ordering.
     const key = (record: BridgeAgendaTodo) => [Number(record.status === "completed" || record.status === "cancelled"), record.dueAt ?? "~", record.id].join("\0");
     const cursor = [closed, date, id].join("\0");
@@ -239,9 +251,12 @@ export class AgendaStore {
     let incomplete = false;
     for (const row of this.recurringObjects(2)) {
       try {
-        const { uid, todos } = parseAgendaObject(row.data, collectionZone(row.calendar_timezone, this.timeZone), { todos: { limit, closed: Number(closed), date } });
+        const { uid, todos } = parseAgendaObject(row.data, collectionZone(row.calendar_timezone, this.timeZone), {
+          todos: { limit, closed: Number(closed), date, window: recurrenceWindow },
+        });
         for (const todo of todos) {
           if (query.status && todo.status !== query.status) continue;
+          if (window && !(todo.dueAt === day || todo.dueAt && todo.dueAt.length > 10 && todo.dueAt >= window.from && todo.dueAt < window.to)) continue;
           const record = { ...todo, ...this.importedIdentity(row, uid, todo.recurrenceId) };
           const order = key(record);
           if (order > cursor) entries.push({ record, key: order });
@@ -256,7 +271,7 @@ export class AgendaStore {
     return { ...page, records: page.records.map(entry => entry.record), ...(incomplete ? { incomplete: true } : {}) };
   }
 
-  listEvents(query: AgendaPageQuery & AgendaWindow): AgendaPage<BridgeAgendaEvent> {
+  listEvents(query: AgendaPageQuery & AgendaWindow & { allDayOn?: string | undefined }): AgendaPage<BridgeAgendaEvent> {
     const limit = query.limit ?? 50;
     const key = (record: BridgeAgendaEvent) => `${new Date(this.eventStart(record)).toISOString()}|${record.id}`;
     const { records, incomplete } = this.eventsIn(query, { allowIncomplete: true });
@@ -271,17 +286,21 @@ export class AgendaStore {
     return agendaInstant(event.endAt, event.allDay && event.origin === "untrusted_external" ? this.timeZone : event.timeZone);
   }
 
-  private eventsIn(window: AgendaWindow, options?: { allowIncomplete: true }) {
+  private eventsIn(window: AgendaWindow & { allDayOn?: string | undefined }, options?: { allowIncomplete: true }) {
+    const { allDayOn } = window;
     const from = Date.parse(window.from), to = Date.parse(window.to);
+    const expansion = allDayOn ? includeCivilDate(window, allDayOn) : window;
     const rows = this.db.prepare(`SELECT event.value FROM calendar_events event
       LEFT JOIN agenda_caldav_objects object ON object.source_id = event.source_id AND object.href = event.href
       WHERE (COALESCE(object.recurring, 0) & 1) = 0 AND event.start_at < ? AND event.end_at >= ?`)
-      .all(new Date(to + 86_400_000).toISOString(), new Date(from - 86_400_000).toISOString().slice(0, 10));
+      .all(new Date(Date.parse(expansion.to) + 86_400_000).toISOString(), new Date(Date.parse(expansion.from) - 86_400_000).toISOString().slice(0, 10));
     const records = rows.map(row => JSON.parse(row.value as string) as BridgeAgendaEvent);
     let incomplete = false;
     for (const row of this.recurringObjects(1)) {
       try {
-        const { uid, events } = parseAgendaObject(row.data, collectionZone(row.calendar_timezone, this.timeZone), { window, allDayZone: this.timeZone });
+        const { uid, events } = parseAgendaObject(row.data, collectionZone(row.calendar_timezone, this.timeZone), {
+          window: expansion, allDayZone: allDayOn ? "UTC" : this.timeZone,
+        });
         for (const event of events) records.push({ ...event, ...this.importedIdentity(row, uid, event.recurrenceId) });
       } catch (error) {
         if (!options?.allowIncomplete || !(error instanceof AgendaExpansionLimitError)) throw error;
@@ -289,7 +308,11 @@ export class AgendaStore {
       }
     }
     return {
-      records: records.filter(event => this.eventStart(event) < to && (this.eventEnd(event) > from || this.eventStart(event) === this.eventEnd(event) && this.eventStart(event) >= from))
+      records: records.filter(event => {
+        if (allDayOn && event.allDay) return event.startAt <= allDayOn && allDayOn < event.endAt;
+        const start = this.eventStart(event), end = this.eventEnd(event);
+        return start < to && (end > from || start === end && start >= from);
+      })
         .sort((a, b) => this.eventStart(a) - this.eventStart(b) || a.id.localeCompare(b.id)),
       incomplete,
     };

@@ -111,7 +111,7 @@ function ruleStarts(rule: ICAL.Recur, start: ICAL.Time, zone: AgendaZone, floor:
   return () => iterator.next();
 }
 
-type TodoPage = { limit: number; closed: number; date: string };
+type TodoPage = { limit: number; closed: number; date: string; window?: AgendaWindow | undefined };
 
 function expandSeries(items: Timing[], fallback: AgendaZone, window: AgendaWindow | undefined, expand: boolean, page?: TodoPage): Instance[] {
   const master = items.find(item => !item.component.hasProperty("recurrence-id"));
@@ -156,7 +156,7 @@ function expandSeries(items: Timing[], fallback: AgendaZone, window: AgendaWindo
   let candidateLimit = Infinity;
   const steps = rules.map(rule => repeatStep(rule, start));
   const fixed = steps.some(Boolean) && hasFixedOffset(start, zone);
-  if (page && rules.length === 1 && steps[0] && fixed && !extra.length && !ranges.length) {
+  if (!window && page && rules.length === 1 && steps[0] && fixed && !extra.length && !ranges.length) {
     const due = master.endAt();
     if (due?.endsWith("Z")) {
       const status = text(master.component, "status", 32)?.toUpperCase();
@@ -257,7 +257,7 @@ export function parseAgendaObject(data: string, fallbackZone: AgendaZone, option
     }
   }
   const todoPage = options && "todos" in options ? options.todos : undefined;
-  return { uid, todos: window ? [] : expandSeries(todos.map(item => timing(item, fallbackZone)), fallbackZone, undefined, Boolean(todoPage), todoPage).map(todoFields), events: eventRecords, recurring };
+  return { uid, todos: window ? [] : expandSeries(todos.map(item => timing(item, fallbackZone)), fallbackZone, todoPage?.window, Boolean(todoPage), todoPage).map(todoFields), events: eventRecords, recurring };
 }
 
 function isRecurring(component: ICAL.Component) {

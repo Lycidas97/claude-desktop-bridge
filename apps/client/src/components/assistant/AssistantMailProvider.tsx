@@ -1,4 +1,4 @@
-import { ASSISTANT_ATTENTION_CAPABILITY, ASSISTANT_MAIL_FILING_CAPABILITY, type AssistantAttentionAcknowledgment, type AssistantAttentionItem, type BridgeAssistantMailSnapshot, type BridgeHostSnapshot, type BridgeMailCache, type BridgeMailCard, type BridgeMailDetail, type BridgeMailPage, type BridgeMethod, type BridgeResponse } from "@bridge/protocol";
+import { ASSISTANT_ATTENTION_CAPABILITY, ASSISTANT_MAIL_CATEGORIES_CAPABILITY, ASSISTANT_MAIL_FILING_CAPABILITY, DEFAULT_MAIL_CATEGORIES, type AssistantAttentionAcknowledgment, type AssistantAttentionItem, type BridgeAssistantMailSnapshot, type BridgeHostSnapshot, type BridgeMailCache, type BridgeMailCard, type BridgeMailCategoryEntry, type BridgeMailDetail, type BridgeMailPage, type BridgeMethod, type BridgeResponse } from "@bridge/protocol";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { mergeMailCards, refreshMailPages } from "../../lib/assistant-mail.js";
 
@@ -22,6 +22,9 @@ interface AssistantMailState {
   supportsAttachments: boolean;
   supportsBatches: boolean;
   supportsFiling: boolean;
+  supportsCategories: boolean;
+  categories: readonly BridgeMailCategoryEntry[];
+  categoryLabel(id: string): string | undefined;
   markViewed(card: BridgeMailCard): void;
   selectMail(card: BridgeMailCard): void;
   clearReference(): void;
@@ -137,10 +140,12 @@ export function AssistantMailProvider({ hostId, snapshot, online, request, loadC
   const changeToken = assistant?.changeToken ?? "";
   const supportsFiling = capabilities.includes(ASSISTANT_MAIL_FILING_CAPABILITY);
   const supportsHistory = capabilities.includes("plugin.assistant-mail.history.v1");
+  const supportsCategories = capabilities.includes(ASSISTANT_MAIL_CATEGORIES_CAPABILITY);
+  const categories = supportsCategories ? assistant?.categories ?? DEFAULT_MAIL_CATEGORIES : DEFAULT_MAIL_CATEGORIES;
   const loadPage = useCallback(async (cursor?: string) => mailResult<{ mailPage: BridgeMailPage }>(await request(
     "plugin.assistant-mail.list", { ...(cursor ? { cursor } : {}), ...(supportsHistory ? { includeHistory: true } : {}),
-      ...(supportsFiling ? { folder: "inbox" } : {}) },
-  )).mailPage, [request, supportsHistory, supportsFiling]);
+      ...(supportsFiling ? { folder: "inbox" } : {}), ...(supportsCategories ? { includeCustomCategories: true } : {}) },
+  )).mailPage, [request, supportsHistory, supportsFiling, supportsCategories]);
   useEffect(() => {
     if (!online) {
       setLoading(false);
@@ -211,7 +216,8 @@ export function AssistantMailProvider({ hostId, snapshot, online, request, loadC
   return <AssistantMailContext.Provider value={enabled ? {
     cache, timelineCards, unreadCount, attention: assistant?.attention, acknowledge, assistant, canReference, selectedMail,
     supportsAttachments: capabilities.includes("plugin.assistant-mail.attachments.v1"),
-    supportsFiling,
+    supportsFiling, supportsCategories,
+    categories, categoryLabel: id => categories.find(category => category.id === id)?.label,
     supportsBatches: capabilities.includes("plugin.assistant-mail.batches.v1"),
     accountLabel: accountKey => {
       const label = accountLabels.get(accountKey);

@@ -36,6 +36,14 @@
   letter-spacing: -0.01em;
 }
 .assistant-filed-heading { display: flex; align-items: center; gap: 8px; }
+.assistant-page-mobile .assistant-mail-manage-categories { min-height: 44px; }
+.assistant-mail-category-list .m-sheet-action-copy { overflow-wrap: anywhere; }
+.assistant-mail-category-form { display: grid; gap: 12px; }
+.assistant-mail-category-form label { display: grid; gap: 6px; font-size: calc(13px * var(--font-scale)); }
+.assistant-mail-category-form input { min-width: 0; min-height: 44px; padding: 8px 12px; border: 1px solid var(--line-strong); border-radius: var(--r-input); background: var(--surface); color: var(--text); font: inherit; }
+.assistant-mail-category-form :is([role="alert"], .assistant-mail-category-delete) { color: var(--danger-ink); }
+.assistant-mail-category-delete { justify-self: start; min-height: 44px; }
+.m-sheet-backdrop[aria-hidden="true"]:has(.assistant-mail-category-form) + .confirm-backdrop .confirm-dialog > h2 { overflow-wrap: anywhere; }
 .assistant-binding {
   padding: 14px 0 16px;
   margin-bottom: 18px;
@@ -98,7 +106,7 @@
 .assistant-mail-search button { min-width: 44px; display: grid; place-items: center; }
 body:has(.assistant-mail-category-options) .diagnostic-floating-entry { display: none; }
 .assistant-mail-folder-label { margin: 8px 0 0; color: var(--muted); font-size: calc(11px * var(--font-scale)); }
-.assistant-mail-close-folder { justify-self: start; }
+.assistant-mail-close-folder { justify-self: start; overflow-wrap: anywhere; }
 .assistant-mail-junk-action { color: var(--muted); }
 .assistant-mail-junk-feedback {
   position: sticky;
@@ -128,7 +136,7 @@ body:has(.assistant-mail-category-options) .diagnostic-floating-entry { display:
 .assistant-mail-filed-entry { width: 100%; padding: 0; margin-bottom: 12px; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--text); text-align: start; }
 .assistant-mail-group > summary::-webkit-details-marker { display: none; }
 :is(.assistant-mail-group > summary, .assistant-mail-filed-entry):focus-visible { outline: 2px solid var(--accent-ink); outline-offset: -2px; }
-:is(.assistant-mail-group > summary, .assistant-mail-filed-entry) > span { flex: 1; }
+:is(.assistant-mail-group > summary, .assistant-mail-filed-entry) > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 :is(.assistant-mail-group > summary, .assistant-mail-filed-entry) > small { color: var(--muted); font-variant-numeric: tabular-nums; font-size: inherit; font-weight: 400; }
 :is(.assistant-mail-group > summary, .assistant-mail-filed-entry) > svg { color: var(--muted); flex-shrink: 0; }
 .assistant-mail-group[open] > summary > svg { transform: rotate(90deg); }

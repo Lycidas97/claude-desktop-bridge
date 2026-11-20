@@ -400,7 +400,12 @@ export class AssistantMailService extends EventEmitter {
     return { attachment, text: await attachmentText(await this.attachmentBytes(ref, MAIL_TEXT_MAX_BYTES), attachment.mimeType, this.attachmentCMapUrl, attachment.charset) };
   }
   attention(automatic: boolean, sessionId?: string) { return this.store.attention(automatic, sessionId); }
-  folderCounts(includeHistory: boolean) { return this.store.folderCounts(includeHistory); }
+  categories() { return this.store.categories(); }
+  requireFolder(folder: string) { this.store.requireFolder(folder); }
+  changeCategory(change: Parameters<AssistantMailStore["changeCategory"]>[0]) {
+    if (this.store.changeCategory(change)) this.emit("changed", true);
+  }
+  folderCounts(...args: Parameters<AssistantMailStore["folderCounts"]>) { return this.store.folderCounts(...args); }
   setFolder(...args: Parameters<AssistantMailStore["setFolder"]>) {
     const changed = this.store.setFolder(...args);
     if (changed) this.emit("changed", true);

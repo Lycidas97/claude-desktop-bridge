@@ -27,15 +27,15 @@ describe("sanitizeGeneratedTitle", () => {
     expect(sanitizeGeneratedTitle("标题：「移动端字体缩放适配」")).toBe("移动端字体缩放适配");
   });
 
-  it("rejects empty or generic placeholder titles and caps at 40 code points cleanly", () => {
+  it("rejects empty or generic placeholder titles and titles over 40 code points", () => {
     expect(sanitizeGeneratedTitle("")).toBeUndefined();
     expect(sanitizeGeneratedTitle("   ")).toBeUndefined();
     expect(sanitizeGeneratedTitle("Claude 会话")).toBeUndefined();
     expect(sanitizeGeneratedTitle('"New Chat."')).toBeUndefined();
     expect(sanitizeGeneratedTitle("新建会话")).toBeUndefined();
-    const longEmoji = `${"🚀".repeat(45)}`;
-    const capped = sanitizeGeneratedTitle(longEmoji)!;
-    expect(Array.from(capped)).toHaveLength(40);
+    const maxTitle = "🚀".repeat(40);
+    expect(sanitizeGeneratedTitle(maxTitle)).toBe(maxTitle);
+    expect(sanitizeGeneratedTitle(`${maxTitle}🚀`)).toBeUndefined();
   });
 });
 
@@ -165,11 +165,34 @@ describe("resolveActiveClaudeGateway and generateSessionTitle", () => {
     });
   });
 
+  it.each([
+    { name: "short unrelated text", texts: ["示例开发工具背景信息 由示例公司开发"] },
+    { name: "long unrelated text", texts: ["关于示例开发工具的背景信息与功能介绍：此工具由示例公司开发，可在终端中执行多种自动化任务。"] },
+    { name: "model self-description before an untagged title", texts: ["Request is to produce a title only.\n\n松港用户动线检查"] },
+    { name: "extra text in another block", texts: ["<title>松港用户动线检查</title>", "Here is an explanation."] },
+    { name: "a multiline tagged title", texts: ["<title>松港界面\n用户动线检查</title>"] },
+    { name: "an overlong tagged title", texts: [`<title>${"字".repeat(41)}</title>`] },
+    { name: "a truncated response", texts: ["<title>松港用户动线检查</title>"], stopReason: "max_tokens" },
+    { name: "a refusal", texts: ["<title>松港用户动线检查</title>"], stopReason: "refusal" },
+  ])("falls back to the first message for $name", async ({ texts, stopReason }) => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(Response.json({
+      content: texts.map(text => ({ type: "text", text })),
+      stop_reason: stopReason ?? "end_turn",
+    }));
+
+    await expect(generateSessionTitle({
+      text: "检查松港界面的用户动线。找出风格不统一的页面。",
+      gateway: { baseUrl: "https://gateway.example.test", authToken: "test-token" },
+      fetchImpl,
+    })).resolves.toBe("检查松港界面的用户动线");
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
   it("queries POST /v1/messages with bearer + x-api-key headers and falls back cleanly on HTTP/generic responses", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response(JSON.stringify({
       content: [
         { type: "thinking", thinking: "internal" },
-        { type: "text", text: '  "远程开启 9229 调试端口。"  ' },
+        { type: "text", text: '  <title>"远程开启 9229 调试端口。"</title>  ' },
       ],
     }), { status: 200 }));
 
@@ -196,6 +219,7 @@ describe("resolveActiveClaudeGateway and generateSessionTitle", () => {
     expect(JSON.parse(String(init?.body))).toMatchObject({
       model: "claude-sonnet-4-6",
       max_tokens: 48,
+      system: expect.stringContaining("between <title> and </title>"),
     });
 
     fetchImpl.mockResolvedValueOnce(new Response("upstream unavailable", { status: 502 }));
@@ -206,12 +230,13 @@ describe("resolveActiveClaudeGateway and generateSessionTitle", () => {
     })).resolves.toBe("重构会话分组拖拽长按手势逻辑");
 
     fetchImpl.mockResolvedValueOnce(new Response(JSON.stringify({
-      content: [{ type: "text", text: "Claude 会话" }],
+      content: [{ type: "text", text: "<title>Claude 会话</title>" }],
     }), { status: 200 }));
     await expect(generateSessionTitle({
       text: "修复 Windows 空前台句柄菜单点击",
       gateway: { baseUrl: "https://gateway.example.test", authToken: "gw-bearer-token" },
       fetchImpl,
     })).resolves.toBe("修复 Windows 空前台句柄菜单点击");
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
   });
 });

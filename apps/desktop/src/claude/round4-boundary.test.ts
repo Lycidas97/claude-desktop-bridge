@@ -367,24 +367,16 @@ describe("Round-4 Boundary 2A.1: Inspector checkbox toggle serialization & dedup
 describe("Round-4 Boundary 2A.2: Title generator Unicode, injection, gateway errors & lifecycle races", () => {
   it("preserves UTF-16 surrogate pairs, strips lone surrogates, and handles slash commands, XSS strings, giant pastes & multiline quotes", async () => {
     // Surrogate-pair emoji & CJK supplementary plane characters (U+20BB7 𠮷)
-    const emojiStream = "🚀🔥✨🧪𠮷".repeat(12);
-    const sanitizedEmoji = sanitizeGeneratedTitle(emojiStream)!;
-    expect(Array.from(sanitizedEmoji)).toHaveLength(40);
-    expect(hasLoneSurrogate(sanitizedEmoji)).toBe(false);
+    const emojiStream = "🚀🔥✨🧪𠮷".repeat(8);
+    expect(sanitizeGeneratedTitle(emojiStream)).toBe(emojiStream);
 
     const fallbackEmoji = deriveFallbackSessionTitle(emojiStream, false)!;
     expect(Array.from(fallbackEmoji)).toHaveLength(25); // 24 code points + '…'
     expect(fallbackEmoji.endsWith("…")).toBe(true);
     expect(hasLoneSurrogate(fallbackEmoji)).toBe(false);
 
-    // Lone surrogates are sanitized into U+FFFD so JSON/UTF-8 never corrupts
-    const lone = sanitizeGeneratedTitle("坏代理\uD800标题\uDC00测试")!;
-    expect(hasLoneSurrogate(lone)).toBe(false);
-    expect(() => JSON.stringify({ title: lone })).not.toThrow();
-
-    // Multiline markdown + triple-wrapped quotes from LLM
+    expect(sanitizeGeneratedTitle("坏代理\uD800标题\uDC00测试")).toBe("坏代理标题测试");
     expect(sanitizeGeneratedTitle('"""标题"""')).toBe("标题");
-    expect(sanitizeGeneratedTitle("# **标题**\n正文详细解释不会混入标题")).toBe("标题");
 
     // Empty / whitespace / lone code fence / lone URL / XSS literal / control slash commands
     expect(deriveFallbackSessionTitle("", false)).toBeUndefined();
@@ -490,7 +482,7 @@ describe("Round-4 Boundary 2A.2: Title generator Unicode, injection, gateway err
       expect(h.bridge.session(sDeleted.sessionId)).toBeUndefined();
 
       releaseGateway(new Response(JSON.stringify({
-        content: [{ type: "text", text: "已删除会话不应复活" }],
+        content: [{ type: "text", text: "<title>已删除会话不应复活</title>" }],
       }), { status: 200 }));
       await new Promise(resolve => setTimeout(resolve, 30));
 
@@ -510,7 +502,7 @@ describe("Round-4 Boundary 2A.2: Title generator Unicode, injection, gateway err
       await vi.waitFor(() => expect(gatewayCalls).toBe(2));
       await h.bridge.close();
       releaseGateway(new Response(JSON.stringify({
-        content: [{ type: "text", text: "关闭后晚到的标题" }],
+        content: [{ type: "text", text: "<title>关闭后晚到的标题</title>" }],
       }), { status: 200 }));
       await new Promise(resolve => setTimeout(resolve, 25));
       expect(h.native.calls.some(c => c.method === "updateSession" && c.args[0] === sClosing.sessionId)).toBe(false);

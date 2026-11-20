@@ -23,7 +23,7 @@ const NON_PROSE_SLASH_COMMAND_RE = /^\/(?:compact|clear|cost|context|doctor|help
 const TITLE_SYSTEM_PROMPT = [
   "Generate a concise plain-text session title summarizing the user's request.",
   "Use Chinese (<= 16 characters) when the request is primarily Chinese, or English (3-6 words) otherwise.",
-  "Return ONLY a single-line title with no quotes, no markdown, and no trailing period.",
+  "Put only the title between <title> and </title> on one line, with no other text, quotes, markdown, or trailing period.",
 ].join(" ");
 
 export function stripLoneSurrogates(value: string): string {
@@ -36,14 +36,9 @@ function trimCodePoints(value: string, limit: number): string {
   return chars.length > limit ? chars.slice(0, limit).join("").trimEnd() : wellFormed;
 }
 
-export function sanitizeGeneratedTitle(raw: string | undefined): string | undefined {
-  if (typeof raw !== "string") return undefined;
-  const firstLine = stripLoneSurrogates(raw)
-    .split(/\r?\n/u)
-    .map(line => line.replace(/\s+/gu, " ").trim())
-    .find(line => line.length > 0 && !/^```/u.test(line));
-  if (!firstLine) return undefined;
-  let cleaned = firstLine.replace(/^(?:title|session\s+title|标题|会话标题)\s*[:：-]\s*/iu, "");
+export function sanitizeGeneratedTitle(raw: string): string | undefined {
+  let cleaned = stripLoneSurrogates(raw).trim()
+    .replace(/^(?:title|session\s+title|标题|会话标题)\s*[:：-]\s*/iu, "");
   for (let pass = 0; pass < 4; pass += 1) {
     const next = cleaned
       .replace(/^(?:[#>*`~-]+\s*)+/u, "")
@@ -56,9 +51,9 @@ export function sanitizeGeneratedTitle(raw: string | undefined): string | undefi
     if (next === cleaned) break;
     cleaned = next;
   }
-  if (!cleaned || GENERIC_TITLE_RE.test(cleaned)) return undefined;
-  const capped = trimCodePoints(cleaned, MAX_GENERATED_TITLE_CHARS);
-  return capped && !GENERIC_TITLE_RE.test(capped) ? capped : undefined;
+  return cleaned && !GENERIC_TITLE_RE.test(cleaned) && Array.from(cleaned).length <= MAX_GENERATED_TITLE_CHARS
+    ? cleaned
+    : undefined;
 }
 
 function stripLeadingFormatting(line: string): string {
@@ -297,12 +292,16 @@ export async function generateSessionTitle(options: {
       signal,
     });
     if (!response.ok) return fallback;
-    const payload = await response.json() as { content?: unknown };
-    if (!Array.isArray(payload?.content)) return fallback;
-    const textBlock = payload.content.find((block): block is { type: "text"; text: string } => (
-      Boolean(block && typeof block === "object" && (block as { type?: unknown }).type === "text" && typeof (block as { text?: unknown }).text === "string")
-    ));
-    return sanitizeGeneratedTitle(textBlock?.text) ?? fallback;
+    const payload = await response.json() as { content?: unknown; stop_reason?: unknown };
+    if (!Array.isArray(payload?.content) || payload.stop_reason === "max_tokens" || payload.stop_reason === "refusal") {
+      return fallback;
+    }
+    const reply = payload.content
+      .filter((block): block is { type: "text"; text: string } => block?.type === "text" && typeof block.text === "string")
+      .map(block => block.text)
+      .join("\n");
+    const title = reply.trim().match(/^<title>([^<>\r\n]+)<\/title>$/u)?.[1];
+    return title === undefined ? fallback : sanitizeGeneratedTitle(title) ?? fallback;
   } catch {
     return fallback;
   }

@@ -111,9 +111,11 @@ export async function verifyAssistantAttention(page, host, steps, directory, vie
     await mark(desktop).waitFor();
     assert.equal(host.snapshot.assistantMail.attention.some(item => item.id === action.mailRefId), true);
 
-    await mark(desktop).click();
+    await mark(desktop).press("Enter");
     await card(desktop).waitFor({ state: "detached" });
     await card(page).waitFor({ state: "detached" });
+    await eventually(() => desktop.evaluate(() => document.activeElement?.textContent), "撤销", "Keyboard marking moves focus to undo");
+    await desktop.getByRole("status").filter({ hasText: action.subject }).waitFor();
     await desktop.screenshot({ path: resolve(directory, "desktop-mail-junk.png") });
     viewports.push({ page: "desktop-mail-junk", ...desktop.viewportSize() });
     await desktop.getByRole("button", { name: "撤销", exact: true }).click();

@@ -206,8 +206,20 @@ export async function verifyAssistantMailHistory(page, host, steps, directory, v
   await eventually(() => assistant.getAttribute("aria-label"), "助理，1 条未读", "New mail after backfill is still unread");
   await assistant.click();
   await inbox.click();
-  await cards.first().getByText("收件记录 26", { exact: true }).waitFor();
-  steps.push("First inbox imports 20 existing mails, older loads all remaining without a badge, and a new live arrival still badges");
+  const latest = cards.first();
+  await latest.getByText("收件记录 26", { exact: true }).waitFor();
+  const emulation = await page.context().newCDPSession(page);
+  try {
+    await emulation.send("Emulation.setSafeAreaInsetsOverride", { insets: { top: 0, right: 0, bottom: 48, left: 0 } });
+    await latest.getByRole("button", { name: "标为垃圾邮件", exact: true }).click();
+    const feedback = page.locator(".assistant-mail-junk-feedback");
+    await feedback.waitFor();
+    assert.ok(await feedback.evaluate(element => element.getBoundingClientRect().bottom <= innerHeight - 48),
+      "The unbound mobile inbox places undo above the system safe area");
+    await feedback.getByRole("button", { name: "撤销", exact: true }).click();
+    await latest.getByText("收件记录 26", { exact: true }).waitFor();
+  } finally { await emulation.detach(); }
+  steps.push("The inbox backfills without a badge and keeps the latest live arrival reversible above a 48px system safe area");
 }
 
 export async function verifyAssistantMail(page, host, steps, directory, viewports, baseUrl) {

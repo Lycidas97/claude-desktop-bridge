@@ -1,6 +1,6 @@
 import { ASSISTANT_MAIL_SHARED_AUTH_CAPABILITY, ASSISTANT_SMTP_CAPABILITY, MAIL_POLL_INTERVALS, type BridgeActionProposal, type BridgeDirectoryListing, type BridgeHostSnapshot, type BridgeMailAccount, type BridgeMailCard, type BridgeMailCategory, type BridgeMethod, type BridgeSessionInfo } from "@bridge/protocol";
 import { Check, ChevronRight, ListChecks, LoaderCircle, RefreshCw, Settings } from "lucide-react";
-import { useEffect, useId, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
 import { formatSessionModelLabel } from "../../lib/conversation-timeline.js";
 import { IconButton } from "../common/IconButton.js";
@@ -294,16 +294,22 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
 
 function InboxMailList({ mail, canMarkJunk, onDiscuss }: { mail: NonNullable<ReturnType<typeof useAssistantMail>>; canMarkJunk: boolean; onDiscuss(): void }) {
   const { cards } = mail.cache;
-  const [lastMarked, setLastMarked] = useState<string>();
+  const [lastMarked, setLastMarked] = useState<{ mailRefId: string; subject: string; focusUndo: boolean }>();
+  const undoButton = useRef<HTMLButtonElement>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const disabled = !mail.online || busy;
-  async function setJunk(mailRefId: string, junk: boolean) {
+  useEffect(() => {
+    if (lastMarked?.focusUndo) undoButton.current?.focus();
+  }, [lastMarked]);
+
+  async function setJunk({ mailRefId, subject }: Pick<BridgeMailCard, "mailRefId" | "subject">, junk: boolean, keyboardButton?: HTMLButtonElement) {
     setBusy(true);
     setError("");
     try {
       mailResult(await mail.request("plugin.assistant-mail.junk.set", { mailRefId, junk }));
-      setLastMarked(junk ? mailRefId : undefined);
+      setLastMarked(junk ? { mailRefId, subject: subject || "无主题", focusUndo: Boolean(keyboardButton &&
+        (document.activeElement === keyboardButton || document.activeElement === document.body)) } : undefined);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "垃圾邮件标记更新失败。");
     } finally { setBusy(false); }
@@ -317,7 +323,7 @@ function InboxMailList({ mail, canMarkJunk, onDiscuss }: { mail: NonNullable<Ret
   const regular: BridgeMailCard[] = [];
   for (const card of cards) (groups.get(card.analysis?.category ?? "other")?.cards ?? regular).push(card);
   const renderCard = (card: BridgeMailCard) => <MailCard key={card.mailRefId} card={card} onDiscuss={onDiscuss}
-    junkAction={canMarkJunk ? { disabled, onMark: () => { void setJunk(card.mailRefId, true); } } : undefined} />;
+    junkAction={canMarkJunk ? { disabled, onMark: event => { void setJunk(card, true, event.detail === 0 ? event.currentTarget : undefined); } } : undefined} />;
 
   return <div className="assistant-mail-list" aria-label="邮件输入">
     {regular.length < cards.length && <div className="assistant-mail-groups">
@@ -330,8 +336,8 @@ function InboxMailList({ mail, canMarkJunk, onDiscuss }: { mail: NonNullable<Ret
     {canMarkJunk && (lastMarked || error) && <div className="assistant-mail-junk-feedback">
       {error && <span role="alert">{error}</span>}
       {lastMarked && <>
-        <span role="status">已在 Bridge 标为垃圾邮件</span>
-        <button type="button" className="assistant-session-link" disabled={disabled} onClick={() => { void setJunk(lastMarked, false); }}>撤销</button>
+        <span role="status" title={lastMarked.subject}>已在 Bridge 标为垃圾邮件：{lastMarked.subject}</span>
+        <button ref={undoButton} type="button" className="assistant-session-link" disabled={disabled} onClick={() => { void setJunk(lastMarked, false); }}>撤销</button>
       </>}
     </div>}
   </div>;

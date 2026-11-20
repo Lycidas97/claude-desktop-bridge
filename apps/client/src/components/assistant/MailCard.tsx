@@ -1,6 +1,6 @@
 import { ARTIFACT_MAX_BYTES, mailAttachmentPreviewKind, type BridgeHistoryItem, type BridgeMailAttachment, type BridgeMailCard, type BridgeMailDetail } from "@bridge/protocol";
 import { Download, Mail, Paperclip } from "lucide-react";
-import { useState } from "react";
+import { useState, type MouseEvent } from "react";
 import { downloadMailAttachment } from "../../lib/artifact-download.js";
 import { formatBytes } from "../../lib/media-preview.js";
 import { useMediaPreview, useMediaRequest } from "../evidence/MediaPreviewProvider.js";
@@ -46,7 +46,7 @@ function MailAttachmentRow({ attachment, mailRefId, enabled }: { attachment: Bri
 
 export function MailCard({ card, nativeMessage, onDiscuss, showBatchDelivery = true, junkAction }: {
   card: BridgeMailCard; nativeMessage?: BridgeHistoryItem; onDiscuss?(): void; showBatchDelivery?: boolean;
-  junkAction?: { disabled: boolean; onMark(): void } | undefined;
+  junkAction?: { disabled: boolean; onMark(event: MouseEvent<HTMLButtonElement>): void } | undefined;
 }) {
   const mail = useAssistantMail();
   const accountLabel = mail?.accountLabel(card.accountKey) ?? "邮件插件";

@@ -440,6 +440,7 @@ function MobileApp({ themeControl }: { themeControl: ThemeControl }) {
               events={mobile.state.events}
               localTurns={mobile.state.localTurns}
               connectionIssue={mobile.state.connectionIssue}
+              quickReconnect={mobile.state.quickReconnect}
               onInspectConnection={() => {
                 setComputerDetailsHostId(mobile.state.activeHostId);
                 setTab("computers");

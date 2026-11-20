@@ -19,7 +19,7 @@ import {
   SquarePen,
 } from "lucide-react";
 import type { ReactNode, RefObject } from "react";
-import type { MobileConnectionIssue, PairedHost } from "../../hooks/useMobileBridge.js";
+import type { MobileConnectionIssue, PairedHost, QuickReconnectState } from "../../hooks/useMobileBridge.js";
 import type { ThemeControl } from "../../hooks/useTheme.js";
 import {
   CLAUDE_UNSECTIONED_PROJECT_ID,
@@ -96,6 +96,7 @@ export interface MobileSessionCatalogProps {
   projectsByActivity: string[];
   permissions: BridgePermissionInfo[];
   connectionIssue: MobileConnectionIssue | undefined;
+  quickReconnect?: QuickReconnectState | undefined;
   onInspectConnection?: (() => void) | undefined;
   transportMetrics: BridgeTransportMetrics | undefined;
   search: string;
@@ -107,7 +108,7 @@ export interface MobileSessionCatalogProps {
   sectionManage: SectionManageController;
   sessionOverlays: ReactNode;
   onBackToHosts(): void;
-  onRetry(): Promise<void>;
+  onRetry(fromQuickSwitch?: boolean): Promise<void>;
   onCreateSection: ((name: string) => Promise<BridgeProjectInfo | undefined>) | undefined;
   selectSession(sessionId: string): Promise<void>;
   setSearch(value: string): void;
@@ -161,6 +162,7 @@ export function MobileSessionCatalog({
   projectsByActivity,
   permissions,
   connectionIssue,
+  quickReconnect,
   onInspectConnection,
   transportMetrics,
   search,
@@ -193,6 +195,7 @@ export function MobileSessionCatalog({
   const seenCompletions = useSeenSessionCompletions(activeHostId);
   const searchQuery = search.trim().toLocaleLowerCase();
   const online = connection === "connected" && desktopOnline;
+  const repairActiveHost = hosts?.some((host) => host.roomId === activeHostId && host.needsRepair) ? onAddHost : undefined;
   const supportsCreateSection = Boolean(onCreateSection && snapshot?.host.capabilities.includes("section.create.v1"));
   const hasActiveSessions = sessions.some((candidate) => !candidate.archivedAt);
   const totalArchivedFamilies = archivedFamilies ?? groupProjectSessionFamilies(archivedSessions);
@@ -281,7 +284,9 @@ export function MobileSessionCatalog({
             <div className="drawer-host-options">
               {hosts.map((host) => {
                 const isCurrent = host.roomId === activeHostId;
-                const isOnline = isCurrent && online && !host.needsRepair;
+                const retry = isCurrent ? quickReconnect : undefined;
+                const retrying = retry?.status === "pending";
+                const isOnline = isCurrent && online && !retry && !host.needsRepair;
                 return (
                   <div key={host.roomId} className={`drawer-host-row${isCurrent ? " active" : ""}`}>
                     <button
@@ -291,20 +296,27 @@ export function MobileSessionCatalog({
                       onClick={() => {
                         onToggleHostSwitcher?.();
                         onClose?.();
-                        void onSelectHost?.(host.roomId);
+                        if (host.needsRepair && onAddHost) onAddHost();
+                        else void onSelectHost?.(host.roomId);
                       }}
                     >
                       <i className={`m-status-dot${isOnline ? " is-online" : ""}`} aria-hidden="true" />
                       <span className="drawer-host-option-name">{host.desktopName}</span>
-                      <span className="drawer-host-option-meta">
-                        {hostQuickMeta(host, isCurrent, isOnline, transportMetrics)}
+                      <span className="drawer-host-option-meta" aria-live={isCurrent ? "polite" : undefined}>
+                        {retrying ? "正在重连" : hostQuickMeta(host, isCurrent, isOnline, transportMetrics)}
                       </span>
                     </button>
                     {isCurrent && !isOnline && !host.needsRepair && (
-                      <IconButton label="重新连接" className="drawer-host-retry" onClick={() => void onRetry()}>
-                        <RotateCw size={16} aria-hidden="true" />
+                      <IconButton
+                        label={retrying ? "正在重连" : "重新连接"}
+                        className="drawer-host-retry"
+                        disabled={retrying}
+                        onClick={() => void onRetry(true)}
+                      >
+                        {retrying ? <LoaderCircle size={16} className="is-spinning" aria-hidden="true" /> : <RotateCw size={16} aria-hidden="true" />}
                       </IconButton>
                     )}
+                    {retry?.status === "failed" && <p className="drawer-host-retry-error" role="alert">{retry.message}</p>}
                   </div>
                 );
               })}
@@ -388,7 +400,7 @@ export function MobileSessionCatalog({
             </button>
           )}
 
-          {connectionIssue && (
+          {connectionIssue && !(hostSwitcherOpen && quickReconnect?.status === "failed" && quickReconnect.message === connectionIssue.message) && (
             <button type="button" className="host-connection-issue" onClick={() => void onRetry()}>
               {connectionIssue.message}
             </button>
@@ -415,6 +427,19 @@ export function MobileSessionCatalog({
           )}
 
           {(snapshot ? (!hasActiveSessions && grouped.length === 0) || (Boolean(searchQuery) && grouped.length === 0) : !online) && (() => {
+            if (repairActiveHost) {
+              return (
+                <EmptyState
+                  title="电脑需要重新配对"
+                  {...(!hostSwitcherOpen && quickReconnect?.status === "failed" ? { description: quickReconnect.message } : {})}
+                  action={(
+                    <button type="button" className="secondary-button session-catalog-empty-action" onClick={repairActiveHost}>
+                      重新配对
+                    </button>
+                  )}
+                />
+              );
+            }
             const claudeRuntime = snapshot?.runtimes?.find((candidate) => candidate.id === "claude-desktop");
             const claudeDesktopReady = claudeRuntime
               ? claudeRuntime.state === "ready"

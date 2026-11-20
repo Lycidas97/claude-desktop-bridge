@@ -134,6 +134,7 @@ export {
   type PairingSyncStage,
   type PairingSyncState,
   type ProjectCatalogPatch,
+  type QuickReconnectState,
   type ReplaceActiveHostSnapshotOptions,
   type SessionEvidenceState,
   type SessionHistoryState,
@@ -200,6 +201,7 @@ export function useMobileBridge() {
     provisionalPairing?: PairingBundle,
     pairingPhase?: PairingConnectionPhase,
     restored?: StoredHostState,
+    quickReconnectAttempt?: symbol,
   ) => startBridgeConnection(
     transportRefs,
     { handlePayload, notifyCompletedTurns, refreshSessionList, refreshSnapshot, resumeEvents },
@@ -209,6 +211,7 @@ export function useMobileBridge() {
     provisionalPairing,
     pairingPhase,
     restored,
+    quickReconnectAttempt,
   ), [handlePayload, notifyCompletedTurns, refreshSessionList, refreshSnapshot, resumeEvents]);
 
   useEffect(() => {
@@ -822,9 +825,29 @@ export function useMobileBridge() {
     [start],
   );
 
-  const retryConnection = useCallback(async () => {
+  const retryConnection = useCallback(async (fromQuickSwitch = false) => {
     const crypto = cryptoRef.current;
-    if (crypto) await start(crypto);
+    if (!fromQuickSwitch) {
+      if (crypto) await start(crypto);
+      return;
+    }
+    if (!crypto) {
+      setState((current) => ({
+        ...current,
+        quickReconnect: { status: "failed", message: "找不到这台电脑的配对密钥，请重新配对。" },
+      }));
+      return;
+    }
+    const attempt = Symbol();
+    try {
+      await start(crypto, false, undefined, undefined, undefined, undefined, attempt);
+    } catch (error) {
+      if (transportRefs.connectionAttemptRef.current !== attempt) return;
+      setState((current) => ({
+        ...current,
+        quickReconnect: { status: "failed", message: error instanceof Error ? error.message : String(error) },
+      }));
+    }
   }, [start]);
 
   const archiveSession = useCallback(async (sessionId: string, archived: boolean) => {

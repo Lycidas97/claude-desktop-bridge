@@ -220,6 +220,7 @@
 
 .drawer-host-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   color: var(--muted);
 }
@@ -258,6 +259,15 @@
   border: 0;
   background: transparent;
   color: var(--accent-ink);
+}
+
+.drawer-host-retry-error {
+  flex: 0 0 100%;
+  margin: 0;
+  padding: 0 12px 8px;
+  color: var(--danger-ink);
+  font-size: calc(11.5px * var(--font-scale));
+  overflow-wrap: anywhere;
 }
 
 .drawer-host-option .m-status-dot.is-online {

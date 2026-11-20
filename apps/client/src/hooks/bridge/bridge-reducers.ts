@@ -141,6 +141,8 @@ export interface PairingConnectionPhase {
   provisional: boolean;
 }
 
+export type QuickReconnectState = { status: "pending" } | { status: "failed"; message: string };
+
 export interface MobileBridgeState {
   loading: boolean;
   hosts: PairedHost[];
@@ -148,6 +150,7 @@ export interface MobileBridgeState {
   desktopName: string | undefined;
   connection: SocketState;
   desktopOnline: boolean;
+  quickReconnect?: QuickReconnectState | undefined;
   foregroundRevision?: number;
   snapshot: BridgeHostSnapshot | undefined;
   snapshotSeq: number;
@@ -175,6 +178,7 @@ export const EMPTY_ACTIVE_HOST_STATE: Readonly<ActiveHostState> = Object.freeze(
   desktopName: undefined,
   connection: "idle",
   desktopOnline: false,
+  quickReconnect: undefined,
   snapshot: undefined,
   snapshotSeq: 0,
   permissions: Object.freeze([]) as unknown as BridgePermissionInfo[],
@@ -606,7 +610,7 @@ export function isLoopbackRelay(value: string): boolean {
 
 export function relayIssue(code: string, fallback: string): MobileConnectionIssue {
   if (code === "DEVICE_REVOKED") {
-    return { code: "revoked", message: "这台电脑已撤销当前手机的访问权限，请删除主机后重新扫码。" };
+    return { code: "revoked", message: "这台电脑已撤销当前手机的访问权限，请扫描电脑端生成的新二维码。" };
   }
   if (
     code === "AUTH_FAILED" ||
@@ -617,7 +621,7 @@ export function relayIssue(code: string, fallback: string): MobileConnectionIssu
   ) {
     return {
       code: "pairing-invalid",
-      message: "配对已过期或已绑定其他设备，请删除后在电脑端生成新二维码。",
+      message: "配对已过期或已绑定其他设备，请扫描电脑端生成的新二维码。",
     };
   }
   if (code === "INVALID_ENVELOPE") {

@@ -1,6 +1,7 @@
-import { BridgeCrypto, PROTOCOL_VERSION, type BridgeHostSnapshot, type BridgeRequest, type ClientFrame, type EncryptedEnvelope, type PairingBundle, type ServerFrame } from "@bridge/protocol";
+import { bridgeEndpoint, BridgeCrypto, PROTOCOL_VERSION, type BridgeHostSnapshot, type BridgeRequest, type ClientFrame, type EncryptedEnvelope, type PairingBundle, type ServerFrame } from "@bridge/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bridgeVault } from "../lib/vault.js";
+import { writeLastActiveHost } from "./bridge/bridge-transport.js";
 import { useMobileBridge } from "./useMobileBridge.js";
 import { createBridgeTestStore } from "./useMobileBridge.test-harness.js";
 
@@ -41,6 +42,7 @@ vi.mock("../lib/vault.js", () => ({ bridgeVault: {
   addOutbox: vi.fn(async (envelope: EncryptedEnvelope) => { harness.outbox.push(envelope); }),
   removeOutbox: vi.fn(async (ids: string[]) => { harness.outbox = harness.outbox.filter(envelope => !ids.includes(envelope.id)); }),
   importPairing: vi.fn(async () => undefined), setActiveEndpoint: vi.fn(async () => undefined), setDesktopRelay: vi.fn(async () => undefined), updateLanRelay: vi.fn(async () => undefined),
+  removeHost: vi.fn(async (roomId: string) => { harness.hosts = harness.hosts.filter(host => host.roomId !== roomId); }),
 } }));
 
 let pairing: PairingBundle;
@@ -208,6 +210,90 @@ describe("startup and network recovery", () => {
     await firstRetry;
     expect(LocalWebSocket.instances).toHaveLength(2);
     expect(latest.readyState).toBe(LocalWebSocket.OPEN);
+  });
+
+  it("does not complete a quick switch retry from Relay presence or a replayed response", async () => {
+    const bridge = mount();
+    await vi.waitFor(() => expect(bridgeVault.saveMessage).toHaveBeenCalledOnce());
+    const priorRequest = harness.requests.find(request => request.method === "snapshot.get")!;
+    const replayedReply = await desktop.encrypt({ kind: "response", requestId: priorRequest.requestId, ok: true, result: { snapshot } }, "desktop", "mobile", Date.now(), undefined, pairing.deviceId, true);
+    const answer = LocalWebSocket.prototype.answer;
+    const held = vi.spyOn(LocalWebSocket.prototype, "answer").mockResolvedValue(undefined);
+
+    await bridge.retryConnection(true);
+    const socket = LocalWebSocket.instances.at(-1)!;
+    await vi.waitFor(() => expect(held).toHaveBeenCalledOnce());
+    const sent = vi.spyOn(socket, "send");
+    socket.receive({ type: "envelope", envelope: replayedReply });
+    await vi.waitFor(() => expect(sent).toHaveBeenCalledWith(JSON.stringify({ type: "ack", ids: [replayedReply.id] })));
+    expect(harness.state.quickReconnect).toEqual({ status: "pending" });
+    expect(harness.state.desktopOnline).toBe(false);
+
+    await answer.call(socket, held.mock.calls[0]![0]);
+    await vi.waitFor(() => expect(harness.state.quickReconnect).toBeUndefined());
+    expect(harness.state.desktopOnline).toBe(true);
+  });
+
+  it("ends a quick switch retry when Relay drops before the first reply and stays unreachable", async () => {
+    const bridge = mount();
+    await vi.waitFor(() => expect(bridgeVault.saveMessage).toHaveBeenCalledOnce());
+    vi.spyOn(LocalWebSocket.prototype, "answer").mockResolvedValue(undefined);
+    await bridge.retryConnection(true);
+    expect(harness.state.connection).toBe("connected");
+    expect(harness.state.quickReconnect).toEqual({ status: "pending" });
+    vi.spyOn(LocalWebSocket.prototype, "send").mockImplementation(() => {});
+    LocalWebSocket.instances.at(-1)!.close();
+
+    await vi.advanceTimersByTimeAsync(25_000);
+    expect(harness.state.quickReconnect).toMatchObject({ status: "failed", message: expect.stringContaining("检查网络") });
+  });
+
+  it("keeps a revoked host selected to report the failure, but clears selection when the host is removed", async () => {
+    const other = await BridgeCrypto.createHost("wss://other.example/ws", "Other desktop");
+    const device = await BridgeCrypto.createDevicePairing({ hostId: other.crypto.identity.deviceId, roomId: other.crypto.identity.roomId, relayUrl: other.crypto.identity.relayUrl, desktopName: "Other desktop" });
+    harness.hosts.push({ ...device.pairing, crypto: await BridgeCrypto.fromPairing(device.pairing), updatedAt: 1, needsRepair: false });
+    writeLastActiveHost(pairing.roomId);
+    const bridge = mount();
+    await vi.waitFor(() => expect(bridgeVault.saveMessage).toHaveBeenCalledOnce());
+    vi.spyOn(LocalWebSocket.prototype, "answer").mockResolvedValue(undefined);
+    await bridge.retryConnection(true);
+    const socket = LocalWebSocket.instances.at(-1)!;
+    socket.receive({ type: "error", code: "DEVICE_REVOKED", message: "Revoked by desktop" });
+
+    expect(socket.readyState).toBe(LocalWebSocket.CLOSED);
+    expect(harness.state.activeHostId).toBe(pairing.roomId);
+    expect(harness.state.hosts[0]).toMatchObject({ needsRepair: true, status: "offline" });
+    expect(harness.state.snapshot).toBeUndefined();
+    expect(harness.state.quickReconnect).toMatchObject({ status: "failed", message: expect.stringContaining("撤销") });
+
+    const remove = bridge.forgetHost(pairing.roomId);
+    await vi.advanceTimersByTimeAsync(4_000);
+    await remove;
+    expect(harness.state.hosts.map(({ roomId }: { roomId: string }) => roomId)).toEqual([device.pairing.roomId]);
+    expect(harness.state.activeHostId).toBeUndefined();
+    expect(harness.state.quickReconnect).toBeUndefined();
+  });
+
+  it("retries both Relay candidates and reports the pairing rejection when neither accepts it", async () => {
+    harness.hosts[0].relayEndpoints = [
+      bridgeEndpoint(pairing.relayUrl, 1, "first"),
+      bridgeEndpoint("wss://backup.example/ws", 2, "second"),
+    ];
+    const bridge = mount();
+    await vi.waitFor(() => expect(bridgeVault.saveMessage).toHaveBeenCalledOnce());
+    const attempted = new Set<string>();
+    vi.spyOn(LocalWebSocket.prototype, "send").mockImplementation(function (this: LocalWebSocket, raw) {
+      if ((JSON.parse(raw) as ClientFrame).type !== "hello") return;
+      attempted.add(this.url);
+      this.receive({ type: "error", code: "AUTH_FAILED", message: "Relay rejected the pairing" });
+      this.close();
+    });
+    await bridge.retryConnection(true);
+    await vi.waitFor(() => expect(harness.state.connectionIssue?.code).toBe("pairing-invalid"));
+    expect(attempted).toEqual(new Set(harness.hosts[0].relayEndpoints.map(({ url }: { url: string }) => url)));
+    await vi.advanceTimersByTimeAsync(18_000);
+    expect(harness.state.quickReconnect).toMatchObject({ status: "failed", message: expect.stringContaining("新二维码") });
+    expect(harness.state.connectionIssue?.code).toBe("pairing-invalid");
   });
 
   it("reconnects once when Android reports online before publishing the new interface type", async () => {

@@ -11,12 +11,12 @@ export const todoInput = z.strictObject({
   title, notes, status: todoStatus, priority: z.number().int().min(0).max(9).optional(),
   dueAt: timestamp.optional(), remindAt: timestamp.optional(), mailRefId: z.uuid().optional(),
 });
+const timeZone = z.string().min(1).max(128).refine(value => {
+  try { new Intl.DateTimeFormat("en", { timeZone: value }); return true; }
+  catch (error) { if (error instanceof RangeError) return false; throw error; }
+});
 export const eventInput = z.strictObject({
-  title, notes, startAt: timestamp, endAt: timestamp, allDay: z.boolean(),
-  timeZone: z.string().min(1).max(128).refine(value => {
-    try { new Intl.DateTimeFormat("en", { timeZone: value }); return true; }
-    catch (error) { if (error instanceof RangeError) return false; throw error; }
-  }),
+  title, notes, startAt: timestamp, endAt: timestamp, allDay: z.boolean(), timeZone,
   location: z.string().max(1000).optional(),
 }).refine(({ startAt, endAt, allDay }) => startAt < endAt && [startAt, endAt].every(value => (value.length === 10) === allDay), {
   message: "The end must follow the start, with matching date or time fields",
@@ -33,7 +33,7 @@ export const freeSlotQuery = z.strictObject({ ...window, durationMinutes: z.numb
 const existing = z.strictObject({ id, revision });
 const secret = z.string().min(1).max(1024);
 export const agendaRequests = {
-  "plugin.assistant-agenda.todo.list": todoList,
+  "plugin.assistant-agenda.todo.list": todoList.extend({ dueOn: z.strictObject({ date: z.iso.date(), timeZone }).optional() }),
   "plugin.assistant-agenda.event.list": eventList,
   "plugin.assistant-agenda.todo.save": z.strictObject({ existing: existing.optional(), value: todoInput }),
   "plugin.assistant-agenda.event.save": z.strictObject({ existing: existing.optional(), value: eventInput }),

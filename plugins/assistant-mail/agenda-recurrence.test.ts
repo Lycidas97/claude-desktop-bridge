@@ -83,6 +83,19 @@ test("pages an old hourly VTODO from its original due date and can seek to a lat
   expect(store.listTodos({ limit: 1, cursor: later.nextCursor }).records).toMatchObject([{ dueAt: "2027-01-01T01:30:00.000Z" }]);
 });
 
+test("filters recurring task deadlines before paging, including civil dates", () => {
+  sync(object("hourly-task", ics(...item("VTODO", "hourly-task", "DTSTART:20140101T090000Z", "DUE:20140101T093000Z", "RRULE:FREQ=HOURLY"))),
+    object("date-task", ics(...item("VTODO", "date-task", "DTSTART;VALUE=DATE:20261231", "DUE;VALUE=DATE:20270101", "RRULE:FREQ=DAILY;COUNT=3"))));
+  const dueOn = { date: "2027-01-02", timeZone: "Asia/Tokyo" };
+  const page = store.listTodos({ dueOn, limit: 1 });
+  expect(page.records[0]).toMatchObject({ dueAt: "2027-01-01T15:30:00.000Z" });
+  const remaining = store.listTodos({ dueOn, cursor: page.nextCursor });
+  expect(remaining.incomplete).toBeUndefined();
+  expect(remaining.records).toHaveLength(24);
+  expect(remaining.records).toContainEqual(expect.objectContaining({ title: "date-task", dueAt: "2027-01-02" }));
+  expect(remaining.records.at(-1)).toMatchObject({ dueAt: "2027-01-02T14:30:00.000Z" });
+});
+
 const newYork = ["BEGIN:VTIMEZONE", "TZID:America/New_York", "BEGIN:STANDARD", "DTSTART:20071104T020000",
   "TZOFFSETFROM:-0400", "TZOFFSETTO:-0500", "RRULE:FREQ=YEARLY;BYMONTH=11;BYDAY=1SU", "END:STANDARD",
   "BEGIN:DAYLIGHT", "DTSTART:20070311T020000", "TZOFFSETFROM:-0500", "TZOFFSETTO:-0400",

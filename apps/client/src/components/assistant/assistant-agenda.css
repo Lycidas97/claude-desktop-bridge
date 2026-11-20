@@ -4,6 +4,8 @@
 .agenda-month { gap: 4px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .agenda-actions, .agenda-pagination { flex-wrap: wrap; justify-content: flex-end; margin-top: 8px; }
 .agenda-day { margin-top: 16px; }
+.agenda-other-todos { margin-top: 12px; border-top: 1px solid var(--line); }
+.agenda-other-todos summary { display: list-item; align-content: center; cursor: pointer; min-height: 36px; color: var(--muted); }
 .agenda-day h3 { margin: 0; padding: 5px 8px; border-radius: var(--r-input); background: var(--surface-2); color: var(--muted); font-size: calc(12px * var(--font-scale)); font-weight: 600; font-variant-numeric: tabular-nums; }
 .agenda-records { margin: 0; padding: 0; list-style: none; }
 .agenda-record { display: flex; min-width: 0; gap: 8px; align-items: start; padding: 6px 0; }

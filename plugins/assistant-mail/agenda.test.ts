@@ -58,6 +58,22 @@ test("local records survive assistant restart, support paging, and reject stale 
     .toMatchObject([{ title: "All day", startAt: "2027-01-02", allDay: true }]);
 });
 
+test("pages a device day's dated todos before unrelated tasks can consume the page", () => {
+  const store = testStore();
+  for (let index = 0; index < 51; index++) store.saveTodo({ title: `Old task ${index}`, status: "pending", dueAt: "2027-03-13" });
+  for (const [title, dueAt] of [
+    ["Before", "2027-03-14T07:59:59.999Z"], ["Start", "2027-03-14T08:00:00.000Z"],
+    ["Last", "2027-03-15T06:59:59.999Z"], ["After", "2027-03-15T07:00:00.000Z"],
+    ["Date only", "2027-03-14"], ["Undated", undefined],
+  ] as const) store.saveTodo({ title, dueAt, status: title === "Last" ? "completed" : "pending" });
+  const dueOn = { date: "2027-03-14", timeZone: "America/Los_Angeles" };
+  const first = store.listTodos({ dueOn, limit: 2 });
+  expect(first.records.map(record => record.title)).toEqual(["Date only", "Start"]);
+  expect(first.nextCursor).toBeDefined();
+  expect(store.listTodos({ dueOn, cursor: first.nextCursor }).records.map(record => record.title)).toEqual(["Last"]);
+  expect(store.listTodos({ limit: 100 }).records).toHaveLength(57);
+});
+
 test("normalizes remote todo status and alarms, preserves identity, and computes availability across overrides", () => {
   const store = testStore();
   const id = store.addSource(source, Buffer.from("sealed"));

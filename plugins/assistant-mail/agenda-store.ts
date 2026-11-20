@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type {
-  AgendaEventInput, AgendaPage, AgendaPageQuery, AgendaRecordIdentity, AgendaTodoInput, AgendaWindow,
+  AgendaDueDay, AgendaEventInput, AgendaPage, AgendaPageQuery, AgendaRecordIdentity, AgendaTodoInput, AgendaWindow,
   BridgeAgendaEvent, BridgeAgendaSource, BridgeAgendaTodo,
 } from "../../packages/protocol/src/assistant-agenda.js";
 import { AgendaExpansionLimitError, parseAgendaObject } from "./agenda-ical.js";
@@ -225,13 +225,26 @@ export class AgendaStore {
     return record;
   }
 
-  listTodos(query: AgendaPageQuery & { status?: AgendaTodoInput["status"] | undefined }): AgendaPage<BridgeAgendaTodo> {
+  listTodos(query: AgendaPageQuery & { status?: AgendaTodoInput["status"] | undefined; dueOn?: AgendaDueDay | undefined }): AgendaPage<BridgeAgendaTodo> {
     const limit = query.limit ?? 50;
     const [closed = "0", date = "", id = ""] = query.cursor?.split("|") ?? [];
+    const day = query.dueOn?.date;
+    const nextDay = day && new Date(Date.parse(day) + 86_400_000).toISOString().slice(0, 10);
+    const window = day && nextDay && query.dueOn ? {
+      from: new Date(agendaInstant(day, query.dueOn.timeZone)).toISOString(),
+      to: new Date(agendaInstant(nextDay, query.dueOn.timeZone)).toISOString(),
+    } : undefined;
+    // Date-only tasks are civil dates, not UTC instants. Expand both kinds of recurrence before filtering by dueAt.
+    const recurrenceWindow = window && day && nextDay ? {
+      from: window.from < `${day}T00:00:00.000Z` ? window.from : `${day}T00:00:00.000Z`,
+      to: window.to > `${nextDay}T00:00:00.000Z` ? window.to : `${nextDay}T00:00:00.000Z`,
+    } : undefined;
     const rows = this.db.prepare(`SELECT value FROM todos WHERE (? IS NULL OR status = ?) AND (${todoOrder}) > (?, ?, ?)
+      AND (? IS NULL OR due_at = ? OR (length(due_at) > 10 AND due_at >= ? AND due_at < ?))
       AND NOT EXISTS (SELECT 1 FROM agenda_caldav_objects object
         WHERE object.source_id = todos.source_id AND object.href = todos.href AND (object.recurring & 2) != 0)
-      ORDER BY ${todoOrder} LIMIT ?`).all(query.status ?? null, query.status ?? null, Number(closed), date, id, limit + 1);
+      ORDER BY ${todoOrder} LIMIT ?`).all(query.status ?? null, query.status ?? null, Number(closed), date, id,
+        day ?? null, day ?? null, window?.from ?? null, window?.to ?? null, limit + 1);
     // NUL sorts before the time suffix, matching SQLite's date-only vs date-time ordering.
     const key = (record: BridgeAgendaTodo) => [Number(record.status === "completed" || record.status === "cancelled"), record.dueAt ?? "~", record.id].join("\0");
     const cursor = [closed, date, id].join("\0");
@@ -239,9 +252,12 @@ export class AgendaStore {
     let incomplete = false;
     for (const row of this.recurringObjects(2)) {
       try {
-        const { uid, todos } = parseAgendaObject(row.data, collectionZone(row.calendar_timezone, this.timeZone), { todos: { limit, closed: Number(closed), date } });
+        const { uid, todos } = parseAgendaObject(row.data, collectionZone(row.calendar_timezone, this.timeZone), {
+          todos: { limit, closed: Number(closed), date, window: recurrenceWindow },
+        });
         for (const todo of todos) {
           if (query.status && todo.status !== query.status) continue;
+          if (window && !(todo.dueAt === day || todo.dueAt && todo.dueAt.length > 10 && todo.dueAt >= window.from && todo.dueAt < window.to)) continue;
           const record = { ...todo, ...this.importedIdentity(row, uid, todo.recurrenceId) };
           const order = key(record);
           if (order > cursor) entries.push({ record, key: order });

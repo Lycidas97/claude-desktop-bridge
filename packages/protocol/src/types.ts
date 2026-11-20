@@ -226,6 +226,7 @@ export type BridgeCapability =
   | "transcript.toolDetail.v1"
   | "plugin.magpie-quota.v1"
   | "plugin.assistant-agenda.v1"
+  | "plugin.assistant-agenda.due-day.v1"
   | "assistant.proposal.v1"
   | "assistant.proposal.memory.v1"
   | "plugin.assistant-mail.v1"

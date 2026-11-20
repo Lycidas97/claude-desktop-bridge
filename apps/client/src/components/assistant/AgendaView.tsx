@@ -4,10 +4,10 @@ import { useEffect, useId, useState, type FormEvent } from "react";
 import { agendaCalendarDate, agendaInputTime, agendaInstant, agendaTimedRange } from "../../lib/assistant-agenda.js";
 import { IconButton } from "../common/IconButton.js";
 import { Sheet } from "../common/Sheet.js";
-import { useAssistantAgenda } from "./AssistantAgendaProvider.js";
+import { agendaDeviceZone as deviceZone, useAssistantAgenda } from "./AssistantAgendaProvider.js";
 import "./assistant-agenda.css";
 
-const deviceZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+const dayLabel = new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric", weekday: "short" });
 const timeZones = new Set([deviceZone, "UTC", ...Intl.supportedValuesOf("timeZone")]);
 const priorityLabels = { 1: "高", 5: "中", 9: "低" };
 const priorityGroup = (priority: number | undefined): keyof typeof priorityLabels | "" =>
@@ -23,31 +23,38 @@ function displayTime(value: string, timeZone = deviceZone): string {
   return agendaInputTime(value, timeZone).replace("T", " ");
 }
 
-export function AgendaView({ calendarOnly, onCalendarOnlyChange }: { calendarOnly: boolean; onCalendarOnlyChange(calendarOnly: boolean): void }) {
+export function AgendaView() {
   const agenda = useAssistantAgenda()!;
+  const { events, todos, allTodos, calendarOnly, date } = agenda;
   const dayId = useId();
   const [editor, setEditor] = useState<Editor>();
   const [completing, setCompleting] = useState<string>();
   const [error, setError] = useState("");
   // The provider keeps opened pages while the Assistant stage is switched away.
-  useEffect(() => { agenda.selectMonth(); }, []);
-  const { events, todos } = agenda;
+  useEffect(() => { agenda.selectDate(); }, []);
   const sources = new Map(agenda.snapshot?.sources.map(source => [source.id, source]));
   const canCreate = agenda.online && agenda.snapshot?.sources.some(source => source.enabled && source.writable);
-  const year = agenda.month.getFullYear();
-  const month = agenda.month.getMonth();
-  const entries = [
-    ...events.records.map(record => ({ record, at: agendaInputTime(record.startAt, deviceZone) })),
-    ...(calendarOnly ? [] : todos.records.map(record => ({ record, at: record.dueAt ? agendaInputTime(record.dueAt, deviceZone) : "" }))),
-  ].sort((a, b) => Number(!a.at) - Number(!b.at) || a.at.localeCompare(b.at));
-  const days = new Map<string, typeof entries>();
-  for (const entry of entries) {
-    const day = entry.at.slice(0, 10);
+  const year = date.getFullYear();
+  const month = date.getMonth();
+  const selectedDay = agendaInputTime(date.toISOString(), deviceZone).slice(0, 10);
+  const today = agendaInputTime(new Date().toISOString(), deviceZone).slice(0, 10);
+  const entries = events.records.map(record => ({ record, at: agendaInputTime(record.startAt, deviceZone), epoch: record.allDay ? -Infinity : Date.parse(record.startAt) }));
+  const dayTodos = calendarOnly ? [] : todos.records.flatMap(record => {
+    if (!record.dueAt) return [];
+    const at = agendaInputTime(record.dueAt, deviceZone);
+    return at.startsWith(selectedDay) ? [{ record, at, epoch: record.dueAt.length === 10 ? -Infinity : Date.parse(record.dueAt) }] : [];
+  });
+  const days = new Map<string, Array<{ record: BridgeAgendaTodo | BridgeAgendaEvent; at: string }>>();
+  for (const entry of [...entries, ...dayTodos].sort((a, b) =>
+    (calendarOnly ? a.at.slice(0, 10).localeCompare(b.at.slice(0, 10)) : 0) || a.epoch - b.epoch)) {
+    const day = calendarOnly ? entry.at.slice(0, 10) : selectedDay;
     const records = days.get(day);
     if (records) records.push(entry);
     else days.set(day, [entry]);
   }
+
   const pages = calendarOnly ? [{ name: "日程", page: events }] : [{ name: "日程", page: events }, { name: "待办", page: todos }];
+  const loading = pages.some(({ page }) => page.loading);
 
   async function complete(todo: BridgeAgendaTodo, completed: boolean) {
     setCompleting(todo.id);
@@ -61,25 +68,25 @@ export function AgendaView({ calendarOnly, onCalendarOnlyChange }: { calendarOnl
     }
   }
 
-  function row({ record, at }: (typeof entries)[number]) {
+  function row({ record, at }: { record: BridgeAgendaTodo | BridgeAgendaEvent; at: string }, groupedDay?: string) {
     const source = sources.get(record.sourceId);
     const isTodo = "status" in record;
     const priority = isTodo ? priorityGroup(record.priority) : "";
     return <li className={`agenda-record${isTodo && (record.status === "completed" || record.status === "cancelled") ? " is-closed" : ""}`} key={`${isTodo ? "todo" : "event"}:${record.id}`}>
       {isTodo ? <label className="agenda-marker agenda-check">
-        <input type="checkbox" aria-label={`完成 ${record.title}`} checked={record.status === "completed"} disabled={!agenda.online || !source?.enabled || !source.writable || Boolean(completing) || todos.loading}
+        <input type="checkbox" aria-label={`完成 ${record.title}`} checked={record.status === "completed"} disabled={!agenda.online || !source?.enabled || !source.writable || Boolean(completing) || (groupedDay ? todos.loading : allTodos.loading)}
           onChange={event => void complete(record, event.target.checked)} />
       </label> : <span className="agenda-marker agenda-event-marker" aria-hidden="true"><CalendarDays size={17} /></span>}
       <div className="agenda-record-copy">
         <strong>{record.title}</strong>
         {isTodo ? <div className="agenda-todo-meta">
           {record.status !== "pending" && record.status !== "completed" && <small>{todoStatuses[record.status]}</small>}
-          {at.length > 10 && <small>截止 {at.slice(11)}</small>}
+          {at && (groupedDay ? at.length > 10 && <small>截止 {at.slice(11)}</small> : <small>截止 {at.replace("T", " ")}</small>)}
           {record.remindAt && <small>提醒 {displayTime(record.remindAt)}</small>}
           {priority && <small>优先级 {priorityLabels[priority]}</small>}
         </div> : <>
-          <small>{record.allDay ? record.endAt === shiftDate(record.startAt, 1) ? "全天" : `全天 · 至 ${shiftDate(record.endAt, -1)}`
-            : agendaTimedRange(record.startAt, record.endAt, record.timeZone, deviceZone, at.slice(0, 10))}</small>
+          <small>{record.allDay ? `全天${record.startAt === groupedDay ? "" : ` ${record.startAt}`}${record.endAt === shiftDate(record.startAt, 1) ? "" : ` 至 ${shiftDate(record.endAt, -1)}`}`
+            : agendaTimedRange(record.startAt, record.endAt, record.timeZone, deviceZone, groupedDay)}</small>
           {record.location && <small>{record.location}</small>}
           {!!record.attendees?.length && <small>{record.attendees.join("、")}</small>}
         </>}
@@ -93,14 +100,14 @@ export function AgendaView({ calendarOnly, onCalendarOnlyChange }: { calendarOnl
 
   return <section className="agenda-view" aria-label="议程">
     <div className="agenda-toolbar">
-      <div className="agenda-month" role="group" aria-label="日程月份">
-        <IconButton label="上个月" onClick={() => agenda.selectMonth(new Date(year, month - 1, 1))}><ChevronLeft size={18} /></IconButton>
-        <strong aria-live="polite">{year}年{month + 1}月</strong>
-        <IconButton label="下个月" onClick={() => agenda.selectMonth(new Date(year, month + 1, 1))}><ChevronRight size={18} /></IconButton>
+      <div className="agenda-month" role="group" aria-label={calendarOnly ? "日程月份" : "议程日期"}>
+        <IconButton label={calendarOnly ? "上个月" : "前一天"} onClick={() => agenda.selectDate(calendarOnly ? new Date(year, month - 1, 1) : new Date(year, month, date.getDate() - 1))}><ChevronLeft size={18} /></IconButton>
+        <strong aria-live="polite">{calendarOnly ? `${year}年${month + 1}月` : <time dateTime={selectedDay}>{selectedDay === today ? "今天 " : ""}{dayLabel.format(date)}</time>}</strong>
+        <IconButton label={calendarOnly ? "下个月" : "后一天"} onClick={() => agenda.selectDate(calendarOnly ? new Date(year, month + 1, 1) : new Date(year, month, date.getDate() + 1))}><ChevronRight size={18} /></IconButton>
       </div>
       <nav className="assistant-view-switch" aria-label="议程视图">
-        <button type="button" aria-pressed={!calendarOnly} onClick={() => onCalendarOnlyChange(false)}>全部</button>
-        <button type="button" aria-pressed={calendarOnly} onClick={() => onCalendarOnlyChange(true)}>日历</button>
+        <button type="button" aria-pressed={!calendarOnly} onClick={() => agenda.setCalendarOnly(false)}>按日</button>
+        <button type="button" aria-pressed={calendarOnly} onClick={() => agenda.setCalendarOnly(true)}>日历</button>
       </nav>
     </div>
     <div className="agenda-actions">
@@ -113,23 +120,34 @@ export function AgendaView({ calendarOnly, onCalendarOnlyChange }: { calendarOnl
       {page.error && <div className="assistant-actions"><p role="alert">{name}：{page.error}</p><button type="button" className="secondary-button" disabled={!agenda.online || page.loading} onClick={page.retry}>重试{name}</button></div>}
       {page.incomplete && <p role="status">部分重复{name}超出展开上限，未显示。</p>}
     </div>)}
-    {!entries.length && agenda.online && pages.every(({ page }) => !page.error && !page.incomplete) && <p className="assistant-mail-empty" role="status">
-      {pages.some(({ page }) => page.loading) ? "正在同步议程…" : calendarOnly ? "本月暂无日程" : "暂无日程或待办"}
-    </p>}
-    {[...days].map(([day, records]) => <div className="agenda-day" key={day}>
-      <h3 id={`${dayId}-${day}`}>{day ? <time dateTime={day}>{day}</time> : "无截止日期"}</h3>
-      <ul className="agenda-records" aria-labelledby={`${dayId}-${day}`}>{records.map(row)}</ul>
-    </div>)}
+    {agenda.online && loading && <p role="status">正在同步议程…</p>}
     {pages.some(({ page }) => page.hasMore) && <div className="agenda-pagination">
-      {pages.map(({ name, page }) => page.hasMore && <button key={name} type="button" className="secondary-button" disabled={!agenda.online || page.loading} onClick={page.loadMore}>
-        {page.loading ? `正在读取${name}…` : `更多${name}`}
-      </button>)}
+      {pages.map(({ name, page }) => page.hasMore && <button key={name} type="button" className="secondary-button" disabled={!agenda.online || page.loading} onClick={page.loadMore}>更多{name}</button>)}
     </div>}
-    {editor && <AgendaEditor editor={editor} month={agenda.month} onClose={() => setEditor(undefined)} />}
+    {!days.size && agenda.online && !loading && pages.every(({ page }) => !page.error && !page.incomplete && !page.hasMore) &&
+      <p className="assistant-mail-empty" role="status">{calendarOnly ? "本月暂无日程" : "当天暂无日程或待办"}</p>}
+    {[...days].map(([day, records]) => calendarOnly ? <div className="agenda-day" key={day}>
+      <h3 id={`${dayId}-${day}`}><time dateTime={day}>{dayLabel.format(new Date(`${day}T00:00`))}</time></h3>
+      <ul className="agenda-records" aria-labelledby={`${dayId}-${day}`}>{records.map(entry => row(entry, day))}</ul>
+    </div> : <ul key={day} className="agenda-records agenda-day" aria-label="当日议程">{records.map(entry => row(entry, day))}</ul>)}
+    {!calendarOnly && <details className="agenda-other-todos" open={agenda.allTodosOpen} onToggle={event => agenda.setAllTodosOpen(event.currentTarget.open)}>
+      <summary>其他待办</summary>
+      {agenda.allTodosOpen && <>
+        {allTodos.error && <div className="assistant-actions"><p role="alert">{allTodos.error}</p><button type="button" className="secondary-button" disabled={!agenda.online || allTodos.loading} onClick={allTodos.retry}>重试</button></div>}
+        {allTodos.incomplete && <p role="status">部分重复待办超出展开上限，未显示。</p>}
+        {allTodos.loading && <p role="status">正在读取待办…</p>}
+        <ul className="agenda-records" aria-label="其他待办">{allTodos.records.map(record => {
+          const at = record.dueAt ? agendaInputTime(record.dueAt, deviceZone) : "";
+          return at.startsWith(selectedDay) ? null : row({ record, at });
+        })}</ul>
+        {allTodos.hasMore && <button type="button" className="secondary-button" disabled={!agenda.online || allTodos.loading} onClick={allTodos.loadMore}>更多其他待办</button>}
+      </>}
+    </details>}
+    {editor && <AgendaEditor editor={editor} onClose={() => setEditor(undefined)} />}
   </section>;
 }
 
-function AgendaEditor({ editor, month, onClose }: { editor: Editor; month: Date; onClose(): void }) {
+function AgendaEditor({ editor, onClose }: { editor: Editor; onClose(): void }) {
   const agenda = useAssistantAgenda()!;
   const formId = useId();
   const [busy, setBusy] = useState(false);
@@ -141,7 +159,9 @@ function AgendaEditor({ editor, month, onClose }: { editor: Editor; month: Date;
   const [start, setStart] = useState(() => {
     if (event) return agendaInputTime(event.startAt, timeZone);
     const now = new Date();
-    const day = now.getFullYear() === month.getFullYear() && now.getMonth() === month.getMonth() ? now : month;
+    const { date } = agenda;
+    const day = agenda.calendarOnly ? now.getFullYear() === date.getFullYear() && now.getMonth() === date.getMonth()
+      ? now : new Date(date.getFullYear(), date.getMonth(), 1) : date;
     return `${agendaInputTime(day.toISOString(), timeZone).slice(0, 10)}T09:00`;
   });
   const [end, setEnd] = useState(() => event ? event.allDay ? shiftDate(event.endAt, -1) : agendaInputTime(event.endAt, timeZone) : `${start.slice(0, 10)}T10:00`);
@@ -168,6 +188,8 @@ function AgendaEditor({ editor, month, onClose }: { editor: Editor; month: Date;
           if (date) value[key] = agendaInstant(date, deviceZone, todo?.[key]);
         }
         await agenda.mutate("plugin.assistant-agenda.todo.save", { existing, value });
+        if (!value.dueAt) agenda.setAllTodosOpen(true);
+        else if (value.dueAt !== todo?.dueAt) agenda.selectDate(agendaCalendarDate(value.dueAt, value.dueAt.length === 10));
       } else {
         const zone = timeZone;
         const startAt = allDay ? start : agendaInstant(start, zone, event?.allDay === false ? event.startAt : undefined);
@@ -176,7 +198,7 @@ function AgendaEditor({ editor, month, onClose }: { editor: Editor; month: Date;
         const location = String(form.get("location")).trim();
         const value: AgendaEventInput = { ...fields, startAt, endAt, timeZone: zone, allDay, ...(location ? { location } : {}) };
         await agenda.mutate("plugin.assistant-agenda.event.save", { existing, value });
-        agenda.selectMonth(agendaCalendarDate(startAt, allDay));
+        agenda.selectDate(agendaCalendarDate(startAt, allDay));
       }
       onClose();
     } catch (reason) {

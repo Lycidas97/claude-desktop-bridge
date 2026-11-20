@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { EventEmitter, once } from "node:events";
+import { EventEmitter, on, once } from "node:events";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -643,12 +643,18 @@ export async function startNativeApprovalHost(options: {
     },
     readFixtureProfile: () => readFile(join(workspace!.path, "PROFILE.md"), "utf8"),
     draftProposal: (action: ProposalDraftAction) => callAssistantTool("proposal.create", { action }),
-    async message(message: Record<string, unknown>) {
+    async message(message: Record<string, unknown>, completedToolId?: string) {
       messages.push(message);
       const after = eventLog.latestSeq();
-      const changed = once(broker, "changed");
+      // An unrelated runtime refresh can emit "changed" while the file receipt is still being read.
+      const completions = completedToolId ? on(eventLog, "event", { signal: AbortSignal.timeout(15_000) }) : undefined;
+      const changed = completions ? undefined : once(broker, "changed");
       inspector.emit("event", { type: "message", sessionId: options.sessionId, message });
-      await changed;
+      if (completions) {
+        for await (const [event] of completions) {
+          if (event.type === "tool.completed" && event.sessionId === options.sessionId && event.itemId === completedToolId) break;
+        }
+      } else await changed;
       await eventLog.flushDeltas(options.sessionId);
       return eventLog.replay(after);
     },

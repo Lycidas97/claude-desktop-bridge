@@ -7,6 +7,7 @@ import {
   orderProjects,
   readStoredProjectOrder,
   sortProjectSessionsByRecent,
+  splitRecentSessionFamilies,
   toggleCollapsedProject,
   writeStoredProjectOrder,
 } from "../../lib/project-groups.js";
@@ -15,6 +16,13 @@ export interface ProjectSessionGroup {
   projectId: string;
   project: BridgeProjectInfo | undefined;
   sessions: BridgeSessionInfo[];
+}
+
+function activeCatalogSessions(sessions: readonly BridgeSessionInfo[]): BridgeSessionInfo[] {
+  const activeParents = new Map(sessions.filter(session => !session.archivedAt).map(session => [session.sessionId, session.projectId]));
+  return sessions.filter(session => !session.archivedAt || Boolean(
+    session.sidechat && session.parentSessionId && activeParents.get(session.parentSessionId) === session.projectId,
+  ));
 }
 
 export function useProjectSessionGroups({
@@ -137,24 +145,13 @@ export function useProjectSessionGroups({
         .toLocaleLowerCase()
         .includes(searchQuery)
     ));
-    const matchingActiveParents = new Map(
-      matches.filter((session) => !session.archivedAt).map((session) => [session.sessionId, session.projectId]),
-    );
-    const filtered = matches.filter((session) => (
-      !session.archivedAt
-      || Boolean(
-        session.sidechat
-        && session.parentSessionId
-        && matchingActiveParents.get(session.parentSessionId) === session.projectId,
-      )
-    ));
     const groups = new Map<string, BridgeSessionInfo[]>(
       (projects ?? [])
         .filter((project) => project.kind === "desktop-group" || project.managedAssistant)
         .filter((project) => !searchQuery || `${project.name}\n${project.cwd}`.toLocaleLowerCase().includes(searchQuery))
         .map((project) => [project.projectId, []]),
     );
-    for (const session of filtered) {
+    for (const session of activeCatalogSessions(matches)) {
       const list = groups.get(session.projectId) ?? [];
       list.push(session);
       groups.set(session.projectId, list);
@@ -200,6 +197,15 @@ export function useProjectSessionGroups({
     setExpandedForkParents((current) => toggleCollapsedProject(current, parentSessionId));
   }
 
+  function revealOlderSession({ projectId, sessionId }: BridgeSessionInfo): void {
+    const projectSessions = sortProjectSessionsByRecent(activeCatalogSessions(sessions.filter(session => session.projectId === projectId)));
+    const familyId = getSessionAncestorIds(projectSessions, sessionId).at(-1) ?? sessionId;
+    const { older } = splitRecentSessionFamilies(groupProjectSessionFamilies(projectSessions));
+    if (older.some(family => family.primary.sessionId === familyId)) {
+      setExpandedOlderSessions(current => current.has(projectId) ? current : new Set([...current, projectId]));
+    }
+  }
+
   function registerCreatedSection(projectId: string, options?: { clearSearch?: boolean | undefined }): void {
     placeProjects([projectId, ...placedProjects.filter((id) => id !== projectId)]);
     setCollapsedProjectIds((current) => expandProject(current, projectId));
@@ -236,6 +242,7 @@ export function useProjectSessionGroups({
     toggleForkGroup,
     expandedOlderSessions,
     toggleOlderSessions: (projectId: string) => setExpandedOlderSessions(current => toggleCollapsedProject(current, projectId)),
+    revealOlderSession,
     registerCreatedSection,
   };
 }

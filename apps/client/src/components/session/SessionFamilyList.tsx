@@ -2,7 +2,7 @@ import type { BridgePermissionInfo, BridgeProjectInfo, BridgeSessionInfo } from 
 import { ChevronDown, ChevronRight, MoreHorizontal } from "lucide-react";
 import type { ReactNode } from "react";
 import { activeSessionBadgeLabel, forkGroupToggleLabel, relativeTime, visibleSessionForks } from "../../lib/conversation-timeline.js";
-import type { SessionFamily } from "../../lib/project-groups.js";
+import { splitRecentSessionFamilies, type SessionFamily } from "../../lib/project-groups.js";
 import { backgroundSubagentBadge } from "../../lib/session-activity.js";
 import { IconButton } from "../common/IconButton.js";
 import "./session-family-list.css";
@@ -46,8 +46,6 @@ function SessionTreeConnector({ variant }: { variant: TreeConnectorVariant }) {
     </span>
   );
 }
-
-const RECENT_ROOT_LIMIT = 3;
 
 export interface SessionFamilyListProps {
   families: readonly SessionFamily<BridgeSessionInfo>[];
@@ -243,12 +241,7 @@ export function SessionFamilyList({
 
   if (!olderSessionsDisclosure) return <>{families.map(family => renderSessionFamily(family))}</>;
 
-  const recent: SessionFamily<BridgeSessionInfo>[] = [];
-  const older: SessionFamily<BridgeSessionInfo>[] = [];
-  for (const family of families) {
-    if (!family.primary.parentSessionId && recent.length < RECENT_ROOT_LIMIT) recent.push(family);
-    else older.push(family);
-  }
+  const { recent, older } = splitRecentSessionFamilies(families);
 
   const { expanded, onToggle } = olderSessionsDisclosure;
   let waiting = 0;

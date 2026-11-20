@@ -208,6 +208,23 @@ export async function verifySessionCatalog(page, host, steps, directory, viewpor
   const selected = sidebar.locator(".session-row-v2.active");
   assert.equal(await selected.count(), 1, "Desktop highlights the selected shared row");
   assert.notEqual(await selected.evaluate(element => getComputedStyle(element).backgroundColor), "rgba(0, 0, 0, 0)");
+  const beforePermissionJump = await page.evaluate(() => structuredClone(window.__catalogSnapshot));
+  await page.evaluate(() => {
+    const snapshot = structuredClone(window.__catalogSnapshot);
+    snapshot.permissions = [{ requestId: "older-permission", sessionId: "catalog-oldest", toolUseId: "older-tool", toolName: "Bash", input: {}, createdAt: Date.now(), canAllowAlways: false }];
+    window.__updateCatalog(snapshot);
+  });
+  const olderRow = sidebar.locator('[data-session-id="catalog-oldest"]');
+  assert.equal(await olderRow.count(), 0);
+  await sidebar.getByRole("button", { name: /有操作待你授权.*更早的目录会话/u }).click();
+  await sidebar.locator('[data-session-id="catalog-oldest"].active').waitFor();
+  await olderRow.getByText("待授权", { exact: true }).waitFor();
+  await sidebar.getByRole("button", { name: "收起较早会话", exact: true }).click();
+  await olderRow.waitFor({ state: "detached" });
+  await page.locator(".desktop-conversation").getByRole("heading", { name: "更早的目录会话", exact: true }).waitFor();
+  await page.evaluate(snapshot => window.__updateCatalog(snapshot), beforePermissionJump);
+  await desktopMetadataRow.locator(".session-row-hit").click();
+  steps.push("Desktop permission alert reveals and selects an older session; folding the list keeps its conversation open");
   await sidebar.locator(".mobile-fork-toggle").click();
   await sidebar.locator('[data-session-id="browser-e2e-fork"]').waitFor();
   assert.equal(await sidebar.locator('[data-session-id="browser-e2e-btw-archived"]').count(), 0, "Archived sidechats do not appear inline under active parent branches");

@@ -162,6 +162,7 @@ export function DesktopSessions({
     toggleForkGroup,
     expandedOlderSessions,
     toggleOlderSessions,
+    revealOlderSession,
     registerCreatedSection,
   } = useProjectSessionGroups({
     hostId,
@@ -291,6 +292,7 @@ export function DesktopSessions({
     if (target) {
       setCollapsedProjectIds((current) => expandProject(current, target.projectId));
       if (target.archivedAt) setArchivedExpanded(true);
+      else revealOlderSession(target);
       const ancestors = getSessionAncestorIds(snapshot.sessions, target.sessionId);
       if (ancestors.length > 0) {
         setExpandedForkParents((current) => new Set([...current, ...ancestors]));

@@ -184,7 +184,7 @@ describe("SessionFamilyList", () => {
       { ...session, sessionId: "third", lastActivityAt: 60 },
       { ...session, sessionId: "older", lastActivityAt: 50, turnState: "queued", pendingCount: 2 },
       { ...session, sessionId: "older-fork", parentSessionId: "older", lastActivityAt: 45, turnState: "waiting" },
-      { ...session, sessionId: "orphan", parentSessionId: "archived-parent", lastActivityAt: 55, turnState: "running" },
+      { ...session, sessionId: "orphan", parentSessionId: "archived-parent", lastActivityAt: 95, turnState: "running" },
       { ...session, sessionId: "question", parentSessionId: "older", lastActivityAt: 40 },
       { ...session, sessionId: "fork", parentSessionId: "root", lastActivityAt: 90 },
     ]);

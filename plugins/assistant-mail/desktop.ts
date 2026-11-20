@@ -422,6 +422,12 @@ export class AssistantMailService extends EventEmitter {
     return event;
   }
 
+  setJunk(mailRefId: string, junk: boolean): boolean | undefined {
+    const changed = this.store.setJunk(mailRefId, junk);
+    if (changed) this.emit("changed", true);
+    return changed;
+  }
+
   markRead(mailRefIds: readonly string[]) {
     const changedCount = this.store.markRead(mailRefIds);
     if (changedCount === undefined) return undefined;

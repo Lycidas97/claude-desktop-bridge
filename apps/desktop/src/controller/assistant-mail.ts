@@ -32,6 +32,7 @@ export const ASSISTANT_MAIL_CAPABILITIES = [
   "plugin.assistant-mail.polling.v1",
   "plugin.assistant-mail.attachments.v1",
   "plugin.assistant-mail.history.v1",
+  "plugin.assistant-mail.junk.v1",
   ASSISTANT_ATTENTION_CAPABILITY,
 ] as const;
 
@@ -109,7 +110,7 @@ function projectMailCard(event: NonNullable<ReturnType<AssistantMailService["eve
 
 export function assistantMailPage(mail: AssistantMailService, options: Parameters<AssistantMailService["page"]>[0], includeHistory: boolean,
   delivery?: (mailRefId: string) => BridgeMailCard["nativeDelivery"] | undefined): BridgeMailPage {
-  const page = mail.page(options, includeHistory);
+  const page = mail.page(options, includeHistory, "inbox");
   return {
     cards: page.events.map(event => projectMailCard(event, delivery?.(event.mailRefId))),
     ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
@@ -492,7 +493,11 @@ export class AssistantMailCoordinator {
         } satisfies BridgeMailDetail,
       };
     }
-    if (method === "plugin.assistant-mail.bind") {
+    if (method === "plugin.assistant-mail.junk.set") {
+      const mailRefId = stringParam(params, "mailRefId", false);
+      if (!mailRefId || typeof params.junk !== "boolean") throw new BridgeRequestError("INVALID_PARAMS", "请选择邮件和垃圾标记状态。");
+      if (this.mail.setJunk(mailRefId, params.junk) === undefined) throw new BridgeRequestError("NOT_FOUND", "邮件不存在。");
+    } else if (method === "plugin.assistant-mail.bind") {
       const sessionId = stringParam(params, "sessionId")!;
       const session = this.host.allSessions().find(candidate => candidate.sessionId === sessionId);
       if (!session || session.archivedAt || session.transport !== "claude-desktop-native") {

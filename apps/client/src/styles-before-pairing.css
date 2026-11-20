@@ -1933,6 +1933,21 @@ button:disabled {
   color: var(--danger);
 }
 
+.conversation-stage {
+  position: relative;
+}
+
+.latest-history-notice {
+  position: absolute;
+  z-index: 1;
+  inset-block-start: 8px;
+  inset-inline: max(14px, env(safe-area-inset-left)) max(14px, env(safe-area-inset-right));
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  overflow-wrap: anywhere;
+}
+
 .session-view-switch {
   display: grid;
   min-height: 43px;

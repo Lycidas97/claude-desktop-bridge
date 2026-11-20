@@ -836,15 +836,6 @@ export function ConversationView({
       {history?.hasMore && history.error && (
         <div className="conversation-error-detail" role="alert">{history.error}</div>
       )}
-      {latestHistorySync === "loading" && (
-        <div className="conversation-loading" role="status"><LoaderCircle className="is-spinning" size={20} />正在同步最新对话…</div>
-      )}
-      {latestHistorySync && latestHistorySync !== "loading" && (
-        <div className="conversation-empty">
-          <strong role="alert">最新对话同步失败：{latestHistorySync.error}</strong>
-          <button type="button" className="secondary-button" disabled={!isOnline || history?.status === "loading"} onClick={() => void latestHistorySync.retry()}>重试同步</button>
-        </div>
-      )}
       {history?.status === "loading" && history.items.length === 0 && (
         <div className="conversation-loading"><LoaderCircle className="is-spinning" size={20} />正在加载最新对话…</div>
       )}
@@ -1341,6 +1332,17 @@ export function ConversationView({
       {isAssistant ? (
         <div className="conversation-stage" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
           {transcript}
+          {!transcriptHidden && latestHistorySync && (latestHistorySync === "loading" ? (
+            <div className="latest-history-notice session-channel-warning" role="status">
+              <LoaderCircle className="is-spinning" size={15} aria-hidden="true" />正在同步最新对话…
+            </div>
+          ) : (
+            <div className="latest-history-notice session-channel-warning danger">
+              <AlertTriangle size={17} aria-hidden="true" />
+              <span role="alert"><strong>最新对话同步失败</strong>{latestHistorySync.error}</span>
+              <button type="button" className="secondary-button" disabled={!isOnline || history?.status === "loading"} onClick={() => void latestHistorySync.retry()}>重试同步</button>
+            </div>
+          ))}
           {hasAlternateStage ? (
             <div className="conversation-alternate-stage" style={{ flex: 1, overflowY: "auto" }}>
               {alternateStage(canConfigure && isOnline ? () => setInternalConfiguration("model-effort") : undefined)}

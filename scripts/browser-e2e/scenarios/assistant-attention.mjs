@@ -79,8 +79,7 @@ export async function verifyAssistantAttention(page, host, steps, directory, vie
     await entry.click();
     const card = client => client.locator(`.assistant-mail-list [data-mail-id="${action.mailRefId}"]`);
     const mark = client => card(client).getByRole("combobox", { name: "收入分类", exact: true });
-    const inboxCard = client => client.locator(`.assistant-mail-list > [data-mail-id="${action.mailRefId}"]`);
-    const marketing = client => client.locator(".assistant-mail-group > summary").filter({ hasText: "营销与垃圾邮件" });
+    const inboxCard = client => client.getByLabel("邮件输入", { exact: true }).locator(`[data-mail-id="${action.mailRefId}"]`);
     for (const client of [page, desktop]) {
       await client.getByRole("button", { name: "收件", exact: true }).click();
       await mark(client).waitFor();
@@ -88,7 +87,8 @@ export async function verifyAssistantAttention(page, host, steps, directory, vie
     await desktop.evaluate(host => window.assistantDesktopSnapshot({ host }), { ...host.snapshot.host,
       capabilities: host.snapshot.host.capabilities.filter(value => value !== "plugin.assistant-mail.filing.v1") });
     await mark(desktop).waitFor({ state: "detached" });
-    await card(desktop).waitFor();
+    await inboxCard(desktop).waitFor();
+    assert.equal(await desktop.locator(".assistant-mail-group").count(), 0, "A legacy analysis label is not a filed location");
     await desktop.evaluate(host => window.assistantDesktopSnapshot({ host }), host.snapshot.host);
     await mark(desktop).waitFor();
 
@@ -99,14 +99,17 @@ export async function verifyAssistantAttention(page, host, steps, directory, vie
     await inboxCard(desktop).waitFor({ state: "detached" });
     assert.equal(host.snapshot.assistantMail.attention.some(item => item.id === action.mailRefId), false);
     assert.equal(host.snapshot.assistantMail.attention.some(item => item.kind === "todo"), true);
-    await marketing(page).getByText("2 封", { exact: true }).waitFor();
-    await marketing(page).press("Enter");
+    await page.getByRole("button", { name: "已收纳 2 封", exact: true }).click();
+    await page.getByRole("region", { name: "已收纳", exact: true }).locator(".assistant-mail-group > summary")
+      .filter({ hasText: "营销与垃圾邮件" }).press("Enter");
     const restore = card(page).getByRole("button", { name: "收回收件", exact: true });
     await restore.waitFor();
     assert.ok(await restore.evaluate(element => element.getBoundingClientRect().height >= 44));
     await page.screenshot({ path: resolve(directory, "mobile-mail-filing.png") });
     viewports.push({ page: "mobile-mail-filing", ...page.viewportSize() });
     await restore.click();
+    await restore.waitFor({ state: "detached" });
+    await page.getByRole("button", { name: "返回收件", exact: true }).click();
     await inboxCard(page).waitFor();
     await publishDesktop();
     await mark(desktop).waitFor();

@@ -1,5 +1,5 @@
 import { ASSISTANT_MAIL_SHARED_AUTH_CAPABILITY, ASSISTANT_SMTP_CAPABILITY, MAIL_CATEGORIES, MAIL_POLL_INTERVALS, type BridgeActionProposal, type BridgeDirectoryListing, type BridgeHostSnapshot, type BridgeMailAccount, type BridgeMailCache, type BridgeMailCard, type BridgeMailCategory, type BridgeMailFolder, type BridgeMailPage, type BridgeMethod, type BridgeSessionInfo } from "@bridge/protocol";
-import { Check, ChevronRight, ListChecks, LoaderCircle, RefreshCw, Search, Settings, X } from "lucide-react";
+import { ArrowLeft, Check, ChevronRight, ListChecks, LoaderCircle, RefreshCw, Search, Settings, X } from "lucide-react";
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { mergeMailCards, refreshMailPages } from "../../lib/assistant-mail.js";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
@@ -35,7 +35,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
   const proposals = useAssistantProposals();
   const toolWarningId = useId();
   const modelSettingsDescription = useId();
-  const [view, setView] = useState<"conversation" | "mail" | "agenda" | "settings" | "proposals">("conversation");
+  const [view, setView] = useState<"conversation" | "mail" | "filed" | "agenda" | "settings" | "proposals">("conversation");
   const [proposalReturn, setProposalReturn] = useState<Exclude<typeof view, "proposals">>("conversation");
   const [selectedProposal, setSelectedProposal] = useState<BridgeActionProposal>();
   const [replyTarget, setReplyTarget] = useState<ConversationViewProps["assistantReplyTarget"]>();
@@ -63,11 +63,18 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
     else setView(proposalReturn);
   }
   useEffect(() => { if (active) { setView("conversation"); setSelectedProposal(undefined); setReplyTarget(undefined); setReplyError(""); } }, [active]);
+  const supportsFiling = mail?.supportsFiling;
+  const backToInbox = () => setView("mail");
+  const focusFiledTitle = useCallback((title: HTMLSpanElement | null) => { title?.focus(); }, []);
   useEffect(() => {
-    if (active && mobile && view === "proposals" && proposals) {
+    if (!active || !mobile) return;
+    if (view === "proposals" && proposals) {
       return registerMobileBackHandler(() => { backFromProposals(); return true; }, 110);
     }
-  }, [active, mobile, view, Boolean(proposals), selectedProposal, proposalReturn]);
+    if (view === "filed" && supportsFiling) {
+      return registerMobileBackHandler(() => { backToInbox(); return true; }, 110);
+    }
+  }, [active, mobile, view, Boolean(proposals), selectedProposal, proposalReturn, supportsFiling]);
   if (!active) return null;
   if (!mail && !agenda) return null;
   const binding = mail?.assistant?.binding;
@@ -82,7 +89,9 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
   const state = mail?.assistant?.bindingState;
   const fallbackView = session ? "conversation" : mail ? "mail" : "agenda";
   const displayedView = (view === "conversation" && !session) || (view === "mail" && !mail) || (view === "agenda" && !agenda)
-    || (view === "proposals" && !proposals) ? fallbackView : view;
+    || (view === "filed" && !supportsFiling) || (view === "proposals" && !proposals) ? fallbackView : view;
+  const filed = displayedView === "filed";
+  const filedTitle = <span ref={focusFiledTitle} tabIndex={-1}>已收纳</span>;
   const pendingCount = pendingProposalCount(proposals);
   function openProposals() {
     if (displayedView !== "proposals") { setProposalReturn(displayedView); setSelectedProposal(undefined); }
@@ -207,7 +216,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
     {displayedView === "mail" && mail.online && mail.assistant?.history?.failed && <p role="alert">更早邮件读取失败。</p>}
   </>;
   const stage = (openConfiguration?: () => void) => displayedView === "proposals" ? <div className="assistant-page-content"><ProposalPanel mobile={mobile} selected={selectedProposal} onSelect={setSelectedProposal} /></div> : <div className="assistant-page-content">
-    {bindingControls}
+    {!filed && bindingControls}
     {displayedView === "settings" && session && (
       <button type="button" className="assistant-model-settings" aria-label="模型与思考强度" aria-describedby={modelSettingsDescription} aria-haspopup="dialog"
         disabled={!openConfiguration || workspace?.repairFailed === true} onClick={openConfiguration}>
@@ -237,24 +246,31 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
     />}
     {displayedView === "settings" && agenda && <AgendaSources />}
     {displayedView === "agenda" && agenda && <AgendaView />}
-    {displayedView === "mail" && mail && <>
-      {!session && binding?.nativeSessionId && <MailReference sessionId={binding.nativeSessionId} />}
-      <InboxMailList mail={mail} canMarkJunk={!mail.supportsFiling && capabilities.includes("plugin.assistant-mail.junk.v1")} onDiscuss={() => setView("conversation")} />
+    {(displayedView === "mail" || filed) && mail && <>
+      {!filed && !session && binding?.nativeSessionId && <MailReference sessionId={binding.nativeSessionId} />}
+      <InboxMailList mail={mail} filed={filed} canMarkJunk={!supportsFiling && capabilities.includes("plugin.assistant-mail.junk.v1")}
+        onOpenFiled={() => setView("filed")} onDiscuss={() => setView("conversation")} />
     </>}
   </div>;
   return <section className={`assistant-page ${mobile ? "assistant-page-mobile" : "desktop-page"}${session ? " has-conversation" : ""}`}>
-    {mobile && (displayedView === "proposals" ? <MobilePageHeader title={selectedProposal ? "提案详情" : "待确认提案"} onBack={backFromProposals} />
+    {mobile && (filed ? <MobilePageHeader title={filedTitle} onBack={backToInbox} backLabel="返回收件" />
+      : displayedView === "proposals" ? <MobilePageHeader title={selectedProposal ? "提案详情" : "待确认提案"} onBack={backFromProposals} />
       : <MobilePageHeader title="助理" {...(headerLeading ? { leading: headerLeading } : {})} actions={viewTabs} />)}
     {!mobile && <div className="assistant-desktop-header-band">
       {headerLeading && <div className="assistant-desktop-leading">{headerLeading}</div>}
       <div className="assistant-page-header-inner">
-        <header className="desktop-page-heading"><h1>助理</h1>{viewTabs}</header>
+        <header className="desktop-page-heading">
+          {filed ? <div className="assistant-filed-heading">
+            <IconButton label="返回收件" onClick={backToInbox}><ArrowLeft size={16} aria-hidden="true" /></IconButton>
+            <h1>{filedTitle}</h1>
+          </div> : <><h1>助理</h1>{viewTabs}</>}
+        </header>
       </div>
     </div>}
     {mail?.error && showMailFeedback && <div className="assistant-page-content assistant-mail-feedback">
       <p role="alert">{mail.error}</p>
     </div>}
-    {proposals && displayedView !== "proposals" && (mobile || pendingCount > 0) && <div className="assistant-proposal-dock">
+    {proposals && !filed && displayedView !== "proposals" && (mobile || pendingCount > 0) && <div className="assistant-proposal-dock">
       <button type="button" className="permission-dock" data-empty={!pendingCount} onClick={openProposals}>
         <span className="permission-dock-icon"><ListChecks size={18} aria-hidden="true" /></span>
         <span><strong>{pendingCount ? `${pendingCount} 项待你确认` : "提案"}</strong></span>
@@ -264,7 +280,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
     {displayedView === "conversation" && (replyTarget || replyError) && <div className="assistant-page-content assistant-mail-feedback">
       {replyError ? <p role="alert">{replyError}</p> : <p role="status">正在查找回复…</p>}
     </div>}
-    {displayedView !== "proposals" && <AssistantAttention onReply={itemId => {
+    {!filed && displayedView !== "proposals" && <AssistantAttention onReply={itemId => {
       setView("conversation"); setReplyError("");
       setReplyTarget({ itemId, done(error) { setReplyTarget(undefined); setReplyError(error ?? ""); } });
     }}
@@ -274,7 +290,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
       <div className="assistant-conversation">{renderConversation(session.sessionId, {
         alternateStage: displayedView === "conversation" ? undefined : stage,
         assistantReplyTarget: replyTarget,
-        hideComposer: displayedView === "settings" || displayedView === "agenda" || displayedView === "proposals" || workspace?.repairFailed === true,
+        hideComposer: filed || displayedView === "settings" || displayedView === "agenda" || displayedView === "proposals" || workspace?.repairFailed === true,
       })}</div>
     </> : stage()}
     {creating && snapshot && mail && <SessionCreateDialog snapshot={snapshot} connected={mail.online}
@@ -291,8 +307,19 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
   </section>;
 }
 
-function InboxMailList({ mail, canMarkJunk, onDiscuss }: { mail: NonNullable<ReturnType<typeof useAssistantMail>>; canMarkJunk: boolean; onDiscuss(): void }) {
-  const { cards } = mail.cache;
+function InboxMailList({ mail, filed, canMarkJunk, onOpenFiled, onDiscuss }: {
+  mail: NonNullable<ReturnType<typeof useAssistantMail>>; filed: boolean; canMarkJunk: boolean;
+  onOpenFiled(): void; onDiscuss(): void;
+}) {
+  const { cards, folderCounts } = mail.cache;
+  const inboxCards = mail.supportsFiling ? cards.filter(card => !card.folder) : cards;
+  const filedCount = MAIL_CATEGORIES.reduce((total, category) => total + (folderCounts?.[category] ?? 0), 0);
+  const filedEntry = useRef<HTMLButtonElement>(null);
+  const wasFiled = useRef(filed);
+  useEffect(() => {
+    if (wasFiled.current && !filed) filedEntry.current?.focus();
+    wasFiled.current = filed;
+  }, [filed]);
   const [searchText, setSearchText] = useState("");
   const [query, setQuery] = useState("");
   const [openedFolders, setOpenedFolders] = useState<ReadonlySet<BridgeMailCategory>>(new Set());
@@ -326,11 +353,9 @@ function InboxMailList({ mail, canMarkJunk, onDiscuss }: { mail: NonNullable<Ret
     filing={mail.supportsFiling ? { disabled, showFolder: Boolean(query), move: (folder, control) => {
       void move(card, { folder }, { folder: card.folder ?? "inbox" }, control);
     } } : undefined} />;
-  const folders = mail.supportsFiling ? MAIL_CATEGORIES : MAIL_CATEGORIES.filter(category => category !== "other");
-  const counts = mail.cache.folderCounts;
 
   return <>
-    {mail.supportsFiling && <form className="assistant-mail-search" role="search" onSubmit={event => {
+    {!filed && mail.supportsFiling && <form className="assistant-mail-search" role="search" onSubmit={event => {
       event.preventDefault(); setQuery(searchText.trim()); setError("");
     }}>
       <Search size={16} aria-hidden="true" />
@@ -343,38 +368,36 @@ function InboxMailList({ mail, canMarkJunk, onDiscuss }: { mail: NonNullable<Ret
       }}><X size={16} aria-hidden="true" /></button>}
       <button type="submit" className="assistant-session-link" disabled={!mail.online}>搜索</button>
     </form>}
-    {mail.supportsFiling && query ? <div className="assistant-mail-list" aria-label="搜索结果">
+    {filed ? <section className="assistant-mail-list" aria-label="已收纳">
+      {filedCount ? <div className="assistant-mail-groups">
+        {MAIL_CATEGORIES.map(category => {
+          const count = folderCounts?.[category] ?? 0;
+          return count > 0 && <details className="assistant-mail-group" key={category} open={openedFolders.has(category)} onToggle={event => {
+            const { open } = event.currentTarget;
+            setOpenedFolders(current => current.has(category) === open ? current
+              : open ? new Set(current).add(category) : new Set([...current].filter(folder => folder !== category)));
+          }}>
+            <summary><span>{MAIL_FOLDER_LABELS[category]}</span><small>{count} 封</small><ChevronRight size={16} aria-hidden="true" /></summary>
+            {openedFolders.has(category) && <div className="assistant-mail-group-cards">
+              <ScopedMailList mail={mail} folder={category} renderCard={renderCard} />
+              {count > 1 && <button type="button" className="assistant-session-link assistant-mail-close-folder" onClick={event => {
+                const details = event.currentTarget.closest("details")!;
+                details.open = false;
+                details.querySelector("summary")?.focus();
+              }}>收起「{MAIL_FOLDER_LABELS[category]}」</button>}
+            </div>}
+          </details>;
+        })}
+      </div> : <p className="assistant-mail-empty" role="status">{mail.loading ? "正在读取邮件…" : "暂无已收纳邮件"}</p>}
+    </section> : mail.supportsFiling && query ? <div className="assistant-mail-list" aria-label="搜索结果">
       <ScopedMailList key={query} mail={mail} query={query} renderCard={renderCard} />
     </div> : <>
-    <div className="assistant-mail-list" aria-label="邮件输入">
-      {(mail.supportsFiling ? Boolean(Object.keys(counts ?? {}).length) : cards.some(card => card.analysis?.category && card.analysis.category !== "other")) &&
-        <div className="assistant-mail-groups">
-          {folders.map(category => {
-            const grouped = mail.supportsFiling ? [] : cards.filter(card => card.analysis?.category === category);
-            const count = mail.supportsFiling ? counts?.[category] ?? 0 : grouped.length;
-            return count > 0 && <details className="assistant-mail-group" key={category} open={mail.supportsFiling ? openedFolders.has(category) : undefined} onToggle={mail.supportsFiling ? event => {
-              const { open } = event.currentTarget;
-              setOpenedFolders(current => current.has(category) === open ? current
-                : open ? new Set(current).add(category) : new Set([...current].filter(folder => folder !== category)));
-            } : undefined}>
-              <summary><span>{MAIL_FOLDER_LABELS[category]}</span><small>{count} 封</small><ChevronRight size={16} aria-hidden="true" /></summary>
-              <div className="assistant-mail-group-cards">
-                {mail.supportsFiling ? openedFolders.has(category) && <>
-                  <ScopedMailList mail={mail} folder={category} renderCard={renderCard} />
-                  {count > 1 && <button type="button" className="assistant-session-link assistant-mail-close-folder" onClick={event => {
-                    const details = event.currentTarget.closest("details")!;
-                    details.open = false;
-                    details.querySelector("summary")?.focus();
-                  }}>收起「{MAIL_FOLDER_LABELS[category]}」</button>}
-                </> : grouped.map(renderCard)}
-              </div>
-            </details>;
-          })}
-        </div>}
-      {(mail.supportsFiling ? cards.filter(card => !card.folder) : cards.filter(card => !card.analysis?.category || card.analysis.category === "other")).map(renderCard)}
-    </div>
-    {!cards.length && !Object.keys(counts ?? {}).length && <p className="assistant-mail-empty" role="status">{mail.loading ? "正在读取邮件…" : "暂无已记录邮件"}</p>}
-    {mail.hasOlderMail && <button type="button" className="secondary-button assistant-mail-older" disabled={!mail.online || mail.loading} onClick={() => void mail.loadOlder()}>{mail.loading ? "正在读取…" : "更早邮件"}</button>}
+      {mail.supportsFiling && <button ref={filedEntry} type="button" className="assistant-mail-filed-entry" onClick={onOpenFiled}>
+        <span>已收纳</span><small>{filedCount} 封</small><ChevronRight size={16} aria-hidden="true" />
+      </button>}
+      <div className="assistant-mail-list" aria-label="邮件输入">{inboxCards.map(renderCard)}</div>
+      {!inboxCards.length && <p className="assistant-mail-empty" role="status">{mail.loading ? "正在读取邮件…" : filedCount ? "暂无收件" : "暂无已记录邮件"}</p>}
+      {mail.hasOlderMail && <button type="button" className="secondary-button assistant-mail-older" disabled={!mail.online || mail.loading} onClick={() => void mail.loadOlder()}>{mail.loading ? "正在读取…" : "更早邮件"}</button>}
     </>}
     {(receipt || error) && <div className="assistant-mail-junk-feedback">
       {error && <span role="alert">{error}</span>}

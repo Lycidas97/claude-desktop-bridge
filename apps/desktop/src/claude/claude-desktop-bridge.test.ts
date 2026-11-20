@@ -4806,7 +4806,7 @@ describe("manual session title persistence and automatic first-turn title genera
     }
   });
 
-  it("auto-titles the first turn asynchronously via the Desktop gateway with a manual Magpie gateway saved, and skips sidechats", async () => {
+  it("falls back from an invalid Desktop gateway title asynchronously, ignores the manual gateway, and skips sidechats", async () => {
     const directory = await mkdtemp(join(tmpdir(), "bridge-autotitle-"));
     const state = new ConversationStateStore({
       databasePath: join(directory, "state.sqlite"),
@@ -4867,7 +4867,7 @@ describe("manual session title persistence and automatic first-turn title genera
       // startTurn resolves immediately without waiting for the background HTTP title request.
       const receipt = await bridge.startTurn({
         sessionId: blank.sessionId,
-        text: "请帮我实现新建会话自动生成标题与竞态保护",
+        text: "检查松港界面的用户动线。找出风格不统一的页面。",
         requestId: "req-1",
         idempotencyKey: "idem-1",
         origin: "mobile",
@@ -4883,14 +4883,14 @@ describe("manual session title persistence and automatic first-turn title genera
       expect(bridge.session(blank.sessionId)?.title).toBe("Claude 会话");
 
       const changed = once(bridge, "changed");
-      releaseTitleResponse(new Response(JSON.stringify({
-        content: [{ type: "text", text: '"自动生成会话标题"' }],
-      }), { status: 200 }));
+      releaseTitleResponse(Response.json({
+        content: [{ type: "text", text: "关于示例开发工具的背景信息与功能介绍：此工具由示例公司开发，可在终端中执行多种自动化任务。" }],
+      }));
       await changed;
 
-      expect(bridge.session(blank.sessionId)?.title).toBe("自动生成会话标题");
+      expect(bridge.session(blank.sessionId)?.title).toBe("检查松港界面的用户动线");
       expect(native.calls.filter(call => call.method === "updateSession")).toEqual([
-        { method: "updateSession", args: [blank.sessionId, { title: "自动生成会话标题" }] },
+        { method: "updateSession", args: [blank.sessionId, { title: "检查松港界面的用户动线" }] },
       ]);
 
       // A second turn on the same session never triggers another title generation request.
@@ -4981,7 +4981,7 @@ describe("manual session title persistence and automatic first-turn title genera
         return Response.json({ data: [{ id: "host-only-model" }] });
       }
       if (url === `${baseUrl}/v1/messages`) {
-        return Response.json({ content: [{ type: "text", text: "Desktop profile title" }] });
+        return Response.json({ stop_reason: "end_turn", content: [{ type: "text", text: "<title>Fix <Button> focus</title>" }] });
       }
       return new Response(null, { status: 503 });
     });
@@ -4999,8 +4999,8 @@ describe("manual session title persistence and automatic first-turn title genera
     async function expectTitleModel(requestId: string, model: string) {
       fetchImpl.mockClear();
       const session = await bridge.createSession("/new-project");
-      await bridge.startTurn({ ...input, sessionId: session.sessionId, requestId, idempotencyKey: requestId });
-      await vi.waitFor(() => expect(bridge.session(session.sessionId)?.title).toBe("Desktop profile title"));
+      await bridge.startTurn({ ...input, sessionId: session.sessionId, text: "Fix keyboard focus for the <Button> component", requestId, idempotencyKey: requestId });
+      await vi.waitFor(() => expect(bridge.session(session.sessionId)?.title).toBe("Fix <Button> focus"));
       expect(fetchImpl.mock.calls.filter(([, init]) => init?.method === "POST"), requestId).toEqual([
         [`${baseUrl}/v1/messages`, expect.objectContaining({
           headers: expect.objectContaining({ "x-api-key": source === "fixed" ? "desktop-key" : "host-key" }),
@@ -5088,14 +5088,13 @@ describe("manual session title persistence and automatic first-turn title genera
       const target1 = native.sessions.find(item => item.sessionId === s1.sessionId)!;
       target1.title = "原生自动生成标题";
       releaseFetch(new Response(JSON.stringify({
-        content: [{ type: "text", text: "网关晚到的标题" }],
+        content: [{ type: "text", text: "<title>原生标题竞态保护</title>" }],
       }), { status: 200 }));
       await new Promise(resolve => setTimeout(resolve, 25));
       expect(native.calls.some(call => call.method === "updateSession" && call.args[0] === s1.sessionId)).toBe(false);
       expect(bridge.session(s1.sessionId)?.title).toBe("原生自动生成标题");
 
-      // Case 2: Image-only fallback when no gateway is reachable.
-      fetchImpl.mockRejectedValueOnce(new Error("network offline"));
+      // Case 2: Image-only titles do not need a gateway request.
       const s2 = await bridge.createSession("/race-2");
       const changed = once(bridge, "changed");
       await bridge.startTurn({
@@ -5108,11 +5107,14 @@ describe("manual session title persistence and automatic first-turn title genera
       });
       await changed;
       expect(bridge.session(s2.sessionId)?.title).toBe("图片分析");
+      expect(fetchImpl).toHaveBeenCalledOnce();
 
       // Case 3: Concurrent rename() while autoTitleSession's final getSession read is already in flight.
-      fetchImpl.mockImplementationOnce(async () => new Response(JSON.stringify({
-        content: [{ type: "text", text: "过期的自动标题" }],
-      }), { status: 200 }));
+      const titleResponse = vi.fn(async () => Response.json({
+        stop_reason: "end_turn",
+        content: [{ type: "text", text: "<title>并发手动重命名</title>" }],
+      }));
+      fetchImpl.mockImplementationOnce(titleResponse);
       const s3 = await bridge.createSession("/race-3");
       let getSessionCountForS3 = 0;
       let releaseFinalGetSession!: () => void;
@@ -5148,6 +5150,7 @@ describe("manual session title persistence and automatic first-turn title genera
       await new Promise(resolve => setTimeout(resolve, 25));
       native.call = originalCall;
 
+      expect(titleResponse).toHaveBeenCalledOnce();
       expect(native.calls.filter(call => call.method === "updateSession" && call.args[0] === s3.sessionId)).toEqual([
         { method: "updateSession", args: [s3.sessionId, { title: "用户并发手动改名" }] },
       ]);

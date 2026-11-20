@@ -177,6 +177,28 @@ describe("SessionFamilyList", () => {
     expect(onlyBranch.props.className).toBe("session-fork-branch is-last is-only");
   });
 
+  it("limits only root sessions in activity order and keeps a fork with a missing parent reachable", () => {
+    const families = groupProjectSessionFamilies([
+      session,
+      { ...session, sessionId: "second", lastActivityAt: 70 },
+      { ...session, sessionId: "third", lastActivityAt: 60 },
+      { ...session, sessionId: "older", lastActivityAt: 50 },
+      { ...session, sessionId: "orphan", parentSessionId: "archived-parent", lastActivityAt: 80 },
+      { ...session, sessionId: "fork", parentSessionId: "root", lastActivityAt: 90 },
+    ]);
+    const onToggle = vi.fn();
+    const props = { families, expandedForkParents: new Set(["root"]) };
+    const collapsed = elements(render({ ...props, olderSessionsDisclosure: { expanded: false, onToggle } }));
+    expect(collapsed.flatMap(element => element.props["data-session-id"] ?? [])).toEqual(["root", "fork", "orphan", "second", "third"]);
+    const disclosure = collapsed.find(element => element.props.className === "session-history-toggle")!;
+    expect(disclosure.props["aria-expanded"]).toBe(false);
+    expect(renderToStaticMarkup(disclosure)).toContain("显示其余 1 个会话");
+    disclosure.props.onClick();
+    expect(onToggle).toHaveBeenCalledOnce();
+    expect(row(render({ ...props, olderSessionsDisclosure: { expanded: true, onToggle } }), "older")).toBeDefined();
+    expect(row(render({ ...props, archivedList: true }), "older")).toBeDefined();
+  });
+
   it("excludes archived forks from active families while keeping live descendants reachable and rendering archived rows in archive mode", () => {
     const families = groupProjectSessionFamilies([
       session,

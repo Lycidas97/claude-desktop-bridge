@@ -44,6 +44,7 @@ export function useProjectSessionGroups({
     : readStoredProjectOrder(projectOrderKey);
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(() => new Set());
   const [expandedForkParents, setExpandedForkParents] = useState<Set<string>>(() => new Set());
+  const [expandedOlderSessions, setExpandedOlderSessions] = useState<Set<string>>(() => new Set());
   const autoExpandedForkKeysRef = useRef(new Set<string>());
 
   const manualSections = useMemo(
@@ -233,6 +234,8 @@ export function useProjectSessionGroups({
     placeProjects,
     toggleProject,
     toggleForkGroup,
+    expandedOlderSessions,
+    toggleOlderSessions: (projectId: string) => setExpandedOlderSessions(current => toggleCollapsedProject(current, projectId)),
     registerCreatedSection,
   };
 }

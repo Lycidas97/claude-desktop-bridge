@@ -160,6 +160,8 @@ export function DesktopSessions({
     placeProjects,
     toggleProject,
     toggleForkGroup,
+    expandedOlderSessions,
+    toggleOlderSessions,
     registerCreatedSection,
   } = useProjectSessionGroups({
     hostId,
@@ -700,6 +702,10 @@ export function DesktopSessions({
                           {families.length > 0 ? (
                             <SessionFamilyList
                               families={families}
+                              olderSessionsDisclosure={searchQuery ? undefined : {
+                                expanded: expandedOlderSessions.has(groupProjectId),
+                                onToggle: () => toggleOlderSessions(groupProjectId),
+                              }}
                               projects={snapshot.projects}
                               permissions={snapshot.permissions}
                               expandedForkParents={expandedForkParents}

@@ -730,6 +730,8 @@ describe("Round 4 Client Deliverables", () => {
           grouped: [{ project: snapWithAssistant.projects[0], sessions: snapWithAssistant.sessions }],
           collapsedProjectIds: new Set<string>(),
           expandedForkParents: new Set<string>(),
+          expandedOlderSessions: new Set<string>(),
+          toggleOlderSessions: vi.fn(),
           projectOrder: ["dir-1"],
           projectsByActivity: ["dir-1"],
           permissions: [],

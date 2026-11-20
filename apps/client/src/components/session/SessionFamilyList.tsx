@@ -5,6 +5,7 @@ import { activeSessionBadgeLabel, forkGroupToggleLabel, relativeTime, visibleSes
 import type { SessionFamily } from "../../lib/project-groups.js";
 import { backgroundSubagentBadge } from "../../lib/session-activity.js";
 import { IconButton } from "../common/IconButton.js";
+import "./session-family-list.css";
 import "./session-section-drag.css";
 import type { SessionSectionDragController } from "./useSessionSectionDrag.js";
 
@@ -46,8 +47,11 @@ function SessionTreeConnector({ variant }: { variant: TreeConnectorVariant }) {
   );
 }
 
+const RECENT_ROOT_LIMIT = 3;
+
 export interface SessionFamilyListProps {
   families: readonly SessionFamily<BridgeSessionInfo>[];
+  olderSessionsDisclosure?: { expanded: boolean; onToggle(): void } | undefined;
   projects: readonly BridgeProjectInfo[] | undefined;
   permissions: readonly BridgePermissionInfo[];
   expandedForkParents: ReadonlySet<string>;
@@ -64,6 +68,7 @@ export interface SessionFamilyListProps {
 
 export function SessionFamilyList({
   families,
+  olderSessionsDisclosure,
   projects,
   permissions,
   expandedForkParents,
@@ -236,5 +241,26 @@ export function SessionFamilyList({
     );
   }
 
-  return <>{families.map(family => renderSessionFamily(family))}</>;
+  const olderRoots = olderSessionsDisclosure
+    ? families.filter(({ primary }) => !primary.parentSessionId).slice(RECENT_ROOT_LIMIT)
+    : [];
+  const firstOlderRoot = olderRoots[0];
+  if (!olderSessionsDisclosure || !firstOlderRoot) {
+    return <>{families.map(family => renderSessionFamily(family))}</>;
+  }
+
+  const split = families.indexOf(firstOlderRoot);
+  const { expanded, onToggle } = olderSessionsDisclosure;
+  return (
+    <>
+      {families.slice(0, split).map(family => renderSessionFamily(family))}
+      <button type="button" className="session-history-toggle" aria-expanded={expanded} onClick={onToggle}>
+        {expanded ? <ChevronDown size={13} aria-hidden="true" /> : <ChevronRight size={13} aria-hidden="true" />}
+        {expanded ? "收起较早会话" : `显示其余 ${olderRoots.length} 个会话`}
+      </button>
+      {families.slice(split).map(family => (
+        expanded || family.primary.parentSessionId ? renderSessionFamily(family) : null
+      ))}
+    </>
+  );
 }

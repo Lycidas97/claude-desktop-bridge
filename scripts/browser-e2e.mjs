@@ -14,7 +14,7 @@ import { verifyRename, verifyDelivery } from "./browser-e2e/scenarios/rename-del
 import { verifyNativeApprovals, verifyNativePromptsPr } from "./browser-e2e/scenarios/native-approvals.mjs";
 import { verifyNativeMessages, verifyHistoryPagination, verifyNativeCompaction, verifyNativeBoundaries, verifyNativeSessionNotices } from "./browser-e2e/scenarios/native-conversation.mjs";
 import { verifyNativeQueueActions } from "./browser-e2e/scenarios/native-queue.mjs";
-import { verifySessionCatalog, addScrollProjects, verifyProjectGrouping, verifySectionManage } from "./browser-e2e/scenarios/workspace.mjs";
+import { verifySessionCatalog, addOlderCatalogSessions, addScrollProjects, verifyProjectGrouping, verifySectionManage } from "./browser-e2e/scenarios/workspace.mjs";
 import { verifyRound4Boundaries, verifyRound5Ux } from "./browser-e2e/scenarios/cross-surface.mjs";
 import { verifyDesktopDiagnostics, verifyDesktopQuota, verifyDesktopConversation } from "./browser-e2e/scenarios/desktop.mjs";
 import { verifyMobileSafeArea } from "./browser-e2e/scenarios/mobile-safe-area.mjs";
@@ -455,7 +455,10 @@ try {
       await host.nativeApproval.draftProposal(memoryProposalFixture);
       await seedMailProposal(host);
     }
-    if (projectGroupingPreview) Object.assign(host.snapshot, await host.nativeApproval.projectCatalog());
+    if (projectGroupingPreview) {
+      Object.assign(host.snapshot, await host.nativeApproval.projectCatalog());
+      if (process.argv.includes("--recent-sessions-preview")) addOlderCatalogSessions(host.snapshot);
+    }
     if (projectGroupingPreview && process.argv.includes("--project-order-scroll-preview")) addScrollProjects(host, 30);
     if (sectionCreatePreview) await syncNativeSections(host);
     if (nativePromptsPreview) await host.syncNativeDialogs(await host.nativeApproval.seedPullRequest());

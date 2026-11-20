@@ -336,7 +336,7 @@ export async function verifyRound4Boundaries(page, host, steps, directory, viewp
   await desktop.close();
   steps.push("Desktop sidebar ... menu rename/move, NewChatCanvas title, and mouse drag onto dynamic unsectioned drop zone verified");
 
-  // 5. Extreme narrow viewport (320x568) + xlarge effective font scale (larger + 130% textZoom) + 200-char unbroken CJK/URL title + 4-level fork tree!
+  // 5. Nested forks with long titles at large font scales and narrow viewports.
   const longUnbrokenTitle = `超长无空格边界压测标题_${"https://claude.ai/very/long/unbroken/path/segment/9229/inspector/".repeat(3)}尾部校验`;
   assert.ok(longUnbrokenTitle.length >= 200, "Boundary title is >= 200 chars");
   await host.nativeApproval.seedSessions([
@@ -345,27 +345,47 @@ export async function verifyRound4Boundaries(page, host, steps, directory, viewp
     { sessionId: "r4-fork-l2", cwd: host.nativeApproval.cwd, harnessCwd: host.nativeApproval.cwd, title: `二级分支_${longUnbrokenTitle}`, forkedFromSessionId: "r4-fork-l1", lastActivityAt: Date.now() + 300 },
     { sessionId: "r4-fork-l3", cwd: host.nativeApproval.cwd, harnessCwd: host.nativeApproval.cwd, title: `三级分支_${longUnbrokenTitle}`, forkedFromSessionId: "r4-fork-l2", lastActivityAt: Date.now() + 200 },
     { sessionId: "r4-fork-l4", cwd: host.nativeApproval.cwd, harnessCwd: host.nativeApproval.cwd, title: `四级分支_${longUnbrokenTitle}`, forkedFromSessionId: "r4-fork-l3", lastActivityAt: Date.now() + 100 },
+    { sessionId: "r4-fork-l5", cwd: host.nativeApproval.cwd, harnessCwd: host.nativeApproval.cwd, title: "五级分支", forkedFromSessionId: "r4-fork-l4", lastActivityAt: Date.now() },
   ]);
   await syncNativeSections(host);
+  const idleSessions = host.snapshot.sessions;
+  host.snapshot.sessions = idleSessions.map(session => session.sessionId === "r4-fork-l4"
+    ? { ...session, turnState: "running", ownership: "DESKTOP_NATIVE_RUNNING", isCompacting: true }
+    : session);
   await host.send({ kind: "snapshot", snapshot: host.snapshot });
 
-  await page.setViewportSize({ width: 320, height: 568 });
+  await page.setViewportSize({ width: 375, height: 812 });
   await page.evaluate(() => {
     localStorage.setItem("bridge-font-size", "larger");
     document.documentElement.dataset.fontSize = "larger";
     document.documentElement.dataset.effectiveScale = "xlarge";
-    document.documentElement.style.setProperty("--font-scale", "1.3");
+    document.documentElement.style.setProperty("--font-scale", "1.25");
   });
-  await drawer.locator('[data-session-id="r4-fork-root"]').waitFor();
-  // Expand all 4 nested fork toggles!
-  for (let depth = 0; depth < 4; depth += 1) {
-    const collapsedForkToggle = drawer.locator('.mobile-fork-toggle[aria-expanded="false"]').first();
-    if (await collapsedForkToggle.count() > 0) {
-      await collapsedForkToggle.click();
-    }
+  const forkRoot = drawer.locator(".mobile-session-family").filter({ has: page.locator('[data-session-id="r4-fork-root"]') });
+  await forkRoot.waitFor();
+  const collapsedForkToggle = forkRoot.locator(".mobile-fork-toggle");
+  for (let depth = 0; depth < 4 && await collapsedForkToggle.count() > 0; depth += 1) {
+    await collapsedForkToggle.click();
   }
-  await drawer.locator('[data-session-id="r4-fork-l4"]').waitFor();
-  await drawer.locator('[data-session-id="r4-fork-l4"]').scrollIntoViewIfNeeded();
+  const deepForkRow = drawer.locator('[data-session-id="r4-fork-l4"]');
+  const compactionBadge = deepForkRow.locator(".session-row-status", { hasText: "正在压缩上下文" });
+  await compactionBadge.waitFor();
+  const deepForkBounds = await deepForkRow.evaluate(row => {
+    const action = row.querySelector(".session-row-action").getBoundingClientRect();
+    const title = row.querySelector(".session-row-copy strong").getBoundingClientRect();
+    const catalog = row.closest(".drawer-project-list").getBoundingClientRect();
+    return { actionRight: action.right, catalogRight: catalog.right, titleWidth: title.width };
+  });
+  assert.ok(deepForkBounds.actionRight <= deepForkBounds.catalogRight && deepForkBounds.titleWidth > 0,
+    `375px compacting fork must keep the action inside the catalog and room for its title: ${JSON.stringify(deepForkBounds)}`);
+  steps.push("A depth-four compacting fork at 375px and 1.25× font keeps its title and more action inside the catalog");
+
+  host.snapshot.sessions = idleSessions;
+  await host.send({ kind: "snapshot", snapshot: host.snapshot });
+  await compactionBadge.waitFor({ state: "detached" });
+  await page.setViewportSize({ width: 320, height: 568 });
+  await page.evaluate(() => document.documentElement.style.setProperty("--font-scale", "1.3"));
+  await deepForkRow.scrollIntoViewIfNeeded();
   const catalogOverflow = await page.evaluate(() => ({
     scrollWidth: document.documentElement.scrollWidth,
     innerWidth: window.innerWidth,

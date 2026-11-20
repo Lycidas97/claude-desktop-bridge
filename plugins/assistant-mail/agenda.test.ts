@@ -137,16 +137,23 @@ test.each([
   "TRIGGER:-PTM",
   "TRIGGER;VALUE=DATE-TIME:20270313",
   "TRIGGER;VALUE=DATE-TIME:20270313TAB0000Z",
+  "TRIGGER:-PT2500000000H",
 ])("ignores a malformed legacy VEVENT alarm %s without losing the event", malformed => {
   const database = new DatabaseSync(":memory:");
   closers.push(() => database.close());
   const store = new AgendaStore(database, "UTC");
   const id = store.addSource(source, Buffer.from("sealed"));
-  store.applySync(id, { removed: [], changed: [calendar] });
-  database.prepare("UPDATE agenda_caldav_objects SET data = ? WHERE source_id = ?").run(calendar.data.replace("TRIGGER:-PT15M", malformed), id);
+  const other = object("other", calendar.data.replaceAll("UID:meeting", "UID:other").replace("SUMMARY:Daily", "SUMMARY:Other"));
+  store.applySync(id, { removed: [], changed: [calendar, other] });
+  database.prepare("UPDATE agenda_caldav_objects SET data = ? WHERE source_id = ? AND href = ?")
+    .run(calendar.data.replace("TRIGGER:-PT15M", malformed), id, calendar.href);
   const from = "2027-03-13T16:50:00.000Z";
-  expect(store.attention(Date.parse(from), new Set()).items).toEqual([]);
-  expect(store.listEvents({ from, to: "2027-03-13T19:00:00.000Z" }).records).toMatchObject([{ title: "Daily" }]);
+  expect(store.attention(Date.parse(from), new Set()).items).toMatchObject([{ kind: "event", title: "Other" }]);
+  const events = store.listEvents({ from, to: "2027-03-13T19:00:00.000Z" }).records;
+  expect(events.map(event => [event.title, event.startAt, event.endAt, event.remindAt]).sort()).toEqual([
+    ["Daily", "2027-03-13T17:00:00.000Z", "2027-03-13T18:00:00.000Z", undefined],
+    ["Other", "2027-03-13T17:00:00.000Z", "2027-03-13T18:00:00.000Z", "2027-03-13T16:45:00.000Z"],
+  ]);
 });
 
 test.each([

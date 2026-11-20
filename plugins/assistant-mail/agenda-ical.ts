@@ -213,8 +213,9 @@ function alarmTime(component: ICAL.Component, zone: AgendaZone, startAt?: string
     const anchor = alarm.getFirstParameter("related")?.toUpperCase() === "END" ? endAt : startAt;
     if (!anchor) return;
     const at = agendaInstant(anchor, zone);
-    return trigger.weeks || trigger.days ? durationEnd(wallClock(at, zone), trigger, zone)
-      : new Date(at + trigger.toSeconds() * 1000).toISOString();
+    if (trigger.weeks || trigger.days) return durationEnd(wallClock(at, zone), trigger, zone);
+    const reminder = new Date(at + trigger.toSeconds() * 1000);
+    return Number.isFinite(reminder.getTime()) ? reminder.toISOString() : undefined;
   }
 }
 

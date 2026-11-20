@@ -39,7 +39,7 @@ export default function MediaViewer({ target, request, onClose }: { target: Medi
   const [{ width, height }, setViewportSize] = useState<Size>({ width: 0, height: 0 });
   const [busy, setBusy] = useState(!target.dataUrl);
   const [error, setError] = useState("");
-  const [saving, setSaving] = useState(false);
+  const [saveProgress, setSaveProgress] = useState<number>();
   const [saveError, setSaveError] = useState("");
   const [attempt, setAttempt] = useState(0);
   const requestRef = useRef(request);
@@ -173,14 +173,14 @@ export default function MediaViewer({ target, request, onClose }: { target: Medi
   }, [pdf, pageNumber, width, pdfZoom, rotation]);
 
   async function save() {
-    setSaving(true);
+    setSaveProgress(0);
     setSaveError("");
     try {
-      await saveMediaTarget(target, request);
+      await saveMediaTarget(target, request, setSaveProgress);
     } catch (failure) {
       setSaveError(failure instanceof Error ? failure.message : "文件保存失败");
     } finally {
-      setSaving(false);
+      setSaveProgress(undefined);
     }
   }
 
@@ -292,8 +292,8 @@ export default function MediaViewer({ target, request, onClose }: { target: Medi
         <header>
           <div><span>{target.kind === "pdf" ? "PDF" : target.kind === "text" ? (markdown ? "Markdown" : "文本") : "图片"}</span><h2 id="media-viewer-title">{target.name}</h2></div>
           <div className="media-viewer-actions">
-            {target.kind !== "text" && target.downloadAllowed !== false && <IconButton label="保存到本地" disabled={saving} onClick={() => void save()}>
-              {saving ? <LoaderCircle className="is-spinning" size={20} /> : <Download size={20} />}
+            {target.kind !== "text" && target.downloadAllowed !== false && <IconButton label="保存到本地" disabled={saveProgress !== undefined} onClick={() => void save()}>
+              {saveProgress !== undefined ? <LoaderCircle className="is-spinning" size={20} /> : <Download size={20} />}
             </IconButton>}
             <IconButton label="关闭查看器" onClick={onClose}><X size={21} /></IconButton>
           </div>
@@ -342,7 +342,8 @@ export default function MediaViewer({ target, request, onClose }: { target: Medi
               onError={() => { setError("图片无法显示，请重新加载"); setBusy(false); }} />}
           </div>}
         </div>
-        <footer>{saveError ? <span role="alert">保存失败：{saveError}</span> : saving ? <span role="status">正在保存…</span>
+        <footer>{saveError ? <span role="alert">保存失败：{saveError}</span>
+          : saveProgress !== undefined ? <span role="status">{saveProgress < 1 ? `下载中 ${Math.floor(saveProgress * 100)}%` : "正在保存…"}</span>
           : target.kind === "text" ? `${text === "" && !busy && !error ? "空文件" : "全文预览"} · ${target.charset?.toUpperCase() ?? "UTF-8"}`
             : target.kind === "pdf" ? "按需读取页面内容" : "双指或按钮缩放"}</footer>
       </div>

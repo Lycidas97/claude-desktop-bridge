@@ -107,7 +107,7 @@ async function runArtifactTransfer(
   openParams: Record<string, unknown>,
   request: MediaRequest,
   mode: "open" | "save",
-  onProgress?: (progress: number) => void,
+  onProgress: (progress: number) => void,
 ): Promise<void> {
   const opened = unwrap<{ transfer: BridgeArtifactTransferInfo }>(await request(
     "artifact.transfer.open",
@@ -153,7 +153,7 @@ async function runArtifactTransfer(
           });
         }
       }
-      onProgress?.((index + 1) / transfer.totalChunks);
+      onProgress((index + 1) / transfer.totalChunks);
     }
     if (await sha256Hex(chunks) !== transfer.sha256) throw new Error("文件完整性校验失败");
     transferCompleted = true;
@@ -202,14 +202,15 @@ export async function downloadMailAttachment(mailAttachment: BridgeMailAttachmen
   await runArtifactTransfer({ mailAttachment }, request, "save", onProgress);
 }
 
-export async function saveMediaTarget(target: MediaTarget, request: MediaRequest): Promise<void> {
+export async function saveMediaTarget(target: MediaTarget, request: MediaRequest, onProgress: (progress: number) => void): Promise<void> {
   if (target.dataUrl?.startsWith("data:") && !target.artifactId && !target.mailAttachment && !target.path && !target.nativeImage) {
     // Inline conversation attachments already carry their original Base64 bytes.
     const data = target.dataUrl.slice(target.dataUrl.indexOf(",") + 1);
     const name = safeFilename(target.name);
+    onProgress(1);
     if (Capacitor.getPlatform() === "android") await BridgeFiles.saveFile({ name, chunks: [data] });
     else downloadInBrowser(name, [base64Bytes(data)], "application/octet-stream");
     return;
   }
-  await runArtifactTransfer(mediaFileParams(target), request, "save");
+  await runArtifactTransfer(mediaFileParams(target), request, "save", onProgress);
 }

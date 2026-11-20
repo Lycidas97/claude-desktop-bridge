@@ -76,7 +76,19 @@ async function verifyDownload(page, filename, original) {
   const viewer = page.locator(".media-viewer");
   const save = viewer.getByRole("button", { name: "保存到本地", exact: true });
   await save.waitFor({ timeout: 5_000 });
-  const [download] = await Promise.all([page.waitForEvent("download", { timeout: 10_000 }), save.click()]);
+  const [download] = await Promise.all([page.waitForEvent("download", { timeout: 10_000 }), (async () => {
+    if (filename.endsWith(".pdf")) {
+      await page.evaluate(() => {
+        window.__pausedMediaRead = new Promise((resolve) => { window.__resumeMediaRead = resolve; });
+      });
+    }
+    await save.click();
+    if (filename.endsWith(".pdf")) {
+      await viewer.getByRole("status").filter({ hasText: /^下载中 [1-9]\d*%$/u }).waitFor();
+      assert.ok(await save.isDisabled(), "Saving stays disabled while chunks are downloading");
+      await page.evaluate(() => window.__resumeMediaRead());
+    }
+  })()]);
   assert.equal(download.suggestedFilename(), filename);
   assert.deepEqual(await readFile(await download.path()), Buffer.from(original, "base64"));
   assert.ok(await viewer.isVisible(), "Saving does not close the viewer");
@@ -179,6 +191,7 @@ try {
             return response({ transfer: { transferId, artifactId: id, name, mimeType, size: data.length, chunkBytes: 262144, totalChunks: Math.ceil(data.length / 262144), sha256, expiresAt: Date.now() + 600000 } });
           }
           if (method === "artifact.transfer.read") {
+            if (params.index === 1) await window.__pausedMediaRead;
             const data = transfers.get(params.transferId);
             if (!data) return { kind: "response", requestId: "qa", ok: false, error: { message: "Artifact transfer expired" } };
             const chunk = data.slice(params.index * 262144, (params.index + 1) * 262144);
@@ -278,6 +291,7 @@ try {
     await page.getByRole("button", { name: "保存到本地", exact: true }).click();
     await page.getByRole("alert").filter({ hasText: "保存失败：文件不可读取" }).waitFor();
     assert.ok(await page.locator(".media-viewer img").isVisible(), "A save failure does not hide the preview");
+    await page.screenshot({ path: `${output}/${packaged ? "electron-" : mobile ? "mobile-" : ""}media-save-error-${viewport.width}.png` });
     await verifyDownload(page, "Figure.png", png);
     assert.equal(await page.getByRole("alert").count(), 0, "Retry clears the save error");
     await page.getByRole("button", { name: "关闭查看器" }).click();

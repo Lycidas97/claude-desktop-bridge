@@ -104,7 +104,9 @@ it.each<{ target: MediaTarget; params: Record<string, unknown> }>([
 ])("saves original Android file bytes from $params", async ({ target, params }) => {
   native.platform = "android";
   const request = downloadRequest(target.name);
-  await saveMediaTarget(target, request);
+  const onProgress = vi.fn();
+  await saveMediaTarget(target, request, onProgress);
+  expect(onProgress).toHaveBeenCalledExactlyOnceWith(1);
   expect(request).toHaveBeenNthCalledWith(1, "artifact.transfer.open", params, expect.anything());
   expect(native.saveFile).toHaveBeenCalledExactlyOnceWith({ name: target.name, chunks: ["YWJj"] });
   expect(native.writeFile).not.toHaveBeenCalled();
@@ -115,7 +117,7 @@ it.each<{ target: MediaTarget; params: Record<string, unknown> }>([
 it("saves a local inline attachment without requesting it from the host", async () => {
   native.platform = "android";
   const request = vi.fn();
-  await saveMediaTarget({ name: "photo.png", kind: "image", sessionId: "session", dataUrl: "data:image/png;base64,YWJj" }, request);
+  await saveMediaTarget({ name: "photo.png", kind: "image", sessionId: "session", dataUrl: "data:image/png;base64,YWJj" }, request, vi.fn());
   expect(request).not.toHaveBeenCalled();
   expect(native.saveFile).toHaveBeenCalledExactlyOnceWith({ name: "photo.png", chunks: ["YWJj"] });
 });

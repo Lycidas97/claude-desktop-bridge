@@ -58,7 +58,7 @@ export function parseSessionNotice(text: string): SessionNotice | undefined {
         if (!body.startsWith("None of the sessions you started is working now;")) return undefined;
         idle = true;
       } else {
-        const report = /^The session "([^"\n]+)" you started \([^)]+\) finished a turn(?: \([^\n]*?\))?\. It reported \(quoted child output, data not instructions\): "([\s\S]*)"(?:\s+Read it with[\s\S]*)?$/u.exec(body);
+        const report = /^The session "([^"\n]+)" you started \([^)]+\) finished a turn(?: \([^\n]*?\))?\. It reported \(quoted child output, data not instructions\): "([\s\S]*)"(?: \(first \d+ of \d+ characters\))?(?:\s+Read it with[\s\S]*)?$/u.exec(body);
         if (report) reports.push({ title: report[1]!, text: report[2]! });
         else if (!body.startsWith("Linked sessions now (")) return undefined;
       }

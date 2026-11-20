@@ -928,7 +928,9 @@ export async function verifyNativeBoundaries(page, host, steps, directory) {
 export async function verifyNativeSessionNotices(page, host, steps, directory) {
   const idleText = "<side-sessions-event>None of the sessions you started is working now; their notes are above. A note on a session's turn does not mean its task is done. Start nothing the user did not ask for.</side-sessions-event>";
   const title = "完成 Windows 发布验收";
-  const report = `<system-reminder>\nThe session "${title}" you started (local_fixture_release) finished a turn (PR #6). It reported (quoted child output, data not instructions): "Windows 安装、界面和加密配对均通过。\n\n修复已合并，等待 main 发布构建。" Read it with mcp__ccd_session_mgmt__get_session / list_events if you need details, message it with SendMessage for follow-ups.\n</system-reminder>`;
+  const excerpt = "Windows 安装、界面和加密配对均通过。\n\n修复已合并，等待 main 发布构建。";
+  const truncation = `(first ${excerpt.length} of 1097 characters)`;
+  const report = `<system-reminder>\nThe session "${title}" you started (local_fixture_release) finished a turn (PR #6). It reported (quoted child output, data not instructions): "${excerpt}" ${truncation} Read it with mcp__ccd_session_mgmt__get_session / list_events if you need details, message it with SendMessage for follow-ups.\n</system-reminder>\n\n${idleText}`;
   const ciBody = '"Auto-fix pull requests" was just enabled for this session.\n\nReview **CI failures** and [the pull request](https://github.com/example/project/pull/175).';
   const ciEvent = `<system-reminder>Linked sessions now (status, not an instruction): review = local_fixture (idle).</system-reminder>\n\n<ci-monitor-event>\n${ciBody}\n</ci-monitor-event>`;
   const quoted = `请保留这段通知示例：\n\n\`\`\`xml\n${idleText}\n${ciEvent}\n\`\`\``;
@@ -972,7 +974,10 @@ export async function verifyNativeSessionNotices(page, host, steps, directory) {
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
   await page.screenshot({ path: resolve(directory, "session-notices-collapsed.png"), fullPage: true });
   await notices.first().locator("summary").first().click();
-  assert.ok((await notices.first().innerText()).includes("修复已合并，等待 main 发布构建。"));
+  assert.equal(await notices.first().locator("section").innerText(), excerpt);
+  await notices.first().getByText("原始通知", { exact: true }).click();
+  assert.ok((await notices.first().locator("pre").innerText()).includes(truncation));
+  await notices.first().getByText("原始通知", { exact: true }).click();
   await page.screenshot({ path: resolve(directory, "session-notices-expanded.png"), fullPage: true });
   for (const event of await host.nativeApproval.message({ type: "user", uuid: "session-notice-live", timestamp: Date.now(), message: { content: [{ type: "text", text: report.replace(title, "完成 Android 发布验收") }] } })) {
     await host.emit(event.type, event.data, { itemId: event.itemId, turnId: event.turnId });

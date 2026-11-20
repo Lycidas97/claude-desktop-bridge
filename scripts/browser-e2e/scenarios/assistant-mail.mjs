@@ -943,7 +943,10 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await page.getByText("第二页已同步", { exact: true }).waitFor();
   steps.push("agenda reconnect and live changes reload the requested page depth");
 
+  const originalTodo = agendaFixture.listTodos({ limit: 100 }).records.find(record => record.title === "当天待办");
   agendaFixture.saveEvent({ value: { title: "待编辑日程", startAt: `${today}T17:00:00Z`, endAt: `${today}T18:00:00Z`, allDay: false, timeZone: "America/Los_Angeles" } });
+  const originalEvent = agendaFixture.listEvents({ from: `${today}T00:00:00Z`, to: `${tomorrow}T00:00:00Z` })
+    .records.find(record => record.title === "待编辑日程");
   const desktopRequests = [];
   await openDesktopAssistant(page, host, baseUrl, desktopRequests);
   assert.equal(await page.locator(".assistant-page").getByRole("button", { name: "对话", exact: true }).count(), 1, "Only the assistant-level tab is labeled 对话");
@@ -964,6 +967,8 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await page.getByLabel("标题", { exact: true }).fill("桌面编辑的待办");
   await page.getByRole("button", { name: "保存", exact: true }).click();
   await page.getByText("桌面编辑的待办", { exact: true }).waitFor();
+  assert.deepEqual(desktopRequests.find(request => request.method === "plugin.assistant-agenda.todo.save")?.params?.existing,
+    { id: originalTodo.id, revision: originalTodo.revision }, "Desktop edits the original todo revision");
   await capture("desktop-agenda");
   await agendaView.getByRole("button", { name: "日历", exact: true }).click();
   await agendaView.getByText("今天的评审", { exact: true }).waitFor();
@@ -1025,6 +1030,10 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await page.getByLabel("结束时间", { exact: true }).fill("2027-07-01T01:15");
   await page.getByRole("button", { name: "保存", exact: true }).click();
   await page.getByText("东京跨月日程", { exact: true }).waitFor();
+  assert.deepEqual(desktopRequests.filter(request => request.method === "plugin.assistant-agenda.event.save").map(request => request.params?.existing), [
+    { id: originalEvent.id, revision: originalEvent.revision },
+    { id: originalEvent.id, revision: originalEvent.revision + 1 },
+  ], "Both calendar edits save the same event with its current revision");
   assert.equal(await page.locator(".agenda-month strong").innerText(), "2027年6月");
   const importedEvent = page.getByRole("listitem").filter({ hasText: "外部时区日程" });
   await importedEvent.waitFor();

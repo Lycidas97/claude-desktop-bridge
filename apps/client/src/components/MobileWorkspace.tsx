@@ -303,6 +303,7 @@ export function MobileWorkspace({
     key: number;
     initialProjectId?: string | undefined;
     initialCwd?: string | undefined;
+    returnSessionId?: string | undefined;
   }>();
   const [createDialogState, setCreateDialogState] = useState<NewChatDirectoryPickerRequest>();
   const conversationDrafts = useConversationDrafts(activeHostId);
@@ -385,6 +386,9 @@ export function MobileWorkspace({
     ? sessions.find((session) => session.sessionId === effectiveSelectedId)
     : undefined;
   const showingHomeCatalog = !selectedSession && !newChatMode;
+  const newChatReturnSession = newChatMode && newChatTarget?.returnSessionId
+    ? sessions.find((session) => session.sessionId === newChatTarget.returnSessionId)
+    : undefined;
   const activeConversationSessionId = visible && !showingHomeCatalog && selectedSession && sessionView === "conversation"
     ? selectedSession.sessionId
     : undefined;
@@ -507,7 +511,7 @@ export function MobileWorkspace({
     }, 110);
     const unregisterNewChat = registerMobileBackHandler(() => {
       if (visible && newChatMode) {
-        closeToCatalog();
+        leaveNewChat();
         return true;
       }
       return false;
@@ -525,6 +529,7 @@ export function MobileWorkspace({
     menuSessionId,
     moveMenuSessionId,
     newChatMode,
+    newChatReturnSession,
     projectOrderOpen,
     renameOpen,
     sectionCreate,
@@ -538,6 +543,11 @@ export function MobileWorkspace({
       directoryRef.current.scrollTop = directoryScrollPositions.current.get("") ?? 0;
     }
   }, [showingHomeCatalog, visible]);
+
+  function leaveNewChat(): void {
+    if (newChatReturnSession) void selectSession(newChatReturnSession.sessionId);
+    else closeToCatalog();
+  }
 
   function closeToCatalog(): void {
     autoOpenedSessionRef.current = undefined;
@@ -636,12 +646,13 @@ export function MobileWorkspace({
     await onOpenSession(sessionId);
   }
 
-  function startNewChat(targetProjectId?: string, targetCwd?: string): void {
+  function startNewChat(targetProjectId?: string, targetCwd?: string, returnSessionId?: string): void {
     autoOpenedSessionRef.current = undefined;
     setNewChatTarget((previous) => ({
       key: (previous?.key ?? 0) + 1,
       ...(targetProjectId !== undefined ? { initialProjectId: targetProjectId } : {}),
       ...(targetCwd !== undefined ? { initialCwd: targetCwd } : {}),
+      ...(returnSessionId !== undefined ? { returnSessionId } : {}),
     }));
     setNewChatMode(true);
     setCreateDialogState(undefined);
@@ -817,7 +828,7 @@ export function MobileWorkspace({
               label="新建会话"
               detail="使用当前目录与分组"
               disabled={sessionActionBusy || !snapshot || !online}
-              onClick={() => startNewChat(menuSession.projectId, menuSession.cwd)}
+              onClick={() => startNewChat(menuSession.projectId, menuSession.cwd, menuSession.sessionId)}
             />}
             <SheetAction
               icon={sessionView === "evidence" ? <MessageSquare size={19} /> : <PackageCheck size={19} />}
@@ -1129,8 +1140,8 @@ export function MobileWorkspace({
               conversationDrafts={conversationDrafts}
               {...(newChatTarget?.initialProjectId !== undefined ? { initialProjectId: newChatTarget.initialProjectId } : {})}
               {...(newChatTarget?.initialCwd !== undefined ? { initialCwd: newChatTarget.initialCwd } : {})}
-              onBack={closeToCatalog}
-              backLabel="返回会话列表"
+              onBack={leaveNewChat}
+              backLabel={newChatReturnSession ? "返回会话" : "返回会话列表"}
               onOpenDirectoryPicker={openDirectoryPickerFromCanvas}
               {...(supportsCreateSection && onCreateSection
                 ? {

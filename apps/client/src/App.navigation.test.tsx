@@ -179,11 +179,13 @@ describe("mobile app parent navigation", () => {
     expect(hooks.mobile.selectHost).toHaveBeenCalledWith("work-room");
     expect(component(MobileWorkspace)?.props.focusRequest?.sessionId).toBe("pending-session");
   });
-  it("opens active computer connection details directly from workspace inspection callback", () => {
+  it("returns home from connection details opened by the workspace inspection callback", () => {
     component(MobileWorkspace)!.props.onInspectConnection(); draw();
     expect(component(MobileAppShell)!.props.tab).toBe("computers");
-    expect(component(MobileHostDetails)).toBeDefined();
+    expect(component(MobileHostDetails)!.props.backLabel).toBe("返回会话列表");
     expect(back()).toBe(true);
+    expect(component(MobileAppShell)!.props.tab).toBe("sessions");
+    tab("computers");
     expect(component(HostBrowser)).toBeDefined();
   });
   it("lets an unpaired start screen return to Android while keeping secure import in place", () => {

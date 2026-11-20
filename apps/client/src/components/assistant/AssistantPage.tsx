@@ -4,6 +4,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState, type FormEven
 import { mergeMailCards, refreshMailPages } from "../../lib/assistant-mail.js";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
 import { formatSessionModelLabel } from "../../lib/conversation-timeline.js";
+import { ConfirmationDialog } from "../common/ConfirmationDialog.js";
 import { IconButton } from "../common/IconButton.js";
 import { SelectMenu } from "../common/SelectMenu.js";
 import type { ConversationViewProps } from "../conversation/ConversationView.js";
@@ -38,6 +39,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
   const modelSettingsDescription = useId();
   const [view, setView] = useState<"conversation" | "mail" | "filed" | "agenda" | "settings" | "proposals">("conversation");
   const [proposalReturn, setProposalReturn] = useState<Exclude<typeof view, "proposals">>("conversation");
+  const [settingsReturn, setSettingsReturn] = useState<Exclude<typeof view, "settings">>("conversation");
   const [selectedProposal, setSelectedProposal] = useState<BridgeActionProposal>();
   const [replyTarget, setReplyTarget] = useState<ConversationViewProps["assistantReplyTarget"]>();
   const [replyError, setReplyError] = useState("");
@@ -66,6 +68,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
   useEffect(() => { if (active) { setView("conversation"); setSelectedProposal(undefined); setReplyTarget(undefined); setReplyError(""); } }, [active]);
   const supportsFiling = mail?.supportsFiling;
   const backToInbox = () => setView("mail");
+  const backFromSettings = () => setView(settingsReturn);
   useEffect(() => {
     if (!active || !mobile) return;
     if (view === "proposals" && proposals) {
@@ -74,7 +77,10 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
     if (view === "filed" && supportsFiling) {
       return registerMobileBackHandler(() => { backToInbox(); return true; }, 110);
     }
-  }, [active, mobile, view, Boolean(proposals), selectedProposal, proposalReturn, supportsFiling]);
+    if (view === "settings") {
+      return registerMobileBackHandler(() => { backFromSettings(); return true; }, 110);
+    }
+  }, [active, mobile, view, Boolean(proposals), selectedProposal, proposalReturn, settingsReturn, supportsFiling]);
   if (!active) return null;
   if (!mail && !agenda) return null;
   const binding = mail?.assistant?.binding;
@@ -100,6 +106,10 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
   function openProposals() {
     if (displayedView !== "proposals") { setProposalReturn(displayedView); setSelectedProposal(undefined); }
     setView("proposals");
+  }
+  function openSettings() {
+    if (displayedView !== "settings") setSettingsReturn(displayedView);
+    setView("settings");
   }
 
   async function configureBinding(method: "plugin.assistant-mail.bind" | "plugin.assistant-mail.workspace.initialize", params: Record<string, string>): Promise<boolean> {
@@ -136,7 +146,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
       {mail && showMailFeedback && <span className="assistant-mail-refresh-status" role="status">
         {refreshing ? "正在刷新邮件列表…" : refreshed ? "邮件列表已刷新" : ""}
       </span>}
-      <IconButton label="助理设置" aria-pressed={displayedView === "settings"} onClick={() => setView("settings")}><Settings size={16} /></IconButton>
+      <IconButton label="助理设置" aria-pressed={displayedView === "settings"} onClick={openSettings}><Settings size={16} /></IconButton>
     </nav>
   );
   const bindingControls = mail && displayedView !== "agenda" && (displayedView === "settings" || !binding?.nativeSessionId || state === "needs-rebind" || state === "missing") && (
@@ -259,6 +269,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
   return <section className={`assistant-page ${mobile ? "assistant-page-mobile" : "desktop-page"}${session ? " has-conversation" : ""}`}>
     {mobile && (filed ? <MobilePageHeader title="已收纳" leading={filedBack} actions={filedActions || undefined} />
       : displayedView === "proposals" ? <MobilePageHeader title={selectedProposal ? "提案详情" : "待确认提案"} onBack={backFromProposals} />
+      : displayedView === "settings" ? <MobilePageHeader title="助理设置" onBack={backFromSettings} />
       : <MobilePageHeader title="助理" {...(headerLeading ? { leading: headerLeading } : {})} actions={viewTabs} />)}
     {!mobile && <div className="assistant-desktop-header-band">
       {headerLeading && <div className="assistant-desktop-leading">{headerLeading}</div>}
@@ -493,6 +504,13 @@ function MailAccounts({ accounts, configUnavailable, credentialsSupported, onlin
   const showSharedSmtp = supportsSharedAuth && (!hasSeparateSmtp || action?.kind === "share");
   const smtpAccount = action?.kind === "smtp" ? accounts.find(account => account.accountKey === action.accountKey) : undefined;
   const removedAccount = action?.kind === "remove" ? accounts.find(account => account.accountKey === action.accountKey) : undefined;
+  useEffect(() => {
+    if (!removedAccount) return;
+    return registerMobileBackHandler(() => {
+      if (!busy) setAction(undefined);
+      return true;
+    }, 200);
+  }, [removedAccount, busy]);
 
   async function update(method: BridgeMethod, params: Record<string, unknown>) {
     setBusy(true);
@@ -622,14 +640,19 @@ function MailAccounts({ accounts, configUnavailable, credentialsSupported, onlin
         </div>
       </fieldset>
     </form>}
-    {removedAccount && <div className="assistant-account-confirm">
-      <p>移除 {removedAccount.user}？已收取的邮件仍可查看。</p>
-      <div className="assistant-actions">
-        <button type="button" className="secondary-button" disabled={busy} onClick={() => { setError(""); setAction(undefined); }}>取消</button>
-        <button type="button" className="secondary-button assistant-remove" disabled={disabled} onClick={() => { void update("plugin.assistant-mail.account.remove", { accountKey: removedAccount.accountKey }); }}>确认移除</button>
-      </div>
-    </div>}
-    {error && <p role="alert">{error}</p>}
+    <ConfirmationDialog
+      open={Boolean(removedAccount)}
+      title="移除邮箱？"
+      description={`移除「${removedAccount?.user ?? ""}」？已收取的邮件仍可查看。`}
+      error={removedAccount ? error : undefined}
+      confirmLabel="确认移除"
+      danger
+      busy={busy}
+      confirmDisabled={disabled}
+      onCancel={() => { setError(""); setAction(undefined); }}
+      onConfirm={() => { if (removedAccount) void update("plugin.assistant-mail.account.remove", { accountKey: removedAccount.accountKey }); }}
+    />
+    {error && !removedAccount && <p role="alert">{error}</p>}
   </section>;
 }
 

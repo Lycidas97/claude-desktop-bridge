@@ -2487,7 +2487,7 @@ describe("sidechat and slash command integration", () => {
     text("/help"); form().props.onSubmit({ preventDefault() {} }); await settle();
     expect(props.onLoadSessionCommands).toHaveBeenCalledExactlyOnceWith("B");
     expect(props.onRunSessionCommand).toHaveBeenCalledExactlyOnceWith("B", "/help");
-    expect(elements(tree).find(element => element.type === SessionCommandDialogs)!.props.session.sessionId).toBe("B");
+    expect(elements(tree).find(element => element.type === SessionCommandDialogs)!.props.result).toEqual({ action: "help" });
     expect(props.onSendTurn).not.toHaveBeenCalled();
     elements(tree).find(element => element.type === "button" && Array.isArray(element.props.children) && element.props.children.includes("主会话：Session A"))!.props.onClick(); await settle();
     expect(input().props.value).toBe("parent draft");

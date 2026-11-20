@@ -6,7 +6,7 @@ import type {
   SocketState,
 } from "@bridge/protocol";
 import { Activity, LoaderCircle, Play, Power, RefreshCw, Trash2 } from "lucide-react";
-import { type ReactNode, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import type { MobileConnectionIssue } from "../../hooks/useMobileBridge.js";
 import { setDiagDialogOpen } from "../../lib/diagnostics.js";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
@@ -36,7 +36,7 @@ export interface MobileHostDetailsProps {
   onDesktopAppAction(runtimeId: BridgeDesktopRuntimeId, action: "launch" | "quit"): Promise<BridgeDesktopAppStatus[]>;
   onRemove(): Promise<void>;
   onBack(): void;
-  permissionSettings?: ReactNode;
+  backLabel?: string;
   remoteUpdate?: RemoteDesktopUpdateControl | undefined;
 }
 
@@ -56,7 +56,7 @@ export function MobileHostDetails({
   onDesktopAppAction,
   onRemove,
   onBack,
-  permissionSettings,
+  backLabel = "返回电脑列表",
   remoteUpdate,
 }: MobileHostDetailsProps) {
   const [connectionAction, setConnectionAction] = useState<"retry" | "refresh">();
@@ -171,7 +171,7 @@ export function MobileHostDetails({
         title={desktopName}
         subtitle="连接与电脑设置"
         onBack={onBack}
-        backLabel="返回电脑列表"
+        backLabel={backLabel}
         backDisabled={removing}
       />
 
@@ -278,8 +278,6 @@ export function MobileHostDetails({
           </span>
         </div>
       </section>
-
-      {permissionSettings}
 
       {remoteUpdate ? (
         <RemoteDesktopUpdaterSection remote={remoteUpdate} heading="远端桌面状态" />

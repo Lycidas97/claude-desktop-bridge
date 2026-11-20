@@ -39,6 +39,7 @@ import { SessionProfileSummary } from "./session/SessionProfileSummary.js";
 import { SectionCreateDialog } from "./session/SectionCreateDialog.js";
 import { SectionManageDialog } from "./session/SectionManageDialog.js";
 import { SessionActionSheets } from "./session/SessionActionSheets.js";
+import { SessionConfigurationDialog } from "./session/SessionConfigurationDialog.js";
 import { SessionCreateDialog } from "./session/SessionCreateDialog.js";
 import { MobilePageHeader } from "./mobile/MobilePageHeader.js";
 import { ProjectOrderSheet } from "./mobile/ProjectOrderSheet.js";
@@ -884,7 +885,7 @@ describe("desktop common commands", () => {
     await settle();
     tree = sessions.draw();
 
-    expect(elements(tree).find(element => element.type === SessionCommandDialogs)!.props.session.sessionId).toBe("new-A");
+    expect(elements(tree).find(element => element.type === ConversationView)!.props.session.sessionId).toBe("new-A");
     expect(apiRequest.mock.calls.filter(([req]) => req.method === "session.open" && req.params.sessionId === "new-A")).toHaveLength(1);
     expect(elements(tree).filter((element) => element.type === ConversationMessageItem).map((element) => element.props.item.text))
       .toEqual(["New context history"]);
@@ -2203,7 +2204,10 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
     elements(tree).find((element) => element.type === IconButton && element.props.label === "管理分组：Research")!.props.onClick();
     tree = sessions.draw();
     apiRequest.mockResolvedValueOnce({ kind: "response", requestId: "sec-delete", ok: true, result: {} });
-    elements(tree).find((element) => element.type === SheetAction && element.props.label === "删除空分组")!.props.onClick();
+    elements(tree).find((element) => element.type === SheetAction && element.props.label === "删除分组")!.props.onClick();
+    tree = sessions.draw();
+    expect(apiRequest).not.toHaveBeenCalledWith({ method: "section.delete", params: { sectionId: "sec-1" } });
+    elements(tree).find((element) => element.type === ConfirmationDialog && element.props.title === "删除分组")!.props.onConfirm();
     await settle();
     expect(apiRequest).toHaveBeenCalledWith({ method: "section.delete", params: { sectionId: "sec-1" } });
 
@@ -2276,6 +2280,17 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
     tree = sessions.draw();
     expect(elements(tree).find((element) => element.type === Sheet && element.props.title === activeTitle)!.props.focusPaused).toBe(false);
     elements(tree).find((element) => element.type === Sheet && element.props.title === activeTitle)!.props.onClose();
+    tree = sessions.draw();
+
+    // The sidebar row menu offers the same management entries as the conversation menu.
+    elements(tree).find((element) => element.props.label === `会话操作：${activeTitle}`)!.props.onClick();
+    tree = sessions.draw();
+    expect(elements(tree).filter((element) => element.type === SheetAction).map((element) => element.props.label))
+      .toEqual(expect.arrayContaining(["会话设置", "同步此会话", "删除会话"]));
+    elements(tree).find((element) => element.type === SheetAction && element.props.label === "会话设置")!.props.onClick();
+    tree = sessions.draw();
+    expect(elements(tree).find((element) => element.type === SessionConfigurationDialog)?.props.session.sessionId).toBe(snapshot.sessions[0]!.sessionId);
+    elements(tree).find((element) => element.type === SessionConfigurationDialog)!.props.onClose();
     tree = sessions.draw();
 
     // Per-project 新建会话：<项目名> opens unified NewChatCanvas with initialProjectId and wires directory browse/mkdir

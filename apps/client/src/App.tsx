@@ -239,6 +239,8 @@ function MobileApp({ themeControl }: { themeControl: ThemeControl }) {
   const [pairingOpen, setPairingOpen] = useState(false);
   const [tab, setTab] = useState<MobileTab>("sessions");
   const [computerDetailsHostId, setComputerDetailsHostId] = useState<string>();
+  // Details opened from the home connection banner return home, not to the computer list.
+  const [computerDetailsFromHome, setComputerDetailsFromHome] = useState(false);
   const [quotaOpen, setQuotaOpen] = useState(false);
   const [providersOpen, setProvidersOpen] = useState(false);
   const [focusRequest, setFocusRequest] = useState<{ sessionId: string; key: number }>();
@@ -326,6 +328,13 @@ function MobileApp({ themeControl }: { themeControl: ThemeControl }) {
     void openComputer(hostId, sessionId);
   }), [mobile.state.activeHostId, mobile.selectHost]);
 
+  function closeComputerDetails(): void {
+    setComputerDetailsHostId(undefined);
+    if (!computerDetailsFromHome) return;
+    setComputerDetailsFromHome(false);
+    setTab("sessions");
+  }
+
   useEffect(() => registerMobileBackHandler(() => {
     // The secure import must finish before a back gesture can change route.
     if (mobile.state.pairingSync) return true;
@@ -335,7 +344,7 @@ function MobileApp({ themeControl }: { themeControl: ThemeControl }) {
     }
     if (mobile.state.hosts.length === 0) return false;
     if (tab === "computers" && computerDetailsHostId) {
-      setComputerDetailsHostId(undefined);
+      closeComputerDetails();
       return true;
     }
     if (providersOpen || quotaOpen) {
@@ -352,6 +361,7 @@ function MobileApp({ themeControl }: { themeControl: ThemeControl }) {
     }
     return false;
   }, -100), [
+    computerDetailsFromHome,
     computerDetailsHostId,
     mobile.state.hosts.length,
     mobile.state.pairingSync,
@@ -443,6 +453,7 @@ function MobileApp({ themeControl }: { themeControl: ThemeControl }) {
               quickReconnect={mobile.state.quickReconnect}
               onInspectConnection={() => {
                 setComputerDetailsHostId(mobile.state.activeHostId);
+                setComputerDetailsFromHome(true);
                 setTab("computers");
               }}
               transportMetrics={mobile.state.transportMetrics}
@@ -574,7 +585,8 @@ function MobileApp({ themeControl }: { themeControl: ThemeControl }) {
             await forgetHost(mobile.state.activeHostId!);
             setComputerDetailsHostId(undefined);
           }}
-          onBack={() => setComputerDetailsHostId(undefined)}
+          {...(computerDetailsFromHome ? { backLabel: "返回会话列表" } : {})}
+          onBack={closeComputerDetails}
         />
       ) : (
         <HostBrowser
@@ -585,6 +597,7 @@ function MobileApp({ themeControl }: { themeControl: ThemeControl }) {
           onSelect={openComputer}
           onDetails={(hostId) => {
             setComputerDetailsHostId(hostId);
+            setComputerDetailsFromHome(false);
             if (hostId !== mobile.state.activeHostId) void mobile.selectHost(hostId);
           }}
           onRemove={forgetHost}

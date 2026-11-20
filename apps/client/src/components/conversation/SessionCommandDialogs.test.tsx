@@ -2,7 +2,6 @@ import type { BridgeSessionCommandResult, BridgeSessionPermissions } from "@brid
 import type { ComponentProps, ReactElement, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { findSessionCommand, sessionCommandName, useSessionCommands } from "../../hooks/useSessionCommands.js";
-import { SelectMenu } from "../common/SelectMenu.js";
 import { SessionPermissionsEditor } from "./SessionCommandDialogs.js";
 
 const hooks = vi.hoisted(() => ({ slots: [] as any[], index: 0, dirty: false, effects: [] as Array<{ deps?: unknown[]; cleanup?: (() => void) | undefined }>, pending: [] as Array<() => void>, effectIndex: 0 }));
@@ -122,13 +121,12 @@ describe("SDK session permissions", () => {
   const button = (label: string) => elements(tree).find(element => element.type === "button" && elements(element).length === 1 && element.props.children === label)
     ?? elements(tree).find(element => element.type === "button" && Array.isArray(element.props.children) && element.props.children.includes(label))!;
 
-  it("loads actual SDK mode and isolates override fields from inherited rules", async () => {
+  const status = () => elements(tree).find(element => element.props.className === "session-permission-status")!.props.children.join("");
+
+  it("shows the current mode read-only and isolates override fields from inherited rules", async () => {
     await load();
-    const modeMenu = elements(tree).find(element => element.type === SelectMenu)!;
-    expect(modeMenu.props.value).toBe("acceptEdits");
-    expect(modeMenu.props.options.map((opt: { value: string; label: string }) => [opt.value, opt.label])).toEqual([
-      ["default", "标准授权"], ["acceptEdits", "自动接受编辑"], ["plan", "计划模式"], ["dontAsk", "仅允许已批准"], ["auto", "自动判断"], ["bypassPermissions", "完全授权"],
-    ]);
+    expect(status()).toBe("当前生效：自动接受编辑");
+    expect(elements(tree).some(element => element.props.ariaLabel === "权限模式")).toBe(false);
     const body = elements(tree).find(element => element.props.className === "session-command-body")!;
     expect(elements(body).filter(element => element.type === "textarea")).toHaveLength(3);
     expect(elements(body).some(element => element.type === "footer")).toBe(false);
@@ -140,30 +138,28 @@ describe("SDK session permissions", () => {
     expect(props.onSavePermissions).not.toHaveBeenCalled();
   });
 
-  it("saves all three overrides only after explicit confirmation", async () => {
+  it("saves all three overrides with the current mode only after explicit confirmation", async () => {
     await load();
-    elements(tree).find(element => element.type === SelectMenu)!.props.onChange("plan");
     elements(tree).find(element => element.props["aria-label"] === "会话 ask 规则")!.props.onChange({ target: { value: "Edit\nBash(git:*)\n" } });
     tree = draw();
     expect(props.onSavePermissions).not.toHaveBeenCalled();
     button("保存权限").props.onClick(); await settle();
-    expect(props.onSavePermissions).toHaveBeenCalledWith("plan", { allow: ["Read"], ask: ["Edit", "Bash(git:*)"], deny: ["Bash(rm:*)"] });
+    expect(props.onSavePermissions).toHaveBeenCalledWith("acceptEdits", { allow: ["Read"], ask: ["Edit", "Bash(git:*)"], deny: ["Bash(rm:*)"] });
     expect(props.onClose).toHaveBeenCalledOnce();
   });
 
-  it("keeps the editor open and displays an SDK bypass error", async () => {
-    props.onSavePermissions = vi.fn().mockRejectedValue(new Error("bypassPermissions was not enabled at startup"));
+  it("keeps the editor open and displays a save error", async () => {
+    props.onSavePermissions = vi.fn().mockRejectedValue(new Error("rule replacement failed"));
     await load();
-    elements(tree).find(element => element.type === SelectMenu)!.props.onChange("bypassPermissions");
-    tree = draw(); button("保存权限").props.onClick(); await settle(); tree = draw();
-    expect(elements(tree).find(element => element.props.role === "alert")!.props.children).toContain("not enabled at startup");
+    button("保存权限").props.onClick(); await settle(); tree = draw();
+    expect(elements(tree).find(element => element.props.role === "alert")!.props.children).toContain("rule replacement failed");
     expect(props.onClose).not.toHaveBeenCalled();
   });
 
   it("shows an unavailable runtime as read-only", async () => {
     props.onLoadPermissions = vi.fn().mockResolvedValue({ ...permissions, canConfigure: false, unavailableReason: "SDK host 尚未启动" });
     await load();
-    expect(elements(tree).filter(element => element.type === "textarea" || element.type === SelectMenu).every(element => element.props.disabled)).toBe(true);
+    expect(elements(tree).filter(element => element.type === "textarea").every(element => element.props.disabled)).toBe(true);
     expect(button("保存权限").props.disabled).toBe(true);
   });
 });
@@ -233,48 +229,20 @@ describe("permission lifecycle edges", () => {
     const button = elements(tree).find(element => element.type === "button" && (element.props.children === label || (Array.isArray(element.props.children) && element.props.children.includes(label))))!;
     button.props.onClick();
   }
-  function mode(value: string) { elements(tree).find(element => element.type === SelectMenu)!.props.onChange(value); tree = draw(); }
+  const status = () => elements(tree).find(element => element.props.className === "session-permission-status")!.props.children.join("");
   function reopen() {
     hooks.effects.forEach(effect => effect.cleanup?.());
     hooks.slots = []; hooks.effects = []; hooks.pending = [];
     draw = renderer(() => SessionPermissionsEditor(props));
   }
 
-  it("[edge] reloads actual permission mode after mode succeeds but rule replacement fails, preserving the draft", async () => {
-    let actual = initial;
-    props.onLoadPermissions = vi.fn(async () => actual);
-    props.onSavePermissions = vi.fn(async selected => {
-      actual = { ...actual, mode: selected };
-      throw new Error("rule replacement failed");
-    });
-    await load(); mode("plan");
-    elements(tree).find(element => element.props["aria-label"] === "会话 ask 规则")!.props.onChange({ target: { value: "Bash(git push)" } }); tree = draw();
-    click("保存权限"); await settle(); tree = draw();
-    expect(props.onLoadPermissions).toHaveBeenCalledTimes(2);
-    expect(elements(tree).find(element => element.props.className === "session-permission-status")!.props.children.join("")).toBe("当前生效：计划模式");
-    expect(elements(tree).find(element => element.props["aria-label"] === "会话 ask 规则")!.props.value).toBe("Bash(git push)");
-    expect(elements(tree).find(element => element.props.role === "alert")!.props.children).toContain("rule replacement failed");
-    expect(props.onSavePermissions).toHaveBeenCalledOnce(); expect(props.onClose).not.toHaveBeenCalled();
-  });
-
-  it("[edge] does not claim the old effective mode when permission saving and its status reload both fail", async () => {
-    props.onLoadPermissions = vi.fn().mockResolvedValueOnce(initial).mockRejectedValueOnce(new Error("status unavailable"));
-    props.onSavePermissions = vi.fn().mockRejectedValue(new Error("rule replacement failed"));
-    await load(); mode("plan"); click("保存权限"); await settle(); tree = draw();
-    expect(props.onLoadPermissions).toHaveBeenCalledTimes(2);
-    expect(elements(tree).some(element => element.props.className === "session-permission-status")).toBe(false);
-    const error = elements(tree).find(element => element.props.role === "alert")!.props.children;
-    expect(error).toContain("rule replacement failed"); expect(error).toContain("status unavailable");
-    expect(props.onClose).not.toHaveBeenCalled(); expect(props.onSavePermissions).toHaveBeenCalledOnce();
-  });
-
   it("[edge] discards canceled permission edits and reads a new snapshot when reopened", async () => {
-    await load(); mode("plan");
+    await load();
     elements(tree).find(element => element.props["aria-label"] === "会话 allow 规则")!.props.onChange({ target: { value: "Write" } }); tree = draw();
     click("取消");
     props.onLoadPermissions = vi.fn().mockResolvedValue({ ...initial, mode: "dontAsk", rules: { allow: ["Read", "Edit"], ask: [], deny: ["Bash(sudo:*)"] } });
     reopen(); await load();
-    expect(elements(tree).find(element => element.type === SelectMenu)!.props.value).toBe("dontAsk");
+    expect(status()).toBe("当前生效：仅允许已批准");
     expect(elements(tree).filter(element => element.type === "textarea").map(element => element.props.value)).toEqual(["Read\nEdit", "", "Bash(sudo:*)"]);
     expect(props.onSavePermissions).not.toHaveBeenCalled();
   });
@@ -282,12 +250,12 @@ describe("permission lifecycle edges", () => {
   it("[edge] a previous permission save finishing after close does not close the newly reopened panel", async () => {
     let resolve!: (value: BridgeSessionPermissions) => void;
     props.onSavePermissions = vi.fn(() => new Promise<BridgeSessionPermissions>(yes => { resolve = yes; }));
-    await load(); mode("plan"); click("保存权限"); tree = draw();
+    await load(); click("保存权限"); tree = draw();
     // The dialog's header/escape can close the old editor while its explicit save is pending.
     props.onClose(); reopen(); await load();
     expect(props.onClose).toHaveBeenCalledOnce();
-    resolve({ ...initial, mode: "plan" }); await settle(); tree = draw();
+    resolve(initial); await settle(); tree = draw();
     expect(props.onClose).toHaveBeenCalledOnce();
-    expect(elements(tree).find(element => element.type === SelectMenu)!.props.value).toBe("acceptEdits");
+    expect(status()).toBe("当前生效：自动接受编辑");
   });
 });

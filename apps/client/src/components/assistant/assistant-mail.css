@@ -282,7 +282,7 @@ body:has(.assistant-mail-category-options) .diagnostic-floating-entry { display:
 .assistant-mail-reference p { grid-column: 1 / -1; margin: 0 8px 8px 0; color: var(--danger-ink); font-size: calc(12px * var(--font-scale)); }
 
 .assistant-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; }
-.assistant-workspace-confirm, .assistant-account-confirm { margin: 12px 0; }
+.assistant-workspace-confirm { margin: 12px 0; }
 .assistant-workspace-confirm code { display: block; margin-bottom: 12px; overflow-wrap: anywhere; color: var(--text); }
 .assistant-accounts-heading { border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .assistant-accounts-heading h2 { margin: 0; font-size: calc(16px * var(--font-scale)); font-weight: 600; }

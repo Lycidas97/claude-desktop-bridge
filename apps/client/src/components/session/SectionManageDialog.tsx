@@ -53,7 +53,7 @@ export interface SectionManageController {
   updateName(name: string): void;
   submitRename(): Promise<void>;
   startConfirmDelete(): void;
-  runDelete(explicitSectionId?: string): Promise<void>;
+  runDelete(): Promise<void>;
   close(): void;
   renderDirectoryActions(options: {
     activeGroupProject: BridgeProjectInfo | undefined;
@@ -191,17 +191,10 @@ export function useSectionManage({
     setState({ ...state, mode: "confirm-delete", error: "" });
   }
 
-  async function runDelete(explicitSectionId?: string): Promise<void> {
-    const sectionId = explicitSectionId ?? state?.sectionId;
-    const project = sectionId ? manualSections.find((candidate) => candidate.projectId === sectionId) : undefined;
-    if (!project || state?.busy || !online || !supportsDelete || !onDeleteSection) return;
-    setState({
-      sectionId: project.projectId,
-      mode: state?.mode ?? "menu",
-      name: project.name,
-      busy: true,
-      error: "",
-    });
+  async function runDelete(): Promise<void> {
+    const project = targetProject;
+    if (!state || !project || state.busy || !online || !supportsDelete || !onDeleteSection) return;
+    setState({ ...state, busy: true, error: "" });
     try {
       await onDeleteSection(project.projectId);
       setState(undefined);
@@ -245,22 +238,18 @@ export function useSectionManage({
           {supportsDelete && (
             <SheetAction
               icon={<Trash2 size={19} />}
-              label={activeGroupProject.sessionCount === 0 ? "删除空分组" : "删除分组"}
+              label="删除分组"
               danger
               disabled={!online}
               onClick={() => {
                 closeDirectoryMenu();
-                if (activeGroupProject.sessionCount === 0) {
-                  void runDelete(activeGroupProject.projectId);
-                } else {
-                  setState({
-                    sectionId: activeGroupProject.projectId,
-                    mode: "confirm-delete",
-                    name: activeGroupProject.name,
-                    busy: false,
-                    error: "",
-                  });
-                }
+                setState({
+                  sectionId: activeGroupProject.projectId,
+                  mode: "confirm-delete",
+                  name: activeGroupProject.name,
+                  busy: false,
+                  error: "",
+                });
               }}
             />
           )}
@@ -408,7 +397,7 @@ export function SectionManageDialog({
       <ConfirmationDialog
         open
         title="删除分组"
-        description={`删除「${targetProject.name}」分组？组内 ${targetProject.sessionCount} 个会话不会删除，将移回各自的项目目录。${online ? "" : "电脑已离线，连接后可删除分组。"}`}
+        description={`删除「${targetProject.name}」分组？${targetProject.sessionCount > 0 ? `组内 ${targetProject.sessionCount} 个会话不会删除，将移回各自的项目目录。` : ""}${online ? "" : "电脑已离线，连接后可删除分组。"}`}
         confirmLabel="删除分组"
         danger
         busy={state.busy}
@@ -433,13 +422,10 @@ export function SectionManageDialog({
         {supportsDelete && (
           <SheetAction
             icon={<Trash2 size={19} />}
-            label={targetProject.sessionCount === 0 ? "删除空分组" : "删除分组"}
+            label="删除分组"
             danger
             disabled={!online || state.busy}
-            onClick={() => {
-              if (targetProject.sessionCount === 0) void controller.runDelete();
-              else controller.startConfirmDelete();
-            }}
+            onClick={controller.startConfirmDelete}
           />
         )}
       </div>

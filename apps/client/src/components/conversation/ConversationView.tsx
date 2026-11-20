@@ -413,7 +413,7 @@ export function ConversationView({
     } : undefined,
     onModel: () => setConfigurationOpen(true),
     onRewind: () => setRewindTarget({ sessionId: session.sessionId }),
-    ...(!isAssistant && menu.onRename ? { onRename: menu.onRename } : {}),
+    ...(menu.onRename ? { onRename: menu.onRename } : {}),
     onSession: async (nextSessionId) => {
       await onSelectSession(nextSessionId);
     },
@@ -1084,13 +1084,11 @@ export function ConversationView({
       )}
       <SessionCommandDialogs
         key={`commands:${session.sessionId}`}
-        session={session}
         result={commands.dialog}
         onClose={commands.close}
         onOpenSession={async (nextSessionId) => {
           await onSelectSession(nextSessionId);
         }}
-        {...(menu.commitRename ? { onRename: menu.commitRename } : {})}
         onLoadPermissions={() => onLoadSessionPermissions!(session.sessionId)}
         onSavePermissions={(mode, rules) => onSaveSessionPermissions!(session.sessionId, mode, rules)}
       />
@@ -1476,7 +1474,8 @@ export function ConversationView({
           )}
         </Sheet>
       )}
-      {!isAssistant && menu.renderSheets({
+      {/* The assistant surface has no ⋯ menu; it still uses the shared /rename dialog. */}
+      {menu.renderSheets({
         sessionView: effectiveSessionView,
         evidenceCount,
         parentSession,

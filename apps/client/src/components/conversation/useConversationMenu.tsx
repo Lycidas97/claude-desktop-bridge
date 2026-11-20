@@ -246,7 +246,6 @@ export function useConversationMenu({ hostId, draftKey, previousDraftKeyRef, ses
     },
     closeOnBack,
     onRename: external ? () => external.requestRename(session) : (onRenameSession || onRunSessionCommand) ? startRename : undefined,
-    commitRename: onRenameSession ? (title: string) => onRenameSession(session.sessionId, title) : undefined,
     canSync: canSyncSession,
     refreshing: effectiveRefreshing,
     refresh: runInternalRefresh,

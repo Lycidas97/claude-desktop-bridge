@@ -1280,7 +1280,7 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   assert.equal(await pollInterval.inputValue(), "120");
   await accounts.getByRole("button", { name: `移除：${extraUser}`, exact: true }).click();
   assert.ok(host.snapshot.assistantMail.accounts.some(account => account.accountKey === accountKey));
-  await accounts.getByRole("button", { name: "确认移除", exact: true }).click();
+  await page.getByRole("alertdialog", { name: "移除邮箱？" }).getByRole("button", { name: "确认移除", exact: true }).click();
   await extraAccount.waitFor({ state: "detached" });
   assert.equal(host.snapshot.assistantMail.accounts.some(account => account.accountKey === accountKey), false);
 

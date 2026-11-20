@@ -13,6 +13,7 @@ import {
   useDiagnosticLogs,
 } from "../../lib/diagnostics.js";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
+import { ConfirmationDialog } from "./ConfirmationDialog.js";
 import { IconButton } from "./IconButton.js";
 import "./diagnostic-log.css";
 
@@ -268,26 +269,16 @@ export function DiagnosticFloatingEntry({ desktopSnapshot }: { desktopSnapshot?:
             </div>
           </section>
 
-          {repairConfirmOpen && (
-            <div
-              role="presentation"
-              className="confirm-backdrop diagnostic-confirm-backdrop"
-              onMouseDown={(event) => {
-                if (event.currentTarget === event.target && !repairing) setRepairConfirmOpen(false);
-              }}
-            >
-              <section role="alertdialog" aria-modal="true" aria-labelledby="diag-repair-title" aria-describedby="diag-repair-description" className="confirm-dialog diagnostic-confirm">
-                <h2 id="diag-repair-title">清理所有电脑的手机缓存？</h2>
-                <p id="diag-repair-description">
-                  这会清空手机上所有已配对电脑的缓存消息和待发送消息，并重置它们的中继连接路由。待发送消息无法恢复；完成后应用会重新加载。
-                </p>
-                <div className="confirm-actions">
-                  <button type="button" className="secondary-button" disabled={repairing} onClick={() => setRepairConfirmOpen(false)}>取消</button>
-                  <button type="button" className="danger-button" disabled={repairing} onClick={() => void handleRepair()}>{repairing ? "修复中…" : "确认清理并重连"}</button>
-                </div>
-              </section>
-            </div>
-          )}
+          <ConfirmationDialog
+            open={repairConfirmOpen}
+            title="清理所有电脑的手机缓存？"
+            description="这会清空手机上所有已配对电脑的缓存消息和待发送消息，并重置它们的中继连接路由。待发送消息无法恢复；完成后应用会重新加载。"
+            confirmLabel="确认清理并重连"
+            danger
+            busy={repairing}
+            onCancel={() => setRepairConfirmOpen(false)}
+            onConfirm={() => void handleRepair()}
+          />
         </div>
       )}
     </>

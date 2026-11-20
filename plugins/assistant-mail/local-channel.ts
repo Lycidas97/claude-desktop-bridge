@@ -96,9 +96,16 @@ export async function serveAssistantMailTools(options: {
           break;
         } else break;
         case "memory.lookup_entry": result = options.lookupMemory?.(sessionId!, input.arguments.entryId); break;
-        case "mail.list_events": result = MailCategoryCatalogParameters.safeParse(input.arguments).success
-          ? { categories: options.service.categories() }
-          : { ...options.service.page(input.arguments), categories: options.service.categories() }; break;
+        case "mail.list_events": {
+          const args = input.arguments;
+          if (args && typeof args === "object" && "catalogOnly" in args && args.catalogOnly === true) {
+            MailCategoryCatalogParameters.parse(args);
+            result = { categories: options.service.categories() };
+          } else {
+            result = { ...options.service.page(args), categories: options.service.categories() };
+          }
+          break;
+        }
         case "mail.list_unfinished_triggers": result = options.service.triggers.unfinished(sessionId!, input.arguments.cursor); break;
         case "mail.read_event": result = await options.service.readEvent(input.arguments.mailRefId); break;
         case "mail.read_attachment": result = await options.service.readAttachment(input.arguments); break;
@@ -138,7 +145,7 @@ export async function serveAssistantMailTools(options: {
           message: !compact && error instanceof z.ZodError ? z.prettifyError({
             // Zod can include the received value in type errors (for example Infinity).
             issues: error.issues.map(issue => issue.code === "invalid_type"
-              ? { path: issue.path, message: `Expected ${issue.expected}.` } : issue),
+              ? { path: issue.path, message: issue.expected === "never" ? "Omit this field." : `Expected ${issue.expected}.` } : issue),
           }) : undefined });
       } else {
         console.error("Assistant mail tool request failed", error);

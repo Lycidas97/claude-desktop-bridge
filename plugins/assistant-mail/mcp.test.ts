@@ -315,11 +315,18 @@ it("returns the category catalog without mail fields when triaging a specific re
   service.changeCategory({ action: "add", label: "订单" });
   const { id } = service.categories().at(-1)!;
   expect(service.page().events.map(event => event.mailRefId)).toContain(reference);
+  const page = vi.spyOn(service, "page");
+  const invalid = await post({ name: "mail.list_events", arguments: { catalogOnly: true, limit: 1 } });
+  expect(invalid.status).toBe(400);
+  const error = await invalid.json();
+  expect(error).toMatchObject({ error: "MAIL_INVALID_REQUEST", message: expect.stringContaining("limit") });
+  expect(error.message).not.toContain("catalogOnly");
+
   const result = await post({ name: "mail.list_events", arguments: { catalogOnly: true } });
   const body = await result.json();
   expect(result.status).toBe(200);
   expect(body).toEqual({ source: MAIL_SOURCE, result: { categories: expect.arrayContaining([{ id, label: "订单" }]) } });
-  expect(JSON.stringify(body)).not.toContain(reference);
+  expect(page).not.toHaveBeenCalled();
 });
 
 it("preserves a saved category on legacy analysis writes and replaces it only with a supported category", async () => {
@@ -615,13 +622,15 @@ it("tells the managed MCP caller how to correct a rule deletion draft", async ()
 
   const action = { kind: "memory.rule_upsert", category: "test", ruleId: "lifecycle-test", operation: "delete", reason: "Remove the test rule" };
   const name = "proposal.create";
-  const denied = await client.callTool({ name, arguments: { action: { ...action, text: "Original private rule" } } });
-  expect(denied.isError).toBe(true);
-  const text = (denied.content as Array<{ text: string }>)[0]!.text;
-  expect(JSON.parse(text)).toMatchObject({
-    error: "MAIL_INVALID_REQUEST", message: expect.stringMatching(/omit text for delete[\s\S]*arguments\.action\.text/iu),
-  });
-  expect(text).not.toContain("Original private rule");
+  for (const ruleText of ["Original private rule", null, ""]) {
+    const denied = await client.callTool({ name, arguments: { action: { ...action, text: ruleText } } });
+    expect(denied.isError).toBe(true);
+    const text = (denied.content as Array<{ text: string }>)[0]!.text;
+    expect(JSON.parse(text)).toMatchObject({
+      error: "MAIL_INVALID_REQUEST", message: expect.stringMatching(/^.+Omit this field\.\n.+arguments\.action\.text$/u),
+    });
+    expect(text).not.toContain("Original private rule");
+  }
   expect(proposals.create).not.toHaveBeenCalled();
 
   const revision = await client.callTool({ name: "proposal.update_pending", arguments: { ...ref, action: { ...action, operation: "update" } } });

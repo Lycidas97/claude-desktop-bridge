@@ -18,6 +18,7 @@
   --m-r-group: 14px;
   --m-r-sheet: 20px;
   --m-sheet-fill: var(--bg);
+  --m-popover-fill: var(--surface);
 }
 
 :root[data-effective-scale="xlarge"],
@@ -27,10 +28,34 @@
 
 [data-theme="dark"] {
   --m-sheet-fill: #23221f;
+  --m-popover-fill: #252421;
 }
 
 [data-theme-family="apple"][data-theme="dark"] {
   --m-sheet-fill: #242426;
+  --m-popover-fill: #28282b;
+}
+
+/* Status badges share one shape and size; each keeps its semantic color. */
+:is(.settings-diag-badge, .subagent-status-badge, .interactive-prompt-badge, .interactive-option-tag, .interactive-question-chip, .subagent-tool-pill, .session-fork-badge) {
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: var(--m-fs-caption);
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+/* Text buttons on the phone use one radius, including portalled dialogs. */
+[data-mobile-client] { --r-btn: var(--m-r-control); }
+
+/* Popovers share one surface in every theme family. */
+:is(.select-menu-listbox, .composer-attach-menu, .slash-command-menu, .context-window-popover, .drawer-host-menu, .theme-menu-panel) {
+  border: 1px solid var(--line-strong);
+  border-radius: var(--m-r-group);
+  background: var(--m-popover-fill);
+  box-shadow: var(--shadow);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 /* WebKit resets ancestor touch actions at scroll containers. Set a default
@@ -101,13 +126,14 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: max(8px, env(safe-area-inset-top)) 10px 6px max(12px, env(safe-area-inset-left));
+  padding: max(8px, env(safe-area-inset-top)) max(var(--m-gutter), env(safe-area-inset-right)) 6px max(var(--m-gutter), env(safe-area-inset-left));
 }
 
-.mobile-drawer-topbar .drawer-host-switcher {
+/* The computer switcher and the assistant capsule share one capsule style. */
+.mobile-drawer-topbar .drawer-host-switcher,
+.mobile-drawer-topbar .drawer-assistant-capsule {
   display: inline-flex;
   min-width: 0;
-  max-width: calc(100% - 46px);
   min-height: 38px;
   height: auto;
   align-items: center;
@@ -115,19 +141,20 @@
   margin: 0;
   padding: 7px 11px;
   border: 0;
-  border-radius: 9px;
+  border-radius: var(--m-r-control);
   background: color-mix(in srgb, var(--text) 5.5%, transparent);
   color: var(--text);
-  font-size: calc(14.5px * var(--font-scale));
-  font-weight: 620;
+  font: inherit;
+  font-size: var(--m-fs-callout);
+  font-weight: 600;
 }
 
-.mobile-drawer-topbar .drawer-host-switcher:active {
+.mobile-drawer-topbar .drawer-host-switcher { max-width: calc(100% - 46px); }
+
+.mobile-drawer-topbar .drawer-host-switcher:active,
+.mobile-drawer-topbar .drawer-assistant-capsule:active,
+.mobile-drawer-topbar .drawer-assistant-capsule.active {
   background: color-mix(in srgb, var(--text) 9%, transparent);
-}
-
-.mobile-drawer-topbar .drawer-host-switcher .m-status-dot.is-online {
-  background: var(--success);
 }
 
 .mobile-drawer-topbar .drawer-host-switcher > svg {
@@ -137,36 +164,13 @@
 
 .mobile-drawer-topbar:has(.drawer-assistant-capsule) .drawer-host-switcher {
   flex: 0 1 auto;
-  min-width: 0;
   max-width: 48%;
 }
 
 .mobile-drawer-topbar .drawer-assistant-capsule {
-  display: inline-flex;
   flex: 1 1 auto;
-  min-width: 0;
-  min-height: 38px;
-  height: auto;
-  align-items: center;
-  gap: 7px;
-  margin: 0;
-  padding: 7px 11px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  background: var(--surface-2);
-  color: var(--text);
-  font: inherit;
-  font-size: calc(14px * var(--font-scale));
-  font-weight: 580;
   text-align: left;
   cursor: pointer;
-  transition: background var(--t-fast) ease, border-color var(--t-fast) ease;
-}
-
-.mobile-drawer-topbar .drawer-assistant-capsule:active,
-.mobile-drawer-topbar .drawer-assistant-capsule.active {
-  border-color: color-mix(in srgb, var(--accent) 32%, var(--line));
-  background: color-mix(in srgb, var(--text) 8%, var(--surface-2));
 }
 
 .drawer-assistant-icon {
@@ -205,12 +209,8 @@
 
 .drawer-host-menu {
   flex: none;
-  margin: 2px 12px 6px max(12px, env(safe-area-inset-left));
+  margin: 2px max(var(--m-gutter), env(safe-area-inset-right)) 6px max(var(--m-gutter), env(safe-area-inset-left));
   overflow: hidden;
-  border: 1px solid var(--line-strong);
-  border-radius: 12px;
-  background: var(--m-sheet-fill);
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.14);
 }
 
 .drawer-host-options {
@@ -270,10 +270,6 @@
   overflow-wrap: anywhere;
 }
 
-.drawer-host-option .m-status-dot.is-online {
-  background: var(--success);
-}
-
 .drawer-host-option-name {
   flex: 1;
   min-width: 0;
@@ -315,17 +311,7 @@
   flex: none;
   flex-direction: column;
   gap: 6px;
-  padding: 2px 10px 8px max(10px, env(safe-area-inset-left));
-}
-
-.drawer-top-stack .session-search {
-  min-height: 40px;
-  height: auto;
-  padding: 6px 12px;
-}
-
-.drawer-top-stack .session-search input {
-  font-size: calc(15.5px * var(--font-scale));
+  padding: 2px max(var(--m-gutter), env(safe-area-inset-right)) 8px max(var(--m-gutter), env(safe-area-inset-left));
 }
 
 .drawer-project-list {
@@ -334,7 +320,8 @@
   min-height: 0;
   flex-direction: column;
   gap: 4px;
-  padding: 2px 8px 18px max(8px, env(safe-area-inset-left));
+  /* Rows carry 6px of inner padding, so their content lands on the gutter. */
+  padding: 2px calc(var(--m-gutter) - 6px) 18px max(calc(var(--m-gutter) - 6px), env(safe-area-inset-left));
   overflow-y: auto;
   overscroll-behavior: contain;
   background: transparent;
@@ -348,13 +335,6 @@
   min-height: 28px;
   padding: 3px 8px;
   font-size: calc(13px * var(--font-scale));
-}
-
-.mobile-home-catalog.is-flat-tree .project-group {
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
 }
 
 .mobile-home-catalog.is-flat-tree .project-group + .project-group:not(.archived-group) {
@@ -492,7 +472,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 6px 10px max(8px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left));
+  padding: 6px max(var(--m-gutter), env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(var(--m-gutter), env(safe-area-inset-left));
   border-top: 1px solid var(--line);
 }
 
@@ -754,12 +734,7 @@
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--muted);
-}
-
-.m-status-dot.is-offline {
-  background: transparent;
-  box-shadow: inset 0 0 0 1.5px var(--muted);
+  background: var(--faint);
 }
 
 .m-status-dot.is-online,
@@ -1068,36 +1043,39 @@
   font-size: var(--m-fs-footnote);
 }
 
-.m-sheet .permission-title strong,
-.m-sheet .question-prompt legend { font-size: var(--m-fs-body); }
-.m-sheet .permission-title span { font-size: var(--m-fs-footnote); }
-.m-sheet .permission-prompt pre { border-radius: var(--m-r-control); font-size: var(--m-fs-footnote); }
-.m-sheet .permission-error { border-radius: var(--m-r-control); font-size: var(--m-fs-footnote); }
-.m-sheet .permission-plan,
-.m-sheet .permission-feedback textarea { border-radius: var(--m-r-control); font-size: var(--m-fs-callout); }
+/* Approval and question cards use the mobile type scale and touch targets
+   both in the sheet and inline in the mobile conversation stream. */
+:is(.m-sheet, .mobile-app-shell .conversation-stream) :is(.permission-title strong, .question-prompt legend) { font-size: var(--m-fs-body); }
+:is(.m-sheet, .mobile-app-shell .conversation-stream) :is(.permission-title span, .permission-facts dd, .permission-details summary, .interactive-prompt-status, .interactive-prompt-recap, .interactive-option-detail) { font-size: var(--m-fs-footnote); }
+:is(.m-sheet, .mobile-app-shell .conversation-stream) :is(.permission-facts dt, .permission-risk, .interactive-prompt-badge, .interactive-question-chip, .interactive-option-tag) { font-size: var(--m-fs-caption); }
+:is(.m-sheet, .mobile-app-shell .conversation-stream) :is(.interactive-prompt-ask, .interactive-question-answer, .interactive-option-label) { font-size: var(--m-fs-callout); }
+:is(.m-sheet, .mobile-app-shell .conversation-stream) .permission-prompt pre { border-radius: var(--m-r-control); font-size: var(--m-fs-footnote); }
+:is(.m-sheet, .mobile-app-shell .conversation-stream) .permission-error { border-radius: var(--m-r-control); font-size: var(--m-fs-footnote); }
+:is(.m-sheet, .mobile-app-shell .conversation-stream) :is(.permission-plan, .permission-feedback textarea) { border-radius: var(--m-r-control); font-size: var(--m-fs-callout); }
 
-.m-sheet .question-option {
+:is(.m-sheet, .mobile-app-shell .conversation-stream) .question-option {
   padding: 12px;
   border-radius: var(--m-r-control);
 }
 
-.m-sheet .question-option strong { font-size: var(--m-fs-callout); }
-.m-sheet .question-option small { font-size: var(--m-fs-footnote); }
+:is(.m-sheet, .mobile-app-shell .conversation-stream) .question-option strong { font-size: var(--m-fs-callout); }
+:is(.m-sheet, .mobile-app-shell .conversation-stream) .question-option small { font-size: var(--m-fs-footnote); }
+:is(.m-sheet, .mobile-app-shell .conversation-stream) .interactive-option-button { min-height: var(--m-touch); border-radius: var(--m-r-control); }
 
-.m-sheet .permission-actions {
+:is(.m-sheet, .mobile-app-shell .conversation-stream) .permission-actions {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
 }
 
-.m-sheet .permission-actions > button {
+:is(.m-sheet, .mobile-app-shell .conversation-stream) .permission-actions > button {
   min-height: 48px;
   padding: 0 12px;
   border-radius: var(--m-r-control);
   font-size: var(--m-fs-callout);
 }
 
-.m-sheet .permission-actions > button:last-child:nth-child(odd) { grid-column: 1 / -1; }
+:is(.m-sheet, .mobile-app-shell .conversation-stream) .permission-actions > button:last-child:nth-child(odd) { grid-column: 1 / -1; }
 
 @media (max-width: 720px) {
   .session-configuration-dialog {
@@ -1121,6 +1099,29 @@
     flex: 1;
     min-height: 46px;
     border-radius: var(--m-r-control);
+  }
+}
+
+/* Session settings, /permissions and rewind open as bottom sheets, like the ⋯ menu. */
+@media (max-width: 639px) {
+  .session-configuration-backdrop {
+    align-items: end;
+    padding: 0;
+    background: var(--scrim);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  .session-configuration-dialog {
+    width: 100%;
+    max-height: min(86dvh, calc(100vh - 24px));
+    padding: 16px max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+    border: 1px solid var(--line);
+    border-bottom: 0;
+    border-radius: var(--m-r-sheet) var(--m-r-sheet) 0 0;
+    background: var(--m-sheet-fill);
+    box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.22);
+    animation: m-sheet-rise var(--t-enter) var(--ease-out);
   }
 }
 
@@ -1333,10 +1334,6 @@ button.mobile-settings-row:active { background: var(--surface-2); }
   margin-top: 6px;
 }
 
-.mobile-app-shell .host-row > .m-status-dot.is-online {
-  background: var(--success);
-}
-
 .mobile-app-shell .host-row:hover { background: transparent; }
 .mobile-app-shell .host-row:active:not(:disabled) { background: var(--surface-2); }
 .mobile-app-shell .host-row-copy { display: grid; min-width: 0; gap: 3px; }
@@ -1371,10 +1368,9 @@ button.mobile-settings-row:active { background: var(--surface-2); }
   min-height: var(--m-row);
   gap: 10px;
   padding: 8px 12px;
-  border-radius: 12px;
+  border-radius: var(--m-r-control);
 }
 
-.mobile-home-catalog .host-permission-alert { margin: 4px 2px 8px; }
 .mobile-app-shell .permission-dock-icon,
 .mobile-home-catalog .permission-dock-icon { border-radius: var(--m-r-control); }
 .mobile-app-shell .permission-dock strong,
@@ -1384,10 +1380,17 @@ button.mobile-settings-row:active { background: var(--surface-2); }
 .mobile-app-shell .permission-dock b,
 .mobile-home-catalog .host-permission-alert b { font-size: var(--m-fs-subhead); }
 
-.mobile-home-catalog .host-connection-issue {
+.mobile-home-catalog .host-connection-issue { font-size: var(--m-fs-subhead); }
+
+/* Home banners share one notice style: warm fill, hairline border, control radius. */
+.mobile-home-catalog :is(.host-permission-alert, .host-connection-issue),
+.mobile-inspector-callout {
+  margin: 0 0 8px;
   padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--warm) 30%, var(--line));
   border-radius: var(--m-r-control);
-  font-size: var(--m-fs-subhead);
+  background: var(--warm-soft);
+  box-shadow: none;
 }
 
 /* ---- Conversation ---- */
@@ -1524,17 +1527,25 @@ main.mobile-workspace .select-menu-option-meta {
   pointer-events: none;
 }
 
-/* Safe-area bottom padding & matched 32x32 circular controls on mobile floating composer */
+/* Safe-area bottom padding & matched 32x32 circular controls on mobile floating composer.
+   A transparent ring extends each control's touch target to 44px. */
 .mobile-app-shell .mobile-composer {
   padding-bottom: max(12px, env(safe-area-inset-bottom));
 }
 
 .mobile-app-shell .mobile-composer .composer-attach-trigger,
 .mobile-app-shell .mobile-composer .send-button {
+  position: relative;
   width: 32px;
   height: 32px;
   min-width: 32px;
   min-height: 32px;
+}
+
+.mobile-app-shell .mobile-composer :is(.composer-attach-trigger, .send-button)::after {
+  position: absolute;
+  inset: calc((32px - var(--m-touch)) / 2);
+  content: "";
 }
 
 /* Remote Claude Desktop & Port 9229 One-Tap Callout + Mobile Notification Settings */
@@ -1542,12 +1553,6 @@ main.mobile-workspace .select-menu-option-meta {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 10px;
-  margin: 2px 0 8px;
-  padding: 12px 14px;
-  border: 1px solid var(--card-border);
-  border-radius: 12px;
-  background: var(--card-fill);
-  box-shadow: var(--card-hi), var(--card-shadow);
 }
 
 .mobile-inspector-callout-copy {
@@ -1585,7 +1590,6 @@ main.mobile-workspace .select-menu-option-meta {
   justify-content: center;
   gap: 7px;
   padding: 8px 14px;
-  border-radius: 10px;
   font-size: calc(14px * var(--font-scale, 1));
   font-weight: 600;
 }
@@ -1607,7 +1611,6 @@ main.mobile-workspace .select-menu-option-meta {
   justify-content: center;
   gap: 6px;
   padding: 6px 12px;
-  border-radius: 8px;
   font-size: calc(13px * var(--font-scale, 1));
   font-weight: 600;
   white-space: nowrap;
@@ -1616,4 +1619,22 @@ main.mobile-workspace .select-menu-option-meta {
 .mobile-settings-row .segmented.mobile-settings-compact-segmented {
   flex: 0 0 auto;
   min-width: 118px;
+}
+
+/* Search boxes share the flat home style; 16px text keeps mobile browsers from zooming on focus. */
+[data-mobile-client] :is(.session-search, .assistant-mail-search) {
+  min-height: var(--m-touch);
+  height: auto;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: var(--m-r-control);
+  background: color-mix(in srgb, var(--text) 5.2%, transparent);
+  color: var(--muted);
+}
+
+[data-mobile-client] :is(.session-search, .assistant-mail-search, .pairing-input-wrap) input { font-size: max(16px, var(--m-fs-body)); }
+
+[data-mobile-client] .assistant-mail-search:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line-strong));
+  background: var(--surface);
 }

@@ -289,15 +289,23 @@ export async function verifyNativeApprovals(page, host, steps, directory, baseUr
   await page.getByRole("button", { name: "会话设置", exact: true }).click();
   const effortConfiguration = page.getByRole("dialog", { name: originalTitle, exact: true });
   const highEffort = effortConfiguration.getByRole("button", { name: "高", exact: true });
+  const defaultEffort = effortConfiguration.getByRole("button", { name: "默认", exact: true });
   assert.equal(await effortConfiguration.getByRole("button", { name: "低", exact: true }).getAttribute("aria-pressed"), "false", "A session with no effort must not show Low as selected");
+  assert.equal(await defaultEffort.getAttribute("aria-pressed"), "true", "A session with no effort shows Default as selected");
   await highEffort.click();
   await effortConfiguration.getByRole("button", { name: "保存配置", exact: true }).click();
   await effortConfiguration.waitFor({ state: "hidden" });
   assert.deepEqual(host.nativeApproval.calls.filter(call => call.method === "setEffort").map(call => call.args), [[sessionId, "high"]]);
   await page.getByRole("button", { name: "会话设置", exact: true }).click();
   await eventually(() => highEffort.getAttribute("aria-pressed"), "true", "Reopening settings reads back the Native effort");
+  await defaultEffort.click();
+  await effortConfiguration.getByRole("button", { name: "保存配置", exact: true }).click();
+  await effortConfiguration.waitFor({ state: "hidden" });
+  assert.deepEqual(host.nativeApproval.calls.filter(call => call.method === "setEffort").map(call => call.args), [[sessionId, "high"], [sessionId, null]]);
+  await page.getByRole("button", { name: "会话设置", exact: true }).click();
+  await eventually(() => defaultEffort.getAttribute("aria-pressed"), "true", "Reopening settings reads back the cleared Native effort");
   await effortConfiguration.getByRole("button", { name: "关闭", exact: true }).click();
-  steps.push("unset effort is not shown as Low, and saving High calls native setEffort and survives reopening");
+  steps.push("unset effort shows Default, saving High calls native setEffort, and choosing Default clears it; both survive reopening");
   for (const mode of ["bypassPermissions", "auto"]) {
     await page.getByRole("button", { name: "会话设置", exact: true }).click();
     const configuration = page.getByRole("dialog", { name: originalTitle, exact: true });

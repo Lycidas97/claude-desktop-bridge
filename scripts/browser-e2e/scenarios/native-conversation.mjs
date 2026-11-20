@@ -120,10 +120,9 @@ export async function verifyNativeMessages(page, host, steps, directory) {
   const modelSelect = configuration.getByRole("combobox", { name: "模型", exact: true });
   await eventually(() => customSelectValue(modelSelect), "synthetic-model", "Native alias selects the matching original model ID in the picker");
   const effortGroup = configuration.getByRole("group", { name: /^思考强度/u });
-  await effortGroup.getByText("原生会话不支持：关闭", { exact: true }).waitFor();
-  assert.deepEqual(await effortGroup.getByRole("button").allTextContents(), ["低", "高", "最大"]);
+  await eventually(() => effortGroup.getByRole("button").allTextContents(), ["默认", "低", "高", "最大"], "Only native effort levels are offered, after Default");
   await page.screenshot({ path: resolve(directory, "native-effort-availability.png"), fullPage: true });
-  steps.push("gateway-only effort levels are visible but cannot be picked in session configuration");
+  steps.push("gateway-only effort levels are not offered in session configuration");
   await modelSelect.click();
   const modelListbox = page.getByRole("listbox");
   await modelListbox.waitFor();

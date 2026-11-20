@@ -5,7 +5,7 @@ import { eventually, openMobileDrawer } from "../helpers.mjs";
 async function openRename(page, entry) {
   if (entry === "list") {
     await openMobileDrawer(page);
-    await page.locator(`.mobile-home-catalog [data-session-id="${sessionId}"]`).getByRole("button", { name: "会话操作", exact: true }).click();
+    await page.locator(`.mobile-home-catalog [data-session-id="${sessionId}"]`).getByRole("button", { name: /^会话操作：/u }).click();
   } else {
     await page.getByRole("button", { name: "会话操作", exact: true }).click();
   }

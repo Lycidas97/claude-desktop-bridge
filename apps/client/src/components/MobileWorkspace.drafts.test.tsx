@@ -453,7 +453,7 @@ describe("Session PR disclosure", () => {
     draw();
     backToCatalog();
     const row = elements(tree).find(element => element.props["data-session-id"] === "B")!;
-    elements(row).find(element => element.type === IconButton && element.props.label === "会话操作")!.props.onClick();
+    elements(row).find(element => element.type === IconButton && element.props.label.startsWith("会话操作："))!.props.onClick();
     draw();
     const actions = elements(tree).find(element => element.type === SessionPrActions)!;
     expect(actions.props.session.sessionId).toBe("B");
@@ -1230,7 +1230,6 @@ describe("mobile session creation", () => {
     await settle();
     elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "模型")!.props.onChange("gateway-model");
     draw();
-    expect(elements(tree).find(element => element.props.className === "effort-unavailable")?.props.children).toBe("原生会话不支持：超高");
     expect(elements(tree).some(element => element.props['aria-label'] === "思考强度")).toBe(false);
     elements(tree).find(element => element.type === "button" && String(element.props.className).includes("new-chat-empty-create-btn"))!.props.onClick();
     await settle();
@@ -1435,7 +1434,7 @@ describe("mobile session renaming", () => {
     if (entry === "list") {
       backToCatalog();
       const row = elements(tree).find(element => element.props["data-session-id"] === "A")!;
-      elements(row).find(element => element.type === IconButton && element.props.label === "会话操作")!.props.onClick();
+      elements(row).find(element => element.type === IconButton && element.props.label.startsWith("会话操作："))!.props.onClick();
     } else {
       const header = conversationHeader();
       elements(header.props.actions).find(element => element.type === IconButton && element.props.label === "会话操作")!.props.onClick();
@@ -2878,7 +2877,7 @@ describe("mobile section movement and subfolder labels", () => {
     };
     toDirectory();
     const rowA = elements(tree).find(element => element.props["data-session-id"] === "A")!;
-    elements(rowA).find(element => element.type === IconButton && element.props.label === "会话操作")!.props.onClick();
+    elements(rowA).find(element => element.type === IconButton && element.props.label.startsWith("会话操作："))!.props.onClick();
     draw();
     const inGroupMove = elements(tree).find(element => element.props.label === "移动到分组")!;
     expect(inGroupMove.props.detail).toBe("杂活");

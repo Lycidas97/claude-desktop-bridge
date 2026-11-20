@@ -20,8 +20,7 @@ function statusLabel(host: PairedHost, isCurrent: boolean, isOnline: boolean): s
 
 function statusDotClass(host: PairedHost, isCurrent: boolean, isOnline: boolean): string {
   if (host.needsRepair) return "m-status-dot waiting";
-  if (!isCurrent) return "m-status-dot";
-  if (!isOnline) return "m-status-dot is-offline";
+  if (!isCurrent || !isOnline) return "m-status-dot";
   return host.status === "attention" ? "m-status-dot waiting" : "m-status-dot is-online";
 }
 

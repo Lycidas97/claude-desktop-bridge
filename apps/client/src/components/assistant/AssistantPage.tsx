@@ -158,20 +158,17 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
       {state === "needs-rebind" && <p role="status">原会话已归档或删除，请重新绑定。</p>}
       {state === "missing" && <p role="status">未找到绑定会话。连接恢复后可再次核对，或更换会话。</p>}
       {(configuring || !binding?.nativeSessionId) && <div className="assistant-binding-form">
-        <div className="assistant-binding-select">
-          <span>助理会话</span>
-          <SelectMenu
-            ariaLabel="助理会话"
-            value={selectedId}
-            placeholder="选择现有会话"
-            disabled={!mail.online || bindingBusy}
-            options={[
-              { value: "", label: "选择现有会话" },
-              ...bindableSessions.map(candidate => ({ value: candidate.sessionId, label: candidate.title || candidate.sessionId })),
-            ]}
-            onChange={setSelectedId}
-          />
-        </div>
+        <SelectMenu
+          ariaLabel="助理会话"
+          value={selectedId}
+          placeholder="选择现有会话"
+          disabled={!mail.online || bindingBusy}
+          options={[
+            { value: "", label: "选择现有会话" },
+            ...bindableSessions.map(candidate => ({ value: candidate.sessionId, label: candidate.title || candidate.sessionId })),
+          ]}
+          onChange={setSelectedId}
+        />
         <div className="assistant-actions">
           <button type="button" className="primary-button" disabled={!mail.online || bindingBusy || !bindableSessions.some(candidate => candidate.sessionId === selectedId)} onClick={() => { void configureBinding("plugin.assistant-mail.bind", { sessionId: selectedId }); }}>绑定会话</button>
           {!supportsWorkspace && <button type="button" className="secondary-button" disabled={!mail.online || bindingBusy} onClick={() => setCreating(true)}>新建会话</button>}

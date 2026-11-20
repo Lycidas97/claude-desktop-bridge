@@ -759,7 +759,7 @@ export async function verifySectionManage(page, host, steps, directory) {
   steps.push("empty sections delete after confirmation and custom sections rename via native section.rename");
 
   // Move a session into "重点推进", then verify non-empty delete requires confirmation and returns session to folder.
-  await drawer.locator('[data-session-id="browser-e2e-misc-sub"]').getByRole("button", { name: "会话操作", exact: true }).click();
+  await drawer.locator('[data-session-id="browser-e2e-misc-sub"]').getByRole("button", { name: /^会话操作：/u }).click();
   await page.getByRole("button", { name: /移动到分组/u }).click();
   await page.locator(".m-sheet").getByRole("button", { name: /重点推进/u }).click();
   await eventually(

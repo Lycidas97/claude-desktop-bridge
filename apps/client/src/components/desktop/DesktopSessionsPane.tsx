@@ -737,7 +737,6 @@ export function DesktopSessions({
                               seenCompletions={seenCompletions}
                               flat
                               sessionDrag={sessionDrag}
-                              actionLabel={(session) => `会话操作：${session.title}`}
                               onSelectSession={selectSessionFromSidebar}
                               onOpenSessionActions={(targetSessionId) => {
                                 setRowActionError(undefined);
@@ -781,7 +780,6 @@ export function DesktopSessions({
                           selectedId={activeTab === "sessions" ? selectedId : undefined}
                           archivedList
                           flat
-                          actionLabel={(session) => `会话操作：${session.title}`}
                           onSelectSession={selectSessionFromSidebar}
                           onOpenSessionActions={(targetSessionId) => {
                             setRowActionError(undefined);

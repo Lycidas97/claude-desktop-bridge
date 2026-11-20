@@ -19,7 +19,7 @@
   border-bottom: 1px solid var(--line);
 }
 .session-create-heading { flex: 1; min-width: 0; }
-.session-create-dialog .session-create-heading h2 { font-size: calc(20px * var(--font-scale, 1)); font-weight: 650; letter-spacing: -.3px; }
+.session-create-dialog .session-create-heading h2 { font-size: var(--m-fs-title); font-weight: 650; }
 .session-create-host { display: flex; align-items: center; gap: 5px; margin: 6px 0 0; color: var(--muted); font-size: calc(12px * var(--font-scale, 1)); }
 .session-create-host svg { flex: none; }
 .session-create-dialog .session-create-back,

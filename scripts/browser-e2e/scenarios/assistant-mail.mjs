@@ -50,7 +50,7 @@ export async function openDesktopAssistant(page, host, baseUrl, requests) {
   await page.locator(".assistant-conversation textarea").waitFor();
 }
 
-async function verifyAssistantConfiguration(page, host, requests, { model, effort, effortLabel, unavailableLabel, screenshot }) {
+async function verifyAssistantConfiguration(page, host, requests, { model, effort, effortLabel, screenshot }) {
   const binding = structuredClone(host.snapshot.assistantMail.binding);
   const { nativeSessionId } = binding;
   const chat = page.locator(".assistant-conversation textarea");
@@ -64,8 +64,7 @@ async function verifyAssistantConfiguration(page, host, requests, { model, effor
   await selectCustomOption(page, modelSelect, model);
   assert.equal(await dialog.getByLabel("Desktop 授权模式").count(), 0);
   const effortGroup = dialog.getByRole("group", { name: /^思考强度/u });
-  await effortGroup.getByText(`原生会话不支持：${unavailableLabel}`, { exact: true }).waitFor();
-  assert.deepEqual(await effortGroup.getByRole("button").allTextContents(), ["低", "高", "最大"]);
+  await eventually(() => effortGroup.getByRole("button").allTextContents(), ["默认", "低", "高", "最大"], "Only native effort levels are offered, after Default");
   const effortChoice = effortGroup.getByRole("button", { name: effortLabel, exact: true });
   await effortChoice.click();
   const beforeSave = host.nativeApproval.calls.length;
@@ -969,7 +968,7 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   assert.equal(managedSession.nativePermissionMode, "dontAsk");
   assert.equal(host.snapshot.projects.find(project => project.projectId === managedSession.projectId).managedAssistant, true);
   await verifyAssistantConfiguration(page, host, host.requests, {
-    model: "synthetic-model-large[1m]", effort: "max", effortLabel: "最大", unavailableLabel: "超高",
+    model: "synthetic-model-large[1m]", effort: "max", effortLabel: "最大",
     screenshot: resolve(directory, "mobile-assistant-configuration.png"),
   });
   const managedDesktop = await page.context().newPage();
@@ -977,7 +976,7 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
     const requests = [];
     await openDesktopAssistant(managedDesktop, host, baseUrl, requests);
     await verifyAssistantConfiguration(managedDesktop, host, requests, {
-      model: "synthetic-model", effort: "low", effortLabel: "低", unavailableLabel: "关闭",
+      model: "synthetic-model", effort: "low", effortLabel: "低",
       screenshot: resolve(directory, "desktop-assistant-configuration.png"),
     });
   } finally {

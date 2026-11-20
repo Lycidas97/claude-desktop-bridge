@@ -37,7 +37,7 @@ import { SectionCreateDialog, type SectionCreateState } from "./SectionCreateDia
 import {
   PERMISSION_MODE_OPTIONS,
   effortLabel,
-  modelEffortOptions,
+  modelEffortLevels,
   type SessionConfigurationChange,
 } from "./SessionConfigurationDialog.js";
 
@@ -358,7 +358,7 @@ export function NewChatCanvas({
   );
 
   const reasoningEfforts = configuration?.availableReasoningEfforts;
-  const { levels: effortLevels, unavailable: unavailableEffort } = modelEffortOptions(selectedModel,
+  const effortLevels = modelEffortLevels(selectedModel,
     reasoningEfforts?.length ? reasoningEfforts.filter(isBridgeEffort)
       : configuration?.availableEffortLevels.length ? configuration.availableEffortLevels : BRIDGE_EFFORT_LEVELS,
   );
@@ -752,26 +752,23 @@ export function NewChatCanvas({
               />
             </div>
 
-            {(effortLevels.length > 0 || unavailableEffort) && (
+            {effortLevels.length > 0 && (
               <div className="new-chat-config-row">
-                <span className="new-chat-config-label">思考强度{effortLevels.length > 0 && !pickedEffort && " · 默认"}</span>
-                {effortLevels.length > 0 && (
-                  <div className="effort-segments new-chat-effort-segments" role="group" aria-label="思考强度">
-                    {effortLevels.map((level) => (
-                      <button
-                        type="button"
-                        key={level}
-                        className={pickedEffort === level ? "active" : ""}
-                        aria-pressed={pickedEffort === level}
-                        disabled={!connected || locked || configLoading}
-                        onClick={() => setEffortDraft(level)}
-                      >
-                        {effortLabel(level)}
-                      </button>
-                    ))}
-                  </div>
-                )}
-                {unavailableEffort && <small className="effort-unavailable">{unavailableEffort}</small>}
+                <span className="new-chat-config-label">思考强度</span>
+                <div className="effort-segments new-chat-effort-segments" role="group" aria-label="思考强度">
+                  {[undefined, ...effortLevels].map((level) => (
+                    <button
+                      type="button"
+                      key={level ?? "default"}
+                      className={pickedEffort === level ? "active" : ""}
+                      aria-pressed={pickedEffort === level}
+                      disabled={!connected || locked || configLoading}
+                      onClick={() => setEffortDraft(level)}
+                    >
+                      {level ? effortLabel(level) : "默认"}
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
 

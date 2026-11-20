@@ -31,9 +31,9 @@ import type {
 } from "@bridge/protocol";
 import {
   CornerUpLeft,
+  FileText,
   GitFork,
   MessageSquare,
-  PackageCheck,
   SquarePen,
 } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -830,7 +830,7 @@ export function MobileWorkspace({
               onClick={() => startNewChat(menuSession.projectId, menuSession.cwd, menuSession.sessionId)}
             />}
             <SheetAction
-              icon={sessionView === "evidence" ? <MessageSquare size={19} /> : <PackageCheck size={19} />}
+              icon={sessionView === "evidence" ? <MessageSquare size={19} /> : <FileText size={19} />}
               label={sessionView === "evidence" ? "返回对话" : `成果${evidenceCount > 0 ? ` ${evidenceCount}` : ""}`}
               disabled={sessionActionBusy}
               onClick={() => {

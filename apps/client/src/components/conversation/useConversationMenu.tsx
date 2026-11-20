@@ -1,5 +1,5 @@
 import type { BridgeEvent, BridgeHostSnapshot, BridgePrAutoFixState, BridgePrAutoFixUpdate, BridgeProjectInfo, BridgePullRequest, BridgeSessionCommandResult, BridgeSessionInfo } from "@bridge/protocol";
-import { CornerUpLeft, GitFork, MessageSquare, PackageCheck } from "lucide-react";
+import { CornerUpLeft, FileText, GitFork, MessageSquare } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import type { SessionHistoryState } from "../../hooks/useMobileBridge.js";
 import { desktopRuntimeId } from "../../lib/runtime-labels.js";
@@ -292,7 +292,7 @@ export function useConversationMenu({ hostId, draftKey, previousDraftKeyRef, ses
           leadingGroup={(
             <div className="m-group">
               <SheetAction
-                icon={sessionView === "evidence" ? <MessageSquare size={19} /> : <PackageCheck size={19} />}
+                icon={sessionView === "evidence" ? <MessageSquare size={19} /> : <FileText size={19} />}
                 label={sessionView === "evidence" ? "返回对话" : `成果${evidenceCount > 0 ? ` ${evidenceCount}` : ""}`}
                 disabled={actionBusy}
                 onClick={() => {

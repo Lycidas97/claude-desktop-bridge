@@ -1,7 +1,12 @@
 import type { BridgeHistoryItem, BridgeMailCard, BridgeMailPage } from "@bridge/protocol";
 import { useEffect, useState } from "react";
 import { mailResult, useAssistantMail } from "./AssistantMailProvider.js";
-import { DELIVERY_LABELS, MailCard } from "./MailCard.js";
+import { MailCard } from "./MailCard.js";
+
+const DELIVERY_LABELS: Record<BridgeMailCard["nativeDelivery"]["state"], string> = {
+  "not-submitted": "未提交", pending: "待提交", paused: "已暂停", submitting: "提交中", submitted: "已提交", queued: "排队中",
+  observed: "原生已观测", uncertain: "不确定", failed: "失败", cancelled: "已撤回",
+};
 
 export function AssistantTriggerBatch({ sessionId, batchId, cards, nativeMessage, onCancel }: {
   sessionId: string;

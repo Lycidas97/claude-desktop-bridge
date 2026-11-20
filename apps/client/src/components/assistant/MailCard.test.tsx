@@ -57,8 +57,65 @@ describe("MailCard plain text rendering", () => {
     expect(html).not.toMatch(/<(?:style|object|video|a|img|iframe|script)\b/u);
     expect(html).toContain("<h4>建议</h4><ul><li>&lt;object");
     expect(html).toContain("<h4>问题</h4><ul><li>&lt;video");
-    expect(html).toContain("已处理");
-    expect(html).toContain("未提交");
+  });
+
+  it("shows complete status in its own disclosure, not in the preview or original", () => {
+    const html = renderToStaticMarkup(createElement(MailCard, { card: card({ processingStatus: "processed" }) }));
+    const [collapsed, status] = html.split("<summary>状态</summary>");
+
+    expect(collapsed).not.toMatch(/已处理|未自动发给助理/u);
+    expect(status?.split("</details>")[0]).toContain("已处理");
+    expect(status?.split("</details>")[0]).toContain("未自动发给助理");
+    expect(html.split("<summary>原文</summary>")[1]).not.toMatch(/已处理|未自动发给助理/u);
+    expect(html).not.toMatch(/已记录|原生投递|业务处理|未提交/u);
+  });
+
+  it.each<[BridgeMailCard["nativeDelivery"]["state"], string | undefined]>([
+    ["not-submitted", undefined], ["pending", "等待助理"], ["paused", undefined],
+    ["submitting", "等待助理"], ["submitted", "等待助理"], ["queued", "等待助理"],
+    ["observed", undefined], ["uncertain", undefined], ["failed", "助理任务失败"], ["cancelled", undefined],
+  ])("shows only the relevant collapsed hint for delivery state %s", (state, hint) => {
+    const html = renderToStaticMarkup(createElement(MailCard, { card: card({ nativeDelivery: { state } }) }));
+    const [collapsed] = html.split("<summary>状态</summary>");
+
+    expect(collapsed?.match(/等待助理|处理中|助理任务失败/gu) ?? []).toEqual(hint ? [hint] : []);
+  });
+
+  it("leaves shared delivery information to the batch header but keeps each mail's processing status", () => {
+    const html = renderToStaticMarkup(createElement(MailCard, {
+      card: card({ nativeDelivery: { state: "queued", batchId: "batch-1" } }), showBatchDelivery: false,
+    }));
+
+    expect(html).toContain("待处理");
+    expect(html).not.toMatch(/自动发送|等待助理|已排队等助理/u);
+  });
+
+  it("shows active processing once even when delivery also has a hint", () => {
+    const html = renderToStaticMarkup(createElement(MailCard, { card: card({
+      processingStatus: "processing", nativeDelivery: { state: "queued" },
+    }) }));
+    const [collapsed] = html.split("<summary>状态</summary>");
+
+    expect(collapsed?.match(/等待助理|处理中|助理任务失败/gu)).toEqual(["处理中"]);
+  });
+
+  it("shows a failed automatic task ahead of stale processing without claiming it was never sent", () => {
+    const html = renderToStaticMarkup(createElement(MailCard, { card: card({
+      processingStatus: "processing", nativeDelivery: { state: "failed", batchId: "batch-1", messageId: "native-message" },
+    }) }));
+
+    expect(html).toContain("助理任务失败");
+    expect(html).not.toContain("没能发给助理");
+    expect(html).not.toMatch(/assistant-mail-hint[^>]*>处理中/u);
+  });
+
+  it("does not describe a cancelled task as an unsent mail", () => {
+    const html = renderToStaticMarkup(createElement(MailCard, { card: card({
+      nativeDelivery: { state: "cancelled", batchId: "batch-1", messageId: "native-message" },
+    }) }));
+
+    expect(html).toContain("任务已取消");
+    expect(html).not.toContain("已撤回自动发送");
   });
 
   it("keeps the correlated native message ID and text escaped in its own disclosure", () => {

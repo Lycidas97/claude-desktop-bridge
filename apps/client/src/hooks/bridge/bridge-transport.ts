@@ -78,6 +78,7 @@ import {
   snapshotWithPermissions,
   type LocalTurn,
   type MobileBridgeState,
+  type MobileConnectionIssue,
   type PairingConnectionPhase,
   type PendingResponse,
   type SessionEvidenceState,
@@ -814,6 +815,7 @@ export async function startBridgeConnection(
   provisionalPairing?: PairingBundle,
   pairingPhase?: PairingConnectionPhase,
   restored?: StoredHostState,
+  quickReconnectAttempt?: symbol,
 ): Promise<void> {
   const {
     setState,
@@ -842,8 +844,12 @@ export async function startBridgeConnection(
     nextCrypto: crypto,
     rejectPendingReason: "连接已重置",
   });
-  const attempt = Symbol();
+  const attempt = quickReconnectAttempt ?? Symbol();
   connectionAttemptRef.current = attempt;
+  let awaitingQuickReconnect = quickReconnectAttempt !== undefined;
+  setState((current) => current.quickReconnect || quickReconnectAttempt
+    ? { ...current, quickReconnect: quickReconnectAttempt ? { status: "pending" } : undefined }
+    : current);
   const roomId = crypto.identity.roomId;
   if (!provisionalPairing) writeLastActiveHost(roomId);
   const storedHost = await bridgeVault.getHost(roomId);
@@ -895,13 +901,12 @@ export async function startBridgeConnection(
     Capacitor.isNativePlatform() &&
     relayEndpoints.every((endpoint) => isLoopbackRelay(endpoint.url))
   ) {
+    const message = "这条配对没有手机可访问的网络地址，请更新电脑端 Bridge 后重试。";
     setState((current) => ({
       ...current,
       connection: "closed",
-      connectionIssue: {
-        code: "pairing-invalid",
-        message: "这条配对没有手机可访问的网络地址，请更新电脑端 Bridge 后重试。",
-      },
+      connectionIssue: { code: "pairing-invalid", message },
+      quickReconnect: quickReconnectAttempt ? { status: "failed", message } : undefined,
     }));
     return;
   }
@@ -1063,6 +1068,20 @@ export async function startBridgeConnection(
       socket.registerPushToken(push.platform, push.token);
     }
   };
+  const reportConnectionTimeout = (issue: MobileConnectionIssue) => {
+    setState((current) => ({
+      ...current,
+      desktopOnline: false,
+      connectionIssue: issue,
+      quickReconnect: current.quickReconnect?.status === "pending"
+        ? { status: "failed", message: issue.message }
+        : current.quickReconnect,
+    }));
+  };
+  const unreachable: MobileConnectionIssue = {
+    code: "unreachable",
+    message: "无法连接这台电脑，请确认电脑 Bridge 在线并检查网络。",
+  };
   socket.onState((connection) => {
     if (!isCurrent()) return;
     diagLog("info", "bridge", `socket.onState -> ${connection}`, {
@@ -1083,35 +1102,37 @@ export async function startBridgeConnection(
     }));
     if (connection === "connected") {
       if (connectionTimerRef.current) clearTimeout(connectionTimerRef.current);
-      if (authenticationTimer) clearTimeout(authenticationTimer);
       if (isProvisionalPairing()) {
         setState((current) => advancePairingSync(current, roomId, "verifying", 38));
       }
-      authenticationTimer = setTimeout(() => {
-        if (!isCurrent() || authenticatedDesktop) return;
-        const home = desktopHomeRef.current;
-        if (!isProvisionalPairing() && home && relay.endpoint !== home) {
-          // Known desktop, wrong relay namespace: say we're hunting instead
-          // of claiming the pairing broke.
-          setState((current) => ({
-            ...current,
-            desktopOnline: false,
-            connectionIssue: {
+      // A manual attempt keeps its handshake deadline even if the Relay drops.
+      if (!awaitingQuickReconnect || !authenticationTimer) {
+        if (authenticationTimer) clearTimeout(authenticationTimer);
+        authenticationTimer = setTimeout(() => {
+          authenticationTimer = undefined;
+          if (!isCurrent() || authenticatedDesktop) return;
+          if (socket.state !== "connected") {
+            reportConnectionTimeout(unreachable);
+          } else if (!isProvisionalPairing() && desktopHomeRef.current && relay.endpoint !== desktopHomeRef.current) {
+            reportConnectionTimeout({
               code: "waiting-link",
               message: "当前网络未连到电脑所在的中继（可能被代理带偏），正在自动重连；消息会保存在手机。",
-            },
-          }));
-          return;
-        }
-        setState((current) => ({
-          ...current,
-          desktopOnline: false,
-          connectionIssue: {
-            code: "pairing-invalid",
-            message: "Relay 已连接，但电脑未通过加密握手，请在电脑端重新生成二维码。",
-          },
-        }));
-      }, 25_000);
+            });
+          } else if (!isProvisionalPairing()) {
+            reportConnectionTimeout({
+              code: "unreachable",
+              message: linkHasDesktop
+                ? "未收到电脑的加密回复，请检查电脑端 Bridge 后重试。"
+                : "中继未发现电脑，请确认电脑端 Bridge 已启动。",
+            });
+          } else {
+            reportConnectionTimeout({
+              code: "pairing-invalid",
+              message: "Relay 已连接，但电脑未通过加密握手，请在电脑端重新生成二维码。",
+            });
+          }
+        }, 25_000);
+      }
       setState((current) => ({
         ...current,
         connectionIssue: rejectedOutbox.length > 0
@@ -1132,7 +1153,7 @@ export async function startBridgeConnection(
         }).catch(() => undefined);
       }
       if (!isProvisionalPairing() && linkHasDesktop) void synchronizeDesktop();
-    } else if (authenticationTimer) {
+    } else if (authenticationTimer && !awaitingQuickReconnect) {
       clearTimeout(authenticationTimer);
       authenticationTimer = undefined;
     }
@@ -1154,7 +1175,9 @@ export async function startBridgeConnection(
       linkHasDesktop = desktopHere;
       if (desktopHere) {
         learnHome(relay.endpoint);
-        setState((current) => ({ ...current, desktopOnline: true, error: undefined }));
+        if (!awaitingQuickReconnect) {
+          setState((current) => ({ ...current, desktopOnline: true, error: undefined }));
+        }
         void flushOutbox();
       }
       if (!desktopHere) {
@@ -1166,7 +1189,9 @@ export async function startBridgeConnection(
       linkHasDesktop = frame.online;
       if (frame.online) {
         learnHome(relay.endpoint);
-        setState((current) => ({ ...current, desktopOnline: true, error: undefined }));
+        if (!awaitingQuickReconnect) {
+          setState((current) => ({ ...current, desktopOnline: true, error: undefined }));
+        }
         void flushOutbox();
         if (!wasOnline && !isProvisionalPairing() && socket.state === "connected") void synchronizeDesktop();
       }
@@ -1247,15 +1272,24 @@ export async function startBridgeConnection(
           clearPairingSyncTimer: true,
         });
         if (!isProvisionalPairing()) writeLastActiveHost();
-        setState((current) => clearActiveHostState(current, {
-          connection: "closed",
-          pairingSync: undefined,
-          error: issue.message,
-          hosts: isProvisionalPairing()
-            ? current.hosts
-            : current.hosts.map((host) => host.roomId === roomId
-                ? { ...host, needsRepair: true, status: "offline" }
-                : host),
+        const keepQuickSwitch = awaitingQuickReconnect;
+        setState((current) => ({
+          ...clearActiveHostState(current, {
+            connection: "closed",
+            pairingSync: undefined,
+            error: issue.message,
+            hosts: isProvisionalPairing()
+              ? current.hosts
+              : current.hosts.map((host) => host.roomId === roomId
+                  ? { ...host, needsRepair: true, status: "offline" }
+                  : host),
+          }),
+          // Keep only the host identity so the open switcher can report why it stopped.
+          ...(keepQuickSwitch ? {
+            activeHostId: roomId,
+            desktopName: current.desktopName,
+            quickReconnect: { status: "failed", message: issue.message } as const,
+          } : {}),
         }));
         return;
       }
@@ -1267,19 +1301,29 @@ export async function startBridgeConnection(
   });
   socket.onMessage((message, encrypted) => {
     if (!isCurrent()) return;
-    authenticatedDesktop = true;
-    if (authenticationTimer) {
-      clearTimeout(authenticationTimer);
-      authenticationTimer = undefined;
+    // Relay can replay old ciphertext even when the desktop is offline. A
+    // reply to a request sent on this attempt proves it is reachable now.
+    const verifiedQuickReconnect = awaitingQuickReconnect && message.payload.kind === "response"
+      && pendingResponsesRef.current.has(message.payload.requestId);
+    if (verifiedQuickReconnect) awaitingQuickReconnect = false;
+    if (!awaitingQuickReconnect) {
+      authenticatedDesktop = true;
+      if (authenticationTimer) {
+        clearTimeout(authenticationTimer);
+        authenticationTimer = undefined;
+      }
+      linkHasDesktop = true;
+      // Old queued messages must not teach us a new home relay.
+      if (Date.now() - message.header.sentAt < HOME_LEARN_FRESHNESS_MS) {
+        learnHome(relay.endpoint);
+      }
+      setState((current) => ({
+        ...current,
+        desktopOnline: true,
+        connectionIssue: undefined,
+        ...(verifiedQuickReconnect ? { quickReconnect: undefined } : {}),
+      }));
     }
-    // Authentic desktop traffic on this link proves where the desktop lives
-    // right now. Queued replays can be old, so only fresh envelopes teach
-    // the home relay; presence frames handle the silent-but-online case.
-    linkHasDesktop = true;
-    if (Date.now() - message.header.sentAt < HOME_LEARN_FRESHNESS_MS) {
-      learnHome(relay.endpoint);
-    }
-    setState((current) => ({ ...current, desktopOnline: true, connectionIssue: undefined }));
     socket.ack([encrypted.id]);
     const event = message.payload.kind === "event" ? message.payload.event : undefined;
     const incomingSnapshot = message.payload.kind === "snapshot" ? message.payload.snapshot
@@ -1440,13 +1484,7 @@ export async function startBridgeConnection(
   connectionTimerRef.current = setTimeout(() => {
     if (!isCurrent() || socket.state === "connected") return;
     diagLog("error", "bridge", `connectionTimer 超时: state=${socket.state} endpoint=${socket.endpoint}`);
-    setState((current) => ({
-      ...current,
-      connectionIssue: {
-        code: "unreachable",
-        message: "无法连接这台电脑，请确认电脑 Bridge 在线并检查网络。",
-      },
-    }));
+    reportConnectionTimeout(unreachable);
   }, Math.max(12_000, relayEndpoints.length * 8_000 + 2_000));
 }
 

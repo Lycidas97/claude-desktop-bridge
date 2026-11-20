@@ -42,6 +42,7 @@ import type {
   LocalTurn,
   MobileConnectionIssue,
   PairedHost,
+  QuickReconnectState,
   SessionEvidenceState,
   SessionHistoryState,
 } from "../hooks/useMobileBridge.js";
@@ -109,6 +110,7 @@ export function MobileWorkspace({
   events,
   localTurns,
   connectionIssue,
+  quickReconnect,
   onInspectConnection,
   transportMetrics,
   pendingOutbound: _pendingOutbound,
@@ -179,6 +181,7 @@ export function MobileWorkspace({
   events: BridgeEvent[];
   localTurns: LocalTurn[];
   connectionIssue?: MobileConnectionIssue | undefined;
+  quickReconnect?: QuickReconnectState | undefined;
   onInspectConnection?: (() => void) | undefined;
   transportMetrics?: BridgeTransportMetrics | undefined;
   pendingOutbound: number;
@@ -242,7 +245,7 @@ export function MobileWorkspace({
   onActivateClaude(): Promise<BridgeClaudeActivationResult | undefined>;
   onRefresh(sessionId?: string): Promise<boolean>;
   onBackToHosts(): void;
-  onRetry(): Promise<void>;
+  onRetry(fromQuickSwitch?: boolean): Promise<void>;
 }) {
   const mobileNav = useMobileNav();
   const sessions = snapshot?.sessions ?? [];
@@ -989,6 +992,7 @@ export function MobileWorkspace({
         projectsByActivity={projectsByActivity}
         permissions={permissions}
         connectionIssue={connectionIssue}
+        quickReconnect={quickReconnect}
         onInspectConnection={onInspectConnection}
         transportMetrics={transportMetrics}
         search={search}

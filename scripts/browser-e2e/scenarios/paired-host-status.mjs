@@ -40,10 +40,42 @@ export async function verifyPairedHostStatus(page, previousHost, host, steps, di
   assert.equal(await current.locator(".is-online").count(), 0);
   await retry.waitFor();
   await switcher.screenshot({ path: resolve(directory, "offline-quick-switch.png") });
+  await page.clock.install();
   const connectionsBeforeRetry = serverRoutes.length;
   await retry.click();
   await eventually(() => serverRoutes.length > connectionsBeforeRetry, true, "Quick switch reconnect starts a new relay WebSocket");
+  assert.equal(await current.locator(".drawer-host-option-meta").innerText(), "正在重连", "The current host shows progress while waiting for an encrypted reply");
+  const retrying = switcher.getByRole("button", { name: "正在重连", exact: true });
+  assert.equal(await retrying.isDisabled(), true);
+  await switcher.screenshot({ path: resolve(directory, "reconnecting-quick-switch.png") });
   assert.equal(await switcher.isVisible(), true, "Reconnect does not navigate away from the quick switcher");
   assert.equal(await page.getByText(previousHost.session.title, { exact: true }).isVisible(), true, "Reconnect leaves the same host selected");
-  steps.push("same-name pairings stay separate; only the current offline host can reconnect from the quick switcher without navigation");
+
+  await eventually(() => page.evaluate(async () => {
+    const { collectRendererDiagnosticsSnapshot } = await import("/src/lib/diagnostics.ts");
+    return (await collectRendererDiagnosticsSnapshot()).bridgeState.connection;
+  }), "connected", "Relay accepted the connection before the clock advances");
+  await page.clock.fastForward(26_000);
+  const failure = switcher.getByRole("alert").filter({ hasText: "中继未发现电脑" });
+  await failure.waitFor();
+  assert.equal(await retry.isEnabled(), true, "An offline failure leaves the retry action available");
+  await switcher.screenshot({ path: resolve(directory, "reconnect-failed-quick-switch.png") });
+
+  const send = previousHost.send;
+  let heldReply;
+  // Keep the fixture present on Relay while withholding its encrypted replies.
+  previousHost.send = async (payload) => {
+    if (payload.kind === "response" && previousHost.requests.some(request => request.method === "snapshot.get" && request.requestId === payload.requestId)) heldReply = payload;
+  };
+  await retry.click();
+  previousHost.socket.connect();
+  await eventually(() => Boolean(heldReply), true, "The new attempt reaches the silent desktop over Relay");
+  assert.equal(await retrying.isDisabled(), true, "Relay presence alone does not complete the retry");
+  assert.equal(await current.locator(".is-online").count(), 0);
+  assert.equal(await failure.count(), 0, "A new attempt clears the previous failure");
+  previousHost.send = send;
+  await previousHost.send(heldReply);
+  await current.locator(".is-online").waitFor();
+  assert.equal(await retrying.count(), 0, "An authenticated reply completes the retry");
+  steps.push("Same-name pairings stay separate; quick switch retry reports progress, an inline offline failure, and recovery only after an encrypted reply without navigating away");
 }

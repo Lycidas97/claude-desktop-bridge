@@ -210,6 +210,57 @@ describe("startup and network recovery", () => {
     expect(latest.readyState).toBe(LocalWebSocket.OPEN);
   });
 
+  it("does not complete a quick switch retry from Relay presence or a replayed response", async () => {
+    const bridge = mount();
+    await vi.waitFor(() => expect(bridgeVault.saveMessage).toHaveBeenCalledOnce());
+    const priorRequest = harness.requests.find(request => request.method === "snapshot.get")!;
+    const replayedReply = await desktop.encrypt({ kind: "response", requestId: priorRequest.requestId, ok: true, result: { snapshot } }, "desktop", "mobile", Date.now(), undefined, pairing.deviceId, true);
+    const answer = LocalWebSocket.prototype.answer;
+    const held = vi.spyOn(LocalWebSocket.prototype, "answer").mockResolvedValue(undefined);
+
+    await bridge.retryConnection(true);
+    const socket = LocalWebSocket.instances.at(-1)!;
+    await vi.waitFor(() => expect(held).toHaveBeenCalledOnce());
+    const sent = vi.spyOn(socket, "send");
+    socket.receive({ type: "envelope", envelope: replayedReply });
+    await vi.waitFor(() => expect(sent).toHaveBeenCalledWith(JSON.stringify({ type: "ack", ids: [replayedReply.id] })));
+    expect(harness.state.quickReconnect).toEqual({ status: "pending" });
+    expect(harness.state.desktopOnline).toBe(false);
+
+    await answer.call(socket, held.mock.calls[0]![0]);
+    await vi.waitFor(() => expect(harness.state.quickReconnect).toBeUndefined());
+    expect(harness.state.desktopOnline).toBe(true);
+  });
+
+  it("ends a quick switch retry when Relay drops before the first reply and stays unreachable", async () => {
+    const bridge = mount();
+    await vi.waitFor(() => expect(bridgeVault.saveMessage).toHaveBeenCalledOnce());
+    vi.spyOn(LocalWebSocket.prototype, "answer").mockResolvedValue(undefined);
+    await bridge.retryConnection(true);
+    expect(harness.state.connection).toBe("connected");
+    expect(harness.state.quickReconnect).toEqual({ status: "pending" });
+    vi.spyOn(LocalWebSocket.prototype, "send").mockImplementation(() => {});
+    LocalWebSocket.instances.at(-1)!.close();
+
+    await vi.advanceTimersByTimeAsync(25_000);
+    expect(harness.state.quickReconnect).toMatchObject({ status: "failed", message: expect.stringContaining("检查网络") });
+  });
+
+  it("keeps the revoked host identity only for reporting a failed quick switch retry", async () => {
+    const bridge = mount();
+    await vi.waitFor(() => expect(bridgeVault.saveMessage).toHaveBeenCalledOnce());
+    vi.spyOn(LocalWebSocket.prototype, "answer").mockResolvedValue(undefined);
+    await bridge.retryConnection(true);
+    const socket = LocalWebSocket.instances.at(-1)!;
+    socket.receive({ type: "error", code: "DEVICE_REVOKED", message: "Revoked by desktop" });
+
+    expect(socket.readyState).toBe(LocalWebSocket.CLOSED);
+    expect(harness.state.activeHostId).toBe(pairing.roomId);
+    expect(harness.state.hosts[0]).toMatchObject({ needsRepair: true, status: "offline" });
+    expect(harness.state.snapshot).toBeUndefined();
+    expect(harness.state.quickReconnect).toMatchObject({ status: "failed", message: expect.stringContaining("撤销") });
+  });
+
   it("reconnects once when Android reports online before publishing the new interface type", async () => {
     mount();
     await vi.waitFor(() => expect(bridgeVault.saveMessage).toHaveBeenCalled());

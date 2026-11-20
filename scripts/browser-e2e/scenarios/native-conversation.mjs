@@ -936,7 +936,8 @@ export async function verifyNativeSessionNotices(page, host, steps, directory) {
   const quoted = `请保留这段通知示例：\n\n\`\`\`xml\n${idleText}\n${ciEvent}\n\`\`\``;
   const indented = "    <ci-monitor-event>用户的缩进代码示例</ci-monitor-event>";
   const mixed = "<ci-monitor-event>first</ci-monitor-event>\n不要合并，等我确认\n<ci-monitor-event>second</ci-monitor-event>";
-  for (const [index, text] of [report, idleText, ciEvent, quoted, indented, mixed].entries()) {
+  const reportReply = "先不要发布，等我核对结果。";
+  for (const [index, text] of [report, idleText, ciEvent, quoted, indented, mixed, `${report}\n\n${reportReply}`].entries()) {
     await host.nativeApproval.message({ type: "user", uuid: `session-notice-history-${index}`, timestamp: Date.now() + index, message: { content: [{ type: "text", text }] } });
   }
   host.history.splice(0, host.history.length, ...(await host.nativeApproval.history()).items);
@@ -971,6 +972,10 @@ export async function verifyNativeSessionNotices(page, host, steps, directory) {
   const userReply = stream.locator("article.conversation-item.user").filter({ hasText: "不要合并，等我确认" });
   assert.equal(await userReply.count(), 1, "User prose between CI envelopes is never swallowed into an app notice");
   assert.equal(await userReply.getByRole("button", rewindAction).count(), 1);
+  const userReportReply = stream.locator("article.conversation-item.user").filter({ hasText: reportReply });
+  assert.equal(await userReportReply.count(), 1, "User prose after a truncated child report stays in the conversation");
+  assert.equal(await userReportReply.getByText(reportReply, { exact: true }).isVisible(), true);
+  assert.equal(await userReportReply.getByRole("button", rewindAction).count(), 1);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
   await page.screenshot({ path: resolve(directory, "session-notices-collapsed.png"), fullPage: true });
   await notices.first().locator("summary").first().click();

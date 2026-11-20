@@ -8,7 +8,7 @@ import "./assistant-mail.css";
 
 export function SentMailReference({ mailRefId }: { mailRefId: string }) {
   const mail = useAssistantMail();
-  const card = mail?.timelineCards.find(item => item.mailRefId === mailRefId);
+  const card = mail?.referenceCard(mailRefId);
   const subject = card ? card.subject || "无主题" : "邮件引用";
   const sender = card?.from.map(({ name, address }) => name || address).filter(Boolean).join("，") || "未知发件人";
   const receivedAt = card && new Date(card.receivedAt).toLocaleString("zh-CN", {

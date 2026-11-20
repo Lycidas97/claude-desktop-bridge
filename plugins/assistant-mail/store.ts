@@ -362,9 +362,7 @@ export class AssistantMailStore {
     }
   }
 
-  page(input: unknown = {}, includeHistory = true, scope: MailPageScope = "all", receivedOrder = false): {
-    events: MailEvent[]; nextCursor?: string; latestArrivalSeq?: number;
-  } {
+  page(input: unknown = {}, includeHistory = true, scope: MailPageScope = "all", receivedOrder = false): { events: MailEvent[]; nextCursor?: string } {
     const { cursor, limit = 50, processingStatus } = MailPageParameters.parse(input);
     const order = includeHistory ? mailOrder : "seq";
     const scopeValue = typeof scope === "object" ? scope.query : scope === "legacy" || scope === "all" ? undefined : scope;
@@ -388,10 +386,7 @@ export class AssistantMailStore {
       const event = eventFromRow(row);
       return { ...event, attachments: event.attachments.slice(0, 32) };
     });
-    return { events, ...(rows.length > limit ? { nextCursor: String(events.at(-1)!.seq) } : {}),
-      ...(receivedOrder && !cursor && (scope === "inbox" || scope === "legacy") ? {
-        latestArrivalSeq: (this.db().prepare("SELECT COALESCE(MAX(seq), 0) AS seq FROM mail_events WHERE historical = 0").get() as { seq: number }).seq,
-      } : {}) };
+    return { events, ...(rows.length > limit ? { nextCursor: String(events.at(-1)!.seq) } : {}) };
   }
 
   folderCounts(includeHistory: boolean): Partial<Record<BridgeMailCategory, number>> {

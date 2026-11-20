@@ -110,8 +110,7 @@ export function AssistantMailProvider({ hostId, snapshot, online, request, loadC
     void loadCache().then(stored => {
       if (!active || !stored) return;
       // An empty cache can have been saved before the first successful sync.
-      const baselineSeq = stored.latestArrivalSeq ?? stored.cards[0]?.seq;
-      if (baselineSeq !== undefined) initializeUnreadBaseline(baselineSeq);
+      if (!stored.order && stored.cards[0]) initializeUnreadBaseline(stored.cards[0].seq);
       setCache(stored);
     })
       .catch(reason => { if (active) setError(String(reason)); })
@@ -157,7 +156,8 @@ export function AssistantMailProvider({ hostId, snapshot, online, request, loadC
     void refreshMailPages(loadPage, cacheRef.current, changeToken)
       .then(next => {
         if (!active) return;
-        initializeUnreadBaseline(next.latestArrivalSeq ?? next.cards[0]?.seq ?? 0);
+        // Receipt-order hosts supply attention directly; their first card is not a sequence baseline.
+        if (!next.order) initializeUnreadBaseline(next.cards[0]?.seq ?? 0);
         setCache(next);
         setRefreshStatus(status => status === "refreshing" ? "refreshed" : undefined);
       })

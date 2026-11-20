@@ -124,7 +124,6 @@ export function assistantMailPage(mail: AssistantMailService, options: z.infer<t
     cards: page.events.map(event => projectMailCard(event, delivery?.(event.mailRefId))),
     ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
     ...(receivedOrder ? { order: "received" } : {}),
-    ...(page.latestArrivalSeq !== undefined ? { latestArrivalSeq: page.latestArrivalSeq } : {}),
     ...(folderCounts ? { folderCounts } : {}),
     ...(filedTimelineCards.length ? { filedTimelineCards } : {}),
   };

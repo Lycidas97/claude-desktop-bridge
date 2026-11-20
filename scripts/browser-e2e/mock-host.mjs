@@ -400,7 +400,8 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
     Object.assign(session, host.nativeApproval.profile());
     nativeHosts.push(host.nativeApproval);
     if (assistantMail) {
-      snapshot.host.capabilities.push(...host.nativeApproval.mailCapabilities().filter(capability => !options.legacyAttention || capability !== "plugin.assistant-mail.attention.v1"), "workspace.upload.v1");
+      snapshot.host.capabilities.push(...host.nativeApproval.mailCapabilities().filter(capability => !options.legacyAttention ||
+        !["plugin.assistant-mail.attention.v1", "plugin.assistant-mail.received-order.v1"].includes(capability)), "workspace.upload.v1");
       snapshot.assistantMail = mailSnapshot(host.nativeApproval.mailSnapshot());
       snapshot.host.capabilities.push("plugin.assistant-agenda.v1", "plugin.assistant-agenda.day.v1");
       snapshot.assistantAgenda = host.nativeApproval.assistantMail.agenda.snapshot();

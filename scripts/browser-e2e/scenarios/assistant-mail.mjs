@@ -228,9 +228,9 @@ export async function verifyAssistantMailHistory(page, host, steps, directory, v
   await page.screenshot({ path: resolve(directory, "assistant-mail-history.png"), fullPage: true });
   viewports.push({ page: "assistant-mail-history", ...page.viewportSize() });
   await back.click();
-  assert.equal(await assistant.getAttribute("aria-label"), "助理", "Backfill does not count as unread");
+  assert.equal(await assistant.getAttribute("aria-label"), "助理", "Backfill does not raise attention");
   await host.nativeApproval.assistantMail.deliver(1);
-  await eventually(() => assistant.getAttribute("aria-label"), "助理，1 条未读", "New mail after backfill is still unread");
+  await eventually(() => assistant.getAttribute("aria-label"), "助理，有事项待关注", "New mail after backfill still raises attention");
   await assistant.click();
   await inbox.click();
   const latest = cards.first();

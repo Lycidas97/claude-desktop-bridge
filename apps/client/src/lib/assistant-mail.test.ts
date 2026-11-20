@@ -59,11 +59,11 @@ describe("refreshMailPages", () => {
     const history = card(-8);
     const latest = card(-9, { receivedAt: "2026-11-15T00:00:00.000Z" });
     const load = vi.fn<(cursor?: string) => Promise<BridgeMailPage>>()
-      .mockResolvedValueOnce({ cards: [latest, history], nextCursor: "-8", order: "received", latestArrivalSeq: 7 })
+      .mockResolvedValueOnce({ cards: [latest, history], nextCursor: "-8", order: "received" })
       .mockResolvedValueOnce({ cards: [live, late], nextCursor: "7", order: "received" });
 
     expect(await refreshMailPages(load, { cards: [late, live], changeToken: "old", nextCursor: "5" }, "new")).toEqual({
-      cards: [latest, history, live, late], nextCursor: "7", order: "received", latestArrivalSeq: 7, changeToken: "new",
+      cards: [latest, history, live, late], nextCursor: "7", order: "received", changeToken: "new",
     });
     expect(load.mock.calls).toEqual([[undefined], ["-8"]]);
   });

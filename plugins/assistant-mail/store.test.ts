@@ -92,7 +92,7 @@ it("pages by receipt time across accounts and imports, with a stable anchor that
   const tied = (await store.record({ ...message(2), accountKey: "other-account", historical: true, receivedAt: "2026-11-14T13:00:00+01:00" }))!;
   const undated = (await store.record({ ...message(3), historical: true, receivedAt: "now" }))!;
   const first = store.page({ limit: 2 }, true, "inbox", true);
-  expect(first).toEqual({ events: [newest, tied], nextCursor: String(tied.seq), latestArrivalSeq: late.seq });
+  expect(first).toEqual({ events: [newest, tied], nextCursor: String(tied.seq) });
   store.setFolder(tied.mailRefId, "account", "user");
   expect(store.page({ cursor: first.nextCursor }, true, "inbox", true).events).toEqual([live, late, undated]);
   expect(store.page({}, false, "inbox", true).events).toEqual([live, late]);

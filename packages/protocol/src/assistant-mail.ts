@@ -153,8 +153,6 @@ export interface BridgeMailPage {
   nextCursor?: string;
   /** Orders both cards and cursors. Omitted for legacy sequence order. */
   order?: "received";
-  /** Latest live insertion sequence on a first inbox page, independent of card order. */
-  latestArrivalSeq?: number;
   folderCounts?: Partial<Record<BridgeMailCategory, number>>;
   /** Recent live cards kept for the assistant conversation, never rendered in the inbox. */
   filedTimelineCards?: BridgeMailCard[];

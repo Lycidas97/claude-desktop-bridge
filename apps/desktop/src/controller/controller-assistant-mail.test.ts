@@ -167,7 +167,7 @@ describe("assistant mail mobile RPC projections", () => {
     expect(await list({ cursor: legacy.nextCursor })).toMatchObject({ mailPage: { cards: [{ mailRefId: newest.mailRefId }] } });
 
     const { mailPage: received } = await list({ order: "received" });
-    expect(received).toMatchObject({ cards: [{ mailRefId: newest.mailRefId }], order: "received", nextCursor: String(newest.seq), latestArrivalSeq: late.seq });
+    expect(received).toMatchObject({ cards: [{ mailRefId: newest.mailRefId }], order: "received", nextCursor: String(newest.seq) });
     expect(await list({ order: "received", cursor: received.nextCursor })).toMatchObject({ mailPage: { cards: [{ mailRefId: late.mailRefId }], order: "received" } });
     await expect(list({ order: "recorded" })).rejects.toMatchObject({ code: "INVALID_PARAMS" });
   });

@@ -526,12 +526,26 @@ it("bounds compact context and points to the next page of unfinished references"
     expect(context).not.toContain(oldest.mailRefId);
     expect(context).not.toMatch(/Subject 1|Body 1|sender@example\.test/);
     expect(context).toContain('mail.list_unfinished_triggers({"cursor":2})');
-    expect(context.includes("调用 mail.update_analysis 写回分析；若工具支持 category")).toBe(event === "SessionStart");
   }
   expect(service.triggers.unfinished("native-first", 2)).toEqual({
     refs: [{ kind: "mail.received", eventId: oldest.mailRefId, batchId: expect.any(String) }],
   });
   expect(coordinator.compactContext("native-first", "PostCompact")).toBeUndefined();
+});
+
+it("does not turn a withdrawn pending batch into new processing instructions on compact resume", async () => {
+  service.setBinding({ assistantId: "assistant", nativeSessionId: "native-first", sectionId: null, previousSessionIds: [],
+    managed: { path: "/synthetic/assistant", policy: "stage1-fenced-workspace", token: "fixture", automaticDelivery: true } });
+  const { mailRefId } = await record(1);
+  const { batchId, idempotencyKey } = store.triggers.batchForEvent("mail.received", mailRefId)!;
+  const receipt = { idempotencyKey, commandId: "withdrawn-command", requestId: batchId, sessionId: "native-first",
+    messageId: "withdrawn-message", source: "assistant-trigger", state: "cancelled" } as const;
+  run.receiptStore.saveNativeDesktopReceipt(receipt);
+  store.triggers.link(batchId, receipt);
+  expect(service.event(mailRefId)?.processingStatus).toBe("pending");
+  const context = run.controller.assistantMailCoordinator!.compactContext("native-first", "SessionStart");
+  expect(context).toContain(`${batchId} mail.received ${mailRefId}`);
+  expect(context).not.toContain("mail.update_analysis");
 });
 
 it("indexes entries after an ordinary managed turn without including their names or contents", async () => {

@@ -94,7 +94,7 @@
 .assistant-mail-card > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--muted); font-size: calc(11px * var(--font-scale)); }
 .assistant-mail-groups { min-width: 0; margin-bottom: 8px; }
 .assistant-mail-group { border-bottom: 1px solid var(--line); }
-.assistant-mail-group > summary { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 8px; font-size: calc(13px * var(--font-scale)); font-weight: 600; cursor: pointer; list-style: none; }
+.assistant-mail-group > summary { display: flex; align-items: center; gap: 8px; min-height: 44px; font-size: calc(13px * var(--font-scale)); font-weight: 600; cursor: pointer; list-style: none; }
 .assistant-mail-group > summary::-webkit-details-marker { display: none; }
 .assistant-mail-group > summary:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: -2px; }
 .assistant-mail-group > summary > span { flex: 1; }

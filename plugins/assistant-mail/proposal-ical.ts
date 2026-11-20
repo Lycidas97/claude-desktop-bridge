@@ -2,7 +2,7 @@ import ICAL from "ical.js";
 import { tzlib_get_ical_block } from "timezones-ical-library";
 import type { AgendaEventInput, AgendaTodoInput } from "../../packages/protocol/src/assistant-agenda.js";
 import type { AgendaProposalAction } from "../../packages/protocol/src/assistant-proposal.js";
-import { AgendaEditError } from "./agenda-store.js";
+import { AssistantError } from "./assistant-error.js";
 import { isRepeatedWallTime } from "./agenda-time.js";
 
 const todoStatuses: Record<AgendaTodoInput["status"], string> = {
@@ -18,7 +18,7 @@ export function proposalCalendarBody(
   const calendar = new ICAL.Component(previous ? ICAL.parse(previous.body) : "vcalendar");
   const components = calendar.getAllSubcomponents(kind);
   if (previous && (components.length !== 1 || calendar.getAllSubcomponents(kind === "vtodo" ? "vevent" : "vtodo").length)) {
-    throw new AgendaEditError("UNSUPPORTED", "暂不支持修改包含多项记录的日历资源。");
+    throw new AssistantError("UNSUPPORTED", "暂不支持修改包含多项记录的日历资源。");
   }
   if (action.kind === "calendar.delete") return "";
   const item = previous ? components[0]! : new ICAL.Component(kind);
@@ -40,7 +40,7 @@ export function proposalCalendarBody(
       const instant = ICAL.Time.fromJSDate(new Date(value), true);
       const time = instant.convertToZone(zone);
       if (zone !== ICAL.Timezone.utcTimezone && (isRepeatedWallTime(Date.parse(value), zone.tzid) || time.toUnixTime() !== instant.toUnixTime())) {
-        throw new AgendaEditError("UNSUPPORTED", "CalDAV 无法在夏令时切换处无歧义地保留此时刻和时区，请选择其他时间。");
+        throw new AssistantError("UNSUPPORTED", "CalDAV 无法在夏令时切换处无歧义地保留此时刻和时区，请选择其他时间。");
       }
       const property = item.addPropertyWithValue(name, time);
       if (zone !== ICAL.Timezone.utcTimezone) property.setParameter("tzid", zone.tzid);
@@ -65,7 +65,7 @@ export function proposalCalendarBody(
         if (existing) zone = existing;
         else {
           const data = tzlib_get_ical_block(timeZone);
-          if (!Array.isArray(data) || !data[0]) throw new AgendaEditError("UNSUPPORTED", "缺少此日程的时区定义。");
+          if (!Array.isArray(data) || !data[0]) throw new AssistantError("UNSUPPORTED", "缺少此日程的时区定义。");
           const definition = new ICAL.Component(ICAL.parse(data[0]));
           definition.updatePropertyWithValue("tzid", timeZone);
           calendar.addSubcomponent(definition);
@@ -96,17 +96,17 @@ export function proposalCalendarBody(
         if (before?.remindAt === remindAt && alarms.some(alarm => {
           const trigger = alarm.getFirstProperty("trigger");
           return trigger?.getFirstValue() instanceof ICAL.Duration && trigger.getFirstParameter("related")?.toUpperCase() === "END";
-        })) throw new AgendaEditError("UNSUPPORTED", "修改截止时间会移动相对提醒，请同时明确调整提醒。");
+        })) throw new AssistantError("UNSUPPORTED", "修改截止时间会移动相对提醒，请同时明确调整提醒。");
         item.removeAllProperties("duration");
         date("due", dueAt);
       }
       if (before?.remindAt !== remindAt) {
         if (alarms.length > 1 || (alarms.length && alarms[0]!.getFirstPropertyValue("action") !== "DISPLAY")) {
-          throw new AgendaEditError("UNSUPPORTED", "暂不支持编辑此日历的多个提醒或非显示提醒。");
+          throw new AssistantError("UNSUPPORTED", "暂不支持编辑此日历的多个提醒或非显示提醒。");
         }
         if (alarms[0]) item.removeSubcomponent(alarms[0]);
         if (remindAt) {
-          if (remindAt.length === 10) throw new AgendaEditError("INVALID_PARAMS", "CalDAV 提醒需要日期和时间。");
+          if (remindAt.length === 10) throw new AssistantError("INVALID_PARAMS", "CalDAV 提醒需要日期和时间。");
           const alarm = new ICAL.Component("valarm");
           alarm.addPropertyWithValue("action", "DISPLAY");
           alarm.addPropertyWithValue("description", action.value.title);

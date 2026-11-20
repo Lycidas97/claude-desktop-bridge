@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import type { AssistantAgendaService } from "./agenda.js";
 import { AgendaExpansionLimitError } from "./agenda-ical.js";
-import { AgendaEditError } from "./agenda-store.js";
+import { AssistantError } from "./assistant-error.js";
 import type { AssistantMailService } from "./desktop.js";
 import { MailAttachmentError } from "./mime.js";
 import { CompactHookRequest } from "./compact-hook.js";
@@ -126,7 +126,7 @@ export async function serveAssistantMailTools(options: {
         reply(response, 403, { error: "MAIL_FORBIDDEN" });
       } else if (error instanceof AgendaExpansionLimitError) {
         reply(response, 409, { error: "AGENDA_INCOMPLETE" });
-      } else if (error instanceof AgendaEditError) {
+      } else if (error instanceof AssistantError) {
         reply(response, { NOT_FOUND: 404, CONFLICT: 409, UNSUPPORTED: 422, INVALID_PARAMS: 400 }[error.code], { error: error.code, message: error.message });
       } else if (error instanceof MailCategoryError) {
         reply(response, 404, { error: "MAIL_CATEGORY_NOT_FOUND" });

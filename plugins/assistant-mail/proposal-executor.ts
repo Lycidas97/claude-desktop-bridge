@@ -5,7 +5,8 @@ import type { AgendaProposalAction, BridgeActionProposal, BridgeProposalSnapshot
 import type { AgendaCredentials } from "./agenda.js";
 import { agendaInstant } from "./agenda-time.js";
 import type { AssistantMemory } from "./assistant-memory.js";
-import { AgendaEditError, type AgendaStore, LOCAL_AGENDA_ID } from "./agenda-store.js";
+import { type AgendaStore, LOCAL_AGENDA_ID } from "./agenda-store.js";
+import { AssistantError } from "./assistant-error.js";
 import { CalDavError, requestCalDavMember } from "./caldav.js";
 import { canonicalCalendarBody, proposalCalendarBody } from "./proposal-ical.js";
 import { ProposalStore, publicProposal, type ProposalPayload, type StoredProposal } from "./proposal-store.js";
@@ -49,7 +50,7 @@ export class ProposalExecutor extends EventEmitter {
     assertAuthorized?.();
     const proposal = this.store.transaction(() => {
       const current = this.store.requirePending(ref, sessionId);
-      if (action.kind !== current.action.kind) throw new AgendaEditError("INVALID_PARAMS", "不能更改提案的动作类型。");
+      if (action.kind !== current.action.kind) throw new AssistantError("INVALID_PARAMS", "不能更改提案的动作类型。");
       const sameRecord = "recordId" in action && "recordId" in current.action && action.recordId === current.action.recordId;
       // A manual field edit keeps the baseline the user reviewed. A model revision can re-read it.
       const payload = mailPayload ?? this.freeze(action as AgendaProposalAction | MemoryRuleProposalAction, current.proposalId, current.sessionId,
@@ -79,7 +80,7 @@ export class ProposalExecutor extends EventEmitter {
   dismiss(ref: ProposalRevisionRef & { includeMemory?: true | undefined }, actor: string) {
     const proposal = this.store.transaction(() => {
       const proposal = this.store.requirePending(ref);
-      if (proposal.intent.backend === "profile" && !ref.includeMemory) throw new AgendaEditError("NOT_FOUND", "找不到此提案。");
+      if (proposal.intent.backend === "profile" && !ref.includeMemory) throw new AssistantError("NOT_FOUND", "找不到此提案。");
       this.store.claim(proposal, actor, "dismissed");
       return publicProposal({ ...proposal, state: "dismissed" });
     });
@@ -91,13 +92,13 @@ export class ProposalExecutor extends EventEmitter {
     const claimed = this.store.transaction(() => {
       const proposal = this.store.requirePending(ref);
       if (proposal.intent.backend === "profile" && !ref.confirmMemory) {
-        throw new AgendaEditError("INVALID_PARAMS", "请在支持规则提案的 Bridge 中核对并确认变更。");
+        throw new AssistantError("INVALID_PARAMS", "请在支持规则提案的 Bridge 中核对并确认变更。");
       }
       if (proposal.intent.backend === "smtp" && "accountKey" in proposal.action) {
-        if (!ref.confirmMail) throw new AgendaEditError("INVALID_PARAMS", "请在发信确认抽屉中核对并发送。");
+        if (!ref.confirmMail) throw new AssistantError("INVALID_PARAMS", "请在发信确认抽屉中核对并发送。");
         const account = this.mailService().smtpAccount(proposal.action.accountKey);
         if (!account || account.smtp.version !== proposal.intent.channelVersion) {
-          throw new AgendaEditError("CONFLICT", "发信账号已更改或停用。请调整提案后重新核对。");
+          throw new AssistantError("CONFLICT", "发信账号已更改或停用。请调整提案后重新核对。");
         }
         const messageId = `<${proposal.proposalId}.${proposal.revision}@${proposal.action.from.split("@")[1]}>`;
         this.store.claim(proposal, actor, "executing", messageId);
@@ -142,7 +143,7 @@ export class ProposalExecutor extends EventEmitter {
   }
 
   private mailService(): AssistantMailService {
-    if (!this.mail) throw new AgendaEditError("UNSUPPORTED", "当前宿主未启用发信提案。");
+    if (!this.mail) throw new AssistantError("UNSUPPORTED", "当前宿主未启用发信提案。");
     return this.mail;
   }
 
@@ -161,10 +162,10 @@ export class ProposalExecutor extends EventEmitter {
   private freeze(action: AgendaProposalAction | MemoryRuleProposalAction, proposalId: string, sessionId: string, keepBase?: StoredProposal): ProposalPayload {
     if (action.kind === "memory.rule_upsert") {
       const policy = this.profile?.policy(sessionId);
-      if (!policy) throw new AgendaEditError("UNSUPPORTED", "当前托管会话的规则文件不可用。");
+      if (!policy) throw new AssistantError("UNSUPPORTED", "当前托管会话的规则文件不可用。");
       const frozen = this.profile!.memory.freeze(action, policy === ASSISTANT_WORKSPACE_POLICY);
       if (keepBase && frozen.intent.baseProfileSha256 !== keepBase.profile?.baseProfileSha256) {
-        throw new AgendaEditError("CONFLICT", "PROFILE.md 已变更，请让助理重新核对。");
+        throw new AssistantError("CONFLICT", "PROFILE.md 已变更，请让助理重新核对。");
       }
       return { action, sourceId: "profile", sourceLabel: "助理规则", ...frozen };
     }
@@ -173,11 +174,11 @@ export class ProposalExecutor extends EventEmitter {
     const sourceId = record?.sourceId ?? ("sourceId" in action ? action.sourceId : LOCAL_AGENDA_ID);
     const source = sourceId === LOCAL_AGENDA_ID ? undefined : this.agenda.source(sourceId);
     if (source && (!source.enabled || (!record && !this.agenda.proposalSources().some(s => s.id === sourceId && s.kinds.includes(kind))))) {
-      throw new AgendaEditError("UNSUPPORTED", "此来源当前不能写入这种记录。");
+      throw new AssistantError("UNSUPPORTED", "此来源当前不能写入这种记录。");
     }
     if (keepBase && (record?.revision !== (keepBase.intent.backend === "local" ? keepBase.intent.baseRevision : 1) ||
       (keepBase.intent.backend === "caldav" && record?.etag !== keepBase.intent.write.etag))) {
-      throw new AgendaEditError("CONFLICT", "目标记录已更新，请让助理重新核对。");
+      throw new AssistantError("CONFLICT", "目标记录已更新，请让助理重新核对。");
     }
     const before = record && (({ id: _id, sourceId: _source, revision: _revision, uid: _uid, collection: _collection,
       etag: _etag, resourceHref: _href, recurrenceId: _recurrence, origin: _origin, ...value }) => value)(record);
@@ -190,8 +191,8 @@ export class ProposalExecutor extends EventEmitter {
     const etag = record.etag;
     const href = record.resourceHref!;
     const object = this.agenda.proposalObject(sourceId, href);
-    if (!object || object.recurring || record.recurrenceId) throw new AgendaEditError("UNSUPPORTED", "暂不支持修改或删除重复日历实例。");
-    if (!etag || !/^"[^"\r\n]*"$/u.test(etag)) throw new AgendaEditError("UNSUPPORTED", "此来源没有可用于条件写入的版本。" );
+    if (!object || object.recurring || record.recurrenceId) throw new AssistantError("UNSUPPORTED", "暂不支持修改或删除重复日历实例。");
+    if (!etag || !/^"[^"\r\n]*"$/u.test(etag)) throw new AssistantError("UNSUPPORTED", "此来源没有可用于条件写入的版本。" );
     const body = proposalCalendarBody(action, record.uid, { body: object.data, value: before! });
     return { ...base, intent: { backend: "caldav", collection,
       write: action.kind === "calendar.delete" ? { method: "DELETE", href, etag } : { method: "PUT", href, etag, body } } };
@@ -216,7 +217,7 @@ export class ProposalExecutor extends EventEmitter {
         case "calendar.delete": this.agenda.deleteLocalEvent(action.recordId, baseRevision!); break;
       }
     } catch (error) {
-      if (error instanceof AgendaEditError && (error.code === "CONFLICT" || error.code === "NOT_FOUND")) return this.store.finish(proposal, "conflict");
+      if (error instanceof AssistantError && (error.code === "CONFLICT" || error.code === "NOT_FOUND")) return this.store.finish(proposal, "conflict");
       throw error;
     }
     return this.store.finish(proposal, "applied");
@@ -225,7 +226,7 @@ export class ProposalExecutor extends EventEmitter {
   private remoteCredentials(proposal: StoredProposal, collection: string) {
     let source;
     try { source = this.agenda.source(proposal.sourceId); }
-    catch (error) { if (error instanceof AgendaEditError && error.code === "NOT_FOUND") return; throw error; }
+    catch (error) { if (error instanceof AssistantError && error.code === "NOT_FOUND") return; throw error; }
     if (!source.enabled || source.url !== collection || !source.credential || !this.credentials.available()) return;
     let credential;
     try { credential = this.credentials.decrypt(source.credential); }

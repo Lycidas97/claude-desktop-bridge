@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
-import { AgendaEditError } from "./agenda-store.js";
+import { AssistantError } from "./assistant-error.js";
 import { sharedSmtpChannel, smtpChannel } from "./proposal-contract.js";
 import { EventEmitter } from "node:events";
 import { renameSync, writeFileSync } from "node:fs";
@@ -28,7 +28,7 @@ type SharedSmtpSettings = z.output<typeof sharedSmtpChannel>;
 type SavedAccount = MailAccount & { enabled: boolean; pollIntervalSeconds: MailPollInterval; smtp?: SavedSmtpChannel; smtpSharedAuth?: true };
 
 function sharedSmtpSettings(smtp: SharedSmtpSettings, user: string) {
-  if (!smtpChannel.shape.user.safeParse(user).success) throw new AgendaEditError("INVALID_PARAMS", "邮箱登录名不能用于 SMTP。");
+  if (!smtpChannel.shape.user.safeParse(user).success) throw new AssistantError("INVALID_PARAMS", "邮箱登录名不能用于 SMTP。");
   return { ...smtp, user };
 }
 
@@ -154,7 +154,7 @@ export class AssistantMailService extends EventEmitter {
       const existing = this.accounts.get(key);
       if (existing) {
         if (input.createOnly || input.smtp || existing.config.smtpSharedAuth) {
-          throw new AgendaEditError("CONFLICT", "此邮箱已添加。请在支持共用授权的 Bridge 客户端中打开账号设置。");
+          throw new AssistantError("CONFLICT", "此邮箱已添加。请在支持共用授权的 Bridge 客户端中打开账号设置。");
         }
         await this.savePassword(key, input.password);
         if (existing.config.enabled) await this.restartReceiver(key);
@@ -187,7 +187,7 @@ export class AssistantMailService extends EventEmitter {
       const { config } = this.requireAccount(accountKey);
       if (smtp) await this.saveSharedSmtp(accountKey, config, smtp, password);
       else {
-        if (config.smtpSharedAuth) throw new AgendaEditError("CONFLICT", "此邮箱收发信共用密码。请在新版 Bridge 的账号设置中更新。");
+        if (config.smtpSharedAuth) throw new AssistantError("CONFLICT", "此邮箱收发信共用密码。请在新版 Bridge 的账号设置中更新。");
         await this.savePassword(accountKey, password);
       }
       await this.restartReceiver(accountKey);
@@ -239,7 +239,7 @@ export class AssistantMailService extends EventEmitter {
       const { smtp: previous, smtpSharedAuth } = config;
       let next: SavedSmtpChannel | undefined;
       if (input) {
-        if (smtpSharedAuth) throw new AgendaEditError("UNSUPPORTED", "请更新 Bridge 客户端后修改共用的邮箱授权。");
+        if (smtpSharedAuth) throw new AssistantError("UNSUPPORTED", "请更新 Bridge 客户端后修改共用的邮箱授权。");
         const { credential, ...fields } = input;
         if (previous && sameSmtp(previous, fields)) {
           await this.savePassword(`smtp-${previous.version}`, credential);
@@ -282,7 +282,7 @@ export class AssistantMailService extends EventEmitter {
 
   replySource(accountKey: string, mailRefId: string): { subject: string; source: Readable } {
     const event = this.store.event(mailRefId);
-    if (!event || event.accountKey !== accountKey) throw new AgendaEditError("NOT_FOUND", "此账号下找不到原邮件。");
+    if (!event || event.accountKey !== accountKey) throw new AssistantError("NOT_FOUND", "此账号下找不到原邮件。");
     return { subject: event.subject, source: this.store.stream(mailRefId)! };
   }
 

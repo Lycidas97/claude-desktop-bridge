@@ -7,14 +7,12 @@ import type {
 import type { AssistantAttentionItem } from "../../packages/protocol/src/assistant-mail.js";
 import { AgendaExpansionLimitError, parseAgendaObject } from "./agenda-ical.js";
 import { agendaInstant, collectionZone } from "./agenda-time.js";
+import { AssistantError } from "./assistant-error.js";
 
 export const LOCAL_AGENDA_ID = "local";
 const todoOrder = "(status IN ('completed', 'cancelled')), COALESCE(due_at, '~'), id";
 export type AgendaErrorCode = NonNullable<BridgeAgendaSource["errorCode"]>;
 export class AgendaCalendarDataError extends Error {}
-export class AgendaEditError extends Error {
-  constructor(readonly code: "NOT_FOUND" | "CONFLICT" | "UNSUPPORTED" | "INVALID_PARAMS", message: string) { super(message); }
-}
 
 type SourceRow = {
   id: string; label: string; url: string | null; user: string | null; credential: Uint8Array | null;
@@ -101,7 +99,7 @@ export class AgendaStore {
 
   source(id: string): SourceRow {
     const row = this.db.prepare("SELECT * FROM assistant_sources WHERE id = ? AND kind = 'caldav'").get(id) as SourceRow | undefined;
-    if (!row) throw new AgendaEditError("NOT_FOUND", "找不到此日历源。");
+    if (!row) throw new AssistantError("NOT_FOUND", "找不到此日历源。");
     return row;
   }
 
@@ -111,7 +109,7 @@ export class AgendaStore {
 
   addSource(input: { url: string; label: string; user: string }, credential: Uint8Array): string {
     const id = objectKey(input.url, input.user);
-    if (this.db.prepare("SELECT 1 FROM assistant_sources WHERE id = ?").get(id)) throw new AgendaEditError("CONFLICT", "此日历源已添加。");
+    if (this.db.prepare("SELECT 1 FROM assistant_sources WHERE id = ?").get(id)) throw new AssistantError("CONFLICT", "此日历源已添加。");
     this.db.prepare(`INSERT INTO assistant_sources (id, kind, label, url, user, credential, status)
       VALUES (?, 'caldav', ?, ?, ?, ?, 'pending')`).run(id, input.label, input.url, input.user, credential);
     return id;
@@ -199,7 +197,7 @@ export class AgendaStore {
 
   proposalRecord(kind: "todo" | "calendar", id: string): BridgeAgendaTodo | BridgeAgendaEvent {
     const row = this.db.prepare(`SELECT value FROM ${kind === "todo" ? "todos" : "calendar_events"} WHERE id = ?`).get(id);
-    if (!row) throw new AgendaEditError("NOT_FOUND", "找不到可修改的单项记录（暂不支持重复实例）。");
+    if (!row) throw new AssistantError("NOT_FOUND", "找不到可修改的单项记录（暂不支持重复实例）。");
     return JSON.parse(row.value as string);
   }
 
@@ -210,14 +208,14 @@ export class AgendaStore {
 
   deleteLocalEvent(id: string, revision: number): void {
     if (!this.db.prepare("DELETE FROM calendar_events WHERE id = ? AND revision = ? AND source_id = 'local'").run(id, revision).changes) {
-      throw new AgendaEditError("CONFLICT", "记录已更新或不存在。");
+      throw new AssistantError("CONFLICT", "记录已更新或不存在。");
     }
   }
 
   private localRow(table: Entity, id: string): RecordRow {
     const row = this.db.prepare(`SELECT id, source_id, revision, value FROM ${table} WHERE id = ?`).get(id) as RecordRow | undefined;
-    if (!row) throw new AgendaEditError("NOT_FOUND", "此记录已不存在。");
-    if (row.source_id !== LOCAL_AGENDA_ID) throw new AgendaEditError("UNSUPPORTED", "此数据源只读。");
+    if (!row) throw new AssistantError("NOT_FOUND", "此记录已不存在。");
+    if (row.source_id !== LOCAL_AGENDA_ID) throw new AssistantError("UNSUPPORTED", "此数据源只读。");
     return row;
   }
 
@@ -229,7 +227,7 @@ export class AgendaStore {
     if (existing) {
       const update = this.db.prepare(`UPDATE ${table} SET value = ?, revision = ? WHERE id = ? AND revision = ?`)
         .run(JSON.stringify(record), revision, id, existing.revision);
-      if (!update.changes) throw new AgendaEditError("CONFLICT", "记录已更新，请重新打开后再编辑。");
+      if (!update.changes) throw new AssistantError("CONFLICT", "记录已更新，请重新打开后再编辑。");
     } else this.db.prepare(`INSERT INTO ${table} (id, source_id, revision, value) VALUES (?, 'local', 1, ?)`)
       .run(id, JSON.stringify(record));
     return record;

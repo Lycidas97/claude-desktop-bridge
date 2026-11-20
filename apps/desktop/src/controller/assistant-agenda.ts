@@ -2,7 +2,7 @@ import type { BridgeMethod } from "@bridge/protocol";
 import { ZodError } from "zod";
 import type { AssistantAgendaService } from "../../../../plugins/assistant-mail/agenda.js";
 import { agendaRequests } from "../../../../plugins/assistant-mail/agenda-contract.js";
-import { AgendaEditError } from "../../../../plugins/assistant-mail/agenda-store.js";
+import { AssistantError } from "../../../../plugins/assistant-mail/assistant-error.js";
 import { BridgeRequestError } from "./request-error.js";
 
 export async function handleAssistantAgenda(service: AssistantAgendaService, method: BridgeMethod, params: unknown) {
@@ -31,7 +31,7 @@ export async function handleAssistantAgenda(service: AssistantAgendaService, met
     return { assistantAgenda: service.snapshot() };
   } catch (error) {
     if (error instanceof ZodError) throw new BridgeRequestError("INVALID_PARAMS", "请检查日程或待办的输入。");
-    if (error instanceof AgendaEditError) throw new BridgeRequestError(error.code, error.message);
+    if (error instanceof AssistantError) throw new BridgeRequestError(error.code, error.message);
     throw error;
   }
 }

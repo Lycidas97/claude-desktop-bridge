@@ -1,5 +1,5 @@
 import type { BridgeRequest } from "@bridge/protocol";
-import { AgendaEditError } from "../../../../plugins/assistant-mail/agenda-store.js";
+import { AssistantError } from "../../../../plugins/assistant-mail/assistant-error.js";
 import { proposalRequests } from "../../../../plugins/assistant-mail/proposal-contract.js";
 import type { ProposalExecutor } from "../../../../plugins/assistant-mail/proposal-executor.js";
 import type { z } from "zod";
@@ -43,7 +43,7 @@ export async function handleAssistantProposal(
       default: throw new BridgeRequestError("UNSUPPORTED", "不支持此提案操作。");
     }
   } catch (error) {
-    if (error instanceof AgendaEditError) throw new BridgeRequestError(error.code, error.message);
+    if (error instanceof AssistantError) throw new BridgeRequestError(error.code, error.message);
     throw error;
   }
 }

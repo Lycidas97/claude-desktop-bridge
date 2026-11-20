@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { BridgeActionProposal, BridgeProposalPage, ProposalRevisionRef, ProposalState } from "../../packages/protocol/src/assistant-proposal.js";
-import { AgendaEditError } from "./agenda-store.js";
+import { AssistantError } from "./assistant-error.js";
 import type { CalDavWrite } from "./caldav.js";
 import { ASSISTANT_PROFILE_TEMPLATE_HASH, type ProfileIntent } from "./assistant-memory.js";
 import type { SmtpResult } from "./smtp.js";
@@ -73,9 +73,9 @@ export class ProposalStore {
 
   requirePending(ref: ProposalRevisionRef, sessionId?: string): StoredProposal {
     const row = this.db.prepare(`${projection} WHERE p.id = ? ORDER BY p.revision DESC LIMIT 1`).get(ref.proposalId) as ProposalRow | undefined;
-    if (!row || (sessionId !== undefined && row.session_id !== sessionId)) throw new AgendaEditError("NOT_FOUND", "找不到此提案。");
+    if (!row || (sessionId !== undefined && row.session_id !== sessionId)) throw new AssistantError("NOT_FOUND", "找不到此提案。");
     if (row.revision !== ref.revision || row.hash !== ref.payloadHash || row.state !== null) {
-      throw new AgendaEditError("CONFLICT", "提案已更新或处理，请核对当前版本。");
+      throw new AssistantError("CONFLICT", "提案已更新或处理，请核对当前版本。");
     }
     return stored(row);
   }

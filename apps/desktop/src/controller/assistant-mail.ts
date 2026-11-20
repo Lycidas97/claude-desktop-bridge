@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { ARTIFACT_MAX_BYTES, ASSISTANT_ATTENTION_CAPABILITY, ASSISTANT_MAIL_CATEGORIES_CAPABILITY, ASSISTANT_MAIL_FILING_CAPABILITY, ASSISTANT_MAIL_RECEIVED_ORDER_CAPABILITY, ASSISTANT_MAIL_SHARED_AUTH_CAPABILITY, ASSISTANT_MEMORY_POLICY, ASSISTANT_SMTP_CAPABILITY, isAssistantWorkspacePolicy, isMailPollInterval, mailAttachmentPreviewKind } from "@bridge/protocol";
-import { AgendaEditError } from "../../../../plugins/assistant-mail/agenda-store.js";
+import { AssistantError } from "../../../../plugins/assistant-mail/assistant-error.js";
 import type { AssistantAgendaService } from "../../../../plugins/assistant-mail/agenda.js";
 import { configureSmtp, saveMailAccount } from "../../../../plugins/assistant-mail/proposal-contract.js";
 import type {
@@ -248,7 +248,7 @@ export class AssistantMailCoordinator {
     if (binding?.managed?.policy !== ASSISTANT_MEMORY_POLICY || binding.nativeSessionId !== event.sessionId) return;
     try { this.workspace.memory.refreshIndex(); }
     catch (error) {
-      if (!(error instanceof AgendaEditError) && !(error instanceof Error && "code" in error && "syscall" in error)) throw error;
+      if (!(error instanceof AssistantError) && !(error instanceof Error && "code" in error && "syscall" in error)) throw error;
       process.stderr.write("Bridge assistant memory index refresh failed.\n");
     }
   }

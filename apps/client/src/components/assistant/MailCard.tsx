@@ -1,8 +1,10 @@
 import { ARTIFACT_MAX_BYTES, MAIL_CATEGORIES, mailAttachmentPreviewKind, type BridgeMailCategory, type BridgeMailFolder, type BridgeHistoryItem, type BridgeMailAttachment, type BridgeMailCard, type BridgeMailDetail } from "@bridge/protocol";
-import { Download, Mail, Paperclip } from "lucide-react";
-import { useState, type MouseEvent } from "react";
+import { Download, Folder, Mail, Paperclip } from "lucide-react";
+import { useEffect, useState, type MouseEvent } from "react";
 import { downloadMailAttachment } from "../../lib/artifact-download.js";
 import { formatBytes } from "../../lib/media-preview.js";
+import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
+import { Sheet, SheetAction } from "../common/Sheet.js";
 import { useMediaPreview, useMediaRequest } from "../evidence/MediaPreviewProvider.js";
 import { useAssistantMail } from "./AssistantMailProvider.js";
 import "./assistant-mail.css";
@@ -54,6 +56,31 @@ function MailAttachmentRow({ attachment, mailRefId, enabled }: { attachment: Bri
     {progress !== undefined && <small role="status">下载中 {Math.round(progress * 100)}%</small>}
     {error && <small role="alert">{error}</small>}
   </li>;
+}
+
+function MailCategoryPicker({ disabled, move }: { disabled: boolean; move(category: BridgeMailCategory, control: HTMLElement): void }) {
+  const [opener, setOpener] = useState<HTMLButtonElement>();
+  useEffect(() => {
+    if (!opener) return;
+    if (disabled) { setOpener(undefined); return; }
+    return registerMobileBackHandler(() => { setOpener(undefined); return true; }, 150);
+  }, [disabled, opener]);
+
+  return <>
+    <button type="button" className="assistant-session-link" aria-haspopup="dialog" disabled={disabled} onClick={event => {
+      event.currentTarget.focus({ preventScroll: true });
+      setOpener(event.currentTarget);
+    }}>收入分类</button>
+    {opener && !disabled && <Sheet title="收入分类" manageFocus onClose={() => setOpener(undefined)}>
+      <div className="m-group assistant-mail-category-options">
+        {MAIL_CATEGORIES.map(category => <SheetAction key={category} icon={<Folder size={18} />}
+          label={MAIL_FOLDER_LABELS[category]} onClick={() => {
+            setOpener(undefined);
+            move(category, opener);
+          }} />)}
+      </div>
+    </Sheet>}
+  </>;
 }
 
 export function MailCard({ card, nativeMessage, onDiscuss, showBatchDelivery = true, junkAction, filing }: {
@@ -123,11 +150,7 @@ export function MailCard({ card, nativeMessage, onDiscuss, showBatchDelivery = t
       {filing && <>
         {card.folder
           ? <button type="button" className="assistant-session-link" disabled={filing.disabled} onClick={event => filing.move("inbox", event.currentTarget)}>收回收件</button>
-          : <select className="assistant-mail-file-select" aria-label="收入分类" value="" disabled={filing.disabled}
-              onChange={event => { if (event.target.value) filing.move(event.target.value as BridgeMailCategory, event.currentTarget); }}>
-              <option value="">收入分类</option>
-              {MAIL_CATEGORIES.map(category => <option key={category} value={category}>{MAIL_FOLDER_LABELS[category]}</option>)}
-            </select>}
+          : <MailCategoryPicker disabled={filing.disabled} move={filing.move} />}
       </>}
       {junkAction && <button type="button" className="assistant-session-link assistant-mail-junk-action" disabled={junkAction.disabled} onClick={junkAction.onMark}>标为垃圾邮件</button>}
     </div>}

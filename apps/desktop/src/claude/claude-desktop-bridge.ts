@@ -16,7 +16,8 @@ import {
 import { diag, diagnostics } from "../app/diag.js";
 import { ClaudeDesktopInspector, InspectorDisconnectedError, InspectorNotDispatchedError, NativeCallError, type NativeSectionCatalog } from "./claude-desktop-inspector.js";
 import type { ConversationStateStore, NativeDesktopReceipt } from "../controller/conversation-state-store.js";
-import { readClaudeTranscriptBackgroundTasks, readClaudeTranscriptSubagents, visibleMessage } from "../transcript/claude-history.js";
+import { visibleMessage } from "../transcript/claude-history.js";
+import { readClaudeTranscriptBackgroundTasks, readClaudeTranscriptSubagents } from "../transcript/transcript-subagents.js";
 import { extractToolCallDetailFromMessages, readSubagentToolCallDetail, summarizeNativeToolInput } from "../transcript/transcript-tool-detail.js";
 import { claudeRuntimePaths } from "../app/platform.js";
 import type { SessionEventLog, BridgeEventDraft } from "../controller/session-event-log.js";

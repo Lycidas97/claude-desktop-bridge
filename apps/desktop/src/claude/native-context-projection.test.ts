@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { scanClaudeContextFromMessages } from "../transcript/claude-history.js";
+import { scanClaudeContextFromMessages } from "../transcript/transcript-context.js";
 import { buildTranscriptContextState, projectContextMessages } from "./native-context-usage.js";
 
 it.each(["compactMetadata", "compact_metadata"])("preserves both context consumers across %s and streamed usage", name => {

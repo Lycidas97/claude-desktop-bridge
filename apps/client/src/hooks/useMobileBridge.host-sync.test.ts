@@ -1667,7 +1667,7 @@ describe("mobile history pagination", () => {
       ["evidence.list", expect.anything()],
       ["session.history", expect.objectContaining({ sessionId: "shared-session", cursor: "recent-uuid", limit: 50 })],
     ]);
-    expect(harness.state.histories["shared-session"]).toEqual({ status: "ready", items: [older, recent], hasMore: false });
+    expect(harness.state.histories["shared-session"]).toEqual({ status: "ready", items: [older, recent], hasMore: false, latestRead: { completedTurnId: undefined } });
     expect(harness.addOutbox).not.toHaveBeenCalled();
     expect(harness.state.localTurns).toEqual([]);
   });
@@ -1687,7 +1687,22 @@ describe("mobile history pagination", () => {
     response.resolve({ session, history: { items: [recent], hasMore: false } });
     await opening;
     expect(harness.state.snapshot.sessions[0].lastCompletedTurnId).toBe("new");
-    expect(harness.state.histories[session.sessionId].readCompletedTurnId).toBe("old");
+    expect(harness.state.histories[session.sessionId].latestRead?.completedTurnId).toBe("old");
+  });
+
+  it("keeps a successful manual open when an older automatic history response arrives afterwards", async () => {
+    const automatic = deferred<Record<string, unknown>>();
+    const reply = { ...recent, id: "manual-recovered-reply", role: "assistant", createdAt: recent.createdAt + 1 };
+    harness.respond = async ({ method }) => method === "session.history" ? automatic.promise
+      : method === "session.open" ? { history: { items: [recent, reply], hasMore: false } } : {};
+    const bridge = useMobileBridge();
+    const catchingUp = bridge.refreshLatestHistory(recent.sessionId, undefined);
+    await vi.waitFor(() => expect(harness.requests[0]?.request.method).toBe("session.history"));
+    await bridge.openSession(recent.sessionId);
+    expect(harness.state.histories[recent.sessionId].items).toEqual([recent, reply]);
+    automatic.resolve({ history: { items: [recent], hasMore: false } });
+    await catchingUp;
+    expect(harness.state.histories[recent.sessionId].items).toEqual([recent, reply]);
   });
 
   it("reads the next page when only a projected task plan overlaps", async () => {
@@ -1721,14 +1736,14 @@ describe("mobile history pagination", () => {
     const bridge = useMobileBridge();
     await bridge.refreshLatestHistory("shared-session", "native-completion");
     expect(harness.state.histories["shared-session"]).toEqual({
-      status: "ready", items: [older, updated, between, newest], hasMore: true, nextCursor: older.id, readCompletedTurnId: "native-completion",
+      status: "ready", items: [older, updated, between, newest], hasMore: true, nextCursor: older.id, latestRead: { completedTurnId: "native-completion" },
     });
     await bridge.loadOlderHistory("shared-session");
     expect(harness.requests.map(({ request: { method, params } }) => [method, params.cursor])).toEqual([
       ["session.history", undefined], ["session.history", newest.id], ["session.history", older.id],
     ]);
     expect(harness.state.histories["shared-session"]).toEqual({
-      status: "ready", items: [first, older, updated, between, newest], hasMore: false, readCompletedTurnId: "native-completion",
+      status: "ready", items: [first, older, updated, between, newest], hasMore: false, latestRead: { completedTurnId: "native-completion" },
     });
   });
 

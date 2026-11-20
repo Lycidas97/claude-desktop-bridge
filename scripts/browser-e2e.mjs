@@ -159,7 +159,7 @@ async function runScenario(theme, scenario, mockHostRuntime) {
     if (scenario === "assistant-mail") await verifyAssistantMail(page, host, steps, directory, viewports, baseUrl);
     else if (scenario === "assistant-mail-history") await verifyAssistantMailHistory(page, host, steps, directory, viewports);
     else if (scenario === "assistant-mail-unread") await verifyAssistantMailUnread(page, host, steps, directory, viewports, baseUrl);
-    else if (scenario === "assistant-replies") await verifyAssistantReplies(page, host, steps, directory, relayPeers);
+    else if (scenario === "assistant-replies") await verifyAssistantReplies(page, host, steps, directory, serverRoutes);
     else if (scenario === "assistant-proposals") await verifyAssistantProposals(page, host, steps, directory, viewports, baseUrl);
     else if (scenario === "incoming-file") await verifyIncomingFile(page, host, firstHost, steps, directory);
     else if (scenario === "paired-host-status") await verifyPairedHostStatus(page, firstHost, host, steps, directory, serverRoutes);

@@ -1948,6 +1948,10 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
+.latest-history-notice[role="status"] {
+  background: color-mix(in srgb, var(--warm) 10%, var(--surface));
+}
+
 .session-view-switch {
   display: grid;
   min-height: 43px;

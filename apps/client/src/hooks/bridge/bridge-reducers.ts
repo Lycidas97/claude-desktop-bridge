@@ -89,7 +89,7 @@ export interface SessionHistoryState {
   nextCursor?: string;
   hasMore: boolean;
   error?: string;
-  readCompletedTurnId?: string | undefined;
+  latestRead?: { completedTurnId: string | undefined };
 }
 
 export interface SessionEvidenceState {
@@ -1479,7 +1479,7 @@ export interface ApplySessionResultOptions {
   history?: {
     sessionId: string;
     page: BridgeHistoryPage;
-    readCompletedTurnId?: string | undefined;
+    latestRead?: SessionHistoryState["latestRead"];
   } | undefined;
   titleOnly?: boolean | undefined;
   prepend?: boolean | undefined;
@@ -1568,7 +1568,7 @@ export function applySessionResultToState(
         ...current.histories,
         [options.history.sessionId]: {
           ...projectHistoryPage(options.history.page),
-          ...(options.history.readCompletedTurnId ? { readCompletedTurnId: options.history.readCompletedTurnId } : {}),
+          ...(options.history.latestRead ? { latestRead: options.history.latestRead } : {}),
         },
       }
     : current.histories;

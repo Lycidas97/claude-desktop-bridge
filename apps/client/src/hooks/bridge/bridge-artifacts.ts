@@ -74,6 +74,7 @@ export async function openBridgeSession(
           status: "loading",
           items: current.histories[sessionId]?.items ?? [],
           hasMore: current.histories[sessionId]?.hasMore ?? false,
+          ...(current.histories[sessionId]?.latestRead ? { latestRead: current.histories[sessionId]!.latestRead } : {}),
           ...(current.histories[sessionId]?.nextCursor
             ? { nextCursor: current.histories[sessionId].nextCursor }
             : {}),
@@ -107,7 +108,9 @@ export async function openBridgeSession(
         const session = result.session && liveCompletion && liveCompletion !== readCompletedTurnId
           ? { ...result.session, lastCompletedTurnId: liveCompletion }
           : result.session;
-        return applySessionResultToState(current, session, { history: { sessionId, page: result.history!, readCompletedTurnId } });
+        return applySessionResultToState(current, session, { history: {
+          sessionId, page: result.history!, latestRead: { completedTurnId: readCompletedTurnId },
+        } });
       });
       const eventsAtRequestStart = stateRef.current.events;
       void sendRequest("evidence.list", { sessionId, limit: 12 }, {
@@ -139,6 +142,8 @@ export async function openBridgeSession(
             status: "error",
             items: current.histories[sessionId]?.items ?? [],
             hasMore: current.histories[sessionId]?.hasMore ?? false,
+            ...(current.histories[sessionId]?.latestRead ? { latestRead: current.histories[sessionId]!.latestRead } : {}),
+            ...(current.histories[sessionId]?.nextCursor ? { nextCursor: current.histories[sessionId]!.nextCursor } : {}),
             error: error instanceof Error ? error.message : "会话打开失败",
           },
         },
@@ -359,7 +364,8 @@ export async function refreshLatestBridgeHistory(
   const crypto = cryptoRef.current;
   const socket = socketRef.current;
   const isCurrent = () => cryptoRef.current === crypto && socketRef.current === socket;
-  const existingIds = new Set(stateRef.current.histories[sessionId]?.items.filter(isTranscriptMessage).map(item => item.id));
+  const startingHistory = stateRef.current.histories[sessionId];
+  const existingIds = new Set(startingHistory?.items.filter(isTranscriptMessage).map(item => item.id));
   const pages: BridgeHistoryPage[] = [];
   let cursor: string | undefined;
   let page: BridgeHistoryPage;
@@ -375,16 +381,23 @@ export async function refreshLatestBridgeHistory(
   setState((current) => {
     if (!isCurrent()) return current;
     const existing = current.histories[sessionId];
+    // A newer latest-page read (including a manual open) already replaced this window.
+    if (existing?.latestRead !== startingHistory?.latestRead) return current;
     const overlap = page.hasMore ? existing?.items.findIndex(item => item.id === oldest) ?? -1 : -1;
     const prefix = overlap >= 0 ? existing!.items.slice(0, overlap).filter(item => !newestById.has(item.id)) : [];
+    const history = overlap >= 0 ? { ...existing! } : projectHistoryPage(page);
+    if (history.status === "error") {
+      history.status = "ready";
+      delete history.error;
+    }
     return {
       ...current,
       histories: {
         ...current.histories,
         [sessionId]: {
-          ...(overlap >= 0 ? existing! : projectHistoryPage(page)),
+          ...history,
           items: [...prefix, ...newestById.values()],
-          readCompletedTurnId,
+          latestRead: { completedTurnId: readCompletedTurnId },
         },
       },
     };
@@ -426,7 +439,7 @@ export async function loadOlderBridgeHistory(
           ...stateValue.histories,
           [sessionId]: {
             ...projectHistoryPage(page, existing.items),
-            ...(existing.readCompletedTurnId ? { readCompletedTurnId: existing.readCompletedTurnId } : {}),
+            ...(existing.latestRead ? { latestRead: existing.latestRead } : {}),
           },
         },
       };

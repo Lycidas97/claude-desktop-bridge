@@ -645,6 +645,11 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
         case "session.list": result = { sessions: snapshot.sessions }; break;
         case "project.list": result = { projects: snapshot.projects }; break;
         case "session.open": {
+          if (host.failOpenOnce) {
+            host.failOpenOnce = false;
+            error = { code: "E2E_OPEN_FAILED", message: "隔离会话打开失败" };
+            break;
+          }
           const sidechatItems = nativePreview && String(request.params.sessionId).startsWith("browser-e2e-btw-")
             ? [
                 {

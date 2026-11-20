@@ -431,9 +431,8 @@
 }
 
 .mobile-home-catalog.is-flat-tree .session-family-chevron {
-  width: 26px;
+  width: var(--m-touch);
   height: 26px;
-  min-width: 26px;
   min-height: 26px;
 }
 

@@ -89,7 +89,27 @@ export async function verifySessionCatalog(page, host, steps, directory, viewpor
     assert.ok(mobileAlign.forkedBadgesDelta <= 1.5, `Mobile ${font} forked dot aligns with action: ${JSON.stringify(mobileAlign)}`);
     assert.ok(mobileAlign.plainBadgesDelta <= 1.5, `Mobile ${font} non-forked dot aligns with action: ${JSON.stringify(mobileAlign)}`);
   }
-  await page.locator(".mobile-home-catalog .session-row-v2.has-forks .session-family-chevron").first().click();
+  const mobileCatalog = page.locator(".mobile-home-catalog");
+  const parentRow = mobileCatalog.locator('[data-session-id="browser-e2e-parent"]');
+  const chevron = parentRow.locator(".session-family-chevron");
+  await chevron.scrollIntoViewIfNeeded();
+  const icon = await chevron.locator("svg").boundingBox();
+  assert.ok(icon);
+  const x = icon.x + icon.width / 2;
+  const y = icon.y + icon.height / 2;
+  await page.mouse.click(x - 19, y);
+  assert.ok(await mobileCatalog.isVisible(), "Clicking left of the fork arrow keeps the session catalog open");
+  assert.equal(await chevron.getAttribute("aria-expanded"), "false", "Clicking left of the fork arrow collapses the branch");
+  await page.mouse.click(x + 19, y);
+  assert.ok(await mobileCatalog.isVisible(), "Clicking right of the fork arrow keeps the session catalog open");
+  assert.equal(await chevron.getAttribute("aria-expanded"), "true", "Clicking right of the fork arrow expands the branch");
+  await mobileCatalog.locator('[data-session-id="browser-e2e-fork"]').waitFor();
+  await parentRow.locator(".session-row-action").click();
+  const parentMenu = page.getByRole("dialog", { name: "主会话", exact: true });
+  await parentMenu.getByRole("button", { name: "关闭", exact: true }).click();
+  assert.equal(await chevron.getAttribute("aria-expanded"), "true", "The session menu leaves the fork expanded");
+  await chevron.click();
+  steps.push("Mobile fork arrow expands and collapses 19px from either side of its center, and the adjacent session menu remains accessible");
   await page.evaluate(() => {
     document.documentElement.dataset.fontSize = "standard";
     document.documentElement.dataset.effectiveScale = "normal";
@@ -102,6 +122,8 @@ export async function verifySessionCatalog(page, host, steps, directory, viewpor
   await page.getByRole("dialog", { name: "项目顺序" }).waitFor();
   await capture("mobile-project-order");
   await page.getByRole("dialog", { name: "项目顺序" }).getByRole("button", { name: "关闭", exact: true }).click();
+  await parentRow.getByText("主会话", { exact: true }).click();
+  await page.getByRole("heading", { name: "主会话", exact: true }).waitFor();
 
   await page.exposeFunction("catalogRequest", async input => {
     const request = desktopFixtureRequest(input);

@@ -2952,6 +2952,15 @@
   gap: 2px;
 }
 
+/* Overrides the desktop sidebar's card fill (.desktop-project-list .project-group). */
+.is-flat-tree .project-group {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+}
+
 .is-flat-tree .project-group:not(.archived-group) {
   padding-bottom: 4px;
 }

@@ -88,6 +88,7 @@
 
 .mobile-tab-page[hidden] { display: none; }
 .mobile-workspace-canvas { width: 100%; height: 100%; }
+.mobile-conversation-slot:not([hidden]) { display: contents; }
 .mobile-app-shell .mobile-workspace { height: 100%; }
 .mobile-app-shell .mobile-workspace.new-chat-workspace,
 .mobile-workspace.new-chat-workspace {

@@ -95,16 +95,32 @@ describe("session command dispatch", () => {
     expect(onRun).not.toHaveBeenCalled();
   });
 
-  it.each(["model", "rename", "session", "help", "resume", "permissions"] as const)("routes %s to its real UI action", async action => {
+  it.each(["model", "session", "help", "resume", "permissions"] as const)("routes %s to its real UI action", async action => {
     const result = { action, session: { sessionId: "fork-A" }, sessions: [], catalog } as unknown as BridgeSessionCommandResult;
-    const onModel = vi.fn(); const onRename = vi.fn(); const onSession = vi.fn();
+    const onModel = vi.fn(); const onSession = vi.fn();
     let commands!: ReturnType<typeof useSessionCommands>;
-    const draw = renderer(() => { commands = useSessionCommands({ sessionId: "A", enabled: true, supported: true, onRun: async () => result, onModel, onRename, onSession }); return null; });
+    const draw = renderer(() => { commands = useSessionCommands({ sessionId: "A", enabled: true, supported: true, onRun: async () => result, onModel, onSession }); return null; });
     draw(); await commands.execute("/help", false); draw();
     if (action === "model") expect(onModel).toHaveBeenCalledOnce();
-    else if (action === "rename") expect(onRename).toHaveBeenCalledOnce();
     else if (action === "session") expect(onSession).toHaveBeenCalledWith("fork-A");
     else expect(commands.dialog).toEqual(result);
+  });
+
+  it("opens the shared rename dialog for a bare /rename and sends a named /rename to Desktop", async () => {
+    // Desktop answers both forms with `sent`, so only the client can route the bare form to the dialog.
+    const onRun = vi.fn().mockResolvedValue({ action: "sent" });
+    const onRename = vi.fn();
+    let commands!: ReturnType<typeof useSessionCommands>;
+    const draw = renderer(() => { commands = useSessionCommands({ sessionId: "A", enabled: true, supported: true, onRun, onModel: vi.fn(), onRename, onSession: vi.fn() }); return null; });
+    draw();
+    await expect(commands.execute("/rename  ", false)).resolves.toBe(true);
+    expect(onRename).toHaveBeenCalledOnce();
+    expect(onRun).not.toHaveBeenCalled();
+    await expect(commands.execute("/rename", true)).rejects.toThrow("先移除附件");
+    await commands.execute("/rename 新名称", false); draw();
+    expect(onRun).toHaveBeenCalledExactlyOnceWith("/rename 新名称");
+    expect(onRename).toHaveBeenCalledOnce();
+    expect(commands.dialog).toBeUndefined();
   });
 });
 

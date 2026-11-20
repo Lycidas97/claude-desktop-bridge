@@ -167,6 +167,10 @@ export async function verifyRound4Boundaries(page, host, steps, directory, viewp
   const hostDetails = page.locator(".mobile-host-details");
   const portRow = hostDetails.locator(".mobile-settings-row", { hasText: "调试端口 9229" });
   assert.equal(await portRow.locator(".mobile-settings-value").innerText(), "未开启");
+  // The activation result replaces an earlier failed quit on the same row.
+  await hostDetails.getByRole("button", { name: "退出", exact: true }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "退出 Claude", exact: true }).click();
+  await hostDetails.getByRole("status").getByText("Claude Desktop 未响应退出请求。", { exact: true }).waitFor();
   host.claudeActivationResult = {
     inspectorState: "closed",
     nativeReady: false,

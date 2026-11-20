@@ -980,6 +980,7 @@ export function DesktopSessions({
         <SessionConfigurationDialog
           key={`configuration:${rowConfigurationSession.sessionId}`}
           session={rowConfigurationSession}
+          manageFocus
           revision={hostEvents.filter((event) => (
             ((event.type === "session.configuration" || event.type === "session.compacted") && event.sessionId === rowConfigurationSession.sessionId)
             || (event.type === "permission.policy.changed" && (!event.sessionId || event.sessionId === rowConfigurationSession.sessionId))

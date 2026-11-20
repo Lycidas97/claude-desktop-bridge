@@ -238,7 +238,7 @@ describe("Round 4 Client Deliverables", () => {
           return { kind: "response", requestId: "r2", ok: true, result: { evidence: { sessionId: "sess-1", items: [], hasMore: false } } };
         }
         if (req.method === "session.command") {
-          return { kind: "response", requestId: "r3", ok: true, result: { command: { action: "rename" } } };
+          return { kind: "response", requestId: "r3", ok: true, result: { command: { action: "sent", session: makeSession({ title: "新标题名称" }) } } };
         }
         if (req.method === "section.move") {
           return {

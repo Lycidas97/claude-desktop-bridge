@@ -31,6 +31,7 @@ vi.mock("react", async (importOriginal) => ({
     }];
   },
   useMemo: (create: () => unknown) => create(),
+  useRef: (current: unknown) => ({ current }),
   useEffect(effect: () => (() => void) | void, deps?: unknown[]) {
     const index = hooks.effectIndex++;
     const previous = hooks.effects[index];
@@ -175,6 +176,28 @@ describe("session effort", () => {
     expect(button(draw(), "默认").props["aria-pressed"]).toBe(true);
     button(draw(), "保存配置").props.onClick(); await settle();
     expect(props.onSave).toHaveBeenCalledExactlyOnceWith({ effort: null });
+  });
+
+  it("still clears the session effort when 默认 is picked together with a model change", async () => {
+    const loaded: BridgeSessionConfiguration = {
+      ...configuration,
+      effort: "high",
+      availableModels: [
+        { value: "current-model", displayName: "Current" },
+        { value: "next-model", displayName: "Next", supportedEffortLevels: ["low", "medium", "high"] },
+      ],
+      availableEffortLevels: ["low", "medium", "high"],
+    };
+    const props = {
+      session, onLoad: vi.fn().mockResolvedValue(loaded),
+      onSave: vi.fn().mockResolvedValue({ ...loaded, model: "next-model", effort: undefined }), onClose: vi.fn(),
+    };
+    const draw = () => render(() => <SessionConfigurationDialog {...props} />);
+    draw(); await settle();
+    elements(draw()).find(element => element.type === SelectMenu && element.props.ariaLabel === "模型")!.props.onChange("next-model");
+    button(draw(), "默认").props.onClick();
+    button(draw(), "保存配置").props.onClick(); await settle();
+    expect(props.onSave).toHaveBeenCalledExactlyOnceWith({ model: "next-model", effort: null });
   });
 
   it("starts unset and shows the effort Desktop returns after an explicit change", async () => {

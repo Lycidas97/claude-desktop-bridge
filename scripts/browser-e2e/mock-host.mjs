@@ -832,6 +832,9 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
           session.turnState = "running";
           result = { resolved: true };
           break;
+        case "desktop.app.quit":
+          error = { code: "DESKTOP_APP_QUIT_FAILED", message: "Claude Desktop 未响应退出请求。" };
+          break;
         default:
           throw new Error(`Unimplemented host RPC: ${request.method}`);
       }

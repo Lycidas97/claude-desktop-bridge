@@ -20,7 +20,7 @@ export function trapModalTabKey(event: KeyboardEvent<HTMLElement>, dialog: HTMLE
   const first = focusables[0]!;
   const last = focusables[focusables.length - 1]!;
   const active = typeof document !== "undefined" ? document.activeElement : null;
-  if (event.shiftKey && (active === first || !dialog.contains(active))) {
+  if (event.shiftKey && (active === first || active === dialog || !dialog.contains(active))) {
     event.preventDefault();
     last.focus();
   } else if (!event.shiftKey && (active === last || !dialog.contains(active))) {

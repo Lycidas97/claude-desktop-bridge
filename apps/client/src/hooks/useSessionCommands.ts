@@ -1,6 +1,7 @@
 import type { BridgeSessionCommandResult, BridgeSlashCommandCatalog } from "@bridge/protocol";
 import { useEffect, useRef, useState } from "react";
 
+const ATTACHMENT_ERROR = "命令不能附带图片或文件，请先移除附件";
 const BUILTINS = new Set(["help", "context", "usage", "compact", "model", "permissions", "clear", "new", "fork", "btw", "resume", "rename", "rewind"]);
 
 export function sessionCommandName(text: string): string | undefined {
@@ -55,6 +56,12 @@ export function useSessionCommands({ sessionId, sessionKey = sessionId, enabled,
   async function execute(text: string, hasAttachments: boolean): Promise<boolean> {
     const name = sessionCommandName(text);
     if (!enabled || !name) return false;
+    // Desktop runs a bare /rename as its own turn, so the shared rename dialog edits the title instead.
+    if (onRename && /^\/rename\s*$/iu.test(text.trim())) {
+      if (hasAttachments) throw new Error(ATTACHMENT_ERROR);
+      onRename();
+      return true;
+    }
     const builtin = BUILTINS.has(name);
     // Older hosts keep their existing custom-command turn.start behavior.
     if (!builtin && !supported) return false;
@@ -63,13 +70,12 @@ export function useSessionCommands({ sessionId, sessionKey = sessionId, enabled,
     if (!builtin && !command) return false;
     if (command?.unavailableReason) throw new Error(command.unavailableReason);
     if (!supported || !onRun) throw new Error("当前电脑版本不支持会话命令，请更新 Bridge");
-    if (hasAttachments) throw new Error("命令不能附带图片或文件，请先移除附件");
+    if (hasAttachments) throw new Error(ATTACHMENT_ERROR);
     const result = await onRun(text);
     if (sessionKey === undefined || activeKey.current !== sessionKey) return true;
     if (result.catalog) setCatalog({ key: sessionKey, value: result.catalog });
     if (result.action === "model") onModel();
     else if (result.action === "rewind" && onRewind) onRewind();
-    else if (result.action === "rename" && onRename) onRename();
     else if (result.action === "session" && result.session) await onSession(result.session.sessionId);
     else if (result.action !== "sent") setDialog(result);
     return true;

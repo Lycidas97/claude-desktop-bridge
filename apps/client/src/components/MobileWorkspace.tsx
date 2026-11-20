@@ -303,7 +303,6 @@ export function MobileWorkspace({
     key: number;
     initialProjectId?: string | undefined;
     initialCwd?: string | undefined;
-    returnSessionId?: string | undefined;
   }>();
   const [createDialogState, setCreateDialogState] = useState<NewChatDirectoryPickerRequest>();
   const conversationDrafts = useConversationDrafts(activeHostId);
@@ -386,10 +385,9 @@ export function MobileWorkspace({
     ? sessions.find((session) => session.sessionId === effectiveSelectedId)
     : undefined;
   const showingHomeCatalog = !selectedSession && !newChatMode;
-  const newChatReturnSession = newChatMode && newChatTarget?.returnSessionId
-    ? sessions.find((session) => session.sessionId === newChatTarget.returnSessionId)
-    : undefined;
-  const activeConversationSessionId = visible && !showingHomeCatalog && selectedSession && sessionView === "conversation"
+  // New chat opened from a conversation's ⋯ keeps that conversation mounted underneath to return to.
+  const newChatReturnSession = newChatMode ? selectedSession : undefined;
+  const activeConversationSessionId = visible && !newChatMode && selectedSession && sessionView === "conversation"
     ? selectedSession.sessionId
     : undefined;
   useEffect(() => {
@@ -545,7 +543,7 @@ export function MobileWorkspace({
   }, [showingHomeCatalog, visible]);
 
   function leaveNewChat(): void {
-    if (newChatReturnSession) void selectSession(newChatReturnSession.sessionId);
+    if (newChatReturnSession) setNewChatMode(false);
     else closeToCatalog();
   }
 
@@ -646,22 +644,23 @@ export function MobileWorkspace({
     await onOpenSession(sessionId);
   }
 
-  function startNewChat(targetProjectId?: string, targetCwd?: string, returnSessionId?: string): void {
-    autoOpenedSessionRef.current = undefined;
+  function startNewChat(targetProjectId?: string, targetCwd?: string, keepConversation = false): void {
     setNewChatTarget((previous) => ({
       key: (previous?.key ?? 0) + 1,
       ...(targetProjectId !== undefined ? { initialProjectId: targetProjectId } : {}),
       ...(targetCwd !== undefined ? { initialCwd: targetCwd } : {}),
-      ...(returnSessionId !== undefined ? { returnSessionId } : {}),
     }));
     setNewChatMode(true);
     setCreateDialogState(undefined);
     setMenuSessionId(undefined);
     setMoveMenuSessionId(undefined);
     setHostSwitcherOpen(false);
-    setSelectedSessionId(undefined);
-    setForkChainOpen(false);
-    setSessionView("conversation");
+    if (!keepConversation) {
+      autoOpenedSessionRef.current = undefined;
+      setSelectedSessionId(undefined);
+      setForkChainOpen(false);
+      setSessionView("conversation");
+    }
     if ((activeTab ?? mobileNav?.tab) !== "sessions") {
       (onSelectTab ?? mobileNav?.onTabChange)?.("sessions");
     }
@@ -827,7 +826,7 @@ export function MobileWorkspace({
               icon={<SquarePen size={19} />}
               label="新建会话"
               disabled={sessionActionBusy || !snapshot || !online}
-              onClick={() => startNewChat(menuSession.projectId, menuSession.cwd, menuSession.sessionId)}
+              onClick={() => startNewChat(menuSession.projectId, menuSession.cwd, true)}
             />}
             <SheetAction
               icon={sessionView === "evidence" ? <MessageSquare size={19} /> : <FileText size={19} />}
@@ -1045,7 +1044,8 @@ export function MobileWorkspace({
   return (
     <>
       <div className="mobile-workspace-canvas">
-        {selectedSession ? (
+        {selectedSession && (
+          <div className="mobile-conversation-slot" hidden={newChatMode}>
           <ConversationView
             variant="mobile"
             hostId={activeHostId}
@@ -1054,7 +1054,7 @@ export function MobileWorkspace({
             snapshot={snapshot}
             connection={connection}
             desktopOnline={desktopOnline}
-            visible={visible}
+            visible={visible && !newChatMode}
             navigation
             onBackToCatalog={closeToCatalog}
             onSelectSession={selectSession}
@@ -1127,7 +1127,9 @@ export function MobileWorkspace({
             onPreviewRewind={onPreviewRewind}
             onRewindSession={onRewindSession}
           />
-        ) : (
+          </div>
+        )}
+        {(!selectedSession || newChatMode) && (
           <main className="mobile-workspace new-chat-workspace">
             <NewChatCanvas
               key={`${activeHostId ?? ""}:${newChatTarget?.key ?? 0}`}

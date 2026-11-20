@@ -256,7 +256,12 @@ export function MobileHostDetails({
                   type="button"
                   className={isClaude && claudeStatus.nativeUnavailable && desktopOnline ? "primary-button" : "secondary-button"}
                   disabled={Boolean(desktopAction) || claudeActivation.busy || removing || !desktopOnline || !canLaunchButton}
-                  onClick={() => void (activatesClaude ? claudeActivation.activate() : runDesktopAppAction(desktopApp.id, "launch"))}
+                  onClick={() => {
+                    if (!activatesClaude) return void runDesktopAppAction(desktopApp.id, "launch");
+                    // The activation result replaces an earlier launch/quit error for Claude.
+                    setDesktopActionError(undefined);
+                    void claudeActivation.activate();
+                  }}
                 >
                   {isLaunchingThis ? <LoaderCircle size={15} className="is-spinning" /> : <Play size={15} />}
                   {launchLabel}

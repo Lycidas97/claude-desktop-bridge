@@ -275,6 +275,7 @@ export function DiagnosticFloatingEntry({ desktopSnapshot }: { desktopSnapshot?:
             description="这会清空手机上所有已配对电脑的缓存消息和待发送消息，并重置它们的中继连接路由。待发送消息无法恢复；完成后应用会重新加载。"
             confirmLabel="确认清理并重连"
             danger
+            backdropClassName="diagnostic-confirm-backdrop"
             busy={repairing}
             onCancel={() => setRepairConfirmOpen(false)}
             onConfirm={() => void handleRepair()}

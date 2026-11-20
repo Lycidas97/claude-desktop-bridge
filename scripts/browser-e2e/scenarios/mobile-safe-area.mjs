@@ -106,7 +106,25 @@ export async function verifyMobileSafeArea(page, steps, directory, viewports) {
   assert.equal(await settings.evaluate(element => getComputedStyle(element).overscrollBehaviorY), "none", "Settings disables vertical rubber-banding and scroll chaining at the boundary");
   steps.push("Touch scrolling moves within settings and stops at the content end with vertical overscroll disabled");
   await page.getByRole("button", { name: "连接诊断与日志", exact: true }).click();
-  await page.getByRole("dialog", { name: "连接诊断与日志导出", exact: true }).waitFor();
+  const diagnostics = page.getByRole("dialog", { name: "连接诊断与日志导出", exact: true });
+  await diagnostics.waitFor();
   steps.push("The final settings diagnostics button opens its dialog after scrolling to the bottom");
+  await diagnostics.getByText("高级修复", { exact: true }).click();
+  await diagnostics.getByRole("button", { name: "清理所有电脑缓存并重连…", exact: true }).click();
+  const repairConfirm = page.getByRole("alertdialog", { name: "清理所有电脑的手机缓存？", exact: true });
+  assert.equal(await repairConfirm.evaluate(dialog => {
+    const { x, y, width, height } = dialog.getBoundingClientRect();
+    return dialog.contains(document.elementFromPoint(x + width / 2, y + height / 2));
+  }), true, "The clear-cache confirmation sits above the diagnostic sheet");
+  // Other confirmations (for example deleting a session) stay below the diagnostic layer.
+  assert.equal(await page.evaluate(() => {
+    const backdrop = document.body.appendChild(Object.assign(document.createElement("div"), { className: "confirm-backdrop" }));
+    const zIndex = Number(getComputedStyle(backdrop).zIndex);
+    backdrop.remove();
+    return zIndex < Number(getComputedStyle(document.querySelector(".diagnostic-backdrop")).zIndex);
+  }), true, "Only the diagnostic sheet's own confirmation is raised above it");
+  await repairConfirm.getByRole("button", { name: "取消", exact: true }).click();
+  await repairConfirm.waitFor({ state: "detached" });
+  steps.push("The clear-cache confirmation is the only confirmation raised above the diagnostic sheet");
   await emulation.detach();
 }

@@ -6,7 +6,7 @@ import {
   type BridgeSessionInfo,
 } from "@bridge/protocol";
 import { LoaderCircle, X } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { MagpieModelQuota, useOptionalMagpieQuota } from "../../../../../plugins/magpie-quota/client.js";
 import { modelQuotaLabel } from "../../../../../plugins/magpie-quota/presentation.js";
 import { sanitizeModelDisplayName } from "../../lib/conversation-timeline.js";
@@ -15,6 +15,7 @@ import { ConfirmationDialog } from "../common/ConfirmationDialog.js";
 import { IconButton } from "../common/IconButton.js";
 import { SelectMenu } from "../common/SelectMenu.js";
 import { formatContextPercentage, formatContextTokens } from "../conversation/SessionActivityIndicator.js";
+import { trapModalTabKey } from "./SectionCreateDialog.js";
 import { PERMISSION_MODE_OPTIONS, effortLabel } from "./session-labels.js";
 
 export function modelEffortLevels(model: BridgeModelInfo | undefined, fallback: readonly BridgeEffort[]): readonly BridgeEffort[] {
@@ -34,6 +35,7 @@ export function SessionConfigurationDialog({
   session,
   revision,
   modelAndEffortOnly = false,
+  manageFocus = false,
   onLoad,
   onSave,
   onClose,
@@ -41,6 +43,8 @@ export function SessionConfigurationDialog({
   session: BridgeSessionInfo;
   revision?: string | number;
   modelAndEffortOnly?: boolean;
+  /** Keyboard-opened desktop overlays take focus, trap Tab and close on Escape. */
+  manageFocus?: boolean;
   onLoad(): Promise<BridgeSessionConfiguration>;
   onSave(change: SessionConfigurationChange): Promise<BridgeSessionConfiguration>;
   onClose(): void;
@@ -55,6 +59,7 @@ export function SessionConfigurationDialog({
   const [saving, setSaving] = useState(false);
   const [confirmFullAccess, setConfirmFullAccess] = useState(false);
   const [error, setError] = useState<string>();
+  const dialogRef = useRef<HTMLElement>(null);
   const claudeSession = !session.runtimeId || session.runtimeId === "claude-desktop";
   // Quota lookup is independent of Claude Desktop's native execution channel.
   const quotaState = useOptionalMagpieQuota(claudeSession);
@@ -84,6 +89,17 @@ export function SessionConfigurationDialog({
       active = false;
     };
   }, [session.sessionId, revision]);
+
+  useEffect(() => {
+    if (!manageFocus) return;
+    const dialog = dialogRef.current;
+    const opener = document.activeElement as HTMLElement | null;
+    dialog?.focus();
+    return () => {
+      const active = document.activeElement;
+      if (opener?.isConnected && (!active || active === document.body || Boolean(dialog?.contains(active)))) opener.focus();
+    };
+  }, [manageFocus]);
 
   useEffect(() => {
     if (!confirmFullAccess) return;
@@ -150,7 +166,8 @@ export function SessionConfigurationDialog({
       ...(modelChanged ? { model } : {}),
       ...(!modelAndEffortOnly && outputStyle && outputStyle !== configuration?.outputStyle ? { outputStyle } : {}),
       ...(pickedEffort && pickedEffort !== configuredEffort ? { effort: pickedEffort } : {}),
-      ...(effortDraft === null && configuredEffort ? { effort: null } : {}),
+      // An explicit 默认 resets the session's own effort, even when a model change hides it.
+      ...(effortDraft === null && configuration?.effort ? { effort: null } : {}),
       ...(configurablePermission && nativePermissionMode && nativePermissionMode !== configurablePermission
         ? { permissionMode: nativePermissionMode } : {}),
     };
@@ -167,7 +184,23 @@ export function SessionConfigurationDialog({
         if (event.target === event.currentTarget) onClose();
       }}
     >
-      <section className="session-configuration-dialog" role="dialog" aria-modal="true" aria-labelledby="session-configuration-title">
+      <section
+        ref={dialogRef}
+        className="session-configuration-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="session-configuration-title"
+        tabIndex={manageFocus ? -1 : undefined}
+        onKeyDown={manageFocus ? (event) => {
+          // The full-access confirmation handles its own keys.
+          if (confirmFullAccess) return;
+          if (event.key === "Escape") {
+            event.preventDefault();
+            event.stopPropagation();
+            if (!saving) onClose();
+          } else trapModalTabKey(event, event.currentTarget);
+        } : undefined}
+      >
         <header>
           <h2 id="session-configuration-title">{session.title}</h2>
           <IconButton label="关闭" onClick={onClose}><X size={19} /></IconButton>

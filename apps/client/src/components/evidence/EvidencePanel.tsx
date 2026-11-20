@@ -351,7 +351,8 @@ export function EvidencePanel({
 
   const anyDetailsLoading = summaryBundles.some((bundle) => detailPages[bundle.id]?.loading);
   const firstDetailsError = summaryBundles.map((bundle) => detailPages[bundle.id]?.error).find(Boolean);
-  const bundleWithMoreArtifacts = summaryBundles.find((bundle) => detailPages[bundle.id]?.hasMore);
+  // A failed page is retried from the error banner, so the footer moves on to older batches.
+  const bundleWithMoreArtifacts = summaryBundles.find((bundle) => detailPages[bundle.id]?.hasMore && !detailPages[bundle.id]?.error);
   const waitingInitialSummaryLoad = Boolean(
     online
     && onLoadDetails

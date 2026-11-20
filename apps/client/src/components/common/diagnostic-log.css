@@ -117,7 +117,7 @@
   overflow-wrap: normal;
 }
 
-/* A confirmation opened from the diagnostic sheet stays above it. */
-body:has(.diagnostic-backdrop) > .confirm-backdrop {
+/* Only the diagnostic sheet's own confirmation sits above it; other confirmations stay below the sheet. */
+.confirm-backdrop.diagnostic-confirm-backdrop {
   z-index: 10000;
 }

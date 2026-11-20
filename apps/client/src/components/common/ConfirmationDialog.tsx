@@ -10,6 +10,7 @@ export function ConfirmationDialog({
   busy = false,
   confirmDisabled = false,
   danger = false,
+  backdropClassName,
   onCancel,
   onConfirm,
 }: {
@@ -21,6 +22,7 @@ export function ConfirmationDialog({
   busy?: boolean;
   confirmDisabled?: boolean;
   danger?: boolean;
+  backdropClassName?: string;
   onCancel(): void;
   onConfirm(): void;
 }) {
@@ -49,7 +51,7 @@ export function ConfirmationDialog({
   if (!open) return null;
 
   return createPortal(
-    <div className="confirm-backdrop" onMouseDown={(event) => { if (event.currentTarget === event.target && !busy) onCancel(); }}>
+    <div className={backdropClassName ? `confirm-backdrop ${backdropClassName}` : "confirm-backdrop"} onMouseDown={(event) => { if (event.currentTarget === event.target && !busy) onCancel(); }}>
       <section
         ref={dialogRef}
         className="confirm-dialog"

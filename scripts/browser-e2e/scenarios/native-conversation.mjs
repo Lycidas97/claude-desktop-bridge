@@ -297,6 +297,25 @@ export async function verifyHistoryPagination(page, host, steps, directory) {
   await page.screenshot({ path: resolve(directory, "history-pagination-complete.png"), fullPage: true });
   steps.push("failed paging preserves data/cursor for manual retry; retry preserves the anchor, and the last page stops loading");
 
+  const opensBefore = host.requests.filter(request => request.method === "session.open").length;
+  const itemsBefore = await stream.locator("article.conversation-item").count();
+  const reading = await stream.evaluate(root => {
+    root.scrollTop = Math.floor(root.scrollHeight / 3);
+    root.dispatchEvent(new Event("scroll"));
+    const rect = root.getBoundingClientRect();
+    const node = [...root.querySelectorAll("[data-stream-key]")].find(candidate => candidate.getBoundingClientRect().bottom > rect.top + 1);
+    return { key: node.getAttribute("data-stream-key"), offset: node.getBoundingClientRect().top - rect.top };
+  });
+  await page.locator(".m-header:visible").getByRole("button", { name: "会话操作", exact: true }).click();
+  await page.locator(".m-sheet").getByRole("button", { name: "新建会话", exact: true }).click();
+  await page.locator(".new-chat-canvas").getByRole("heading", { name: "新建会话", exact: true }).waitFor();
+  await page.locator(".m-header:visible").getByRole("button", { name: "返回会话", exact: true }).click();
+  await page.getByRole("heading", { name: originalTitle, exact: true }).waitFor();
+  await assertAnchor(reading);
+  assert.equal(await stream.locator("article.conversation-item").count(), itemsBefore, "Returning from new chat keeps the loaded older pages");
+  assert.equal(host.requests.filter(request => request.method === "session.open").length, opensBefore, "Returning from new chat does not reopen the session");
+  steps.push("cancelling a new chat opened from the conversation ⋯ returns to the same loaded pages and reading position without session.open");
+
   await stream.evaluate(root => { root.scrollTop = root.scrollHeight; root.dispatchEvent(new Event("scroll")); });
   const streaming = stream.locator("article.conversation-item.assistant").filter({ hasText: "流式滚动起始片段" });
   await host.emit("assistant.delta", { text: `流式滚动起始片段。\n\n${"持续输出用于滚动位置验收。\n\n".repeat(8)}` }, { turnId: "scroll-follow-turn", itemId: "scroll-follow-message" });

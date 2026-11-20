@@ -252,6 +252,21 @@ describe("deduplicated chronological output-file evidence list", () => {
     expect(text()).toContain("file-second-0.txt");
   });
 
+  it("moves 加载更多 on to older batches after the current batch's next page fails", async () => {
+    props.state = { status: "ready", items: [bundle()], hasMore: true };
+    draw();
+    await settle();
+    const more = () => elements().find((element) => element.type === "button" && text(element.props.children).includes("加载更多"))!;
+    loadDetails.mockRejectedValueOnce(new Error("detail page unavailable"));
+    more().props.onClick();
+    await settle();
+    expect(text()).toContain("detail page unavailable");
+    expect(props.onLoadMore).not.toHaveBeenCalled();
+    more().props.onClick();
+    expect(props.onLoadMore).toHaveBeenCalledOnce();
+    expect(loadDetails.mock.calls.filter(([, , cursor]) => cursor === "second")).toHaveLength(1);
+  });
+
   it("deduplicates repeated edits across turns in latest-updated descending order while projecting latest snapshot", async () => {
     const turn2 = bundle({
       id: "turn-2",

@@ -50,7 +50,7 @@ export async function verifyAssistantAttention(page, host, steps, directory, vie
   service.setAutomaticDelivery(false);
   const action = await deliver(1);
   await eventually(label, lit, "With proactive delivery off, new mail lights immediately");
-  await analyze(action, "action");
+  await analyze(action, "action", "account");
   const todoTitle = "核对并提交预算";
   agenda.saveTodo({ value: { title: todoTitle, remindAt: new Date(Date.now() - 1000).toISOString(), status: "pending" } });
   agenda.saveEvent({ value: { title: "团队同步", startAt: new Date(Date.now() + 60_000).toISOString(),

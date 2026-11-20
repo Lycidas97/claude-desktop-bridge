@@ -89,7 +89,7 @@
 .assistant-context-usage { margin: 0 0 12px; color: var(--muted); }
 .assistant-context-usage dd { margin: 0; font-variant-numeric: tabular-nums; }
 .assistant-binding details { margin-top: 12px; font-size: calc(13px * var(--font-scale)); }
-.assistant-mail-list { display: grid; gap: 12px; }
+.assistant-mail-list:not([hidden]) { display: grid; gap: 12px; }
 .assistant-mail-search { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; padding-inline: 12px; border: 1px solid var(--line); border-radius: var(--r-input); background: var(--surface); color: var(--muted); }
 .assistant-mail-search:focus-within { border-color: var(--accent-ink); }
 .assistant-mail-search input { min-width: 0; flex: 1; min-height: 44px; border: 0; background: transparent; color: var(--text); font: inherit; }

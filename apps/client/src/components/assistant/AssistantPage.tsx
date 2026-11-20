@@ -65,7 +65,6 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
   useEffect(() => { if (active) { setView("conversation"); setSelectedProposal(undefined); setReplyTarget(undefined); setReplyError(""); } }, [active]);
   const supportsFiling = mail?.supportsFiling;
   const backToInbox = () => setView("mail");
-  const focusFiledTitle = useCallback((title: HTMLSpanElement | null) => { title?.focus(); }, []);
   useEffect(() => {
     if (!active || !mobile) return;
     if (view === "proposals" && proposals) {
@@ -91,7 +90,9 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
   const displayedView = (view === "conversation" && !session) || (view === "mail" && !mail) || (view === "agenda" && !agenda)
     || (view === "filed" && !supportsFiling) || (view === "proposals" && !proposals) ? fallbackView : view;
   const filed = displayedView === "filed";
-  const filedTitle = <span ref={focusFiledTitle} tabIndex={-1}>已收纳</span>;
+  const filedBack = filed && <IconButton key="filed-back" label="返回收件" autoFocus onClick={backToInbox}>
+    <ArrowLeft size={mobile ? 20 : 16} aria-hidden="true" />
+  </IconButton>;
   const pendingCount = pendingProposalCount(proposals);
   function openProposals() {
     if (displayedView !== "proposals") { setProposalReturn(displayedView); setSelectedProposal(undefined); }
@@ -253,7 +254,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
     </>}
   </div>;
   return <section className={`assistant-page ${mobile ? "assistant-page-mobile" : "desktop-page"}${session ? " has-conversation" : ""}`}>
-    {mobile && (filed ? <MobilePageHeader title={filedTitle} onBack={backToInbox} backLabel="返回收件" />
+    {mobile && (filed ? <MobilePageHeader title="已收纳" leading={filedBack} />
       : displayedView === "proposals" ? <MobilePageHeader title={selectedProposal ? "提案详情" : "待确认提案"} onBack={backFromProposals} />
       : <MobilePageHeader title="助理" {...(headerLeading ? { leading: headerLeading } : {})} actions={viewTabs} />)}
     {!mobile && <div className="assistant-desktop-header-band">
@@ -261,8 +262,8 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
       <div className="assistant-page-header-inner">
         <header className="desktop-page-heading">
           {filed ? <div className="assistant-filed-heading">
-            <IconButton label="返回收件" onClick={backToInbox}><ArrowLeft size={16} aria-hidden="true" /></IconButton>
-            <h1>{filedTitle}</h1>
+            {filedBack}
+            <h1>已收纳</h1>
           </div> : <><h1>助理</h1>{viewTabs}</>}
         </header>
       </div>
@@ -368,7 +369,8 @@ function InboxMailList({ mail, filed, canMarkJunk, onOpenFiled, onDiscuss }: {
       }}><X size={16} aria-hidden="true" /></button>}
       <button type="submit" className="assistant-session-link" disabled={!mail.online}>搜索</button>
     </form>}
-    {filed ? <section className="assistant-mail-list" aria-label="已收纳">
+    {/* Keep expanded categories and their loaded pages mounted when returning to the inbox. */}
+    {mail.supportsFiling && (filed || openedFolders.size > 0) && <section hidden={!filed} className="assistant-mail-list" aria-label="已收纳">
       {filedCount ? <div className="assistant-mail-groups">
         {MAIL_CATEGORIES.map(category => {
           const count = folderCounts?.[category] ?? 0;
@@ -389,7 +391,8 @@ function InboxMailList({ mail, filed, canMarkJunk, onOpenFiled, onDiscuss }: {
           </details>;
         })}
       </div> : <p className="assistant-mail-empty" role="status">{mail.loading ? "正在读取邮件…" : "暂无已收纳邮件"}</p>}
-    </section> : mail.supportsFiling && query ? <div className="assistant-mail-list" aria-label="搜索结果">
+    </section>}
+    {!filed && (mail.supportsFiling && query ? <div className="assistant-mail-list" aria-label="搜索结果">
       <ScopedMailList key={query} mail={mail} query={query} renderCard={renderCard} />
     </div> : <>
       {mail.supportsFiling && <button ref={filedEntry} type="button" className="assistant-mail-filed-entry" onClick={onOpenFiled}>
@@ -398,7 +401,7 @@ function InboxMailList({ mail, filed, canMarkJunk, onOpenFiled, onDiscuss }: {
       <div className="assistant-mail-list" aria-label="邮件输入">{inboxCards.map(renderCard)}</div>
       {!inboxCards.length && <p className="assistant-mail-empty" role="status">{mail.loading ? "正在读取邮件…" : filedCount ? "暂无收件" : "暂无已记录邮件"}</p>}
       {mail.hasOlderMail && <button type="button" className="secondary-button assistant-mail-older" disabled={!mail.online || mail.loading} onClick={() => void mail.loadOlder()}>{mail.loading ? "正在读取…" : "更早邮件"}</button>}
-    </>}
+    </>)}
     {(receipt || error) && <div className="assistant-mail-junk-feedback">
       {error && <span role="alert">{error}</span>}
       {receipt && <>

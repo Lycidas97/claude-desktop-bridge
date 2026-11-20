@@ -185,9 +185,16 @@ export async function verifyAssistantMailHistory(page, host, steps, directory, v
   const inbox = page.getByRole("button", { name: "收件", exact: true });
   const cards = page.locator(".assistant-mail-list > [data-mail-id]");
   const older = page.getByRole("button", { name: "更早邮件", exact: true });
+  const returnToInbox = page.getByRole("button", { name: "返回收件", exact: true });
+  const emptyFiledEntry = page.getByRole("button", { name: "已收纳 0 封", exact: true });
 
   await assistant.click();
   await inbox.click();
+  await emptyFiledEntry.press("Enter");
+  await page.getByText("暂无已收纳邮件", { exact: true }).waitFor();
+  assert.ok(await returnToInbox.evaluate(button => button === document.activeElement), "Opening the empty view focuses its Back button");
+  await page.keyboard.press("Enter");
+  await eventually(() => emptyFiledEntry.evaluate(button => button === document.activeElement), true, "Keyboard Back returns focus to the entry");
   await eventually(() => cards.count(), 20, "An unimported 25-message INBOX loads its latest 20 mails");
   await cards.first().getByText("收件记录 25", { exact: true }).waitFor();
   await cards.last().getByText("收件记录 6", { exact: true }).waitFor();
@@ -265,7 +272,7 @@ export async function verifyAssistantMailHistory(page, host, steps, directory, v
   const longPreview = await host.nativeApproval.assistantMail.deliver(1, Buffer.from(
     `Content-Type: text/plain; charset=utf-8\r\n\r\n${"A real message with enough words to wrap naturally. ".repeat(48)}`,
   ));
-  const inboxList = page.locator(".assistant-mail-list");
+  const inboxList = page.getByLabel("邮件输入", { exact: true });
   const brokenCard = inboxList.locator(`[data-mail-id="${brokenPreview.mailRefId}"]`);
   const longCard = inboxList.locator(`[data-mail-id="${longPreview.mailRefId}"]`);
   const compactPreview = async (card, long = false) => {
@@ -308,6 +315,31 @@ export async function verifyAssistantMailHistory(page, host, steps, directory, v
   await compactPreview(page.getByLabel("搜索结果").locator(`[data-mail-id="${brokenPreview.mailRefId}"]`));
   await page.screenshot({ path: resolve(directory, "mobile-mail-compact-preview.png"), fullPage: true });
   steps.push("Synthetic malformed plaintext suppresses blank lines and email-template residue; long text clips at the rendered line budget in inbox, folder and search cards");
+
+  await page.getByRole("button", { name: "清除搜索", exact: true }).click();
+  const { service } = host.nativeApproval.assistantMail;
+  await host.nativeApproval.assistantMail.deliver(51);
+  const promotions = service.page({ limit: 51 }).events;
+  for (const { mailRefId } of promotions) {
+    service.updateAnalysis(mailRefId, { summary: "已分析", suggestions: [], questions: [], category: "marketing" });
+  }
+  const filedTotal = page.getByRole("button", { name: "已收纳 52 封", exact: true });
+  await filedTotal.click();
+  const marketing = filedView.locator(".assistant-mail-group").filter({ hasText: "营销与垃圾邮件" });
+  await marketing.locator("summary").first().click();
+  const more = marketing.getByRole("button", { name: "更多邮件", exact: true });
+  await more.click();
+  const secondPageCard = marketing.locator(`[data-mail-id="${promotions.at(-1).mailRefId}"]`);
+  await secondPageCard.waitFor();
+  await more.waitFor({ state: "detached" });
+  host.socket.close();
+  await page.getByText("电脑离线，显示已缓存邮件。", { exact: true }).waitFor();
+  await returnToInbox.click();
+  assert.equal(await filedView.count(), 0, "The retained category is not exposed by the inbox");
+  await filedTotal.click();
+  assert.equal(await secondPageCard.isVisible(), true, "Reopening an expanded category offline retains the second page");
+  assert.equal(await more.count(), 0, "The exhausted cursor stays exhausted");
+  steps.push("Returning to the inbox and reopening the same category offline retains both loaded pages and their exhausted cursor");
 }
 
 export async function verifyAssistantMail(page, host, steps, directory, viewports, baseUrl) {
@@ -901,8 +933,7 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await filedEntry(2).press("Enter");
   await filedView.waitFor();
   assert.equal(await inbox.count(), 0, "Filed view replaces the inbox instead of extending it");
-  await eventually(() => page.getByRole("heading", { name: "已收纳", exact: true }).evaluate(heading => heading.contains(document.activeElement)), true,
-    "Opening the filed view moves focus to its title");
+  await eventually(() => backToInbox.evaluate(button => button === document.activeElement), true, "Opening the filed view focuses its Back button");
   assert.equal(await group("验证码").count(), 0);
   assert.equal(await group("账号注册").count(), 0);
   await group("营销与垃圾邮件").getByText("2 封", { exact: true }).waitFor();

@@ -251,6 +251,8 @@ describe("mobile workspace directory", () => {
           : [{ project: snapshot.projects[0], sessions: activeList }],
         collapsedProjectIds: new Set<string>(),
         expandedForkParents,
+        expandedOlderSessions: new Set<string>(),
+        toggleOlderSessions: vi.fn(),
         projectOrder: [session.projectId],
         projectsByActivity: [session.projectId],
         permissions: [],

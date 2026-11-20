@@ -4,7 +4,52 @@ import { resolve } from "node:path";
 import { root, sessionId } from "../config.mjs";
 import { desktopFixtureRequest, eventually, openMobileDrawer, customSelectValue } from "../helpers.mjs";
 
+export function addOlderCatalogSessions(snapshot) {
+  const source = snapshot.sessions.find(session => session.sessionId === sessionId);
+  snapshot.sessions.push(
+    { ...source, sessionId: "catalog-oldest", title: "更早的目录会话", lastActivityAt: source.lastActivityAt - 120_000, turnState: "waiting" },
+    { ...source, sessionId: "catalog-recent", title: "第三个近期会话", lastActivityAt: source.lastActivityAt - 60_000 },
+  );
+}
+
 export async function verifySessionCatalog(page, host, steps, directory, viewports, baseUrl) {
+  async function verifyRecentSessions(catalog) {
+    const group = catalog.locator(".project-group").filter({ has: page.locator(`[data-session-id="${sessionId}"]`) });
+    const header = catalog.locator(".project-group-open").filter({ hasText: host.snapshot.sessions.find(session => session.sessionId === sessionId).projectName });
+    const roots = group.locator(".session-row-v2:not(.is-fork-child)");
+    const oldest = catalog.locator('[data-session-id="catalog-oldest"]');
+    const fork = group.locator('[data-session-id="browser-e2e-fork"]');
+    const branchToggle = group.locator('[data-session-id="browser-e2e-parent"] .session-family-chevron');
+    const showOlder = group.getByRole("button", { name: "显示其余 1 个会话 1 个待处理", exact: true });
+
+    await eventually(() => roots.count(), 3, "An expanded section shows only three recent roots");
+    assert.deepEqual((await roots.evaluateAll(rows => rows.map(row => row.dataset.sessionId))).sort(), ["browser-e2e-parent", sessionId, "catalog-recent"].sort());
+    assert.equal(await oldest.count(), 0);
+    assert.equal(await header.locator(".project-count-pill").textContent(), "4");
+    await branchToggle.click();
+    await fork.waitFor();
+    assert.equal(await roots.count(), 3, "An open fork does not consume a slot");
+    await showOlder.press("Enter");
+    await oldest.locator(".session-row-status.waiting").waitFor();
+    assert.equal(await roots.count(), 4);
+    await header.click();
+    await oldest.waitFor({ state: "detached" });
+    await header.click();
+    await oldest.waitFor();
+    await fork.waitFor();
+    await group.getByRole("button", { name: "收起较早会话", exact: true }).click();
+    await oldest.waitFor({ state: "detached" });
+    await branchToggle.click();
+    await fork.waitFor({ state: "detached" });
+
+    const search = catalog.getByPlaceholder("搜索项目或会话");
+    await search.fill(host.snapshot.sessions.find(session => session.sessionId === sessionId).projectName);
+    await oldest.waitFor();
+    assert.equal(await roots.count(), 4, "Search shows all matching roots");
+    assert.equal(await showOlder.count(), 0);
+    await search.fill("");
+    await oldest.waitFor({ state: "detached" });
+  }
   await page.emulateMedia({ reducedMotion: "reduce" });
   const axeSource = await readFile(resolve(root, "node_modules/axe-core/axe.min.js"), "utf8");
   async function capture(name) {
@@ -29,10 +74,13 @@ export async function verifySessionCatalog(page, host, steps, directory, viewpor
   }
   const catalogSession = host.snapshot.sessions.find(session => session.sessionId === sessionId);
   catalogSession.currentSummary = "正在验证链路压缩";
+  addOlderCatalogSessions(host.snapshot);
   await host.send({ kind: "snapshot", snapshot: host.snapshot });
   await openMobileDrawer(page);
-  const mobileMetadataRow = page.locator(`.mobile-home-catalog [data-session-id="${sessionId}"]`);
+  const mobileCatalog = page.locator(".mobile-home-catalog");
+  const mobileMetadataRow = mobileCatalog.locator(`[data-session-id="${sessionId}"]`);
   await mobileMetadataRow.getByText(/· 正在验证链路压缩/u).waitFor();
+  await verifyRecentSessions(mobileCatalog);
   await verifyRowMetadata(mobileMetadataRow);
   const savedMobileSnapshot = structuredClone(host.snapshot);
   assert.equal(await mobileMetadataRow.locator(".session-state-dot.completed").count(), 0);
@@ -89,7 +137,6 @@ export async function verifySessionCatalog(page, host, steps, directory, viewpor
     assert.ok(mobileAlign.forkedBadgesDelta <= 1.5, `Mobile ${font} forked dot aligns with action: ${JSON.stringify(mobileAlign)}`);
     assert.ok(mobileAlign.plainBadgesDelta <= 1.5, `Mobile ${font} non-forked dot aligns with action: ${JSON.stringify(mobileAlign)}`);
   }
-  const mobileCatalog = page.locator(".mobile-home-catalog");
   const parentRow = mobileCatalog.locator('[data-session-id="browser-e2e-parent"]');
   const chevron = parentRow.locator(".session-family-chevron");
   await chevron.scrollIntoViewIfNeeded();
@@ -152,6 +199,8 @@ export async function verifySessionCatalog(page, host, steps, directory, viewpor
   const headers = sidebar.locator('.project-group-open[aria-controls^="desktop-project-"] .project-group-toggle-copy strong');
   const desktopMetadataRow = sidebar.locator(`[data-session-id="${sessionId}"]`);
   await desktopMetadataRow.getByText(/· 正在验证链路压缩/u).waitFor();
+  await verifyRecentSessions(sidebar);
+  steps.push("Mobile and Desktop show three recent roots, reveal older sessions independently of fork and section toggles, and show all search matches");
   await verifyRowMetadata(desktopMetadataRow);
   assert.equal(await sidebar.locator('.project-group-open[aria-controls="desktop-archived-sessions"] .project-group-toggle-copy strong').textContent(), "已归档");
   const initialOrder = await headers.allTextContents();
@@ -159,6 +208,23 @@ export async function verifySessionCatalog(page, host, steps, directory, viewpor
   const selected = sidebar.locator(".session-row-v2.active");
   assert.equal(await selected.count(), 1, "Desktop highlights the selected shared row");
   assert.notEqual(await selected.evaluate(element => getComputedStyle(element).backgroundColor), "rgba(0, 0, 0, 0)");
+  const beforePermissionJump = await page.evaluate(() => structuredClone(window.__catalogSnapshot));
+  await page.evaluate(() => {
+    const snapshot = structuredClone(window.__catalogSnapshot);
+    snapshot.permissions = [{ requestId: "older-permission", sessionId: "catalog-oldest", toolUseId: "older-tool", toolName: "Bash", input: {}, createdAt: Date.now(), canAllowAlways: false }];
+    window.__updateCatalog(snapshot);
+  });
+  const olderRow = sidebar.locator('[data-session-id="catalog-oldest"]');
+  assert.equal(await olderRow.count(), 0);
+  await sidebar.getByRole("button", { name: /有操作待你授权.*更早的目录会话/u }).click();
+  await sidebar.locator('[data-session-id="catalog-oldest"].active').waitFor();
+  await olderRow.getByText("待授权", { exact: true }).waitFor();
+  await sidebar.getByRole("button", { name: "收起较早会话", exact: true }).click();
+  await olderRow.waitFor({ state: "detached" });
+  await page.locator(".desktop-conversation").getByRole("heading", { name: "更早的目录会话", exact: true }).waitFor();
+  await page.evaluate(snapshot => window.__updateCatalog(snapshot), beforePermissionJump);
+  await desktopMetadataRow.locator(".session-row-hit").click();
+  steps.push("Desktop permission alert reveals and selects an older session; folding the list keeps its conversation open");
   await sidebar.locator(".mobile-fork-toggle").click();
   await sidebar.locator('[data-session-id="browser-e2e-fork"]').waitFor();
   assert.equal(await sidebar.locator('[data-session-id="browser-e2e-btw-archived"]').count(), 0, "Archived sidechats do not appear inline under active parent branches");

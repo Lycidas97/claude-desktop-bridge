@@ -2905,8 +2905,13 @@ describe("mobile section movement and subfolder labels", () => {
       },
     };
     toDirectory();
-    expect(elements(tree).filter(element => element.props["data-session-id"])).toHaveLength(6);
-    expect(elements(tree).some(element => element.type === ProjectGroupHeader && element.props.title === "Project")).toBe(true);
+    const visibleIds = () => elements(tree).flatMap(element => element.props["data-session-id"] ?? []);
+    const revealOlder = () => elements(tree).find(element => element.props.className === "session-history-toggle")!.props.onClick();
+    expect(visibleIds()).toEqual(["S-5", "S-4", "S-3"]);
+    expect(elements(tree).some(element => element.type === ProjectGroupHeader && element.props.title === "Project" && element.props.count === 6)).toBe(true);
+    revealOlder();
+    draw();
+    expect(visibleIds()).toHaveLength(6);
 
     // Remove "project" from snapshot.projects (simulating all sessions moved into a Section)
     props = {
@@ -2919,8 +2924,11 @@ describe("mobile section movement and subfolder labels", () => {
     };
     draw();
     expect(elements(tree).some(element => element.type === ProjectGroupHeader && element.props.title === "Project")).toBe(false);
-    expect(elements(tree).some(element => element.type === ProjectGroupHeader && element.props.title === "杂活")).toBe(true);
-    expect(elements(tree).filter(element => element.props["data-session-id"])).toHaveLength(6);
+    expect(elements(tree).some(element => element.type === ProjectGroupHeader && element.props.title === "杂活" && element.props.count === 6)).toBe(true);
+    expect(visibleIds()).toEqual(["S-5", "S-4", "S-3"]);
+    revealOlder();
+    draw();
+    expect(visibleIds()).toHaveLength(6);
   });
 
   it("shows subfolder name only for desktop-group sessions whose folder differs from the group name", () => {

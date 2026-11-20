@@ -1,0 +1,27 @@
+.session-history-toggle {
+  display: flex;
+  flex-wrap: wrap;
+  min-height: 30px;
+  align-items: center;
+  align-content: center;
+  gap: 6px;
+  margin-left: 14px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  font-size: calc(12px * var(--font-scale));
+  text-align: left;
+  cursor: pointer;
+}
+
+.session-history-toggle:hover {
+  background: color-mix(in srgb, var(--text) 3.5%, transparent);
+  color: var(--text);
+}
+
+.mobile-home-catalog .session-history-toggle {
+  min-height: 44px;
+  font-size: calc(13px * var(--font-scale));
+}

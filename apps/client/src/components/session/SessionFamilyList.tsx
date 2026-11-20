@@ -2,9 +2,10 @@ import type { BridgePermissionInfo, BridgeProjectInfo, BridgeSessionInfo } from 
 import { ChevronDown, ChevronRight, MoreHorizontal } from "lucide-react";
 import type { ReactNode } from "react";
 import { activeSessionBadgeLabel, forkGroupToggleLabel, relativeTime, visibleSessionForks } from "../../lib/conversation-timeline.js";
-import type { SessionFamily } from "../../lib/project-groups.js";
+import { splitRecentSessionFamilies, type SessionFamily } from "../../lib/project-groups.js";
 import { backgroundSubagentBadge } from "../../lib/session-activity.js";
 import { IconButton } from "../common/IconButton.js";
+import "./session-family-list.css";
 import "./session-section-drag.css";
 import type { SessionSectionDragController } from "./useSessionSectionDrag.js";
 
@@ -48,6 +49,7 @@ function SessionTreeConnector({ variant }: { variant: TreeConnectorVariant }) {
 
 export interface SessionFamilyListProps {
   families: readonly SessionFamily<BridgeSessionInfo>[];
+  olderSessionsDisclosure?: { expanded: boolean; onToggle(): void } | undefined;
   projects: readonly BridgeProjectInfo[] | undefined;
   permissions: readonly BridgePermissionInfo[];
   expandedForkParents: ReadonlySet<string>;
@@ -64,6 +66,7 @@ export interface SessionFamilyListProps {
 
 export function SessionFamilyList({
   families,
+  olderSessionsDisclosure,
   projects,
   permissions,
   expandedForkParents,
@@ -236,5 +239,37 @@ export function SessionFamilyList({
     );
   }
 
-  return <>{families.map(family => renderSessionFamily(family))}</>;
+  if (!olderSessionsDisclosure) return <>{families.map(family => renderSessionFamily(family))}</>;
+
+  const { recent, older } = splitRecentSessionFamilies(families);
+
+  const { expanded, onToggle } = olderSessionsDisclosure;
+  let waiting = 0;
+  let inProgress = 0;
+  if (!expanded && older.length > 0) {
+    const permissionSessionIds = new Set(permissions.map(permission => permission.sessionId));
+    function countHiddenActivity({ primary, forks }: SessionFamily<BridgeSessionInfo>) {
+      if (!primary.archivedAt) {
+        if (primary.turnState === "waiting" || permissionSessionIds.has(primary.sessionId)) waiting++;
+        else if (primary.turnState === "running" || primary.turnState === "queued") inProgress++;
+      }
+      forks.forEach(countHiddenActivity);
+    }
+    older.forEach(countHiddenActivity);
+  }
+
+  return (
+    <>
+      {recent.map(family => renderSessionFamily(family))}
+      {older.length > 0 && (
+        <button type="button" className="session-history-toggle" aria-expanded={expanded} onClick={onToggle}>
+          {expanded ? <ChevronDown size={13} aria-hidden="true" /> : <ChevronRight size={13} aria-hidden="true" />}
+          <span>{expanded ? "收起较早会话" : `显示其余 ${older.length} 个会话`}</span>
+          {waiting > 0 && <span className="session-row-status waiting">{waiting} 个待处理</span>}
+          {inProgress > 0 && <span className="session-row-status running">{inProgress} 个进行中</span>}
+        </button>
+      )}
+      {expanded && older.map(family => renderSessionFamily(family))}
+    </>
+  );
 }

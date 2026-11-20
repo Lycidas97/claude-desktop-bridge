@@ -90,6 +90,8 @@ export interface MobileSessionCatalogProps {
   grouped: Array<{ project: BridgeProjectInfo | undefined; sessions: BridgeSessionInfo[] }>;
   collapsedProjectIds: Set<string>;
   expandedForkParents: Set<string>;
+  expandedOlderSessions: ReadonlySet<string>;
+  toggleOlderSessions(projectId: string): void;
   projectOrder: string[];
   projectsByActivity: string[];
   permissions: BridgePermissionInfo[];
@@ -153,6 +155,8 @@ export function MobileSessionCatalog({
   grouped,
   collapsedProjectIds,
   expandedForkParents,
+  expandedOlderSessions,
+  toggleOlderSessions,
   projectOrder,
   projectsByActivity,
   permissions,
@@ -552,6 +556,10 @@ export function MobileSessionCatalog({
                         ) : (
                           <SessionFamilyList
                             families={families}
+                            olderSessionsDisclosure={searchQuery ? undefined : {
+                              expanded: expandedOlderSessions.has(projectId),
+                              onToggle: () => toggleOlderSessions(projectId),
+                            }}
                             projects={snapshot?.projects}
                             permissions={permissions}
                             expandedForkParents={expandedForkParents}

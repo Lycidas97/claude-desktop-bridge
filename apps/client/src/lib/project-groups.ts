@@ -140,3 +140,13 @@ export function groupProjectSessionFamilies<T extends {
   }
   return sortFamilies(roots);
 }
+
+export function splitRecentSessionFamilies<T extends { parentSessionId?: string }>(families: readonly SessionFamily<T>[]) {
+  const recent: SessionFamily<T>[] = [];
+  const older: SessionFamily<T>[] = [];
+  for (const family of families) {
+    if (!family.primary.parentSessionId && recent.length < 3) recent.push(family);
+    else older.push(family);
+  }
+  return { recent, older };
+}

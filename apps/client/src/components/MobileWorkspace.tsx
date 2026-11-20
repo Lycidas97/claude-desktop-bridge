@@ -284,6 +284,8 @@ export function MobileWorkspace({
     placeProjects,
     toggleProject,
     toggleForkGroup,
+    expandedOlderSessions,
+    toggleOlderSessions,
     registerCreatedSection,
   } = useProjectSessionGroups({
     hostId: activeHostId,
@@ -985,6 +987,8 @@ export function MobileWorkspace({
         grouped={grouped}
         collapsedProjectIds={collapsedProjectIds}
         expandedForkParents={expandedForkParents}
+        expandedOlderSessions={expandedOlderSessions}
+        toggleOlderSessions={toggleOlderSessions}
         projectOrder={projectOrder}
         projectsByActivity={projectsByActivity}
         permissions={permissions}

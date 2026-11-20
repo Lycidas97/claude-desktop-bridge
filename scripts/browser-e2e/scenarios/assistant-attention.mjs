@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import { sessionId } from "../config.mjs";
 import { desktopFixtureRequest, eventually, openMobileDrawer, openMobileSession } from "../helpers.mjs";
-import { openDesktopAssistant } from "./assistant-mail.mjs";
+import { fileMailInCategory, openDesktopAssistant } from "./assistant-mail.mjs";
 
 export async function verifyAssistantAttention(page, host, steps, directory, viewports, baseUrl) {
   const native = host.nativeApproval;
@@ -85,22 +85,26 @@ export async function verifyAssistantAttention(page, host, steps, directory, vie
 
     await entry.click();
     const card = client => client.locator(`.assistant-mail-list [data-mail-id="${action.mailRefId}"]`);
-    const mark = client => card(client).getByRole("combobox", { name: "收入分类", exact: true });
+    const mark = client => card(client).getByRole("button", { name: "收入分类", exact: true });
     const inboxCard = client => client.getByLabel("邮件输入", { exact: true }).locator(`[data-mail-id="${action.mailRefId}"]`);
     for (const client of [page, desktop]) {
       await client.getByRole("button", { name: "收件", exact: true }).click();
       await mark(client).waitFor();
     }
+    const desktopPicker = desktop.getByRole("dialog", { name: "收入分类", exact: true });
+    await mark(desktop).click();
+    await desktopPicker.waitFor();
     await desktop.evaluate(host => window.assistantDesktopSnapshot({ host }), { ...host.snapshot.host,
       capabilities: host.snapshot.host.capabilities.filter(value => value !== "plugin.assistant-mail.filing.v1") });
     await mark(desktop).waitFor({ state: "detached" });
+    await desktopPicker.waitFor({ state: "detached" });
     await inboxCard(desktop).waitFor();
     assert.equal(await desktop.locator(".assistant-mail-group").count(), 0, "A legacy analysis label is not a filed location");
     await desktop.evaluate(host => window.assistantDesktopSnapshot({ host }), host.snapshot.host);
     await mark(desktop).waitFor();
 
     const publishDesktop = () => desktop.evaluate(assistantMail => window.assistantDesktopSnapshot({ assistantMail }), host.snapshot.assistantMail);
-    await mark(page).selectOption("marketing");
+    await fileMailInCategory(page, card(page), "营销与垃圾邮件");
     await inboxCard(page).waitFor({ state: "detached" });
     await publishDesktop();
     await inboxCard(desktop).waitFor({ state: "detached" });

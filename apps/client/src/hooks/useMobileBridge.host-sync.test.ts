@@ -1808,6 +1808,23 @@ describe("mobile history pagination", () => {
     });
   });
 
+  it("refreshes a split file receipt without moving the card from its loaded call", async () => {
+    const call = { ...older, id: "send-file", role: "tool" as const, toolName: "SendUserFile" };
+    const files = [{ name: "report.md", path: "/worktree/report.md" }];
+    harness.state.histories[recent.sessionId] = {
+      status: "ready", items: [call, recent], hasMore: true, nextCursor: older.id,
+      sessionFileReceipts: { [call.id]: files },
+    };
+    const unavailable = [{ name: "report.md" }];
+    harness.respond = async () => ({ history: {
+      items: [recent], hasMore: true, nextCursor: recent.id, sessionFileReceipts: { [call.id]: unavailable },
+    } });
+    await useMobileBridge().refreshLatestHistory(recent.sessionId, "file-completed");
+    const items = conversationItems(recent.sessionId, harness.state.histories[recent.sessionId], [], [], true);
+    expect(items.map(({ id }) => id)).toEqual([`tool:${call.id}`, recent.id]);
+    expect(items[0]).toMatchObject({ createdAt: call.createdAt, sentFiles: unavailable });
+  });
+
   it("keeps proposal confirmations with the retained history when a manual reopen fails", async () => {
     const history = harness.state.histories[recent.sessionId];
     history.sessionProposalResults = ["retained-call"];

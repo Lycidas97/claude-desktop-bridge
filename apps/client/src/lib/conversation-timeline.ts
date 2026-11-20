@@ -11,6 +11,7 @@ import type {
   BridgeHostSnapshot,
   BridgeInteractivePrompt,
   BridgeSessionInfo,
+  BridgeSentFile,
   BridgeSubagentSummary,
   BridgeTaskPlan,
 } from "@bridge/protocol";
@@ -34,6 +35,7 @@ export interface ConversationItem extends BridgeHistoryItem {
   commandId?: string;
   toolUseId?: string;
   sessionProposalConfirmed?: true;
+  sentFiles?: BridgeSentFile[];
   isError?: boolean;
   error?: string;
   live?: boolean;
@@ -202,7 +204,7 @@ export function groupTimelineTools(timeline: ConversationTimelineEntry[]): Displ
       result.push({ kind: "background-task", id: runId ? `workflow:${runId}` : entry.item.id, item: entry.item });
       continue;
     }
-    if (entry.kind === "message" && entry.item.role === "tool" && !entry.item.sessionProposalConfirmed) {
+    if (entry.kind === "message" && entry.item.role === "tool" && !entry.item.sessionProposalConfirmed && !entry.item.sentFiles?.length) {
       const prev = result.at(-1);
       if (prev && prev.kind === "tool-group") {
         prev.tools.push(entry.item);
@@ -348,6 +350,7 @@ export function conversationItems(
       ?? (subagent ? subagentItemIds.get(subagent.agentId) : undefined) ?? event.itemId ?? event.eventId];
   }));
   const confirmedSessionProposals = new Set(history?.sessionProposalResults);
+  const sentFilesByTool = new Map(Object.entries(history?.sessionFileReceipts ?? {}));
   for (const item of sessionHistory) {
     if (
       (item.role === "user" || item.role === "assistant") &&
@@ -377,6 +380,8 @@ export function conversationItems(
       ...(taskPlan ? { taskPlan } : {}),
     });
   }
+  // Keep the projected IDs of loaded rows separate from replay-only events.
+  const loadedHistoryIds = paged && history?.hasMore && new Set(items.keys());
   const acceptedRequests = new Set(
     sessionEvents
       .filter((event) => event.type === "user.message.accepted" && typeof event.data.requestId === "string")
@@ -570,6 +575,10 @@ export function conversationItems(
       if (hiddenTaskItems.has(id)) continue;
       const existing = toolByItem.get(id) ?? items.get(`tool:${id}`);
       if (event.origin === "claude-desktop" && event.type === "tool.completed") {
+        if (event.itemId && Array.isArray(event.data.sentFiles)) {
+          if (!sentFilesByTool.has(event.itemId)) sentFilesByTool.set(event.itemId, event.data.sentFiles as BridgeSentFile[]);
+          if (!existing) continue; // A receipt alone must not create a tool row at the completion time.
+        }
         if (event.itemId && event.data.sessionProposalResult === true) {
           confirmedSessionProposals.add(event.itemId);
           if (!existing) continue; // A result does not locate its call in the timeline.
@@ -740,8 +749,13 @@ export function conversationItems(
     });
   }
   const sorted = [...items.values()].flatMap((item): ConversationItem[] => {
-    if (item.role === "tool" && item.origin === "claude-desktop" && item.sessionProposal && item.toolUseId
-      && !item.isError && confirmedSessionProposals.has(item.toolUseId)) return [{ ...item, state: "completed", sessionProposalConfirmed: true }];
+    if (item.role === "tool" && item.origin === "claude-desktop" && item.toolUseId && !item.isError) {
+      if (item.sessionProposal && confirmedSessionProposals.has(item.toolUseId)) return [{ ...item, state: "completed", sessionProposalConfirmed: true }];
+      if (item.toolName === "SendUserFile") {
+        const sentFiles = sentFilesByTool.get(item.toolUseId);
+        if (sentFiles?.length) return [{ ...item, state: "completed", sentFiles }];
+      }
+    }
     if (item.role !== "user") return [item];
     const sessionNotice = !item.attachments?.length ? parseSessionNotice(item.text) : undefined;
     if (sessionNotice) return [{ ...item, sessionNotice }];
@@ -823,9 +837,9 @@ export function conversationItems(
   if (paged) {
     if (!history || (history.status === "loading" && history.items.length === 0)) return [];
     const first = sessionHistory[0];
-    if (history.hasMore && first) {
+    if (loadedHistoryIds && first) {
       return sorted.filter((item) => (
-        item.createdAt > first.createdAt ||
+        loadedHistoryIds.has(item.id) || item.createdAt > first.createdAt ||
         (item.createdAt === first.createdAt && item.id.localeCompare(first.id) >= 0)
       ));
     }

@@ -86,6 +86,7 @@ export const HOME_LEARN_FRESHNESS_MS = 3 * 60_000;
 export interface SessionHistoryState {
   status: "idle" | "loading" | "ready" | "error";
   items: BridgeHistoryPage["items"];
+  sessionFileReceipts?: BridgeHistoryPage["sessionFileReceipts"];
   sessionProposalResults?: string[];
   nextCursor?: string;
   hasMore: boolean;
@@ -926,6 +927,8 @@ export function projectHistoryPage(
     status: "ready",
     items: existing ? mergeHistoryPages(page.items, existing.items) : page.items,
     ...(sessionProposalResults.size ? { sessionProposalResults: [...sessionProposalResults] } : {}),
+    ...(existing?.sessionFileReceipts || page.sessionFileReceipts
+      ? { sessionFileReceipts: { ...page.sessionFileReceipts, ...existing?.sessionFileReceipts } } : {}),
     hasMore: page.hasMore,
     ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
   };

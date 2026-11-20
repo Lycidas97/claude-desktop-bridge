@@ -79,6 +79,7 @@ export async function openBridgeSession(
           hasMore: current.histories[sessionId]?.hasMore ?? false,
           ...(current.histories[sessionId]?.latestRead ? { latestRead: current.histories[sessionId]!.latestRead } : {}),
           ...(current.histories[sessionId]?.sessionProposalResults ? { sessionProposalResults: current.histories[sessionId]!.sessionProposalResults } : {}),
+          ...(current.histories[sessionId]?.sessionFileReceipts ? { sessionFileReceipts: current.histories[sessionId]!.sessionFileReceipts } : {}),
           ...(current.histories[sessionId]?.nextCursor
             ? { nextCursor: current.histories[sessionId].nextCursor }
             : {}),
@@ -148,6 +149,7 @@ export async function openBridgeSession(
             hasMore: current.histories[sessionId]?.hasMore ?? false,
             ...(current.histories[sessionId]?.latestRead ? { latestRead: current.histories[sessionId]!.latestRead } : {}),
           ...(current.histories[sessionId]?.sessionProposalResults ? { sessionProposalResults: current.histories[sessionId]!.sessionProposalResults } : {}),
+          ...(current.histories[sessionId]?.sessionFileReceipts ? { sessionFileReceipts: current.histories[sessionId]!.sessionFileReceipts } : {}),
             ...(current.histories[sessionId]?.nextCursor ? { nextCursor: current.histories[sessionId]!.nextCursor } : {}),
             error: error instanceof Error ? error.message : "会话打开失败",
           },
@@ -383,6 +385,7 @@ export async function refreshLatestBridgeHistory(
   } while (cursor && existingIds.size > 0 && !page.items.some(item => isTranscriptMessage(item) && existingIds.has(item.id)));
   const newestById = new Map(pages.reverse().flatMap(({ items }) => items.map(item => [item.id, item] as const)));
   const refreshedProposalResults = pages.flatMap(page => page.sessionProposalResults ?? []);
+  const refreshedFileReceipts = Object.fromEntries(pages.flatMap(page => Object.entries(page.sessionFileReceipts ?? {})));
   const oldest = page.items.find(isTranscriptMessage)?.id;
   setState((current) => {
     if (!isCurrent()) return current;
@@ -394,6 +397,9 @@ export async function refreshLatestBridgeHistory(
     const history = overlap >= 0 ? { ...existing! } : projectHistoryPage(page);
     if (refreshedProposalResults.length) {
       history.sessionProposalResults = [...new Set([...(history.sessionProposalResults ?? []), ...refreshedProposalResults])];
+    }
+    if (Object.keys(refreshedFileReceipts).length) {
+      history.sessionFileReceipts = { ...history.sessionFileReceipts, ...refreshedFileReceipts };
     }
     if (history.status === "error") {
       history.status = "ready";

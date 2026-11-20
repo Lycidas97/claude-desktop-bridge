@@ -223,6 +223,27 @@ function normalizedProjectPath(root: string, candidate: string): {
   };
 }
 
+export function sessionFileLinkPath(path: string): string {
+  return path.trim().replace(/:\d+(?::\d+)?$/u, "");
+}
+
+export async function workspaceTransferMetadata(rootPath: string, sourcePath: string): Promise<
+  { metadata: BridgeArtifactTransferMetadata } | { blockedReason: string }
+> {
+  const normalized = normalizedProjectPath(rootPath, sourcePath);
+  if (!normalized.relativePath || normalized.blockedReason) {
+    return { blockedReason: normalized.blockedReason ?? "项目目录之外的文件不允许远程读取" };
+  }
+  const metadata = await stat(sourcePath);
+  if (!metadata.isFile()) return { blockedReason: "目标路径不是普通文件" };
+  if (metadata.size > ARTIFACT_MAX_BYTES) return { blockedReason: "文件超过 20 MiB 传输上限" };
+  return { metadata: {
+    name: artifactDisplayName(normalized.relativePath),
+    mimeType: artifactMetadata(normalized.relativePath).mimeType,
+    size: metadata.size,
+  } };
+}
+
 export class EvidenceManager {
   private readonly active = new Map<string, ActiveEvidence>();
   private readonly rootOwners = new Map<string, number>();
@@ -862,7 +883,7 @@ export class EvidenceManager {
   }
 
   private async fileTransferSource(cwd: string, candidatePath: string, readCwd?: string, resolveRelativePath?: RelativeFileResolver) {
-    const cleaned = candidatePath.trim().replace(/:\d+(?::\d+)?$/u, "");
+    const cleaned = sessionFileLinkPath(candidatePath);
     if (!cleaned) throw new Error("文件路径不能为空");
     const rootPath = await realpath(cwd);
     const expanded = cleaned.startsWith("~/")
@@ -887,21 +908,9 @@ export class EvidenceManager {
       }
     }
     if (!sourcePath) throw new Error("文件不存在或无法读取");
-    const normalized = normalizedProjectPath(rootPath, sourcePath);
-    if (!normalized.relativePath || normalized.blockedReason) {
-      throw new Error(normalized.blockedReason ?? "项目目录之外的文件不允许远程读取");
-    }
-    const metadata = await stat(sourcePath);
-    if (!metadata.isFile()) throw new Error("目标路径不是普通文件");
-    if (metadata.size > ARTIFACT_MAX_BYTES) throw new Error("文件超过 20 MiB 传输上限");
-    return {
-      sourcePath,
-      metadata: {
-        name: artifactDisplayName(normalized.relativePath),
-        mimeType: artifactMetadata(normalized.relativePath).mimeType,
-        size: metadata.size,
-      },
-    };
+    const result = await workspaceTransferMetadata(rootPath, sourcePath);
+    if ("blockedReason" in result) throw new Error(result.blockedReason);
+    return { sourcePath, metadata: result.metadata };
   }
 
   readTransfer(transferId: string, index: number, owner: string): BridgeArtifactTransferChunk {

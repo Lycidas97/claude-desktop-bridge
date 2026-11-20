@@ -1,7 +1,9 @@
 .session-history-toggle {
   display: flex;
+  flex-wrap: wrap;
   min-height: 30px;
   align-items: center;
+  align-content: center;
   gap: 6px;
   margin-left: 14px;
   padding: 0 10px;
@@ -21,4 +23,5 @@
 
 .mobile-home-catalog .session-history-toggle {
   min-height: 44px;
+  font-size: calc(13px * var(--font-scale));
 }

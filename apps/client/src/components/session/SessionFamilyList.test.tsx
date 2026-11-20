@@ -177,25 +177,36 @@ describe("SessionFamilyList", () => {
     expect(onlyBranch.props.className).toBe("session-fork-branch is-last is-only");
   });
 
-  it("limits only root sessions in activity order and keeps a fork with a missing parent reachable", () => {
-    const families = groupProjectSessionFamilies([
+  it("keeps exactly three recent roots and shows hidden activity and attention on the disclosure", () => {
+    const families = groupProjectSessionFamilies<BridgeSessionInfo>([
       session,
       { ...session, sessionId: "second", lastActivityAt: 70 },
       { ...session, sessionId: "third", lastActivityAt: 60 },
-      { ...session, sessionId: "older", lastActivityAt: 50 },
-      { ...session, sessionId: "orphan", parentSessionId: "archived-parent", lastActivityAt: 80 },
+      { ...session, sessionId: "older", lastActivityAt: 50, turnState: "queued", pendingCount: 2 },
+      { ...session, sessionId: "older-fork", parentSessionId: "older", lastActivityAt: 45, turnState: "waiting" },
+      { ...session, sessionId: "orphan", parentSessionId: "archived-parent", lastActivityAt: 55, turnState: "running" },
+      { ...session, sessionId: "question", parentSessionId: "older", lastActivityAt: 40 },
       { ...session, sessionId: "fork", parentSessionId: "root", lastActivityAt: 90 },
     ]);
     const onToggle = vi.fn();
-    const props = { families, expandedForkParents: new Set(["root"]) };
+    const props = {
+      families, selectedId: "older", expandedForkParents: new Set(["root", "older"]),
+      permissions: [{ ...permission, sessionId: "older-fork" }, { ...permission, sessionId: "question", toolName: "AskUserQuestion" }],
+    };
     const collapsed = elements(render({ ...props, olderSessionsDisclosure: { expanded: false, onToggle } }));
-    expect(collapsed.flatMap(element => element.props["data-session-id"] ?? [])).toEqual(["root", "fork", "orphan", "second", "third"]);
+    expect(collapsed.flatMap(element => element.props["data-session-id"] ?? [])).toEqual(["root", "fork", "second", "third"]);
     const disclosure = collapsed.find(element => element.props.className === "session-history-toggle")!;
     expect(disclosure.props["aria-expanded"]).toBe(false);
-    expect(renderToStaticMarkup(disclosure)).toContain("显示其余 1 个会话");
+    expect(renderToStaticMarkup(disclosure)).toContain("显示其余 2 个会话");
+    expect(renderToStaticMarkup(disclosure)).toContain("2 个待处理");
+    expect(renderToStaticMarkup(disclosure)).toContain("2 个进行中");
     disclosure.props.onClick();
     expect(onToggle).toHaveBeenCalledOnce();
-    expect(row(render({ ...props, olderSessionsDisclosure: { expanded: true, onToggle } }), "older")).toBeDefined();
+    const expanded = render({ ...props, olderSessionsDisclosure: { expanded: true, onToggle } });
+    expect(row(expanded, "orphan")).toBeDefined();
+    expect(row(expanded, "older").props.className).toContain(" active");
+    expect(status(row(expanded, "older-fork"))?.props.children).toBe("待授权");
+    expect(status(row(expanded, "question"))?.props.children).toBe("待回答");
     expect(row(render({ ...props, archivedList: true }), "older")).toBeDefined();
   });
 

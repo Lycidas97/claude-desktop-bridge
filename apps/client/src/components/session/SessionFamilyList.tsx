@@ -241,26 +241,42 @@ export function SessionFamilyList({
     );
   }
 
-  const olderRoots = olderSessionsDisclosure
-    ? families.filter(({ primary }) => !primary.parentSessionId).slice(RECENT_ROOT_LIMIT)
-    : [];
-  const firstOlderRoot = olderRoots[0];
-  if (!olderSessionsDisclosure || !firstOlderRoot) {
-    return <>{families.map(family => renderSessionFamily(family))}</>;
+  if (!olderSessionsDisclosure) return <>{families.map(family => renderSessionFamily(family))}</>;
+
+  const recent: SessionFamily<BridgeSessionInfo>[] = [];
+  const older: SessionFamily<BridgeSessionInfo>[] = [];
+  for (const family of families) {
+    if (!family.primary.parentSessionId && recent.length < RECENT_ROOT_LIMIT) recent.push(family);
+    else older.push(family);
   }
 
-  const split = families.indexOf(firstOlderRoot);
   const { expanded, onToggle } = olderSessionsDisclosure;
+  let waiting = 0;
+  let inProgress = 0;
+  if (!expanded && older.length > 0) {
+    const permissionSessionIds = new Set(permissions.map(permission => permission.sessionId));
+    function countHiddenActivity({ primary, forks }: SessionFamily<BridgeSessionInfo>) {
+      if (!primary.archivedAt) {
+        if (primary.turnState === "waiting" || permissionSessionIds.has(primary.sessionId)) waiting++;
+        else if (primary.turnState === "running" || primary.turnState === "queued") inProgress++;
+      }
+      forks.forEach(countHiddenActivity);
+    }
+    older.forEach(countHiddenActivity);
+  }
+
   return (
     <>
-      {families.slice(0, split).map(family => renderSessionFamily(family))}
-      <button type="button" className="session-history-toggle" aria-expanded={expanded} onClick={onToggle}>
-        {expanded ? <ChevronDown size={13} aria-hidden="true" /> : <ChevronRight size={13} aria-hidden="true" />}
-        {expanded ? "收起较早会话" : `显示其余 ${olderRoots.length} 个会话`}
-      </button>
-      {families.slice(split).map(family => (
-        expanded || family.primary.parentSessionId ? renderSessionFamily(family) : null
-      ))}
+      {recent.map(family => renderSessionFamily(family))}
+      {older.length > 0 && (
+        <button type="button" className="session-history-toggle" aria-expanded={expanded} onClick={onToggle}>
+          {expanded ? <ChevronDown size={13} aria-hidden="true" /> : <ChevronRight size={13} aria-hidden="true" />}
+          <span>{expanded ? "收起较早会话" : `显示其余 ${older.length} 个会话`}</span>
+          {waiting > 0 && <span className="session-row-status waiting">{waiting} 个待处理</span>}
+          {inProgress > 0 && <span className="session-row-status running">{inProgress} 个进行中</span>}
+        </button>
+      )}
+      {expanded && older.map(family => renderSessionFamily(family))}
     </>
   );
 }

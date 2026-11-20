@@ -7,7 +7,7 @@ import { desktopFixtureRequest, eventually, openMobileDrawer, customSelectValue 
 export function addOlderCatalogSessions(snapshot) {
   const source = snapshot.sessions.find(session => session.sessionId === sessionId);
   snapshot.sessions.push(
-    { ...source, sessionId: "catalog-oldest", title: "更早的目录会话", lastActivityAt: source.lastActivityAt - 120_000 },
+    { ...source, sessionId: "catalog-oldest", title: "更早的目录会话", lastActivityAt: source.lastActivityAt - 120_000, turnState: "waiting" },
     { ...source, sessionId: "catalog-recent", title: "第三个近期会话", lastActivityAt: source.lastActivityAt - 60_000 },
   );
 }
@@ -20,7 +20,7 @@ export async function verifySessionCatalog(page, host, steps, directory, viewpor
     const oldest = catalog.locator('[data-session-id="catalog-oldest"]');
     const fork = group.locator('[data-session-id="browser-e2e-fork"]');
     const branchToggle = group.locator('[data-session-id="browser-e2e-parent"] .session-family-chevron');
-    const showOlder = group.getByRole("button", { name: "显示其余 1 个会话", exact: true });
+    const showOlder = group.getByRole("button", { name: "显示其余 1 个会话 1 个待处理", exact: true });
 
     await eventually(() => roots.count(), 3, "An expanded section shows only three recent roots");
     assert.deepEqual((await roots.evaluateAll(rows => rows.map(row => row.dataset.sessionId))).sort(), ["browser-e2e-parent", sessionId, "catalog-recent"].sort());
@@ -30,7 +30,7 @@ export async function verifySessionCatalog(page, host, steps, directory, viewpor
     await fork.waitFor();
     assert.equal(await roots.count(), 3, "An open fork does not consume a slot");
     await showOlder.press("Enter");
-    await oldest.waitFor();
+    await oldest.locator(".session-row-status.waiting").waitFor();
     assert.equal(await roots.count(), 4);
     await header.click();
     await oldest.waitFor({ state: "detached" });

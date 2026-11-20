@@ -238,6 +238,7 @@ export type BridgeCapability =
   | "plugin.assistant-mail.polling.v1"
   | "plugin.assistant-mail.attachments.v1"
   | "plugin.assistant-mail.history.v1"
+  | "plugin.assistant-mail.junk.v1"
   | "plugin.assistant-mail.triggers.v1"
   | "plugin.assistant-mail.batches.v1"
   | "plugin.assistant-mail.attention.v1"
@@ -988,6 +989,8 @@ export interface BridgeHistoryItem {
   interactivePrompt?: BridgeInteractivePrompt;
   taskPlan?: BridgeTaskPlan;
   proposalReceipt?: ProposalRevisionRef & { toolUseId: string };
+  /** Read-only transcript metadata; never evidence that the proposal is still pending. */
+  sessionProposal?: { title: string; background?: string };
 }
 
 export interface BridgeFileChangeSummary {
@@ -1001,6 +1004,8 @@ export interface BridgeFileChangeSummary {
 export interface BridgeHistoryPage {
   sessionId: string;
   items: BridgeHistoryItem[];
+  /** Successful proposal receipts on this page. The matching calls may be on older pages. */
+  sessionProposalResults?: string[];
   nextCursor?: string;
   hasMore: boolean;
 }
@@ -1412,6 +1417,7 @@ export type BridgeMethod =
   | "plugin.assistant-mail.batch"
   | "plugin.assistant-mail.history"
   | "plugin.assistant-mail.read"
+  | "plugin.assistant-mail.junk.set"
   | "plugin.assistant-mail.attention.ack"
   | "plugin.assistant-mail.bind"
   | "plugin.assistant-mail.workspace.initialize"

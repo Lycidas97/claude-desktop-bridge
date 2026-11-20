@@ -237,6 +237,42 @@ describe("controller transport publication", () => {
     expect(controller.onlineDevices.has(paired.pairing.deviceId)).toBe(true);
   });
 
+  it("only completes pairing on an encrypted snapshot handshake before routing local junk writes", async () => {
+    const { ws, controller, paired, config } = await fixture();
+    const device = config.devices[0]!;
+    delete device.pairedAt;
+    const phone = await BridgeCrypto.fromPairing(paired.pairing);
+    const handleRequest = controller.handleRequest.bind(controller);
+    const write = vi.fn(async () => ({ marked: true }));
+    vi.spyOn(controller, "handleRequest").mockImplementation((request, origin, deviceId) =>
+      request.method === "plugin.assistant-mail.junk.set" ? write() : handleRequest(request, origin, deviceId));
+    async function send(requestId: string, method: Extract<BridgePayload, { kind: "request" }>["method"], params: Record<string, unknown>, expected: object) {
+      const envelope = await phone.encrypt({ kind: "request", requestId, idempotencyKey: requestId, method, params },
+        "mobile", "desktop", Date.now(), undefined, config.hostDeviceId);
+      ws.receive({ type: "envelope", envelope });
+      await vi.waitFor(async () => {
+        const replies = await Promise.all(ws.sent.flatMap(frame => frame.type === "envelope" ? [phone.decrypt(frame.envelope)] : []));
+        expect(replies.map(reply => reply.payload)).toContainEqual(expect.objectContaining({ kind: "response", requestId, ...expected }));
+      });
+    }
+    const junk = { mailRefId: "saved-mail", junk: true };
+    const rejected = { ok: false, error: expect.objectContaining({ code: "PAIRING_REQUIRED" }) };
+    await send("before-read", "plugin.assistant-mail.junk.set", junk, rejected);
+    await send("ordinary-read", "project.list", { client: { name: "Before handshake" } }, { ok: true });
+    expect(device.pairedAt).toBeUndefined();
+    expect(device.name).toBe("Synthetic phone");
+    await send("after-read", "plugin.assistant-mail.junk.set", junk, rejected);
+    expect(write).not.toHaveBeenCalled();
+
+    await requestSnapshot(ws, paired, config.hostDeviceId);
+    const pairedAt = device.pairedAt;
+    expect(pairedAt).toEqual(expect.any(Number));
+    await send("after-pairing", "plugin.assistant-mail.junk.set", { ...junk, client: { name: "Paired phone", platform: "web" } },
+      { ok: true, result: { marked: true } });
+    expect(write).toHaveBeenCalledOnce();
+    expect(device).toMatchObject({ pairedAt, name: "Paired phone", platform: "web" });
+  });
+
   it.each<ServerFrame>([
     { type: "stored", ids: ["delivery-1"] },
     { type: "acknowledged", ids: ["delivery-1"], byDeviceId: "synthetic-phone" },

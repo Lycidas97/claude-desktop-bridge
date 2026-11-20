@@ -96,6 +96,11 @@ describe("isBridgePayload", () => {
     expect(isBridgePayload({ kind: "request", requestId: method, idempotencyKey: method, method, params: { sessionId: "native" } })).toBe(true);
   });
 
+  it("accepts the local junk mark request", () => {
+    expect(isBridgePayload({ kind: "request", requestId: "junk", idempotencyKey: "junk", method: "plugin.assistant-mail.junk.set",
+      params: { mailRefId: "saved-mail", junk: true } })).toBe(true);
+  });
+
   it("still rejects unknown methods", () => {
     expect(isBridgePayload({
       kind: "request",

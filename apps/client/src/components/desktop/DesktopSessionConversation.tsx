@@ -447,7 +447,7 @@ function useDesktopConversationController(input: DesktopConversationInput): Desk
       if (!loadingHistoryRef.current.has(key) || (openSeqRef.current.get(key) ?? 0) !== startSeq) return;
       updateHistories((value) => ({
         ...value,
-        [key]: projectHistoryPage(result.history, value[key]?.items ?? current.items),
+        [key]: projectHistoryPage(result.history, value[key] ?? current),
       }));
     } catch (failure) {
       if (!loadingHistoryRef.current.has(key) || (openSeqRef.current.get(key) ?? 0) !== startSeq) return;

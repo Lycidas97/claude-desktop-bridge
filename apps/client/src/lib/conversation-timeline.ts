@@ -33,6 +33,7 @@ export interface ConversationItem extends BridgeHistoryItem {
   requestId?: string;
   commandId?: string;
   toolUseId?: string;
+  sessionProposalConfirmed?: true;
   isError?: boolean;
   error?: string;
   live?: boolean;
@@ -201,7 +202,7 @@ export function groupTimelineTools(timeline: ConversationTimelineEntry[]): Displ
       result.push({ kind: "background-task", id: runId ? `workflow:${runId}` : entry.item.id, item: entry.item });
       continue;
     }
-    if (entry.kind === "message" && entry.item.role === "tool" && !entry.item.subagent) {
+    if (entry.kind === "message" && entry.item.role === "tool" && !entry.item.sessionProposalConfirmed) {
       const prev = result.at(-1);
       if (prev && prev.kind === "tool-group") {
         prev.tools.push(entry.item);
@@ -346,6 +347,7 @@ export function conversationItems(
     return [task.toolUseId ?? (task.taskId ? subagentItemIds.get(task.taskId) : undefined)
       ?? (subagent ? subagentItemIds.get(subagent.agentId) : undefined) ?? event.itemId ?? event.eventId];
   }));
+  const confirmedSessionProposals = new Set(history?.sessionProposalResults);
   for (const item of sessionHistory) {
     if (
       (item.role === "user" || item.role === "assistant") &&
@@ -567,7 +569,15 @@ export function conversationItems(
         : event.itemId ?? event.eventId;
       if (hiddenTaskItems.has(id)) continue;
       const existing = toolByItem.get(id) ?? items.get(`tool:${id}`);
-      if (event.origin === "claude-desktop" && event.type === "tool.completed" && !existing && !incomingSubagent && !event.data.toolName) continue;
+      if (event.origin === "claude-desktop" && event.type === "tool.completed") {
+        if (event.itemId && event.data.sessionProposalResult === true) {
+          confirmedSessionProposals.add(event.itemId);
+          if (!existing) continue; // A result does not locate its call in the timeline.
+        }
+        if (!existing && !incomingSubagent && !event.data.toolName) continue;
+      }
+      const sessionProposal = event.origin === "claude-desktop" && event.type === "tool.started" && event.data.sessionProposal
+        ? event.data.sessionProposal as BridgeHistoryItem["sessionProposal"] : existing?.sessionProposal;
       const toolName = typeof event.data.toolName === "string" && event.data.toolName
         ? event.data.toolName
         : existing?.toolName ?? "工具";
@@ -617,6 +627,7 @@ export function conversationItems(
         createdAt: existing?.createdAt ?? event.timestamp,
         origin: event.origin,
         ...(toolUseId ? { toolUseId } : {}),
+        ...(sessionProposal ? { sessionProposal } : {}),
         ...(isError ? { isError: true } : {}),
         ...(subagent?.state === "unknown" ? {} : {
           state: subagent?.state === "stopped"
@@ -728,7 +739,9 @@ export function conversationItems(
       })) } : {}),
     });
   }
-  const sorted = [...items.values()].flatMap((item) => {
+  const sorted = [...items.values()].flatMap((item): ConversationItem[] => {
+    if (item.role === "tool" && item.origin === "claude-desktop" && item.sessionProposal && item.toolUseId
+      && !item.isError && confirmedSessionProposals.has(item.toolUseId)) return [{ ...item, state: "completed", sessionProposalConfirmed: true }];
     if (item.role !== "user") return [item];
     const sessionNotice = !item.attachments?.length ? parseSessionNotice(item.text) : undefined;
     if (sessionNotice) return [{ ...item, sessionNotice }];

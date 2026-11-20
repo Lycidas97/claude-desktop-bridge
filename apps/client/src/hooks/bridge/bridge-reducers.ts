@@ -86,9 +86,11 @@ export const HOME_LEARN_FRESHNESS_MS = 3 * 60_000;
 export interface SessionHistoryState {
   status: "idle" | "loading" | "ready" | "error";
   items: BridgeHistoryPage["items"];
+  sessionProposalResults?: string[];
   nextCursor?: string;
   hasMore: boolean;
   error?: string;
+  latestRead?: { sequence: number; completedTurnId: string | undefined };
 }
 
 export interface SessionEvidenceState {
@@ -145,6 +147,7 @@ export interface MobileBridgeState {
   desktopName: string | undefined;
   connection: SocketState;
   desktopOnline: boolean;
+  foregroundRevision?: number;
   snapshot: BridgeHostSnapshot | undefined;
   snapshotSeq: number;
   permissions: BridgePermissionInfo[];
@@ -916,11 +919,13 @@ function mergeEvidence(
 
 export function projectHistoryPage(
   page: BridgeHistoryPage,
-  existingItems?: BridgeHistoryPage["items"],
+  existing?: SessionHistoryState,
 ): SessionHistoryState {
+  const sessionProposalResults = new Set([...(page.sessionProposalResults ?? []), ...(existing?.sessionProposalResults ?? [])]);
   return {
     status: "ready",
-    items: existingItems ? mergeHistoryPages(page.items, existingItems) : page.items,
+    items: existing ? mergeHistoryPages(page.items, existing.items) : page.items,
+    ...(sessionProposalResults.size ? { sessionProposalResults: [...sessionProposalResults] } : {}),
     hasMore: page.hasMore,
     ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
   };
@@ -1477,6 +1482,7 @@ export interface ApplySessionResultOptions {
   history?: {
     sessionId: string;
     page: BridgeHistoryPage;
+    latestRead?: SessionHistoryState["latestRead"];
   } | undefined;
   titleOnly?: boolean | undefined;
   prepend?: boolean | undefined;
@@ -1563,7 +1569,10 @@ export function applySessionResultToState(
   const histories = options.history
     ? {
         ...current.histories,
-        [options.history.sessionId]: projectHistoryPage(options.history.page),
+        [options.history.sessionId]: {
+          ...projectHistoryPage(options.history.page),
+          ...(options.history.latestRead ? { latestRead: options.history.latestRead } : {}),
+        },
       }
     : current.histories;
   if (snapshot === current.snapshot && histories === current.histories) return current;

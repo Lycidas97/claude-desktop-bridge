@@ -75,6 +75,52 @@ export async function verifyAssistantAttention(page, host, steps, directory, vie
     await desktop.getByText("需要处理", { exact: true }).waitFor();
     await desktop.screenshot({ path: resolve(directory, "desktop-assistant-attention.png") });
     viewports.push({ page: "desktop-assistant-attention", ...desktop.viewportSize() });
+
+    await entry.click();
+    const card = client => client.locator(`.assistant-mail-list [data-mail-id="${action.mailRefId}"]`);
+    const mark = client => card(client).getByRole("button", { name: "标为垃圾邮件", exact: true });
+    for (const client of [page, desktop]) {
+      await client.getByRole("button", { name: "收件", exact: true }).click();
+      await mark(client).waitFor();
+    }
+    await desktop.evaluate(host => window.assistantDesktopSnapshot({ host }), { ...host.snapshot.host,
+      capabilities: host.snapshot.host.capabilities.filter(value => value !== "plugin.assistant-mail.junk.v1") });
+    await mark(desktop).waitFor({ state: "detached" });
+    await card(desktop).waitFor();
+    await desktop.evaluate(host => window.assistantDesktopSnapshot({ host }), host.snapshot.host);
+    await mark(desktop).waitFor();
+
+    const publishDesktop = () => desktop.evaluate(assistantMail => window.assistantDesktopSnapshot({ assistantMail }), host.snapshot.assistantMail);
+    await mark(page).click();
+    await card(page).waitFor({ state: "detached" });
+    await publishDesktop();
+    await card(desktop).waitFor({ state: "detached" });
+    assert.equal(host.snapshot.assistantMail.attention.some(item => item.id === action.mailRefId), false);
+    assert.equal(host.snapshot.assistantMail.attention.some(item => item.kind === "todo"), true);
+    const undo = page.getByRole("button", { name: "撤销", exact: true });
+    await undo.waitFor();
+    assert.ok(await undo.evaluate(element => {
+      const bounds = element.getBoundingClientRect();
+      return bounds.height >= 44 && bounds.top >= 0 && bounds.bottom <= innerHeight && document.documentElement.scrollWidth <= innerWidth + 1;
+    }), "The latest mark is reversible from the visible mobile inbox");
+    await page.screenshot({ path: resolve(directory, "mobile-mail-junk.png") });
+    viewports.push({ page: "mobile-mail-junk", ...page.viewportSize() });
+    await undo.click();
+    await card(page).waitFor();
+    await publishDesktop();
+    await mark(desktop).waitFor();
+    assert.equal(host.snapshot.assistantMail.attention.some(item => item.id === action.mailRefId), true);
+
+    await mark(desktop).press("Enter");
+    await card(desktop).waitFor({ state: "detached" });
+    await card(page).waitFor({ state: "detached" });
+    await eventually(() => desktop.evaluate(() => document.activeElement?.textContent), "撤销", "Keyboard marking moves focus to undo");
+    await desktop.getByRole("status").filter({ hasText: action.subject }).waitFor();
+    await desktop.screenshot({ path: resolve(directory, "desktop-mail-junk.png") });
+    viewports.push({ page: "desktop-mail-junk", ...desktop.viewportSize() });
+    await desktop.getByRole("button", { name: "撤销", exact: true }).click();
+    await card(page).waitFor();
+    steps.push("A manual junk mark hides one mail and its attention on both clients, undo restores both, and older hosts have no mark action");
   } finally { await desktop.close(); }
 
   await page.reload({ waitUntil: "domcontentloaded" });

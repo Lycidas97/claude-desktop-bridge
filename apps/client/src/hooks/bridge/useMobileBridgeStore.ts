@@ -8,6 +8,7 @@ export interface BridgeMutableStore extends BridgeTransportRefs {
   handledCommandEvents: MutableRefObject<Set<string>>;
   openingSessionsRef: MutableRefObject<Map<string, { socket: BridgeTransport | undefined; task: Promise<void> }>>;
   loadingHistoryRef: MutableRefObject<Map<string, BridgeTransport | undefined>>;
+  historyReadSequenceRef: MutableRefObject<number>;
   transferGaugesRef: MutableRefObject<{ activeUploads: number; activeDownloads: number }>;
 }
 
@@ -33,6 +34,7 @@ export function createBridgeStore(state: MobileBridgeState, setState: BridgeTran
     handledCommandEvents: { current: new Set() },
     openingSessionsRef: { current: new Map() },
     loadingHistoryRef: { current: new Map() },
+    historyReadSequenceRef: { current: 0 },
     transferGaugesRef: { current: { activeUploads: 0, activeDownloads: 0 } },
   };
 }

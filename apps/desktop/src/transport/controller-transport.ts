@@ -65,7 +65,7 @@ export interface DesktopMessageDeliveryHost {
   socket: BridgeTransport | undefined;
   readonly responseCache: Map<string, BridgeResponse>;
   isPairedDevice(deviceId: string): boolean;
-  rememberDevice(deviceId: string, metadata?: Record<string, unknown>): Promise<void>;
+  rememberDevice(deviceId: string, metadata: Record<string, unknown>, requestMethod: BridgeRequest["method"]): Promise<void>;
   sendToDevice(
     payload: BridgePayload,
     deviceId: string,
@@ -311,13 +311,13 @@ export async function deliverTransportMessage(
   const delivered = diagnostics.begin(`rpc.${method}`);
   try {
     const deviceId = message.header.fromDeviceId;
-    if (requestMethod.startsWith("assistant.proposal.") && !host.isPairedDevice(deviceId)) {
+    if ((requestMethod.startsWith("assistant.proposal.") || requestMethod === "plugin.assistant-mail.junk.set") && !host.isPairedDevice(deviceId)) {
       await host.sendToDevice({ kind: "response", requestId: message.payload.requestId, ok: false,
         error: { code: "PAIRING_REQUIRED", message: "请先完成设备配对。", retryable: false } }, deviceId, undefined, true);
       host.socket?.ack([encrypted.id]);
       return;
     }
-    await host.rememberDevice(deviceId, message.payload.params);
+    await host.rememberDevice(deviceId, message.payload.params, requestMethod);
     const cached = cacheable ? host.responseCache.get(message.payload.requestId) : undefined;
     if (cached) {
       diagnostics.cacheHit();
@@ -424,10 +424,11 @@ export function applyRememberedDevice(
   deviceId: string,
   socketPath: BridgeTransport["path"] | undefined,
   deflateDevices: Set<string>,
-  metadata?: Record<string, unknown>,
+  metadata: Record<string, unknown> | undefined,
+  pairingHandshake: boolean,
 ): boolean {
   const device = config.devices.find((candidate) => candidate.deviceId === deviceId && !candidate.revokedAt);
-  if (!device) return false;
+  if (!device || (!device.pairedAt && !pairingHandshake)) return false;
   const now = Date.now();
   device.pairedAt ??= now;
   device.lastSeenAt = now;

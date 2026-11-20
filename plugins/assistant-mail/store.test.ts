@@ -72,6 +72,22 @@ it("projects the original screening deadline and separates user attention from r
   expect(store.page().events[0]).toMatchObject({ processingStatus: "processed", hostRead: true, analysis: { attention: "action", category: "account" } });
 });
 
+it("suppresses marked mail attention and its screening deadline without acknowledging it", async () => {
+  store.openMailbox("test-account", "1", 5);
+  const { mailRefId, recordedAt } = (await store.record(message()))!;
+  store.recordReply("current", "reply", "Separate reply");
+  expect(store.attention(true, recordedAt, "current").nextAt).toBe(recordedAt + 600_000);
+
+  store.setJunk(mailRefId, true);
+  expect(store.attention(true, recordedAt, "current")).toEqual({
+    items: [{ kind: "reply", id: "reply", title: "Separate reply", sessionId: "current" }], nextAt: Infinity,
+  });
+  store.updateAnalysis(mailRefId, { summary: "Review", suggestions: [], questions: [], attention: "action" });
+  expect(store.attention(false, recordedAt, "current").items.map(item => item.id)).toEqual(["reply"]);
+  store.setJunk(mailRefId, false);
+  expect(store.attention(false, recordedAt, "current").items.map(item => item.id)).toEqual([mailRefId, "reply"]);
+});
+
 it("remembers separately acknowledged replies only for the current binding", () => {
   store.recordReply("current", "first", "First");
   store.recordReply("current", "second", "Second");
@@ -254,6 +270,34 @@ it("migrates legacy mail as unmarked and retains host read marks after reopening
   await store.initialize();
   expect(await store.read(event.mailRefId)).toEqual({ event: { ...event, hostRead: true }, source: message().source });
   expect(store.openMailbox("test-account", "1", 100)).toBe(5);
+});
+
+it("migrates and keeps local junk marks across reopen without changing mail identity, processing, or raw bytes", async () => {
+  store.openMailbox("test-account", "1", 5);
+  const older = (await store.record({ ...message(4), historical: true }))!;
+  const target = (await store.record(message(5)))!;
+  const latest = (await store.record(message(6)))!;
+  store.close();
+  const legacy = new DatabaseSync(join(store.directory, "assistant.sqlite"));
+  try { legacy.exec("ALTER TABLE mail_events DROP COLUMN user_junk"); }
+  finally { legacy.close(); }
+  await store.initialize();
+
+  expect(store.page({ limit: 2 }, true, "inbox")).toEqual({ events: [latest, target], nextCursor: String(target.seq) });
+  expect(store.setJunk("missing", true)).toBeUndefined();
+  expect(store.setJunk(target.mailRefId, true)).toBe(true);
+  expect(store.setJunk(target.mailRefId, true)).toBe(false);
+  expect(store.unreadCount()).toBe(1);
+  store.close();
+  await store.initialize();
+
+  expect(store.page({ limit: 2 }, true, "inbox")).toEqual({ events: [latest, older] });
+  expect(store.page({ cursor: String(target.seq) }, true, "inbox").events).toEqual([older]);
+  expect(store.page().events).toEqual([latest, target, older]);
+  expect(await store.record(message(5))).toBeUndefined();
+  expect(await store.read(target.mailRefId)).toEqual({ event: target, source: message(5).source });
+  expect(store.setJunk(target.mailRefId, false)).toBe(true);
+  expect(store.page({}, true, "inbox").events).toEqual([latest, target, older]);
 });
 
 it("creates the assistant business tables and private POSIX files including WAL/SHM", async () => {

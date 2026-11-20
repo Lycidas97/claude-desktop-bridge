@@ -870,9 +870,9 @@ export class DesktopController extends EventEmitter {
     }
   }
 
-  private async rememberDevice(deviceId: string, metadata?: Record<string, unknown>): Promise<void> {
+  private async rememberDevice(deviceId: string, metadata?: Record<string, unknown>, requestMethod?: BridgeRequest["method"]): Promise<void> {
     if (!this.config) return;
-    if (!applyRememberedDevice(this.config, deviceId, this.socket?.path, this.deflateDevices, metadata)) return;
+    if (!applyRememberedDevice(this.config, deviceId, this.socket?.path, this.deflateDevices, metadata, requestMethod === "snapshot.get")) return;
     if (this.currentPairingDeviceId === deviceId) this.currentPairingDeviceId = undefined;
     await this.repository.save(this.config);
   }

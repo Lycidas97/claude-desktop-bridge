@@ -11,7 +11,7 @@ export async function createPreviousPairedHost(runtime, errors) {
   return host;
 }
 
-export async function verifyPairedHostStatus(page, previousHost, host, steps, directory, serverRoutes) {
+export async function verifyPairedHostStatus(page, previousHost, host, steps, directory, serverRoutes, relayStore) {
   await page.getByRole("button", { name: `当前电脑：${host.pairing.desktopName}，切换电脑` }).filter({ has: page.locator(".is-online") }).click();
   const switcher = page.getByRole("region", { name: "快捷切换电脑" });
   const current = switcher.locator('.drawer-host-option[aria-current="true"]');
@@ -81,10 +81,10 @@ export async function verifyPairedHostStatus(page, previousHost, host, steps, di
 
   previousHost.socket.close();
   await retry.waitFor();
+  assert.equal(await relayStore.revokeDevice(previousHost.pairing.roomId, previousHost.pairing.deviceId, Date.now()), true);
   const connectionsBeforeRevocation = serverRoutes.length;
   await retry.click();
   await eventually(() => serverRoutes.length > connectionsBeforeRevocation, true, "The retry opens a new route for Relay to reject");
-  serverRoutes.at(-1).send(JSON.stringify({ type: "error", code: "DEVICE_REVOKED", message: "Test fixture revoked this device" }));
   await switcher.getByRole("alert").filter({ hasText: "撤销" }).waitFor();
   assert.equal(await retry.count(), 0, "The revoked pairing cannot be retried");
   await current.click();

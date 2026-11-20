@@ -1,9 +1,9 @@
 .agenda-view { min-width: 0; padding: 12px; border: 1px solid var(--card-border); border-radius: var(--r-card); background: var(--card-fill); }
-.agenda-toolbar, .agenda-month, .agenda-actions, .agenda-pagination { display: flex; align-items: center; gap: 8px; }
+.agenda-toolbar, .agenda-month, .agenda-pagination { display: flex; align-items: center; gap: 8px; }
 .agenda-toolbar { flex-wrap: wrap; justify-content: space-between; }
 .agenda-month { gap: 4px; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.agenda-actions, .agenda-pagination { flex-wrap: wrap; justify-content: flex-end; margin-top: 8px; }
-.agenda-return-today { margin-right: auto; }
+.agenda-pagination { flex-wrap: wrap; justify-content: flex-end; margin-top: 8px; }
+.agenda-return-today { margin-top: 8px; }
 .agenda-day { margin-top: 16px; }
 .agenda-other-todos { margin-top: 12px; border-top: 1px solid var(--line); }
 .agenda-other-todos summary { display: list-item; align-content: center; cursor: pointer; min-height: 36px; color: var(--muted); }

@@ -433,10 +433,11 @@ export async function startNativeApprovalHost(options: {
   assistantMailCoordinator?.start();
   assistantMailCoordinator?.startTriggers();
   eventLog.on("event", event => {
-    assistantMailCoordinator?.observeDelivery(event);
+    // The live host logs the native event before appending any derived mail change.
     if ((event.type === "user.message.accepted" || event.type === "message.delivery") && event.data.source === "assistant-trigger") {
       options.onTriggerMessage?.(event);
     }
+    assistantMailCoordinator?.observeDelivery(event);
   });
   const mailSnapshot = () => assistantMailCoordinator?.snapshot();
   const controller = createControllerFixture({

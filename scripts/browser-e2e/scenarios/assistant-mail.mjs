@@ -490,7 +490,7 @@ export async function verifyAssistantMailReference(page, host, steps, directory,
   steps.push("Discuss sends a native reference; its echo preserves user text, hides the tool instruction and opens the matching synthetic mail");
 }
 
-export async function verifyAssistantMail(page, host, steps, directory, viewports, baseUrl) {
+export async function verifyAssistantMail(page, host, steps, directory, viewports, baseUrl, liveMailFirst) {
   const cards = () => page.locator('.assistant-mail-list [data-mail-id]');
   const filedView = page.getByRole("region", { name: "已收纳", exact: true });
   const filedEntry = count => page.getByRole("button", { name: `已收纳 ${count} 封`, exact: true });
@@ -1093,11 +1093,35 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   const queuedCard = cards().and(page.locator(`[data-mail-id="${queued.mailRefId}"]`));
   await queuedCard.getByText("等待助理", { exact: true }).waitFor();
   await page.getByRole("button", { name: "对话", exact: true }).click();
+  const queuedReceipt = host.nativeApproval.receipts().find(receipt => receipt.source === "assistant-trigger" && receipt.sessionId === managedSessionId && receipt.state === "queued");
+  const send = host.send;
+  const withdrawalEvents = [];
+  // Keep the client's resume cursor before both live notices. Release the
+  // notices in the selected wire order, then send the original replay response.
+  host.send = async payload => {
+    if (payload.kind === "event" && (payload.event.type === "plugin.assistant-mail.changed" ||
+      (payload.event.type === "message.delivery" && payload.event.data.commandId === queuedReceipt.commandId && payload.event.data.delivery === "cancelled"))) {
+      withdrawalEvents.push(payload);
+      return;
+    }
+    if (payload.kind === "response" && payload.result?.events?.some(event => event.eventId === withdrawalEvents[0]?.event.eventId)) {
+      host.send = send;
+      const mail = withdrawalEvents.find(({ event }) => event.type === "plugin.assistant-mail.changed");
+      const delivery = withdrawalEvents.find(({ event }) => event.type === "message.delivery");
+      assert.ok(mail && delivery);
+      const ids = withdrawalEvents.map(({ event }) => event.eventId);
+      assert.deepEqual(payload.result.events.filter(event => ids.includes(event.eventId)).map(event => event.eventId), ids);
+      for (const notice of liveMailFirst ? [mail, delivery] : [delivery, mail]) await send(notice);
+    }
+    return send(payload);
+  };
   await batch.getByRole("button", { name: "撤回助理唤醒" }).click();
   await batch.getByText("已撤回", { exact: true }).waitFor();
-  const receipt = host.nativeApproval.receipts().findLast(receipt => receipt.source === "assistant-trigger" && receipt.sessionId === managedSessionId);
+  const receipt = host.nativeApproval.receipts().find(receipt => receipt.commandId === queuedReceipt.commandId);
+  assert.equal(receipt.state, "cancelled");
   assert.equal(host.requests.findLast(request => request.method === "turn.queue.cancel").params.commandId, receipt.commandId);
   assert.deepEqual(host.nativeApproval.calls.findLast(call => call.method === "cancelQueuedMessage").args, [managedSessionId, receipt.messageId]);
+  steps.push(`Native withdrawal refreshes the batch after ${liveMailFirst ? "mail then delivery" : "delivery then mail"} live notices and ordered replay`);
   host.nativeApproval.setSessionBusy(managedSessionId, false);
   await page.locator(".assistant-view-tabs").getByRole("button", { name: "助理设置", exact: true }).click();
   await page.locator("label.toggle-row").filter({ has: proactive }).click();

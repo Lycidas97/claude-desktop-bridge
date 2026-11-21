@@ -160,7 +160,9 @@ export async function verifyAssistantAttention(page, host, steps, directory, vie
       { type: "assistant", uuid: `${id}-response`, message: { id: `${id}-reply`, content: [{ type: "text", text }] } },
       { type: "result", uuid: `${id}-result`, is_error: false, user_message_uuid: `${id}-input` },
     ]) events.push(...await native.message({ timestamp: Date.now(), ...message }));
-    await host.syncNativeQueue({ events, history: await native.history(200), session: native.session() });
+    const session = native.session();
+    host.session.lastCompletedTurnId = session.lastCompletedTurnId;
+    await host.syncNativeQueue({ events, history: await native.history(200), session });
   }
   const historyNotice = page.locator(".assistant-conversation .latest-history-notice");
   const { promise, resolve: releaseHistory } = Promise.withResolvers();

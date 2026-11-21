@@ -4,7 +4,7 @@ import { MailParser, type EmailAddress, type Headers, type HeaderValue } from "m
 import type { MailProposalAction, MailProposalDraft } from "../../packages/protocol/src/assistant-proposal.js";
 import { AssistantError } from "./assistant-error.js";
 import type { AssistantMailService } from "./desktop.js";
-import { mailbox } from "./proposal-contract.js";
+import { mailbox } from "./account-contract.js";
 import type { ProposalPayload } from "./proposal-store.js";
 
 function headerAddresses(header: HeaderValue | undefined): string[] {

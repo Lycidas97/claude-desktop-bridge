@@ -2,7 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { ARTIFACT_MAX_BYTES, ASSISTANT_ATTENTION_CAPABILITY, ASSISTANT_MAIL_CATEGORIES_CAPABILITY, ASSISTANT_MAIL_FILING_CAPABILITY, ASSISTANT_MAIL_KEEP_CREDENTIAL_CAPABILITY, ASSISTANT_MAIL_RECEIVED_ORDER_CAPABILITY, ASSISTANT_MAIL_SHARED_AUTH_CAPABILITY, ASSISTANT_MEMORY_POLICY, ASSISTANT_SMTP_CAPABILITY, isAssistantWorkspacePolicy, isMailPollInterval, mailAttachmentPreviewKind } from "@bridge/protocol";
 import { AssistantError } from "../../../../plugins/assistant-mail/assistant-error.js";
 import type { AssistantAgendaService } from "../../../../plugins/assistant-mail/agenda.js";
-import { configureSmtp, saveMailAccount } from "../../../../plugins/assistant-mail/proposal-contract.js";
+import { configureSmtp, saveMailAccount } from "../../../../plugins/assistant-mail/account-contract.js";
 import type {
   AssistantAttentionAcknowledgment,
   BridgeAssistantMailSnapshot,

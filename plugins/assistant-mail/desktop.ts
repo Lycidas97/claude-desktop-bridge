@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { AssistantError } from "./assistant-error.js";
-import { sharedSmtpChannel, smtpChannel } from "./proposal-contract.js";
+import { sharedSmtpChannel, smtpChannel } from "./account-contract.js";
 import { EventEmitter } from "node:events";
 import { renameSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";

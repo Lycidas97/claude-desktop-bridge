@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { mailAccountKey, mailbox } from "./account-contract.js";
 import { eventInput, todoInput } from "./agenda-contract.js";
 
 const recordId = z.string().regex(/^(?:[a-f0-9]{64}|[a-f0-9-]{36})$/u);
@@ -6,31 +7,14 @@ const sourceId = z.string().regex(/^(?:local|[a-f0-9]{64})$/u).default("local");
 const limit = z.number().int().min(1).max(50).default(30);
 const cursor = z.string().regex(/^[1-9]\d*$/u).refine(value => Number.isSafeInteger(Number(value))).optional();
 
-export const mailbox = z.email({ pattern: z.regexes.html5Email }).max(254).transform(address => {
-  const at = address.lastIndexOf("@");
-  return address.slice(0, at + 1) + address.slice(at + 1).toLowerCase();
-});
 const subject = z.string().trim().max(500).regex(/^[^\p{Cc}]*$/u);
 const mailDraft = {
-  accountKey: z.string().regex(/^[a-f0-9]{64}$/u),
+  accountKey: mailAccountKey,
   cc: z.array(mailbox).max(20).optional(),
   replyTo: mailbox.optional(),
   bodyText: z.string().min(1).max(8000).regex(/^[^\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]*$/u),
 };
 const recipients = z.array(mailbox).min(1).max(20);
-export const smtpChannel = z.strictObject({ host: z.string().trim().toLowerCase().min(1).max(253).regex(/^[a-z0-9.-]+$/u),
-  port: z.number().int().min(1).max(65535), security: z.enum(["tls", "starttls"]),
-  user: z.string().trim().min(1).max(300), from: mailbox });
-export const sharedSmtpChannel = smtpChannel.omit({ user: true });
-const sharedMailSettings = { credential: z.string().refine(value => value.trim() !== ""), smtp: sharedSmtpChannel.optional() };
-export const saveMailAccount = z.union([
-  z.strictObject({ host: z.string().trim().min(1).regex(/^\S+$/u), port: z.number().int().min(1).max(65535).optional(),
-    user: z.string().trim().min(1), ...sharedMailSettings }),
-  z.strictObject({ accountKey: mailDraft.accountKey, ...sharedMailSettings }),
-  z.strictObject({ accountKey: mailDraft.accountKey, smtp: sharedSmtpChannel }),
-]);
-export const configureSmtp = z.strictObject({ accountKey: mailDraft.accountKey,
-  smtp: smtpChannel.extend({ credential: z.string().min(1).max(1800) }).nullable() });
 
 export const MEMORY_RULE_TEXT_REQUIREMENT = "For memory.rule_upsert, omit text for delete; provide text for add and update.";
 const memoryRule = z.strictObject({

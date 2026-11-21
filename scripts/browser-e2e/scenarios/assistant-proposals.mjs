@@ -359,13 +359,22 @@ export async function verifyAssistantProposals(page, host, steps, directory, vie
   await sheet.getByRole("button", { name: "确认立即发出" }).click();
   await sheet.waitFor({ state: "hidden" });
   const errorMessage = "发送失败：无法连接发信服务器。邮件未发出。请检查 SMTP 地址、端口和网络。";
-  await detail.getByRole("status").filter({ hasText: errorMessage }).waitFor();
+  const failure = detail.getByRole("status").filter({ hasText: errorMessage });
+  await failure.waitFor();
+  const { actual, danger } = await failure.evaluate(element => {
+    const actual = getComputedStyle(element).color;
+    element.style.color = "var(--danger-ink)";
+    const danger = getComputedStyle(element).color;
+    element.style.removeProperty("color");
+    return { actual, danger };
+  });
+  assert.equal(actual, danger, "SMTP failure status must use the theme's error color");
   await capture(page, "mobile-mail-send-failed");
   assert.equal(await detail.getByRole("button", { name: "核对并发送…" }).count(), 0);
   await page.locator(".assistant-page-mobile").getByRole("button", { name: "返回", exact: true }).click();
   await failingRow.waitFor({ state: "hidden" });
   await page.getByRole("region", { name: "待确认提案" }).getByRole("button", { name: "处理记录", exact: true }).click();
-  await failingRow.getByText(/发送失败 · 无法连接发信服务器/u).waitFor();
+  await failingRow.getByText(/发送失败：无法连接发信服务器/u).waitFor();
   await failingRow.click();
   await detail.getByRole("status").filter({ hasText: errorMessage }).waitFor();
   await assert.rejects(mailRequest("assistant.proposal.commit", { ...failingMail, confirmMail: true }), { code: "CONFLICT" });

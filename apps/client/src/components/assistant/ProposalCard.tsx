@@ -31,7 +31,7 @@ const mailSendReason: Record<MailSendFailure["reason"], { label: string; guidanc
   connection: { label: "无法连接发信服务器", guidance: "请检查 SMTP 地址、端口和网络。" },
   tls: { label: "无法建立 TLS 连接", guidance: "请检查 SMTP 端口、加密方式和服务器证书。" },
   auth: { label: "SMTP 认证失败", guidance: "请检查邮箱账号的发信授权。" },
-  rejected: { label: "服务器未接受邮件", guidance: "请核对发件人和收件地址。" },
+  rejected: { label: "服务器未接受邮件", guidance: "请核对发件人、收件地址和邮件内容。" },
   credential: { label: "发信授权不可用", guidance: "请在邮箱账号设置中核对发信授权。" },
   unconfirmed: { label: "未收到有效的发送回执" },
   interrupted: { label: "发送过程未能完成记录" },
@@ -50,7 +50,7 @@ export function proposalStatus(proposal: BridgeActionProposal): string {
     if (proposal.state === "failed" || proposal.state === "delivery_uncertain") {
       const label = proposal.state === "failed" ? "发送失败" : proposalStateLabel.delivery_uncertain;
       const failure = mailFailureSummary(proposal.mailSendFailure);
-      return failure ? `${label} · ${failure.label}` : label;
+      return failure ? `${label}：${failure.label}` : label;
     }
   }
   return proposalStateLabel[proposal.state];

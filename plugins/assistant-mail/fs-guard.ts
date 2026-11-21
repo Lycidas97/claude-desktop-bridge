@@ -109,9 +109,17 @@ function ancestryContains(path: string, { dev, ino }: BigIntStats): boolean {
 
 export function overlapsAssistantData(workspace: string, physicalPath: string): boolean {
   const userData = dirname(dirname(dirname(workspace)));
-  // APFS may preserve a different spelling for paths that identify the same directory.
-  return ancestryContains(physicalPath, statSync(userData, { bigint: true })) ||
-    ancestryContains(userData, statSync(physicalPath, { bigint: true }));
+  const dataIdentity = statSync(userData, { bigint: true });
+  if (ancestryContains(physicalPath, dataIdentity)) return true;
+  const targetIdentity = statSync(physicalPath, { bigint: true });
+  if (ancestryContains(userData, targetIdentity)) return true;
+  if (process.platform !== "darwin") return false;
+
+  // APFS firmlinks can hide the data-volume mount from the ordinary dirname chain.
+  const mountedPath = join("/System/Volumes/Data", userData);
+  const mounted = statSync(mountedPath, { bigint: true, throwIfNoEntry: false });
+  return mounted?.dev === dataIdentity.dev && mounted.ino === dataIdentity.ino &&
+    ancestryContains(mountedPath, targetIdentity);
 }
 
 export function loadAssistantReadDirectories(workspace: string): AssistantReadDirectories | undefined {

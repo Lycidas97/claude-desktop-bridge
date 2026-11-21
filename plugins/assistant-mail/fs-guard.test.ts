@@ -1,4 +1,4 @@
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import { link, mkdir, mkdtemp, realpath, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -57,6 +57,16 @@ it.skipIf(process.platform !== "darwin")("recognizes distinct APFS realpath spel
   const physicalAlias = realpathSync(alias);
   if (physicalAlias === physicalDirectory) skip();
   expect(overlapsAssistantData(join(physicalDirectory, "private", "assistant", "workspace"), physicalAlias)).toBe(true);
+});
+
+it.skipIf(process.platform !== "darwin")("excludes the APFS data volume containing the workspace's data directory", ({ skip }) => {
+  const dataVolume = "/System/Volumes/Data";
+  const userData = join(root, "bridge-data");
+  const original = statSync(userData, { bigint: true });
+  const mounted = statSync(join(dataVolume, userData), { bigint: true, throwIfNoEntry: false });
+  if (mounted?.dev !== original.dev || mounted.ino !== original.ino) skip();
+  // Only directory metadata for an owned temporary workspace and its mount is used.
+  expect(overlapsAssistantData(workspace, dataVolume)).toBe(true);
 });
 
 it("allows workspace reads and output writes, including files with missing ancestors", async () => {

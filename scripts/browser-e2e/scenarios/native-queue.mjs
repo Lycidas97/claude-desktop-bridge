@@ -2,7 +2,17 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { sessionId, originalTitle } from "../config.mjs";
-import { eventually, openMobileSession, customSelectValue } from "../helpers.mjs";
+import { eventually, openMobileSession, customSelectValue, desktopFixtureRequest } from "../helpers.mjs";
+
+async function completeNativeQueueMessage(host, result) {
+  // A runtime refresh can notify the fixture before the native result is recorded.
+  const [, events] = await Promise.all([
+    host.nativeApproval.commands(desktopFixtureRequest({ method: "runtime.refresh" })),
+    host.nativeApproval.message({ type: "result", is_error: false, ...result },
+      { type: "turn.completed", itemId: result.user_message_uuid }),
+  ]);
+  await host.syncNativeQueue({ events, history: await host.nativeApproval.history(), session: host.nativeApproval.session() });
+}
 
 export async function verifyNativeQueueActions(page, host, steps, directory, relayPeers) {
   await openMobileSession(page);
@@ -157,7 +167,7 @@ export async function verifyNativeQueueActions(page, host, steps, directory, rel
     await steeredMessage.getByRole("button", { name: "撤回", exact: true }).click();
     await eventually(() => host.nativeApproval.calls.filter(call => call.method === "cancelQueuedMessage" && call.args[1] === steered.receipt.messageId).length, 1, "Cancel remains pending at the native boundary");
     await host.syncNativeQueue(await host.nativeApproval.event({ type: "message", message: { type: "command_lifecycle", command_uuid: steered.receipt.messageId, state: "started" } }));
-    await host.syncNativeQueue(await host.nativeApproval.event({ type: "message", message: { type: "result", user_message_uuid: steered.receipt.messageId, is_error: false } }));
+    await completeNativeQueueMessage(host, { user_message_uuid: steered.receipt.messageId });
     await steeredMessage.getByRole("status").filter({ hasText: "已完成" }).waitFor();
   } finally { releaseLateCancel(); }
   await eventually(() => host.requests.filter(request => request.method === "events.resume").length > resumesBeforeLateCancel, true, "Late cancel response reaches the browser and resumes events");
@@ -297,13 +307,11 @@ export async function verifyNativeQueueActions(page, host, steps, directory, rel
   } }));
   const waitingMessage = page.locator("article.conversation-item.user").filter({ hasText: waitingText });
   await waitingMessage.locator(".delivery-state.session-received").waitFor();
-  for (const message of [
-    { type: "assistant", uuid: "next-reply", message: { content: [{ type: "text", text: "上一轮的最终回复。" }] } },
-    { type: "result", uuid: "correlated-next-result", user_message_uuid: next.receipt.messageId, is_error: false },
-  ]) {
-    const events = await host.nativeApproval.message({ ...message, timestamp: Date.now() });
-    await host.syncNativeQueue({ events, history: await host.nativeApproval.history(), session: host.nativeApproval.session() });
-  }
+  const replyEvents = await host.nativeApproval.message({
+    type: "assistant", uuid: "next-reply", timestamp: Date.now(), message: { content: [{ type: "text", text: "上一轮的最终回复。" }] },
+  });
+  await host.syncNativeQueue({ events: replyEvents, history: await host.nativeApproval.history(), session: host.nativeApproval.session() });
+  await completeNativeQueueMessage(host, { uuid: "correlated-next-result", user_message_uuid: next.receipt.messageId, timestamp: Date.now() });
   await nextMessage.locator(".delivery-state.completed").waitFor();
   assert.equal(host.session.turnState, "running");
   assert.equal(await waitingMessage.locator(".delivery-state.session-received").count(), 1, "Another input's completion preserves the waiting receipt");

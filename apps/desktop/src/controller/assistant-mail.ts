@@ -17,7 +17,7 @@ import type {
 } from "@bridge/protocol";
 import { MailCategoryChangeParameters, MailFolderId, MailFolderParameters, MailPageParameters, MailSearchQuery } from "../../../../plugins/assistant-mail/tool-contract.js";
 import { z } from "zod";
-import type { MailPageScope } from "../../../../plugins/assistant-mail/store.js";
+import type { AssistantBinding, MailPageScope } from "../../../../plugins/assistant-mail/store.js";
 import type { AssistantMailService } from "../../../../plugins/assistant-mail/desktop.js";
 import type { ClaudeDesktopBridge } from "../claude/claude-desktop-bridge.js";
 import { isAssistantTool, type WorkspaceProvisioner } from "./assistant-workspace.js";
@@ -56,35 +56,6 @@ export interface AssistantMailCoordinatorHost {
   allProjects(): BridgeProjectInfo[];
   canStartTurn(): boolean;
   onChanged?(snapshot: BridgeAssistantMailSnapshot, wakePhone: boolean): void;
-}
-
-export function assistantMailSnapshot(
-  mail: AssistantMailService,
-  sessions: BridgeSessionInfo[],
-  available: boolean,
-  changeToken: string,
-): BridgeAssistantMailSnapshot {
-  const stored = mail.binding();
-  const binding = stored && {
-    assistantId: stored.assistantId, nativeSessionId: stored.nativeSessionId,
-    sectionId: stored.sectionId, previousSessionIds: stored.previousSessionIds,
-  };
-  const session = sessions.find(candidate => candidate.sessionId === binding?.nativeSessionId);
-  const { state, accounts, accountConfigError, credentialsSupported, history } = mail.status();
-  return {
-    ...(binding ? { binding } : {}),
-    bindingState: !binding?.nativeSessionId ? binding?.previousSessionIds.length ? "needs-rebind" : "unbound"
-      : session?.archivedAt ? "needs-rebind" : !available ? "unavailable" : !session ? "missing" : "ready",
-    receiverState: state === "polling" ? "connected" : state,
-    accounts: accounts.map(account => account.state === "polling"
-      ? { ...account, state: "connected", receivingMode: "polling" } : { ...account, state: account.state }),
-    credentialsSupported,
-    categories: mail.categories(),
-    ...(history.available || history.loading || history.failed ? { history } : {}),
-    ...(accountConfigError ? { accountConfigError } : {}),
-    automaticDelivery: stored?.managed?.automaticDelivery === true,
-    changeToken,
-  };
 }
 
 /** Only a confirmed archive/delete pauses a binding. Catalog absence is not deletion. */
@@ -314,8 +285,44 @@ export class AssistantMailCoordinator {
     }
   }
 
+  private bindingReadiness(binding: AssistantBinding | undefined) {
+    const sessionId = binding?.nativeSessionId ?? undefined;
+    const policy = binding?.managed?.policy;
+    const managedPolicy = isAssistantWorkspacePolicy(policy) ? policy : undefined;
+    const managedSessionId = this.workspace && managedPolicy ? sessionId : undefined;
+    const repairFailed = Boolean(managedSessionId && this.workspace?.repairFailed);
+    const session = sessionId ? this.host.allSessions().find(candidate => candidate.sessionId === sessionId) : undefined;
+    const bindingState: BridgeAssistantMailSnapshot["bindingState"] = repairFailed ? "unavailable"
+      : !sessionId ? binding?.previousSessionIds.length ? "needs-rebind" : "unbound"
+      : session?.archivedAt ? "needs-rebind" : !this.host.canStartTurn() ? "unavailable" : !session ? "missing" : "ready";
+    return { bindingState, managedSessionId, managedPolicy, repairFailed };
+  }
+
+  readyManagedSessionId(): string | undefined {
+    const { bindingState, managedSessionId } = this.bindingReadiness(this.mail.binding());
+    return bindingState === "ready" ? managedSessionId : undefined;
+  }
+
   snapshot(): BridgeAssistantMailSnapshot {
-    const snapshot = assistantMailSnapshot(this.mail, this.host.allSessions(), this.host.canStartTurn(), this.changeToken);
+    const binding = this.mail.binding();
+    const { bindingState, managedSessionId: nativeSessionId, managedPolicy, repairFailed } = this.bindingReadiness(binding);
+    const { state, accounts, accountConfigError, credentialsSupported, history } = this.mail.status();
+    const snapshot: BridgeAssistantMailSnapshot = {
+      ...(binding ? { binding: {
+        assistantId: binding.assistantId, nativeSessionId: binding.nativeSessionId,
+        sectionId: binding.sectionId, previousSessionIds: binding.previousSessionIds,
+      } } : {}),
+      bindingState,
+      receiverState: state === "polling" ? "connected" : state,
+      accounts: accounts.map(account => account.state === "polling"
+        ? { ...account, state: "connected", receivingMode: "polling" } : { ...account, state: account.state }),
+      credentialsSupported,
+      categories: this.mail.categories(),
+      ...(history.available || history.loading || history.failed ? { history } : {}),
+      ...(accountConfigError ? { accountConfigError } : {}),
+      automaticDelivery: binding?.managed?.automaticDelivery === true,
+      changeToken: this.changeToken,
+    };
     const now = Date.now();
     const items = this.mail.attention(snapshot.automaticDelivery, snapshot.binding?.nativeSessionId ?? undefined);
     if (this.agenda && (!this.agendaAttention || now >= this.agendaAttention.nextAt)) {
@@ -335,18 +342,13 @@ export class AssistantMailCoordinator {
       }
     }
     if (!this.workspace) return snapshot;
-    const binding = this.mail.binding();
-    const policy = binding?.managed?.policy;
-    const nativeSessionId = isAssistantWorkspacePolicy(policy) ? binding?.nativeSessionId : null;
     const catalog = nativeSessionId && this.toolCatalog?.sessionId === nativeSessionId ? this.toolCatalog : undefined;
-    const repairFailed = Boolean(nativeSessionId && this.workspace.repairFailed);
-    return { ...snapshot, ...(this.dispatcher ? { automaticDeliveryAvailable: Boolean(this.eligibleTarget()) } : {}),
-      ...(repairFailed ? { bindingState: "unavailable" as const } : {}), workspace: {
+    return { ...snapshot, ...(this.dispatcher ? { automaticDeliveryAvailable: Boolean(this.eligibleTarget()) } : {}), workspace: {
       path: this.workspace.path,
       ...(repairFailed ? { repairFailed: true as const } : {}),
-      policy: isAssistantWorkspacePolicy(policy) ? policy : this.workspace.policy,
+      policy: managedPolicy ?? this.workspace.policy,
       ...(nativeSessionId ? { nativeSessionId } : {}),
-      ...(nativeSessionId && binding?.managed && policy === ASSISTANT_WORKSPACE_POLICY && !repairFailed
+      ...(nativeSessionId && binding?.managed && managedPolicy === ASSISTANT_WORKSPACE_POLICY && !repairFailed
         ? { readDirectories: [...this.workspace.readDirectories(binding.managed.token)] } : {}),
       toolIsolation: !catalog ? "unobserved" : catalog.unexpectedTools.length ? "warning" : "compatible",
       ...(catalog?.unexpectedTools.length ? { unexpectedTools: catalog.unexpectedTools } : {}),

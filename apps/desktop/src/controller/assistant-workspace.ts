@@ -190,7 +190,7 @@ export class WorkspaceProvisioner {
     if (action === "remove") {
       const current = this.directoryGrants;
       if (current?.bindingToken === bindingToken && current.directories.includes(directory)) {
-        this.saveReadDirectories({ ...current, directories: current.directories.filter(path => path !== directory) });
+        this.removeReadDirectories({ ...current, directories: current.directories.filter(path => path !== directory) });
       }
       return;
     }
@@ -200,7 +200,7 @@ export class WorkspaceProvisioner {
     }
     let physical: string;
     try {
-      physical = realpathSync(directory);
+      physical = realpathSync.native(directory);
       if (!isAssistantReadDirectory(this.physicalPath, physical) || !statSync(physical).isDirectory()) {
         throw new BridgeRequestError("INVALID_DIRECTORY", "请选择 Bridge 数据目录之外的文件夹。");
       }
@@ -209,22 +209,46 @@ export class WorkspaceProvisioner {
       throw new BridgeRequestError("INVALID_DIRECTORY", "无法打开此文件夹。请检查路径和系统访问权限。");
     }
     const directories = this.directoryGrants?.bindingToken === bindingToken ? this.readDirectories : [];
-    this.saveReadDirectories({ bindingToken, cliSessionId, directories: [...new Set([...directories, physical])] });
+    const grants = { bindingToken, cliSessionId, directories: [...new Set([...directories, physical])] };
+    const settingsPath = join(this.physicalPath, ".claude", "settings.json");
+    const previousSettings = this.writeReadDirectorySettings(grants.directories);
+    try {
+      updateWorkspaceJson(assistantReadDirectoriesPath(this.physicalPath), grants);
+    } catch (error) {
+      updateWorkspaceJson(settingsPath, previousSettings);
+      throw error;
+    }
+    this.directoryGrants = grants;
   }
 
   revokeReadDirectories(): void {
-    if (this.directoryGrants?.directories.length) this.saveReadDirectories({ ...this.directoryGrants, directories: [] });
+    if (this.directoryGrants?.directories.length) this.removeReadDirectories({ ...this.directoryGrants, directories: [] });
   }
 
-  private saveReadDirectories(grants: AssistantReadDirectories): void {
-    // Revoke at the guard before asking Native to reload its directory settings.
-    updateWorkspaceJson(assistantReadDirectoriesPath(this.physicalPath), grants);
+  private removeReadDirectories(grants: AssistantReadDirectories): void {
+    // Revoke at the guard before updating the Native directory settings.
+    try {
+      updateWorkspaceJson(assistantReadDirectoriesPath(this.physicalPath), grants);
+    } catch (error) {
+      if (!(error instanceof WorkspaceLayoutError) && !(error instanceof Error && "code" in error)) throw error;
+      throw new BridgeRequestError("DIRECTORY_GUARD_REVOKE_FAILED", "Bridge 守卫未能撤销目录授权。");
+    }
     this.directoryGrants = grants;
+    try {
+      this.writeReadDirectorySettings(grants.directories);
+    } catch (error) {
+      if (!(error instanceof WorkspaceLayoutError || error instanceof SyntaxError) && !(error instanceof Error && "code" in error)) throw error;
+      throw new BridgeRequestError("DIRECTORY_NATIVE_REVOKE_FAILED", "Bridge 守卫已撤销目录授权，Claude Desktop 的目录配置未能更新。");
+    }
+  }
+
+  private writeReadDirectorySettings(directories: readonly string[]) {
     const settingsPath = join(this.physicalPath, ".claude", "settings.json");
     const settings = JSON.parse(readFileSync(settingsPath, "utf8")) as { permissions: Record<string, unknown> };
     updateWorkspaceJson(settingsPath, { ...settings, permissions: {
-      ...settings.permissions, ...directoryPermissions(grants.directories, this.platform),
+      ...settings.permissions, ...directoryPermissions(directories, this.platform),
     } });
+    return settings;
   }
 
   async restore(sessionToken: string, savedPath: string, policy: string = ASSISTANT_WORKSPACE_POLICY): Promise<string> {

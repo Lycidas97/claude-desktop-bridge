@@ -3,11 +3,12 @@ import { useState } from "react";
 import { SessionCreateDialog } from "../session/SessionCreateDialog.js";
 import { mailResult, type AssistantRequest } from "./AssistantMailProvider.js";
 
-export function AssistantReadDirectories({ directories, sessionId, snapshot, disabled, request, browse }: {
+export function AssistantReadDirectories({ directories, sessionId, snapshot, disabled, canAdd, request, browse }: {
   directories: readonly string[];
   sessionId: string;
   snapshot: BridgeHostSnapshot;
   disabled: boolean;
+  canAdd: boolean;
   request: AssistantRequest;
   browse(path?: string): Promise<BridgeDirectoryListing>;
 }) {
@@ -30,7 +31,7 @@ export function AssistantReadDirectories({ directories, sessionId, snapshot, dis
   return <section className="assistant-read-directories" aria-label="可读目录">
     <div className="assistant-binding-current">
       <strong>可读目录</strong>
-      <button type="button" className="assistant-session-link" disabled={disabled || busy || Boolean(selected)}
+      <button type="button" className="assistant-session-link" disabled={disabled || !canAdd || busy || Boolean(selected)}
         onClick={() => { setError(""); setPickerOpen(true); }}>添加可读目录</button>
     </div>
     {directories.length ? <ul>
@@ -45,7 +46,7 @@ export function AssistantReadDirectories({ directories, sessionId, snapshot, dis
       <code>{selected}</code>
       <div className="assistant-actions">
         <button type="button" className="secondary-button" disabled={busy} onClick={() => { setSelected(undefined); setError(""); }}>取消</button>
-        <button type="button" className="primary-button" disabled={disabled || busy}
+        <button type="button" className="primary-button" disabled={disabled || !canAdd || busy}
           onClick={() => { void change("add", selected); }}>授权读取</button>
       </div>
     </div>}

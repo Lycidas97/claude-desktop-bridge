@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   ARTIFACT_MAX_BYTES, ASSISTANT_MEMORY_POLICY, ASSISTANT_MEMORY_PROPOSAL_CAPABILITY, BridgeCrypto, PROTOCOL_VERSION,
@@ -64,7 +64,7 @@ async function fixture(proposalStore: ProposalStore, agenda: AgendaStore) {
     permissionsList: () => [], promptsList: () => [], magpieSettings: async () => ({}),
     archive: vi.fn(async (_sessionId: string, _archived: boolean) => undefined),
     deleteSession: vi.fn(async (_sessionId: string) => undefined),
-    canProvisionAssistantWorkspace: () => true,
+    canProvisionAssistantWorkspace: (): boolean => true,
     session: (id: string) => sessions.find(session => session.sessionId === id),
     readNativeSessionIdentity: vi.fn(async (id: string) => ({ cwd: sessions.find(session => session.sessionId === id)?.cwd,
       permissionMode: "dontAsk", archived: false, cliSessionId: "synthetic-cli-session" })),
@@ -809,6 +809,43 @@ it("changes directory grants only for the current managed binding", async () => 
   await run.request("plugin.assistant-mail.bind", { sessionId: "native-second" });
   expect(run.workspace.readDirectories).toEqual([]);
   await expect(run.request(method, grant)).rejects.toMatchObject({ code: "INVALID_TARGET" });
+});
+
+it("continues to expose and revoke grants while Claude Desktop is disconnected", async () => {
+  const method = "plugin.assistant-mail.read-directory.change";
+  const directory = await realpath(await mkdtemp(join(process.env.BRIDGE_TEST_TEMP_ROOT!, "assistant-readable-")));
+  await run.request("plugin.assistant-mail.workspace.initialize", { workspacePath: run.workspace.path });
+  const grant = { action: "add", directory, sessionId: "local-managed" };
+  await run.request(method, grant);
+  vi.spyOn(run.broker, "canProvisionAssistantWorkspace").mockReturnValue(false);
+  run.broker.capabilities.mockReturnValue([]);
+  run.broker.readNativeSessionIdentity.mockClear();
+
+  const snapshot = await run.controller.snapshot();
+  expect(snapshot.host.capabilities).toContain("plugin.assistant-mail.read-directories.v1");
+  expect(snapshot.host.capabilities).not.toContain("plugin.assistant-mail.workspace.v1");
+  expect(snapshot.assistantMail).toMatchObject({ bindingState: "unavailable", workspace: { readDirectories: [directory] } });
+  await expect(run.request(method, grant)).rejects.toMatchObject({ code: "INVALID_TARGET" });
+  await expect(run.request(method, { ...grant, action: "remove" })).resolves.toMatchObject({ assistantMail: { workspace: { readDirectories: [] } } });
+  expect(run.broker.readNativeSessionIdentity).not.toHaveBeenCalled();
+});
+
+it.each(["session.archive", "session.delete"] as const)("persists %s even if Native directory settings are missing", async method => {
+  const directory = await realpath(await mkdtemp(join(process.env.BRIDGE_TEST_TEMP_ROOT!, "assistant-readable-")));
+  await run.request("plugin.assistant-mail.workspace.initialize", { workspacePath: run.workspace.path });
+  const sessionId = "local-managed";
+  await run.request("plugin.assistant-mail.read-directory.change", { action: "add", directory, sessionId });
+  const settings = join(run.workspace.path, ".claude", "settings.json");
+  const warning = vi.spyOn(process.stderr, "write");
+  await rename(settings, `${settings}.fixture`);
+
+  await run.request(method, { sessionId });
+  expect(store.binding()).toMatchObject({ nativeSessionId: null, previousSessionIds: [sessionId] });
+  expect(run.workspace.readDirectories).toEqual([]);
+  expect(warning).toHaveBeenCalledWith(expect.stringContaining("DIRECTORY_NATIVE_REVOKE_FAILED"));
+  expect(run.eventLog.append).toHaveBeenCalledWith(expect.objectContaining({
+    type: method === "session.archive" ? "session.archived" : "session.deleted", sessionId,
+  }));
 });
 
 it.each(["session.command", "turn.start", "turn.steer"] as const)("reserves the assistant receipt key for %s", async method => {

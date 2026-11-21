@@ -74,7 +74,7 @@ async function searchableTree(path: string): Promise<boolean> {
   for (const entry of await readdir(path, { withFileTypes: true })) {
     const child = join(path, entry.name);
     // Grep/Glob recurse inside the native tool, after the hook returns. Reject trees
-    // containing links or credentials since a PreToolUse hook cannot filter results.
+    // containing links or .mcp.json since a PreToolUse hook cannot filter results.
     if (isMcpConfig(child) || !(entry.isDirectory() ? await searchableTree(child) :
       entry.isFile() && (await lstat(child)).nlink === 1)) return false;
   }

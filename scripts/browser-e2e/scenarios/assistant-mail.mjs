@@ -1027,6 +1027,13 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   const revoke = readDirectories.getByRole("button", { name: `撤销读取 ${readablePath}`, exact: true });
   await revoke.waitFor();
   await capture("mobile-assistant-read-directory");
+  await host.send({ kind: "snapshot", snapshot: { ...host.snapshot,
+    host: { ...host.snapshot.host, capabilities: host.snapshot.host.capabilities.filter(cap => cap !== "plugin.assistant-mail.workspace.v1") },
+    assistantMail: { ...host.snapshot.assistantMail, bindingState: "unavailable" },
+  } });
+  const addDirectory = readDirectories.getByRole("button", { name: "添加可读目录", exact: true });
+  await addDirectory.and(page.locator(":disabled")).waitFor();
+  assert.equal(await revoke.isEnabled(), true, "Existing directories can be revoked while Native is disconnected");
   await revoke.click();
   await readDirectories.getByText("未授权工作区外的文件夹。", { exact: true }).waitFor();
   assert.deepEqual(host.snapshot.assistantMail.workspace.readDirectories, []);

@@ -185,7 +185,8 @@ export class AssistantMailCoordinator {
   capabilities() {
     return [
       ...ASSISTANT_MAIL_CAPABILITIES,
-      ...(this.workspace && this.host.broker?.canProvisionAssistantWorkspace() ? ["plugin.assistant-mail.workspace.v1", ASSISTANT_READ_DIRECTORIES_CAPABILITY] as const : []),
+      ...(this.workspace ? [ASSISTANT_READ_DIRECTORIES_CAPABILITY] as const : []),
+      ...(this.workspace && this.host.broker?.canProvisionAssistantWorkspace() ? ["plugin.assistant-mail.workspace.v1"] as const : []),
       ...(this.dispatcher ? ["plugin.assistant-mail.triggers.v1", "plugin.assistant-mail.batches.v1"] as const : []),
     ];
   }
@@ -392,8 +393,15 @@ export class AssistantMailCoordinator {
 
   pauseBinding(sessionId: string): void {
     const binding = this.mail.binding();
-    if (binding?.nativeSessionId === sessionId && binding.managed) this.workspace?.revokeReadDirectories();
     pauseAssistantBinding(this.mail, sessionId);
+    if (binding?.nativeSessionId === sessionId && binding.managed) {
+      try {
+        this.workspace?.revokeReadDirectories();
+      } catch (error) {
+        if (!(error instanceof BridgeRequestError)) throw error;
+        process.stderr.write(`Bridge assistant read-directory cleanup after archive/delete: ${error.code}\n`);
+      }
+    }
   }
 
   pauseIfArchived(): void {
@@ -571,11 +579,19 @@ export class AssistantMailCoordinator {
         binding.managed?.policy !== ASSISTANT_WORKSPACE_POLICY) {
         throw new BridgeRequestError("INVALID_TARGET", "只能修改当前托管助理的可读目录。");
       }
+      if (action === "add" && !this.host.broker?.canProvisionAssistantWorkspace()) {
+        throw new BridgeRequestError("INVALID_TARGET", "Claude Desktop 未连接，暂时无法添加可读目录。");
+      }
       const native = action === "add" ? await this.readManagedNativeSession(sessionId) : undefined;
       if (this.initializingWorkspace || this.mail.binding()?.managed?.token !== binding.managed.token) {
         throw new BridgeRequestError("INVALID_TARGET", "托管助理已更换，请重新选择文件夹。");
       }
-      this.workspace.changeReadDirectory(binding.managed.token, native?.cliSessionId, action, directory);
+      try {
+        this.workspace.changeReadDirectory(binding.managed.token, native?.cliSessionId, action, directory);
+      } catch (error) {
+        if (error instanceof BridgeRequestError && error.code === "DIRECTORY_NATIVE_REVOKE_FAILED") this.publishMailChange();
+        throw error;
+      }
     } else if (method.startsWith("plugin.assistant-mail.account.")) {
       if (!this.mail.status().credentialsSupported) {
         throw new BridgeRequestError("UNSUPPORTED", "当前电脑不支持存储邮箱凭据。");

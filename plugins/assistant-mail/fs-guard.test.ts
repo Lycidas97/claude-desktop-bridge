@@ -1,4 +1,4 @@
-import { link, mkdir, mkdtemp, realpath, symlink, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, realpath, rename, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, expect, it } from "vitest";
@@ -88,6 +88,18 @@ it("permits read tools only inside a granted root for the current managed sessio
   await expect(allowAssistantTool(workspace, { ...read, agent_id: "helper-fixture" })).resolves.toBe(false);
   await expect(allowAssistantTool(workspace, read, ASSISTANT_MEMORY_POLICY)).resolves.toBe(false);
   await expect(allowAssistantTool(workspace, call("Read", { file_path: join(adjacent, "outside.txt") }))).resolves.toBe(false);
+  const fixtureEnv = join(directory, ".env");
+  await writeFile(fixtureEnv, "FAKE_KEY=fixture");
+  await expect(allowAssistantTool(workspace, call("Read", { file_path: fixtureEnv }))).resolves.toBe(true);
+  await expect(allowAssistantTool(workspace, call("Grep", { path: directory, pattern: "fixture" }))).resolves.toBe(true);
+  const externalConfig = join(directory, ".mcp.json");
+  await writeFile(externalConfig, "{}");
+  await expect(allowAssistantTool(workspace, call("Read", { file_path: externalConfig }))).resolves.toBe(false);
+  await expect(allowAssistantTool(workspace, call("Glob", { path: directory, pattern: "**/*" }))).resolves.toBe(false);
+  await expect(allowAssistantTool(workspace, call("Grep", { path: directory, pattern: "fixture" }))).resolves.toBe(false);
+  await expect(allowAssistantTool(workspace, call("Read", { file_path: config }))).resolves.toBe(false);
+  await expect(allowAssistantTool(workspace, call("Read", { file_path: privateFile }))).resolves.toBe(false);
+  await rename(externalConfig, join(adjacent, ".mcp.json"));
   await symlink(adjacent, join(directory, "alias"), "junction");
   await expect(allowAssistantTool(workspace, call("Read", { file_path: join(directory, "alias", "outside.txt") }))).resolves.toBe(false);
   await expect(allowAssistantTool(workspace, call("Grep", { path: directory, pattern: "fixture" }))).resolves.toBe(false);

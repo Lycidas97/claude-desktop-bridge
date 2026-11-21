@@ -210,7 +210,8 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
       })}</ul></details> : null}
       {snapshot && capabilities.includes(ASSISTANT_READ_DIRECTORIES_CAPABILITY) && workspace?.nativeSessionId && workspace.readDirectories && (
         <AssistantReadDirectories key={workspace.nativeSessionId} directories={workspace.readDirectories} sessionId={workspace.nativeSessionId}
-          snapshot={snapshot} disabled={!mail.online || bindingBusy} request={mail.request} browse={browseDirectory} />
+          snapshot={snapshot} disabled={!mail.online || bindingBusy} canAdd={capabilities.includes("plugin.assistant-mail.workspace.v1")}
+          request={mail.request} browse={browseDirectory} />
       )}
     </section>
   );

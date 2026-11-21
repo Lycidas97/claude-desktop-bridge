@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { beforeEach, expect, it, vi } from "vitest";
 import { ASSISTANT_MEMORY_POLICY, ASSISTANT_WORKSPACE_POLICY } from "@bridge/protocol";
 import { ASSISTANT_PROFILE_TEMPLATE } from "../../../../plugins/assistant-mail/assistant-memory.js";
+import { allowAssistantTool, assistantReadDirectoriesPath } from "../../../../plugins/assistant-mail/fs-guard.js";
 import { isAssistantTool, WorkspaceProvisioner } from "./assistant-workspace.js";
 
 vi.mock("node:fs/promises", async importOriginal => {
@@ -93,6 +94,52 @@ it("restores read-only grants for the same binding and does not carry them to a 
   await restored.prepare("replacement-token");
   expect(restored.readDirectories).toEqual([]);
   expect((await settings()).permissions.additionalDirectories).toEqual([]);
+});
+
+it("uses on-disk spelling for authorized directories and rejects aliases of Bridge data", async ({ skip }) => {
+  const data = join(root, "Bridge Data");
+  const directory = join(root, "Readable Fixture");
+  await mkdir(directory);
+  const provisioner = new WorkspaceProvisioner({ ...options, userDataPath: data });
+  const workspace = await provisioner.prepare("first-token");
+  const directoryAlias = join(root, "readable fixture");
+  if (!await stat(directoryAlias).catch(error => { if (error.code !== "ENOENT") throw error; })) skip();
+
+  const cliSessionId = "fixture-cli";
+  const file = join(directory, "sample.txt");
+  await writeFile(file, "synthetic content");
+  provisioner.changeReadDirectory("first-token", cliSessionId, "add", directoryAlias);
+  expect(provisioner.readDirectories).toEqual([directory]);
+  await expect(allowAssistantTool(workspace, { hook_event_name: "PreToolUse", cwd: workspace,
+    tool_name: "Read", tool_input: { file_path: file }, session_id: cliSessionId })).resolves.toBe(true);
+  expect(() => provisioner.changeReadDirectory("first-token", cliSessionId, "add", join(root, "bridge data", "private")))
+    .toThrow(expect.objectContaining({ code: "INVALID_DIRECTORY" }));
+});
+
+it("preserves prior grants after a rejected add and workspace restore", async () => {
+  const provisioner = new WorkspaceProvisioner({ ...options, userDataPath: join(root, "bridge-data") });
+  const previous = join(root, "previous");
+  const rejected = join(root, "rejected");
+  await Promise.all([mkdir(previous), mkdir(rejected)]);
+  const workspace = await provisioner.prepare("first-token");
+  provisioner.changeReadDirectory("first-token", "fixture-cli", "add", previous);
+  const settings = join(workspace, ".claude", "settings.json");
+  await rename(settings, `${settings}.fixture`);
+
+  expect(() => provisioner.changeReadDirectory("first-token", "fixture-cli", "add", rejected)).toThrow();
+  await rename(`${settings}.fixture`, settings);
+  const guard = assistantReadDirectoriesPath(workspace);
+  await rename(guard, `${guard}.fixture`);
+  await mkdir(guard);
+  expect(() => provisioner.changeReadDirectory("first-token", "fixture-cli", "add", rejected)).toThrow();
+  expect(JSON.parse(await readFile(settings, "utf8")).permissions.additionalDirectories).toEqual([previous]);
+  await rename(guard, `${guard}.unwritable`);
+  await rename(`${guard}.fixture`, guard);
+  expect(provisioner.readDirectories).toEqual([previous]);
+  const restored = new WorkspaceProvisioner({ ...options, userDataPath: join(root, "bridge-data") });
+  await restored.restore("first-token", workspace);
+  expect(restored.readDirectories).toEqual([previous]);
+  expect(JSON.parse(await readFile(settings, "utf8")).permissions.additionalDirectories).toEqual([previous]);
 });
 
 it("upgrades to the verified policy without replacing user rules or indexing untrusted file names and contents", async () => {

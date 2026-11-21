@@ -109,7 +109,7 @@ export function AssistantAgendaProvider({ snapshot, online, request, children }:
   const enabled = snapshot?.host.capabilities.includes(ASSISTANT_AGENDA_CAPABILITY) === true;
   const hostAgenda = snapshot?.assistantAgenda;
   const agenda = mutation && hostAgenda?.changeToken === mutation.base ? mutation.snapshot : hostAgenda;
-  const token = agenda?.changeToken ?? "";
+  const token = agenda?.recordsToken ?? agenda?.changeToken ?? "";
   const connected = enabled && online;
   const daySupported = snapshot?.host.capabilities.includes(ASSISTANT_AGENDA_DAY_CAPABILITY) === true;
   const dayKey = day && agendaInputTime(day.toISOString(), agendaDeviceZone).slice(0, 10);
@@ -131,7 +131,7 @@ export function AssistantAgendaProvider({ snapshot, online, request, children }:
   const todos = useAgendaPages<BridgeAgendaTodo>("plugin.assistant-agenda.todo.list", request, opened && Boolean(activeDay), token,
     activeDay && window ? { dueOn: { ...window, date: activeDay } } : undefined);
   const allTodos = useAgendaPages<BridgeAgendaTodo>("plugin.assistant-agenda.todo.list", request,
-    opened && !calendarOnly && (dayKey === todayKey || allTodosOpen || !daySupported), token);
+    opened && !calendarOnly && (dayKey === todayKey || allTodosOpen || !daySupported), `${token}:${agenda?.unfilteredTodosToken ?? ""}`);
 
   return <AssistantAgendaContext.Provider value={enabled ? {
     snapshot: agenda,

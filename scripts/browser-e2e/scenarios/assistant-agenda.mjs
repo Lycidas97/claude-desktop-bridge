@@ -165,4 +165,129 @@ export async function verifyAssistantAgenda(page, host, steps, directory, viewpo
   assert.deepEqual(desktopRequests.slice(requestsBeforeLegacyAgenda).filter(request => request.method === "plugin.assistant-agenda.event.list")
     .map(request => Object.keys(request.params ?? {}).filter(key => key !== "client").sort()), [["from", "to"]]);
   steps.push("an older host gets only the original event window, unfiltered todo request and cursor");
+
+  await page.evaluate(host => window.assistantDesktopSnapshot({ host }), host.snapshot.host);
+  await verifyUnchangedCalDavRefresh(page, host.nativeApproval.assistantMail, agendaView, settingsButton, tomorrow, desktopRequests, steps);
+}
+
+async function verifyUnchangedCalDavRefresh(page, fixture, agendaView, settingsButton, date, requests, steps) {
+  const path = "/refresh-fixture/";
+  const url = `https://caldav.example.test${path}`;
+  const calendarDate = date.replaceAll("-", "");
+  const items = ["VEVENT", "VTODO"].flatMap(kind => Array.from({ length: 101 }, (_, index) => {
+    const uid = `${kind}-${index}`;
+    return { href: `${path}${uid}.ics`, etag: '"1"', data: ["BEGIN:VCALENDAR", "VERSION:2.0", `BEGIN:${kind}`, `UID:${uid}`, `SUMMARY:${uid}`,
+      kind === "VEVENT" ? `DTSTART;VALUE=DATE:${calendarDate}` : `DUE;VALUE=DATE:${calendarDate}`,
+      `END:${kind}`, "END:VCALENDAR", ""].join("\r\n") };
+  }));
+  let unauthorized = false;
+  let ctag = 1;
+  const davRequests = [];
+  const row = (href, props) => `<response><href>${href}</href><propstat><prop>${props}</prop><status>HTTP/1.1 200 OK</status></propstat></response>`;
+  fixture.setCalendarFetch(async (address, options) => {
+    assert.equal(address, url);
+    const depth = new Headers(options.headers).get("Depth");
+    davRequests.push([options.method, depth]);
+    if (unauthorized) return new Response(null, { status: 401 });
+    const rows = depth === "0" ? row(path, `<cs:getctag>${ctag}</cs:getctag>`)
+      : (depth === "1" ? row(path, "<resourcetype><collection/></resourcetype>") : "") + items
+        .filter(item => depth === "1" || options.body.includes(`<d:href>${item.href}</d:href>`))
+        .map(item => row(item.href, `<getetag>${item.etag}</getetag>` +
+          (depth === "1" ? "" : `<c:calendar-data><![CDATA[${item.data}]]></c:calendar-data>`))).join("");
+    return new Response(`<multistatus xmlns="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav" xmlns:cs="http://calendarserver.org/ns/">${rows}</multistatus>`, { status: 207 });
+  });
+  await fixture.agenda.addSource({ url, label: "同步夹具", user: "fixture", credential: "fixture" });
+  const before = fixture.agenda.snapshot().sources.find(source => source.label === "同步夹具");
+  assert.equal(before.status, "ready");
+  assert.deepEqual(davRequests, [["PROPFIND", "0"], ["PROPFIND", "1"], ["REPORT", null]]);
+  const query = { from: `${date}T00:00:00Z`, to: new Date(Date.parse(date) + 86_400_000).toISOString(), allDayOn: date, limit: 100 };
+  const eventsBefore = fixture.agenda.listEvents(query);
+  const todosBefore = fixture.agenda.listTodos({ limit: 100 });
+  const refresh = () => page.evaluate(async id => {
+    const result = await window.bridgeDesktop.request({ method: "plugin.assistant-agenda.source.refresh", params: { id } });
+    return result.result.assistantAgenda.sources.find(source => source.id === id);
+  }, before.id);
+  unauthorized = true;
+  assert.equal((await refresh()).errorCode, "credentials");
+  unauthorized = false;
+  const moreEvents = agendaView.getByRole("button", { name: "更多日程", exact: true });
+  const moreTodos = agendaView.getByRole("button", { name: "更多待办", exact: true });
+  const sameDay = agendaView.getByRole("list", { name: "当日议程", exact: true });
+  async function openTwoPagesTomorrow() {
+    await sameDay.getByText("今天的评审", { exact: true }).waitFor();
+    await agendaView.getByRole("button", { name: "后一天", exact: true }).click();
+    await moreEvents.click();
+    await moreTodos.click();
+    await eventually(() => sameDay.getByRole("listitem").count(), 200, "Two pages of both CalDAV lists are open");
+  }
+  await openTwoPagesTomorrow();
+  const first = requests.length;
+  const davStart = davRequests.length;
+  const after = await refresh();
+  assert.deepEqual(davRequests.slice(davStart), [["PROPFIND", "0"]], "The CalDAV collection tag stayed the same");
+  assert.equal(after.status, "ready");
+  assert.equal(after.errorCode, undefined);
+  assert.ok(after.refreshedAt > before.refreshedAt);
+  assert.deepEqual(fixture.agenda.listEvents(query), eventsBefore);
+  assert.deepEqual(fixture.agenda.listTodos({ limit: 100 }), todosBefore);
+  async function agendaReadsSince(start) {
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await eventually(async () => (await moreEvents.isEnabled()) && (await moreTodos.isEnabled()), true, "Agenda pagination has settled");
+    const reads = requests.slice(start);
+    return { events: reads.filter(({ method }) => method === "plugin.assistant-agenda.event.list").length,
+      todos: reads.filter(({ method }) => method === "plugin.assistant-agenda.todo.list").length };
+  }
+  assert.deepEqual(await agendaReadsSince(first), { events: 0, todos: 0 }, "An unchanged CalDAV refresh issues no agenda list RPCs");
+  assert.equal(await sameDay.getByRole("listitem").count(), 200, "Both lists keep their loaded pages");
+  await settingsButton.click();
+  await page.getByRole("article", { name: "同步夹具" }).getByText("已就绪", { exact: true }).waitFor();
+  await page.locator(".assistant-view-tabs").getByRole("button", { name: "议程", exact: true }).click();
+  await openTwoPagesTomorrow();
+
+  const { title, resourceHref } = eventsBefore.records.find(record => record.sourceId === before.id);
+  const event = items.find(item => item.href === new URL(resourceHref).pathname);
+  event.etag = '"2"';
+  event.data = event.data.replace(`SUMMARY:${title}\r\n`, "SUMMARY:CalDAV record edited\r\n");
+  ctag++;
+  const beforeEdit = requests.length;
+  await refresh();
+  await sameDay.getByText("CalDAV record edited", { exact: true }).waitFor();
+  assert.deepEqual(await agendaReadsSince(beforeEdit), { events: 2, todos: 2 }, "A CalDAV edit rereads both lists at their loaded depth");
+  steps.push("CalDAV recovery with unchanged records makes zero list RPCs; a real edit reloads both open pages");
+
+  const beforeOpening = requests.length;
+  await page.locator(".agenda-other-todos summary").click();
+  const otherTodos = page.getByRole("list", { name: "其他待办", exact: true });
+  const moreOtherTodos = page.getByRole("button", { name: "更多其他待办", exact: true });
+  await agendaReadsSince(beforeOpening);
+  await eventually(() => moreOtherTodos.isEnabled(), true, "The unfiltered todo pages are settled");
+  const depth = requests.slice(beforeOpening).filter(request => request.method === "plugin.assistant-agenda.todo.list" && !request.params?.dueOn).length;
+  assert.ok(depth > 0);
+  const rollingBase = fixture.agenda.snapshot();
+  fixture.agenda.saveTodo({ value: { title: "进入滚动窗口的待办", status: "pending", dueAt: "2000-01-01" } });
+  const beforeRollingUpdate = requests.length;
+  await page.evaluate(assistantAgenda => window.assistantDesktopSnapshot({ assistantAgenda }), {
+    ...fixture.agenda.snapshot(), recordsToken: rollingBase.recordsToken, unfilteredTodosToken: "rolling-window-advanced",
+  });
+  await otherTodos.getByText("进入滚动窗口的待办", { exact: true }).waitFor();
+  assert.deepEqual(await agendaReadsSince(beforeRollingUpdate), { events: 0, todos: depth }, "Only the open unfiltered todo list responds to a horizon update");
+  assert.ok(requests.slice(beforeRollingUpdate).every(request => request.method !== "plugin.assistant-agenda.todo.list" || !request.params?.dueOn));
+  await page.locator(".agenda-other-todos summary").click();
+  await otherTodos.waitFor({ state: "hidden" });
+  steps.push("a rolling-horizon signal invalidates only the unfiltered todo query");
+
+  const publishLegacyAgenda = () => {
+    const assistantAgenda = fixture.agenda.snapshot();
+    delete assistantAgenda.recordsToken;
+    delete assistantAgenda.unfilteredTodosToken;
+    return page.evaluate(assistantAgenda => window.assistantDesktopSnapshot({ assistantAgenda }), assistantAgenda);
+  };
+  const beforeLegacy = requests.length;
+  await publishLegacyAgenda();
+  await agendaReadsSince(beforeLegacy);
+  fixture.agenda.saveTodo({ value: { title: "旧版宿主同步的待办", status: "pending", dueAt: `${date}T12:00:00Z` } });
+  const beforeLegacyUpdate = requests.length;
+  await publishLegacyAgenda();
+  assert.deepEqual(await agendaReadsSince(beforeLegacyUpdate), { events: 2, todos: 2 }, "A legacy snapshot invalidates loaded pages using changeToken alone");
+  steps.push("a legacy agenda snapshot without a records token still reloads the open pages on a content change");
 }

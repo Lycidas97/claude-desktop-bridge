@@ -54,13 +54,23 @@ test("queries imported all-day spans by device date and timed entries by instant
 
 test("retains the ETag of a valid unsupported resource alongside imported events", () => {
   const diary = object("diary", ics(...item("VJOURNAL", "diary", "DTSTART;VALUE=DATE:20270101")));
-  const meeting = object("meeting", ics(...item("VEVENT", "meeting", "DTSTART:20270104T090000Z", "DURATION:PT1H")));
-  sync(diary, meeting);
+  const meeting = object("meeting", ics(...item("VEVENT", "meeting", "DTSTART:20270104T090000Z", "DURATION:PT1H", "RRULE:FREQ=WEEKLY;COUNT=1")));
+  expect(store.applySync(source, { removed: [], changed: [diary] })).toBe(false);
+  sync(meeting);
   expect(store.knownEtags(source).get(diary.href)).toBe(diary.etag);
-  expect(store.listEvents(window).records.map(record => record.uid)).toEqual(["meeting"]);
+  const agenda = store.listEvents(window);
+  expect(agenda.records.map(record => record.uid)).toEqual(["meeting"]);
   expect(store.listTodos({}).records).toEqual([]);
+  const editedDiary = { ...diary, etag: '"2"', data: diary.data.replace("SUMMARY:diary", "SUMMARY:edited diary") };
+  expect(store.applySync(source, { removed: [], changed: [editedDiary] })).toBe(false);
+  expect(store.knownEtags(source).get(diary.href)).toBe('"2"');
+  expect(store.applySync(source, { removed: [diary.href], changed: [] })).toBe(false);
+  expect(store.knownEtags(source).has(diary.href)).toBe(false);
+  expect(store.listEvents(window)).toEqual(agenda);
   expect(() => sync(object("broken", ics(...item("VEVENT", "broken", "DTSTART:invalid"))))).toThrow();
   expect(store.listEvents(window).records.map(record => record.uid)).toEqual(["meeting"]);
+  expect(store.applySync(source, { removed: [], changed: [{ ...diary, href: meeting.href }] })).toBe(true);
+  expect(store.listEvents(window).records).toEqual([]);
 });
 
 test("an old hourly series still expands in a current one-day window", () => {
@@ -191,7 +201,8 @@ test("uses collection VTIMEZONE for floating DTSTART and DUE, with host fallback
   expect(store.listTodos({}).records[0]?.dueAt).toBe("2027-01-04T09:00:00.000Z");
   // A calendar can change its timezone while keeping the member ETags unchanged.
   const delta = { removed: [], changed: [], calendarTimeZone: ics(...customZone) };
-  store.applySync(source, delta);
+  expect(store.applySync(source, delta)).toBe(true);
+  expect(store.applySync(source, delta)).toBe(false);
   expect(store.listEvents(window).records[0]).toMatchObject({ startAt: "2027-01-04T14:00:00.000Z", timeZone: "Eastern Standard Time" });
   expect(store.listTodos({}).records[0]?.dueAt).toBe("2027-01-04T14:00:00.000Z");
   expect(store.freeSlots({ from: "2027-01-04T14:00:00.000Z", to: "2027-01-04T15:00:00.000Z", durationMinutes: 30 }).slots).toEqual([]);

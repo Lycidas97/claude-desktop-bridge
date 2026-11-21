@@ -9,6 +9,7 @@ export class AgendaExpansionLimitError extends Error {
   constructor() { super("Calendar expansion exceeds supported occurrence count"); }
 }
 const utc = ICAL.Timezone.utcTimezone;
+const isUnbounded = (rule: ICAL.Recur) => rule.count === null && !rule.until;
 const text = (component: ICAL.Component, name: string, limit: number) => {
   const value = component.getFirstPropertyValue(name);
   return typeof value === "string" ? value.slice(0, limit) : undefined;
@@ -143,7 +144,7 @@ function expandSeries(items: Timing[], fallback: AgendaZone, window: AgendaWindo
     .sort((a, b) => b.original - a.original);
 
   const from = window ? Date.parse(window.from) : -Infinity;
-  const to = window ? Date.parse(window.to) : rules.some(rule => rule.count === null && !rule.until) ? Date.now() + 366 * DAY : Infinity;
+  const to = window ? Date.parse(window.to) : rules.some(isUnbounded) ? Date.now() + 366 * DAY : Infinity;
   const utcSeries = !start.isDate && start.zone === utc && ranges.every(range => !range.item.start || range.item.start.zone === utc);
   // Local recurrences are ordered by wall time, and a zone transition can move an instant back.
   const zoneMargin = utcSeries ? 0 : DAY;
@@ -273,6 +274,12 @@ export function parseAgendaObject(data: string, fallbackZone: AgendaZone, option
   }
   const todoPage = options && "todos" in options ? options.todos : undefined;
   return { uid, todos: window ? [] : expandSeries(todos.map(item => timing(item, fallbackZone)), fallbackZone, todoPage?.window, Boolean(todoPage), todoPage).map(todoFields), events: eventRecords, recurring };
+}
+
+export function hasRollingTodoSeries(data: string): boolean {
+  const master = new ICAL.Component(ICAL.parse(data)).getAllSubcomponents("vtodo").find(item => !item.hasProperty("recurrence-id"));
+  return Boolean(master && timeValue(master, "dtstart") && text(master, "status", 32)?.toUpperCase() !== "CANCELLED" &&
+    master.getAllProperties("rrule").some(property => isUnbounded(property.getFirstValue() as ICAL.Recur)));
 }
 
 function isRecurring(component: ICAL.Component) {

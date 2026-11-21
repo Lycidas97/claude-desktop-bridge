@@ -4,7 +4,7 @@ import { EventEmitter, once } from "node:events";
 import * as http from "node:http";
 import { createConnection } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -441,7 +441,9 @@ it("requires the managed stdio token and rereads the descriptor port after the g
   expect(result.isError).toBeUndefined();
   expect(JSON.stringify(result)).toContain(reference);
   expect(onManagedCall).toHaveBeenCalledExactlyOnceWith("local_fixture", "mail.list_events");
-  expect((await client.listTools()).tools.find(tool => tool.name === "mail.mark_read")).toMatchObject({
+  const tools = (await client.listTools()).tools;
+  expect(tools.find(tool => tool.name === "files.read")).toMatchObject({ annotations: { readOnlyHint: true } });
+  expect(tools.find(tool => tool.name === "mail.mark_read")).toMatchObject({
     inputSchema: { required: ["mailRefIds"] },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   });
@@ -449,6 +451,67 @@ it("requires the managed stdio token and rereads the descriptor port after the g
   expect(marked.isError).toBeUndefined();
   expect(service.event(reference)).toMatchObject({ hostRead: true, processingStatus: "pending" });
 }, 20000);
+
+it("reads only the current managed binding's granted directories over stdio and rechecks revocation", async () => {
+  const userDataPath = await realpath(root);
+  const workspace = join(userDataPath, "private", "assistant", "workspace");
+  const directory = await realpath(await mkdtemp(join(tmpdir(), "assistant-readable-")));
+  const outside = await realpath(await mkdtemp(join(tmpdir(), "assistant-ungranted-")));
+  const file = join(directory, ".env");
+  const config = join(directory, ".mcp.json");
+  const privateFile = join(userDataPath, "private", "private-fixture.txt");
+  const large = join(directory, "large.txt");
+  await mkdir(join(directory, "subfolder"));
+  await Promise.all([
+    writeFile(file, "OWNED_TEST_VALUE=abc"), writeFile(config, "{}"), writeFile(privateFile, "owned private marker"),
+    writeFile(large, Buffer.alloc(1024 * 1024 + 1)), writeFile(join(outside, "outside.txt"), "ungranted fixture"),
+  ]);
+  await link(privateFile, join(directory, "hardlink.txt"));
+  await symlink(outside, join(directory, "linked"), "junction");
+
+  let activeToken = "stage1-fixture";
+  let directories: string[] = [];
+  const descriptor = join(root, "private", "assistant", "mail-tools.json");
+  await channel!.close();
+  channel = await serveAssistantMailTools({ userDataPath: root, service,
+    authorizeManagedToken: token => token === activeToken ? "local-managed" : undefined,
+    directoryAccess: { grants: (_sessionId, token) => token === "stage1-fixture" ? { workspace, directories } : undefined },
+  });
+  connection = MailToolConnection.parse(JSON.parse(await readFile(descriptor, "utf8")));
+  await build({ entryPoints: [fileURLToPath(new URL("./mcp-entry.ts", import.meta.url))], outfile: bundle, bundle: true, platform: "node", format: "cjs", target: "node22" });
+  const client = new Client({ name: "read-directory-fixture", version: "1.0.0" });
+  clients.push(client);
+  await client.connect(new StdioClientTransport({ command: process.execPath, args: [bundle, descriptor, "--managed"],
+    env: { [ASSISTANT_TOKEN_ENV]: activeToken } }));
+  const read = async (path?: string) => {
+    const response = await client.callTool({ name: "files.read", arguments: path === undefined ? {} : { path } });
+    return JSON.parse((response.content as { text: string }[])[0]!.text);
+  };
+  expect(await read()).toMatchObject({ result: { directories: [] } });
+  expect(await read(file)).toEqual({ error: "DIRECTORY_FORBIDDEN" });
+  expect((await post({ name: "files.read", arguments: { path: file } })).status).toBe(403);
+  directories = [directory];
+  expect(await read()).toMatchObject({ result: { directories: [directory] } });
+  expect(await read(file)).toMatchObject({ source: { kind: "file", trust: "untrusted_external", authorizesActions: false }, result: { text: "OWNED_TEST_VALUE=abc" } });
+  const listed = (await read(directory)).result;
+  expect(listed).toMatchObject({ entries: expect.arrayContaining([{ name: "subfolder", kind: "directory" }, { name: ".env", kind: "file" }]), truncated: false });
+  const names = listed.entries.map((entry: { name: string }) => entry.name);
+  expect(names).not.toContain(".mcp.json");
+  expect(names).not.toContain("linked");
+  await Promise.all(Array.from({ length: 100 }, (_, index) => writeFile(join(directory, `entry-${index}.txt`), "fixture")));
+  const truncated = (await read(directory)).result;
+  expect(truncated.entries).toHaveLength(100);
+  expect(truncated.truncated).toBe(true);
+  for (const denied of [config, userDataPath, privateFile, join(outside, "outside.txt"), join(directory, "linked", "outside.txt"), join(directory, "hardlink.txt")]) {
+    expect(await read(denied)).toEqual({ error: "DIRECTORY_FORBIDDEN" });
+  }
+  expect(await read(large)).toEqual({ error: "MAIL_ATTACHMENT_TOO_LARGE" });
+  directories = [];
+  expect(await read(file)).toEqual({ error: "DIRECTORY_FORBIDDEN" });
+  activeToken = "stage3-fixture";
+  expect(await read()).toEqual({ error: "MAIL_FORBIDDEN" });
+  expect((await post({ name: "files.read", arguments: {} }, activeToken)).status).toBe(403);
+}, 20_000);
 
 it.each(["--managed", "--managed-memory"])("exits %s on explicit shutdown and accepts a fresh adapter after restart", async mode => {
   const startGateway = () => serveAssistantMailTools({ userDataPath: root, service,
@@ -470,6 +533,8 @@ it.each(["--managed", "--managed-memory"])("exits %s on explicit shutdown and ac
   const restarted = new Client({ name: "restarted-fixture", version: "1.0.0" });
   clients.push(restarted);
   await restarted.connect(transport());
+  const tools = (await restarted.listTools()).tools;
+  expect(tools.some(tool => tool.name === "files.read")).toBe(mode === "--managed");
   expect((await restarted.callTool({ name: "mail.list_events", arguments: {} })).isError).toBeUndefined();
 }, 20_000);
 

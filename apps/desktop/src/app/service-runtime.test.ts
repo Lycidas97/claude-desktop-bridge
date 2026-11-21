@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { join } from "node:path";
 import { beforeEach, expect, it, vi } from "vitest";
-import { ASSISTANT_WORKSPACE_POLICY, type BridgeInspectorAlert, type BridgeInspectorStatus } from "@bridge/protocol";
+import { ASSISTANT_MEMORY_POLICY, ASSISTANT_WORKSPACE_POLICY, type BridgeInspectorAlert, type BridgeInspectorStatus } from "@bridge/protocol";
 import { WorkspaceProvisioner } from "../controller/assistant-workspace.js";
 
 const resources = await vi.hoisted(async () => {
@@ -19,7 +19,7 @@ const resources = await vi.hoisted(async () => {
       }),
       startReceivers: vi.fn(),
       close: vi.fn(async () => { database?.close(); database = undefined; }),
-      binding: vi.fn<() => { nativeSessionId: string; managed?: { path: string; token: string } } | undefined>(),
+      binding: vi.fn<() => { nativeSessionId: string; managed?: { path: string; token: string; policy?: string } } | undefined>(),
       status: vi.fn<() => { accounts: { enabled: boolean }[] }>(), resume: vi.fn(),
     }),
     powerSaveBlocker: { start: vi.fn(() => 4), stop: vi.fn() }, mailOptions: vi.fn(), controllerOptions: vi.fn(),
@@ -379,6 +379,33 @@ it("drafts rules for a restored Stage 1 binding and writes them only after confi
     await writeFile(profile, replacement);
     await expect(proposals.create(binding.nativeSessionId, { ...action, ruleId: "other" })).rejects.toMatchObject({ code: "CONFLICT" });
     expect(await readFile(profile, "utf8")).toBe(replacement);
+  } finally { await runtime.close(); }
+});
+
+it("serves directory grants for the current Stage 1 binding and reflects revocation immediately", async () => {
+  const { mkdtemp, realpath } = await import("node:fs/promises");
+  const userDataPath = await realpath(await mkdtemp(join(process.env.BRIDGE_TEST_TEMP_ROOT!, "assistant-profile-")));
+  const directory = await realpath(await mkdtemp(join(process.env.BRIDGE_TEST_TEMP_ROOT!, "assistant-readable-")));
+  const workspace = join(userDataPath, "private", "assistant", "workspace");
+  const sessionId = "local-assistant";
+  const token = "owned-assistant-token";
+  const binding = { nativeSessionId: sessionId, managed: { path: workspace, token, policy: ASSISTANT_WORKSPACE_POLICY } };
+  resources.assistantMail.binding.mockReturnValue(binding);
+  const { createServiceRuntime } = await import("./service-runtime.js");
+  const runtime = await createServiceRuntime({ userDataPath });
+  try {
+    const { directoryAccess } = resources.serveMailTools.mock.calls[0]![0];
+    const provisioner = resources.controllerOptions.mock.calls[0]![14] as WorkspaceProvisioner;
+    expect(directoryAccess.grants(sessionId, token)).toEqual({ workspace, directories: [] });
+    provisioner.changeReadDirectory(token, "owned-cli", "add", directory);
+    expect(directoryAccess.grants(sessionId, token)).toEqual({ workspace, directories: [directory] });
+    expect(directoryAccess.grants("local-other", token)).toBeUndefined();
+    expect(directoryAccess.grants(sessionId, "former-token")).toBeUndefined();
+    resources.assistantMail.binding.mockReturnValue({ ...binding, managed: { ...binding.managed, policy: ASSISTANT_MEMORY_POLICY } });
+    expect(directoryAccess.grants(sessionId, token)).toBeUndefined();
+    resources.assistantMail.binding.mockReturnValue(binding);
+    provisioner.changeReadDirectory(token, undefined, "remove", directory);
+    expect(directoryAccess.grants(sessionId, token)).toEqual({ workspace, directories: [] });
   } finally { await runtime.close(); }
 });
 

@@ -94,6 +94,12 @@
 .assistant-context-usage { display: flex; justify-content: space-between; align-items: center; gap: 12px; min-height: 36px; font-size: calc(13px * var(--font-scale)); }
 .assistant-delivery-setting { margin-top: 8px; }
 .assistant-delivery-setting .toggle-row:has(input:disabled) { cursor: default; opacity: 0.55; }
+.assistant-read-directories { margin-top: 12px; padding-top: 6px; border-top: 1px solid var(--line); }
+.assistant-read-directories > ul { margin: 0; padding: 0; list-style: none; }
+.assistant-read-directories li { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; border-bottom: 1px solid var(--line); }
+.assistant-read-directories li > span { overflow-wrap: anywhere; font-size: calc(13px * var(--font-scale)); }
+.assistant-read-directories button:disabled { opacity: .55; cursor: default; }
+.assistant-page-mobile .assistant-read-directories .assistant-session-link { min-height: 44px; }
 .assistant-context-usage { margin: 0 0 12px; color: var(--muted); }
 .assistant-context-usage dd { margin: 0; font-variant-numeric: tabular-nums; }
 .assistant-binding details { margin-top: 12px; font-size: calc(13px * var(--font-scale)); }

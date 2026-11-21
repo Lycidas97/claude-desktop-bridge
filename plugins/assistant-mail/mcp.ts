@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { ASSISTANT_DIRECTORY_TOOL } from "../../packages/protocol/src/assistant-mail.js";
 import { MAIL_TOOLS, MANAGED_MAIL_TOOLS, MailToolConnection } from "./tool-contract.js";
 
 const ManagedDescriptor = MailToolConnection.pick({ port: true }).strip();
@@ -9,7 +10,7 @@ const ManagedDescriptor = MailToolConnection.pick({ port: true }).strip();
 export function createMailMcpServer(connectionPath: string, managedToken?: string, memory = false): Server {
   const server = new Server({ name: "assistant-mail", version: "0.1.0" }, { capabilities: { tools: {} } });
   server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: MAIL_TOOLS.filter(tool => managedToken
-    ? memory || tool.name !== "memory.lookup_entry" : !MANAGED_MAIL_TOOLS.has(tool.name)) }));
+    ? tool.name !== (memory ? ASSISTANT_DIRECTORY_TOOL : "memory.lookup_entry") : !MANAGED_MAIL_TOOLS.has(tool.name)) }));
   server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
     const descriptor: unknown = JSON.parse(await readFile(connectionPath, "utf8"));
     const connection = managedToken === undefined ? MailToolConnection.parse(descriptor) : {

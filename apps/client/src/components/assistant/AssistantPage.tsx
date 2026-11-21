@@ -1,4 +1,4 @@
-import { ASSISTANT_MAIL_KEEP_CREDENTIAL_CAPABILITY, ASSISTANT_MAIL_SHARED_AUTH_CAPABILITY, ASSISTANT_SMTP_CAPABILITY, type BridgeActionProposal, type BridgeDirectoryListing, type BridgeHostSnapshot, type BridgeSessionInfo } from "@bridge/protocol";
+import { ASSISTANT_MAIL_KEEP_CREDENTIAL_CAPABILITY, ASSISTANT_MAIL_SHARED_AUTH_CAPABILITY, ASSISTANT_READ_DIRECTORIES_CAPABILITY, ASSISTANT_SMTP_CAPABILITY, type BridgeActionProposal, type BridgeDirectoryListing, type BridgeHostSnapshot, type BridgeSessionInfo } from "@bridge/protocol";
 import { ArrowLeft, Check, ChevronRight, ListChecks, LoaderCircle, RefreshCw, Settings } from "lucide-react";
 import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
@@ -16,6 +16,7 @@ import { AgendaView } from "./AgendaView.js";
 import { useAssistantAgenda } from "./AssistantAgendaProvider.js";
 import { pendingProposalCount, useAssistantProposals } from "./AssistantProposalProvider.js";
 import { AssistantAttention } from "./AssistantAttention.js";
+import { AssistantReadDirectories } from "./AssistantReadDirectories.js";
 import { ProposalPanel } from "./ProposalPanel.js";
 import { InboxMailList } from "./InboxMailList.js";
 import { MailAccounts } from "./MailAccounts.js";
@@ -207,6 +208,11 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
         const previous = snapshot?.sessions.find(candidate => candidate.sessionId === sessionId);
         return <li key={sessionId}>{previous ? <button type="button" className="assistant-session-link" onClick={() => onOpenSession(sessionId)}>{previous.title || sessionId}</button> : <span>{sessionId}</span>}</li>;
       })}</ul></details> : null}
+      {snapshot && capabilities.includes(ASSISTANT_READ_DIRECTORIES_CAPABILITY) && workspace?.nativeSessionId && workspace.readDirectories && (
+        <AssistantReadDirectories key={workspace.nativeSessionId} directories={workspace.readDirectories} sessionId={workspace.nativeSessionId}
+          snapshot={snapshot} disabled={!mail.online || bindingBusy} canAdd={capabilities.includes("plugin.assistant-mail.workspace.v1")}
+          request={mail.request} browse={browseDirectory} />
+      )}
     </section>
   );
   const notices = mail && displayedView !== "agenda" && <>

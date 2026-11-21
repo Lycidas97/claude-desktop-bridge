@@ -14,11 +14,23 @@ function card(fields: Partial<BridgeMailCard> = {}): BridgeMailCard {
 }
 
 describe("MailCard plain text rendering", () => {
-  it("renders only the subject and sender until a compact inbox row is opened", () => {
-    const html = renderToStaticMarkup(createElement(MailCard, { card: card({ previewError: "Preview error" }), compact: true }));
+  it("shows the subject, sender and received time without opening a compact inbox row", () => {
+    const receivedAt = "2026-11-13T02:14:00.000Z";
+    const html = renderToStaticMarkup(createElement(MailCard, { card: card({
+      receivedAt, recordedAt: Date.parse("2026-11-14T10:45:00.000Z"), previewError: "Preview error",
+    }), compact: true }));
 
     expect(html).toMatch(/<summary>.*Mail subject.*sender@example\.invalid.*<\/summary>/u);
-    expect(html).not.toMatch(/Mail preview|Preview error|<time|状态|原文/u);
+    expect(html).toContain(`<time dateTime="${receivedAt}">${new Date(receivedAt).toLocaleString("zh-CN", {
+      month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit",
+    })}</time>`);
+    expect(html).not.toMatch(/Mail preview|Preview error|状态|原文/u);
+  });
+
+  it("keeps an unparseable received date from breaking the inbox", () => {
+    const html = renderToStaticMarkup(createElement(MailCard, { card: card({ receivedAt: "invalid" }), compact: true }));
+
+    expect(html).toContain("Invalid Date</time>");
   });
 
   it("keeps a failed assistant task visible on a collapsed inbox row", () => {

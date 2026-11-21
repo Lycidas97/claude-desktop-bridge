@@ -1,0 +1,174 @@
+import assert from "node:assert/strict";
+import { desktopFixtureRequest, eventually, openMobileDrawer } from "../helpers.mjs";
+
+function holdMailRead(host, method, match) {
+  const send = host.send;
+  const gate = Promise.withResolvers();
+  let held = false;
+  host.send = async payload => {
+    if (payload.kind === "response" && host.requests.some(request =>
+      request.requestId === payload.requestId && request.method === method && match(request.params))) {
+      held = true;
+      await gate.promise;
+    }
+    return send(payload);
+  };
+  return {
+    wait: () => eventually(() => held, true, `Hold the ${method} response`),
+    release() { host.send = send; gate.resolve(); },
+  };
+}
+
+export async function verifyAssistantMailRefresh(page, host, steps) {
+  const native = host.nativeApproval;
+  const { service, deliver } = native.assistantMail;
+  const ordinary = service.page({ cursor: "3", limit: 1 }).events[0];
+  const filed = service.page({ cursor: "2", limit: 1 }).events[0];
+  const staysFiled = service.page({ cursor: "4", limit: 1 }).events[0];
+  service.setFolder(filed.mailRefId, "marketing", "user");
+  service.setFolder(staysFiled.mailRefId, "marketing", "user");
+
+  await openMobileDrawer(page);
+  await page.locator(".drawer-assistant-capsule").click();
+  const inbox = page.getByLabel("邮件输入", { exact: true });
+  const inboxCard = mail => inbox.locator(`[data-mail-id="${mail.mailRefId}"]`);
+  await page.getByRole("button", { name: "更早邮件", exact: true }).click();
+  await inboxCard(ordinary).waitFor();
+  await page.getByRole("button", { name: "助理设置", exact: true }).click();
+  await page.getByRole("button", { name: "初始化托管助理", exact: true }).click();
+  await page.getByRole("button", { name: "确认初始化", exact: true }).click();
+  await page.getByRole("button", { name: "助理设置", exact: true }).click();
+  await page.locator("label.toggle-row").filter({ has: page.getByRole("switch", { name: "主动助理" }) }).click();
+  await eventually(() => host.snapshot.assistantMail.automaticDelivery, true, "Enable delivery for the synthetic managed session");
+  await page.getByRole("button", { name: "返回", exact: true }).click();
+  const batches = page.locator(".assistant-trigger-batch");
+  const batchCard = mail => batches.locator(`[data-mail-id="${mail.mailRefId}"]`);
+  const historical = [];
+  for (let index = 0; index < 2; index++) {
+    const mail = await deliver(1);
+    historical.push(mail);
+    await batches.filter({ has: page.locator(`[data-mail-id="${mail.mailRefId}"]`) }).getByText("原生已观测", { exact: true }).waitFor();
+  }
+  const sessionId = host.snapshot.assistantMail.binding.nativeSessionId;
+  native.setSessionBusy(sessionId, true);
+  const queued = await deliver(1);
+  const queuedBatch = batches.filter({ has: page.locator(`[data-mail-id="${queued.mailRefId}"]`) });
+  const cancel = queuedBatch.getByRole("button", { name: "撤回助理唤醒" });
+  await cancel.waitFor();
+  const receipt = native.receipts().find(receipt => receipt.source === "assistant-trigger" && receipt.sessionId === sessionId && receipt.state === "queued");
+  assert.ok(receipt);
+  // The synthetic busy session does not publish a transcript row for a queued command by default.
+  await host.emit("user.message.accepted", {
+    commandId: receipt.commandId, requestId: receipt.requestId, delivery: "queued", source: "assistant-trigger",
+    text: `助理事件批次 ${receipt.requestId}\nmail.received ${queued.mailRefId}`,
+  }, { sessionId, itemId: receipt.messageId, turnId: receipt.messageId });
+  await queuedBatch.getByText("关联原生消息", { exact: true }).waitFor();
+  await eventually(() => host.requests.some(({ method, params }) =>
+    method === "plugin.assistant-mail.batch" && params.batchId === receipt.requestId), true, "Load the linked queued batch");
+  assert.equal(await batches.count(), 3);
+
+  const inboxTab = page.getByRole("button", { name: "收件", exact: true });
+  const conversationTab = page.getByRole("button", { name: "对话", exact: true });
+  const filedEntry = page.getByRole("button", { name: "已收纳 2 封", exact: true });
+  const marketing = page.locator(".assistant-mail-group").filter({ hasText: "营销与垃圾邮件" });
+  await inboxTab.click();
+  await inboxCard(ordinary).waitFor();
+  await filedEntry.click();
+  await marketing.locator("summary").first().click();
+  const filedCard = marketing.locator(`[data-mail-id="${filed.mailRefId}"]`);
+  const returnToInbox = page.getByRole("button", { name: "返回收件" });
+  await filedCard.waitFor();
+  await returnToInbox.click();
+  assert.equal(await batches.count(), 3, "The linked transcript stays mounted in the inbox");
+  await batches.first().waitFor({ state: "hidden" });
+  await marketing.waitFor({ state: "hidden" });
+  assert.equal(await batches.filter({ hasText: "原生已观测" }).count(), 2);
+
+  const beforeReopen = host.requests.length;
+  await filedEntry.click();
+  await filedCard.waitFor();
+  await returnToInbox.click();
+  await page.getByRole("button", { name: "刷新邮件列表", exact: true }).click();
+  await page.getByRole("button", { name: "刷新邮件列表（已刷新）", exact: true }).waitFor();
+  assert.equal(host.requests.slice(beforeReopen).filter(({ method, params }) =>
+    method === "plugin.assistant-mail.list" && params.folder === "marketing").length, 0,
+  "Reopening a loaded category without a mail change does not re-read it");
+
+  async function countReadsAfterProcessing(mail, label) {
+    const card = inboxCard(mail);
+    await card.locator("summary").first().click();
+    const before = host.requests.length;
+    service.setProcessingStatus(mail.mailRefId, "processing");
+    await card.locator(".assistant-mail-hint").filter({ hasText: "处理中" }).waitFor();
+    const counts = { inbox: 0, filed: 0, search: 0, batch: 0 };
+    for (const { method, params } of host.requests.slice(before)) {
+      if (method === "plugin.assistant-mail.batch") counts.batch++;
+      else if (method === "plugin.assistant-mail.list") counts[params.query ? "search" : params.folder === "inbox" ? "inbox" : "filed"]++;
+    }
+    steps.push(`${label}: ${JSON.stringify(counts)}`);
+    return counts;
+  }
+  const ordinaryUpdate = await countReadsAfterProcessing(ordinary, "Ordinary second-page mail update while inbox is visible");
+  const batchUpdate = await countReadsAfterProcessing(historical[0], "Linked batch member update while its transcript is hidden");
+
+  const folderGate = holdMailRead(host, "plugin.assistant-mail.list", params => params.folder === "marketing");
+  let staleFilingDisabled;
+  try {
+    const beforeMove = host.requests.length;
+    service.setFolder(filed.mailRefId, "verification", "user");
+    await eventually(() => host.requests.slice(beforeMove).some(({ method, params }) =>
+      method === "plugin.assistant-mail.list" && params.folder === "inbox"), true, "The client received the filing change while the category was hidden");
+    await filedEntry.click();
+    await folderGate.wait();
+    staleFilingDisabled = await filedCard.getByRole("button", { name: "收回收件" }).isDisabled();
+  } finally { folderGate.release(); }
+  await filedCard.waitFor({ state: "detached" });
+  const remainingCard = marketing.locator(`[data-mail-id="${staysFiled.mailRefId}"]`);
+  await remainingCard.getByRole("button", { name: "收回收件" }).and(page.locator(":enabled")).waitFor();
+  await returnToInbox.click();
+
+  const queuedInbox = inboxCard(queued);
+  await queuedInbox.locator("summary").first().click();
+  await queuedInbox.getByText("状态", { exact: true }).click();
+  const batchGate = holdMailRead(host, "plugin.assistant-mail.batch", params => params.batchId === receipt.requestId);
+  let withdrawnBeforeBatchRead;
+  try {
+    await native.controllerRequest(desktopFixtureRequest({ method: "turn.queue.cancel", params: { sessionId, commandId: receipt.commandId } }), "desktop");
+    await queuedInbox.getByText("任务已取消", { exact: true }).waitFor();
+    await conversationTab.click();
+    await batchGate.wait();
+    withdrawnBeforeBatchRead = await queuedBatch.getByText("已撤回", { exact: true }).isVisible() && await cancel.count() === 0;
+  } finally { batchGate.release(); }
+  await queuedBatch.getByText("已撤回", { exact: true }).waitFor();
+  await batchCard(historical[0]).locator(".assistant-mail-hint").filter({ hasText: "处理中" }).waitFor();
+  assert.equal(native.receipts().find(({ commandId }) => commandId === receipt.commandId).state, "cancelled");
+
+  await inboxTab.click();
+  await filedEntry.click();
+  await marketing.locator("summary").first().click();
+  await remainingCard.waitFor();
+  await returnToInbox.click();
+  host.mailOffline = true;
+  host.socket.close();
+  const offline = page.getByText("电脑离线，显示已缓存邮件。", { exact: true });
+  await offline.waitFor();
+  service.setProcessingStatus(staysFiled.mailRefId, "processing");
+  service.setProcessingStatus(historical[1].mailRefId, "processing");
+  host.mailOffline = false;
+  host.socket.connect();
+  await offline.waitFor({ state: "hidden" });
+  await inboxCard(ordinary).waitFor();
+  await filedEntry.click();
+  await remainingCard.locator(".assistant-mail-hint").filter({ hasText: "处理中" }).waitFor();
+  await returnToInbox.click();
+  await conversationTab.click();
+  await batchCard(historical[1]).locator(".assistant-mail-hint").filter({ hasText: "处理中" }).waitFor();
+
+  assert.deepEqual({ staleFilingDisabled, withdrawnBeforeBatchRead }, {
+    staleFilingDisabled: true, withdrawnBeforeBatchRead: true,
+  }, "Known stale folder cards cannot be moved, and Native withdrawal wins before the batch reply");
+  assert.deepEqual({ ordinaryUpdate, batchUpdate }, {
+    ordinaryUpdate: { inbox: 2, filed: 0, search: 0, batch: 0 },
+    batchUpdate: { inbox: 2, filed: 0, search: 0, batch: 0 },
+  }, "Inbox updates read the two loaded inbox pages without refreshing hidden folders or batches");
+}

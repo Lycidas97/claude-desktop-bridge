@@ -1012,6 +1012,10 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   if (!await settingsHeader.count()) await page.locator(".assistant-view-tabs").getByRole("button", { name: "助理设置", exact: true }).click();
   const readDirectories = page.getByRole("region", { name: "可读目录", exact: true });
   await readDirectories.getByText("未授权工作区外的文件夹。", { exact: true }).waitFor();
+  const previousSessions = await page.locator(".assistant-binding summary").filter({ hasText: /^以前的会话$/u }).boundingBox();
+  const directorySettings = await readDirectories.boundingBox();
+  assert.ok(previousSessions && directorySettings && previousSessions.y + previousSessions.height <= directorySettings.y,
+    "Former sessions remain above the separate read-only directory settings");
   await readDirectories.getByRole("button", { name: "添加可读目录", exact: true }).click();
   const readPicker = page.getByRole("dialog", { name: "选择文件夹", exact: true });
   const readablePath = host.nativeApproval.cwd;

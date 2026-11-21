@@ -204,14 +204,14 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
           {mail.assistant?.automaticDelivery && !mail.assistant.automaticDeliveryAvailable && <p role="status">自动投递已暂停，等待托管会话就绪。</p>}
           {deliveryError && <p role="alert">{deliveryError}</p>}
         </div> : !mail.assistant?.automaticDelivery && <span className="assistant-delivery-disabled">自动投递未启用</span>}
-      {snapshot && capabilities.includes(ASSISTANT_READ_DIRECTORIES_CAPABILITY) && workspace?.nativeSessionId && workspace.readDirectories && (
-        <AssistantReadDirectories key={workspace.nativeSessionId} directories={workspace.readDirectories} sessionId={workspace.nativeSessionId}
-          snapshot={snapshot} disabled={!mail.online || bindingBusy} request={mail.request} browse={browseDirectory} />
-      )}
       {binding?.previousSessionIds.length ? <details><summary>以前的会话</summary><ul>{binding.previousSessionIds.map(sessionId => {
         const previous = snapshot?.sessions.find(candidate => candidate.sessionId === sessionId);
         return <li key={sessionId}>{previous ? <button type="button" className="assistant-session-link" onClick={() => onOpenSession(sessionId)}>{previous.title || sessionId}</button> : <span>{sessionId}</span>}</li>;
       })}</ul></details> : null}
+      {snapshot && capabilities.includes(ASSISTANT_READ_DIRECTORIES_CAPABILITY) && workspace?.nativeSessionId && workspace.readDirectories && (
+        <AssistantReadDirectories key={workspace.nativeSessionId} directories={workspace.readDirectories} sessionId={workspace.nativeSessionId}
+          snapshot={snapshot} disabled={!mail.online || bindingBusy} request={mail.request} browse={browseDirectory} />
+      )}
     </section>
   );
   const notices = mail && displayedView !== "agenda" && <>

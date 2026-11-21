@@ -53,6 +53,5 @@ export function AssistantReadDirectories({ directories, sessionId, snapshot, dis
     {pickerOpen && <SessionCreateDialog snapshot={snapshot} connected={!disabled}
       {...(snapshot.host.capabilities.includes("directory.browse.v1") ? { onBrowseDirectory: browse } : {})}
       onPickDirectory={setSelected} onClose={() => setPickerOpen(false)} onCreate={async () => undefined} onCreated={() => {}} />}
-    <p>网页搜索会将搜索词发给搜索服务，请勿搜索邮件正文或私密信息。</p>
   </section>;
 }

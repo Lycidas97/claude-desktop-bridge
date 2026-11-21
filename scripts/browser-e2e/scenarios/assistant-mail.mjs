@@ -234,6 +234,21 @@ export async function verifyAssistantMailHistory(page, host, steps, directory, v
   await cards.first().getByText("收件记录 25", { exact: true }).waitFor();
   await cards.last().getByText("收件记录 6", { exact: true }).waitFor();
   assert.equal(await cards.locator(".assistant-mail-preview:visible").count(), 0, "Collapsed inbox rows do not expose message previews");
+  // The provider preloads the inbox as soon as pairing completes. Inject the failure on refresh.
+  const handleRequest = host.handleRequest;
+  host.handleRequest = async request => {
+    const reply = await handleRequest(request);
+    if (request.method === "plugin.assistant-mail.list" && reply.response.ok) {
+      const failed = reply.response.result.mailPage.cards.find(card => card.subject === "收件记录 25");
+      if (failed) failed.nativeDelivery = { state: "failed" };
+    }
+    return reply;
+  };
+  await page.getByRole("button", { name: "刷新邮件列表", exact: true }).click();
+  await cards.first().locator("summary").getByText("助理任务失败", { exact: true }).waitFor();
+  assert.equal(await cards.locator("summary").getByText("助理任务失败", { exact: true }).count(), 1);
+  await page.screenshot({ path: resolve(directory, "mobile-inbox-failed-delivery.png") });
+  host.handleRequest = handleRequest;
   await older.click();
   await eventually(() => cards.count(), 25, "Older loads the remaining five messages from IMAP");
   await older.waitFor({ state: "hidden" });

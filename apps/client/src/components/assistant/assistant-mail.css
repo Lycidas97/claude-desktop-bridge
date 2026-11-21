@@ -138,8 +138,10 @@ body:has(.assistant-mail-category-options) .diagnostic-floating-entry { display:
 .assistant-mail-row > summary > svg { grid-column: 2; grid-row: 1 / span 2; }
 .assistant-mail-row[open] > summary > svg { transform: rotate(90deg); }
 .assistant-mail-row-subject { font-size: calc(15px * var(--font-scale)); font-weight: 600; line-height: 1.4; color: var(--text); }
-.assistant-mail-row-from { font-size: calc(12px * var(--font-scale)); line-height: 1.4; }
-.assistant-mail-row :is(.assistant-mail-row-subject, .assistant-mail-row-from) { grid-column: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.assistant-mail-row-meta { grid-column: 1; display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.assistant-mail-row-meta > .assistant-mail-hint { flex: none; margin: 0; }
+.assistant-mail-row-from { min-width: 0; font-size: calc(12px * var(--font-scale)); line-height: 1.4; }
+.assistant-mail-row :is(.assistant-mail-row-subject, .assistant-mail-row-from) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .assistant-mail-row[open] :is(.assistant-mail-row-subject, .assistant-mail-row-from) { white-space: normal; }
 .assistant-mail-row-content { padding: 8px 0; border-top: 1px solid var(--line); }
 .assistant-mail-row-content > header { margin-bottom: 8px; }

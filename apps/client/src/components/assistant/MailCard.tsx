@@ -9,7 +9,8 @@ import { useMediaPreview, useMediaRequest } from "../evidence/MediaPreviewProvid
 import { useAssistantMail } from "./AssistantMailProvider.js";
 import "./assistant-mail.css";
 
-const DELIVERY_STATUS: Record<BridgeMailCard["nativeDelivery"]["state"], { detail: string; hint?: "waiting" | "failed" }> = {
+type DeliveryStatus = { detail: string; hint?: "waiting" | "failed" };
+const DELIVERY_STATUS: Record<BridgeMailCard["nativeDelivery"]["state"], DeliveryStatus> = {
   "not-submitted": { detail: "未自动发给助理" },
   pending: { detail: "等待发给助理", hint: "waiting" },
   paused: { detail: "已暂停自动发送" },
@@ -89,24 +90,29 @@ type MailCardProps = {
 };
 
 export function MailCard(props: MailCardProps) {
-  const { card, compact } = props;
+  const { card, compact, showBatchDelivery = true } = props;
   const [open, setOpen] = useState(false);
   const subject = card.subject || "无主题";
   const sender = card.from.map(({ name, address }) => [name, address].filter(Boolean).join(" ")).join("，") || "未知发件人";
+  const delivery = showBatchDelivery || !card.nativeDelivery.batchId ? DELIVERY_STATUS[card.nativeDelivery.state] : undefined;
+  const content = <MailCardContent {...props} subject={subject} sender={sender} delivery={delivery} />;
   return <article className="assistant-mail-card" data-mail-id={card.mailRefId} data-stream-key={`mail:${card.mailRefId}`} aria-label={`邮件：${subject}`}>
     {compact ? <details className="assistant-mail-row" open={open} onToggle={event => setOpen(event.currentTarget.open)}>
       <summary>
         <span className="assistant-mail-row-subject">{subject}</span>
-        <span className="assistant-mail-row-from">{sender}</span>
+        <span className="assistant-mail-row-meta">
+          <span className="assistant-mail-row-from">{sender}</span>
+          {!open && delivery?.hint === "failed" && <span className="assistant-mail-hint" data-tone="failed">{MAIL_HINT_LABELS.failed}</span>}
+        </span>
         <ChevronRight size={16} aria-hidden="true" />
       </summary>
-      {open && <div className="assistant-mail-row-content"><MailCardContent {...props} subject={subject} sender={sender} /></div>}
-    </details> : <MailCardContent {...props} subject={subject} sender={sender} />}
+      {open && <div className="assistant-mail-row-content">{content}</div>}
+    </details> : content}
   </article>;
 }
 
-function MailCardContent({ card, compact, subject, sender, nativeMessage, onDiscuss, showBatchDelivery = true, junkAction, filing }: MailCardProps & {
-  subject: string; sender: string;
+function MailCardContent({ card, compact, subject, sender, delivery, nativeMessage, onDiscuss, junkAction, filing }: MailCardProps & {
+  subject: string; sender: string; delivery: DeliveryStatus | undefined;
 }) {
   const mail = useAssistantMail();
   const accountLabel = mail?.accountLabel(card.accountKey) ?? "邮件插件";
@@ -123,7 +129,6 @@ function MailCardContent({ card, compact, subject, sender, nativeMessage, onDisc
     {attachmentCount !== undefined && attachmentCount > attachments.length && <small>仅显示前 {attachments.length} 个附件</small>}
   </section> : null;
   const links = detail ? [...new Set(detail.bodyText.match(/https?:\/\/[^\s<>"']+/gu) ?? [])].filter(href => URL.canParse(href)).map(href => new URL(href)) : [];
-  const delivery = showBatchDelivery || !card.nativeDelivery.batchId ? DELIVERY_STATUS[card.nativeDelivery.state] : undefined;
   const hint = delivery?.hint === "failed" ? "failed" : card.processingStatus === "processing" ? "processing" : delivery?.hint;
   return <>
     <header><span><Mail size={15} aria-hidden="true" />{accountLabel}</span><time dateTime={card.receivedAt}>{new Date(card.receivedAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</time></header>

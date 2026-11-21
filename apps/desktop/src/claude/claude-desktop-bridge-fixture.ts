@@ -269,3 +269,5 @@ export async function fixture(legacy = false, evidence?: ConstructorParameters<t
     async close() { await bridge.close(); await eventLog.close(); state.close(); await rm(directory, { recursive: true, force: true }); },
   };
 }
+
+export const turnInput = { sessionId: "local-native", text: "hello", requestId: "request", idempotencyKey: "key", origin: "mobile" } as const;

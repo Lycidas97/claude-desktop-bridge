@@ -1,3 +1,59 @@
+## 1.3.8
+
+- Set up a managed Assistant and connect multiple read-only IMAP inboxes on
+  macOS. Fall back to polling when a server rejects IDLE, import recent mail,
+  and fetch older messages on demand. Optionally process new mail in batches
+  and resume unfinished work after context compaction.
+  [PR 401](https://github.com/Lycidas97/claude-desktop-bridge/pull/401),
+  [PR 433](https://github.com/Lycidas97/claude-desktop-bridge/pull/433),
+  [PR 438](https://github.com/Lycidas97/claude-desktop-bridge/pull/438)
+- File and restore mail in custom categories, search across categories, and
+  see receipt times on collapsed mobile rows. Preview or download attachments
+  and open referenced mail from the conversation. One Assistant attention
+  indicator covers unread mail and replies, reminders, and pending proposals.
+  [PR 462](https://github.com/Lycidas97/claude-desktop-bridge/pull/462),
+  [PR 496](https://github.com/Lycidas97/claude-desktop-bridge/pull/496),
+  [PR 520](https://github.com/Lycidas97/claude-desktop-bridge/pull/520),
+  [PR 547](https://github.com/Lycidas97/claude-desktop-bridge/pull/547)
+- View local and CalDAV events and to-dos together in the Assistant agenda.
+  Confirm the exact revision of a proposed agenda change on desktop or phone,
+  and review proposed changes to lasting Assistant rules before applying them.
+  [PR 439](https://github.com/Lycidas97/claude-desktop-bridge/pull/439),
+  [PR 451](https://github.com/Lycidas97/claude-desktop-bridge/pull/451),
+  [PR 452](https://github.com/Lycidas97/claude-desktop-bridge/pull/452)
+- Review the sender, recipients, and message before confirming an SMTP send or
+  reply. See why a send failed; unconfirmed delivery is marked uncertain and
+  is not retried automatically. Change the From address without re-entering
+  the password when IMAP and SMTP share it.
+  [PR 442](https://github.com/Lycidas97/claude-desktop-bridge/pull/442),
+  [PR 544](https://github.com/Lycidas97/claude-desktop-bridge/pull/544),
+  [PR 545](https://github.com/Lycidas97/claude-desktop-bridge/pull/545)
+- Reconnect faster on mobile and see progress and failure reasons in the
+  computer switcher. Restore missing Assistant replies and keep the selected
+  model with the new-session draft.
+  [PR 431](https://github.com/Lycidas97/claude-desktop-bridge/pull/431),
+  [PR 463](https://github.com/Lycidas97/claude-desktop-bridge/pull/463),
+  [PR 477](https://github.com/Lycidas97/claude-desktop-bridge/pull/477),
+  [PR 536](https://github.com/Lycidas97/claude-desktop-bridge/pull/536)
+- Open files delivered by native sessions from the conversation. Pinch to zoom
+  in mobile image and PDF previews, and save the original file. On Android,
+  open or share a file from another app and choose a session to upload it to.
+  [PR 412](https://github.com/Lycidas97/claude-desktop-bridge/pull/412),
+  [PR 432](https://github.com/Lycidas97/claude-desktop-bridge/pull/432),
+  [PR 472](https://github.com/Lycidas97/claude-desktop-bridge/pull/472),
+  [PR 474](https://github.com/Lycidas97/claude-desktop-bridge/pull/474)
+
+**Upgrade compatibility.** Protocol V3 and Pairing V4 remain unchanged. The
+upgrade keeps stored computer and device identities and manual relay settings.
+Fixture tests verified that Bridge reads the legacy single-account mail
+configuration when the new account file is absent and reuses its credential
+and IMAP watermark. [PR 401](https://github.com/Lycidas97/claude-desktop-bridge/pull/401)
+
+Candidate `ced20a2` passed distributed CI and targeted fixture checks (739
+Vitest tests and 26 browser scenarios). The candidate checks did not cover a
+live upgrade from 1.3.7, live mixed-version connections, production mail or
+Keychain access, live Desktop permissions, physical-device use, or direct WebRTC.
+
 ## 1.3.7
 
 - Save thinking-effort changes for native sessions and show the saved level

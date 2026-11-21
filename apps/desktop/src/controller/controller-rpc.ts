@@ -198,8 +198,7 @@ async function dispatchControllerRequestInner(
     if (!actor) throw new BridgeRequestError("PAIRING_REQUIRED", "请先完成设备配对。");
     const { client: _client, ...proposalParams } = params;
     return handleAssistantProposal(host.proposals, request.method, proposalParams, actor, async (sessionId, text, displayText) => {
-      const assistant = host.assistantMailCoordinator?.snapshot();
-      if (assistant?.workspace?.nativeSessionId !== sessionId || assistant.bindingState !== "ready") {
+      if (host.assistantMailCoordinator?.readyManagedSessionId() !== sessionId) {
         throw new BridgeRequestError("UNSUPPORTED", "此提案所属的托管会话不可用。");
       }
       const turn = await host.broker.startTurn({ requestId: request.requestId, idempotencyKey: request.idempotencyKey,

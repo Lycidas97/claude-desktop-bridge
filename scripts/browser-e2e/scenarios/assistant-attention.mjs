@@ -162,7 +162,18 @@ export async function verifyAssistantAttention(page, host, steps, directory, vie
     ]) events.push(...await native.message({ timestamp: Date.now(), ...message }));
     await host.syncNativeQueue({ events, history: await native.history(200), session: native.session() });
   }
-  await deliverReply("covered", "提交已完成。");
+  const historyNotice = page.locator(".assistant-conversation .latest-history-notice");
+  const { promise, resolve: releaseHistory } = Promise.withResolvers();
+  host.historyGate = promise;
+  try {
+    await deliverReply("covered", "提交已完成。");
+    await historyNotice.waitFor();
+  } finally {
+    releaseHistory();
+    host.historyGate = undefined;
+  }
+  // The completed turn refreshes history and can restore the previous reading position.
+  await historyNotice.waitFor({ state: "hidden" });
   const coveredReply = page.locator(".assistant-conversation [data-stream-key=covered-reply]");
   await coveredReply.evaluate(element => element.scrollIntoView({ block: "center" }));
   assert.equal(await coveredReply.evaluate(element => new Promise(resolve => {

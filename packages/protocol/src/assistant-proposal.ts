@@ -50,6 +50,11 @@ export interface ProposalRevisionRef {
 
 export type ProposalState = "pending" | "executing" | "applied" | "dismissed" | "conflict" | "failed" | "uncertain" | "delivery_uncertain" | "delivery_partial";
 
+export interface MailSendFailure {
+  reason: "connection" | "tls" | "auth" | "rejected" | "credential" | "unconfirmed" | "interrupted";
+  responseCode?: number;
+}
+
 export interface BridgeActionProposal extends ProposalRevisionRef {
   sessionId: string;
   action: AgendaProposalAction | MailProposalAction | MemoryRuleProposalAction;
@@ -59,6 +64,7 @@ export interface BridgeActionProposal extends ProposalRevisionRef {
   profile?: { before: string | null; baseProfileSha256: string };
   state: ProposalState;
   rejectedRecipients?: string[];
+  mailSendFailure?: MailSendFailure;
 }
 
 export interface BridgeProposalSnapshot {

@@ -13,19 +13,25 @@ const message = {
 const messageId = "<attempt@example.com>";
 
 it.each([
-  ["220 capture ESMTP", "250 accepted", false, "applied", undefined],
-  ["220 capture ESMTP", "250 accepted", true, "delivery_partial", undefined],
-  ["220 capture ESMTP", "550 rejected", false, "failed", 550],
-  ["220 capture ESMTP", "354 not a final reply", false, "delivery_uncertain", 354],
-  ["220 capture ESMTP", null, false, "delivery_uncertain", undefined],
-  ["554 service unavailable", null, false, "failed", 554],
-] as const)("records SMTP greeting %s and final reply %s (partial: %s)", async (greeting, response, partial, state, responseCode) => {
+  ["acceptance", "220 capture ESMTP", "250 accepted", false, "applied", undefined, undefined],
+  ["partial acceptance", "220 capture ESMTP", "250 accepted", true, "delivery_partial", undefined, undefined],
+  ["message refusal", "220 capture ESMTP", "550 rejected", false, "failed", 550, "rejected"],
+  ["nonfinal reply after DATA", "220 capture ESMTP", "354 not a final reply", false, "delivery_uncertain", 354, "unconfirmed"],
+  ["disconnect after DATA", "220 capture ESMTP", null, false, "delivery_uncertain", undefined, "unconfirmed"],
+  ["greeting refusal", "554 service unavailable", null, false, "failed", 554, "connection"],
+  ["disconnect before greeting", null, null, false, "failed", undefined, "connection"],
+  ["non-SMTP greeting", "* OK IMAP ready", null, false, "failed", undefined, "connection"],
+  ["authentication refusal", "220 capture ESMTP", null, false, "failed", 535, "auth", "auth"],
+  ["STARTTLS refusal", "220 capture ESMTP", null, false, "failed", 454, "tls", "starttls"],
+  ["implicit TLS against a cleartext port", "220 capture ESMTP", null, false, "failed", undefined, "tls", "tls"],
+] as const)("records SMTP %s", async (_label, greeting, response, partial, state, responseCode, reason, setup?) => {
   const recipients: string[] = [];
   const messages: string[] = [];
   const server = createServer(socket => {
     let buffered = "";
     let data: string[] | undefined;
     socket.setEncoding("utf8");
+    if (greeting === null) { socket.end(); return; }
     socket.write(`${greeting}\r\n`);
     socket.on("data", chunk => {
       buffered += chunk;
@@ -39,8 +45,9 @@ it.each([
           data = undefined;
           if (response) socket.write(`${response}\r\n`);
           else socket.destroy();
-        } else if (line.startsWith("EHLO ")) socket.write("250-capture\r\n250 AUTH PLAIN\r\n");
-        else if (line.startsWith("AUTH PLAIN ")) socket.write("235 authenticated\r\n");
+        } else if (line.startsWith("EHLO ")) socket.write(setup === "starttls" ? "250-capture\r\n250 STARTTLS\r\n" : "250-capture\r\n250 AUTH PLAIN\r\n");
+        else if (line === "STARTTLS") socket.write("454 TLS unavailable\r\n");
+        else if (line.startsWith("AUTH PLAIN ")) socket.write(setup === "auth" ? "535 refused\r\n" : "235 authenticated\r\n");
         else if (line === `MAIL FROM:<${message.from}>`) socket.write("250 sender accepted\r\n");
         else if (line.startsWith("RCPT TO:<")) {
           const address = line.slice(9, -1);
@@ -57,14 +64,15 @@ it.each([
   await once(server, "listening");
   try {
     const result = await submitSmtp({ host: "127.0.0.1", port: (server.address() as AddressInfo).port,
-      security: "starttls", user: "fixture", from: message.from }, "fixture-password", message, messageId, options => {
-      expect(options).toMatchObject({ requireTLS: true, secure: false, auth: { user: "fixture" } });
-      // Exercise SMTP and the exact MIME/envelope over an isolated cleartext capture, not TLS trust.
-      return createTransport({ ...options, requireTLS: false });
+      security: setup === "tls" ? "tls" : "starttls", user: "fixture", from: message.from }, "fixture-password", message, messageId, options => {
+      expect(options).toMatchObject({ requireTLS: setup !== "tls", secure: setup === "tls", auth: { user: "fixture" } });
+      // Except when testing handshake rejection, exercise MIME/envelope on the cleartext capture.
+      return createTransport(setup === "tls" || setup === "starttls" ? options : { ...options, requireTLS: false });
     });
-    expect(result).toMatchObject(state === "delivery_partial" ? { state, accepted: message.to, rejected: message.cc }
-      : { state, ...(responseCode !== undefined ? { responseCode } : {}) });
-    if (responseCode === 554) {
+    expect(result).toEqual(state === "delivery_partial" ? { state, accepted: message.to, rejected: message.cc }
+      : state === "applied" ? { state, accepted: [...message.to, ...message.cc], rejected: [] }
+      : { state, failure: { reason, ...(responseCode !== undefined ? { responseCode } : {}) } });
+    if (setup || greeting !== "220 capture ESMTP") {
       expect(recipients).toEqual([]);
       expect(messages).toEqual([]);
       return;

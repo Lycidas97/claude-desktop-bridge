@@ -189,6 +189,15 @@ export async function verifyAssistantMailAccounts(page, host, steps, directory, 
   await accountSettings.click();
   assert.equal(await credential.evaluate(input => input.required), true, "Older hosts still require the password");
   await extraAccount.getByRole("button", { name: "取消", exact: true }).click();
+  await page.evaluate(host => window.assistantDesktopSnapshot({ host }), { ...host.snapshot.host,
+    capabilities: host.snapshot.host.capabilities.filter(capability => !["plugin.assistant-mail.keep-credential.v1", "plugin.assistant-mail.shared-auth.v1"].includes(capability)) });
+  const legacySmtpSettings = firstAccount.getByRole("button", { name: /^配置 SMTP：/u });
+  await legacySmtpSettings.click();
+  const legacySmtpPassword = firstAccount.locator("form").getByLabel("SMTP 密码", { exact: true });
+  assert.equal(await legacySmtpPassword.evaluate(input => input.required), true, "Legacy SMTP configuration stays in the selected account and requires its own password");
+  await legacySmtpSettings.click();
+  await legacySmtpPassword.waitFor({ state: "hidden" });
+  await page.evaluate(host => window.assistantDesktopSnapshot({ host }), host.snapshot.host);
   await accounts.getByRole("button", { name: `移除：${extraUser}`, exact: true }).click();
   assert.ok(host.snapshot.assistantMail.accounts.some(account => account.accountKey === accountKey));
   await page.getByRole("alertdialog", { name: "移除邮箱？" }).getByRole("button", { name: "确认移除", exact: true }).click();

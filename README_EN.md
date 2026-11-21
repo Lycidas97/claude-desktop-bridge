@@ -52,6 +52,8 @@ The release also includes `SHA256SUMS.txt` and `SOURCE_COMMIT.txt`. A successful
 
 The packaged apps do not need a separate Node.js, npm or Android SDK installation.
 
+Bridge 1.3.8 gives the Assistant a combined view for events and to-dos and asks for confirmation before applying proposed changes or sending mail. The Assistant supports multiple mailboxes; IMAP receipt and SMTP sending both require a macOS Bridge host. Mobile improves reconnection, new-session drafts, and file previews. Android can also import files from other apps. See the [1.3.8 changelog](CHANGELOG.md#138).
+
 ## First connection
 
 The app's controls currently use Chinese labels; they are included in parentheses to help you find them.

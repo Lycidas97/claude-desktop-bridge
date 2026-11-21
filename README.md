@@ -54,6 +54,8 @@ Bridge 为 **Claude-3p**（通过第三方网关使用的 Claude Desktop）开�
 
 使用安装包不需要另装 Node.js、npm 或 Android SDK。
 
+Bridge 1.3.8 的助理可集中显示日程和待办，并在确认提案后执行变更或发送邮件。助理支持多个邮箱；IMAP 收信和 SMTP 发信都需要电脑端 Bridge 运行在 macOS 上。手机端改进了重连、新建会话草稿和文件预览，Android 也可从其他应用导入文件。详见 [1.3.8 更新记录](CHANGELOG.md#138)。
+
 ## 首次连接
 
 开始前确认三件事：

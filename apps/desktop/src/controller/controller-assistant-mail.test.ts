@@ -15,7 +15,6 @@ import { AssistantMailStore } from "../../../../plugins/assistant-mail/store.js"
 import { EvidenceManager } from "../evidence/evidence-manager.js";
 import { EvidenceStore } from "../evidence/evidence-store.js";
 import type { LoadedDesktopConfig } from "../transport/config.js";
-import { assistantMailSnapshot } from "./assistant-mail.js";
 import { WorkspaceProvisioner } from "./assistant-workspace.js";
 import { DesktopController } from "./controller.js";
 import { createControllerFixture } from "./controller-fixture.js";
@@ -611,21 +610,70 @@ describe("assistant native session binding", () => {
     await expect(bare.close()).resolves.toBeUndefined();
   });
 
-  it("keeps automatic delivery disabled for every helper binding state", () => {
-    expect(assistantMailSnapshot(service, [], true, "unbound")).toMatchObject({
-      bindingState: "unbound", receiverState: "disabled", accounts: [], credentialsSupported: true, automaticDelivery: false, changeToken: "unbound",
-    });
-    service.setBinding({ assistantId: "assistant", nativeSessionId: "native-first", sectionId: null, previousSessionIds: [] });
-    for (const [sessions, available, bindingState] of [
-      [run.sessions, true, "ready"], [run.sessions, false, "unavailable"], [[], true, "missing"],
-      [[nativeSession("native-first", { archivedAt: 123 })], true, "needs-rebind"],
-    ] as const) {
-      expect(assistantMailSnapshot(service, [...sessions], available, "marker")).toMatchObject({
-        binding: service.binding(), bindingState, receiverState: "disabled", accounts: [], credentialsSupported: true, automaticDelivery: false, changeToken: "marker",
-      });
-    }
+  it("projects manual binding states without enabling automatic delivery", () => {
+    const snapshot = () => run.controller.assistantMailCoordinator!.snapshot();
+    const disabled = { receiverState: "disabled", accounts: [], credentialsSupported: true, automaticDelivery: false };
+    expect(snapshot()).toMatchObject({ ...disabled, bindingState: "unbound" });
+    const binding = { assistantId: "assistant", nativeSessionId: "native-first", sectionId: null, previousSessionIds: [] };
+    service.setBinding(binding);
+    expect(snapshot()).toMatchObject({ ...disabled, binding, bindingState: "ready" });
+    run.broker.capabilities.mockReturnValue([]);
+    expect(snapshot()).toMatchObject({ ...disabled, binding, bindingState: "unavailable" });
+    run.broker.capabilities.mockReturnValue(["turn.start"]);
+    run.sessions.splice(0);
+    expect(snapshot()).toMatchObject({ ...disabled, binding, bindingState: "missing" });
+    run.sessions.push(nativeSession("native-first", { archivedAt: 123 }));
+    expect(snapshot()).toMatchObject({ ...disabled, binding, bindingState: "needs-rebind" });
     service.setBinding({ assistantId: "assistant", nativeSessionId: null, sectionId: null, previousSessionIds: ["native-first"] });
-    expect(assistantMailSnapshot(service, [], true, "paused")).toMatchObject({ bindingState: "needs-rebind", automaticDelivery: false, changeToken: "paused" });
+    expect(snapshot()).toMatchObject({ ...disabled, bindingState: "needs-rebind" });
+  });
+});
+
+describe("assistant proposal replanning", () => {
+  const sessionId = "local-managed";
+  const action = { kind: "todo.create", sourceId: "local", value: { title: "Review the schedule", status: "pending" } } as const;
+
+  beforeEach(async () => {
+    await run.request("plugin.assistant-mail.workspace.initialize", { workspacePath: run.workspace.path });
+  });
+
+  it("forwards feedback to the current managed session without reading mail presentation data", async () => {
+    const ref = await run.proposals.create(sessionId, action);
+    const snapshot = vi.spyOn(run.controller.assistantMailCoordinator!, "snapshot");
+    const attention = vi.spyOn(service, "attention");
+    const feedback = "Find a later time";
+    const receipt = { commandId: "replan-command", state: "submitted" };
+    run.broker.startTurn.mockResolvedValueOnce(receipt);
+
+    await expect(run.request("assistant.proposal.replan", { ...ref, feedback }, "synthetic-phone", "replan-key")).resolves.toEqual(receipt);
+    expect(run.broker.startTurn).toHaveBeenCalledExactlyOnceWith({
+      sessionId, requestId: "mail-request", idempotencyKey: "replan-key", origin: "mobile", sourceDeviceId: "synthetic-phone",
+      text: `请重查相关议程和空档，按以下意见调整提案。只用 proposal.update_pending 修订此版本，不要提交执行：${JSON.stringify(ref)}\n\n${feedback}`,
+      displayText: feedback,
+    });
+    expect(run.proposals.pending(ref)).toMatchObject({ ...ref, state: "pending", action });
+    expect(snapshot).not.toHaveBeenCalled();
+    expect(attention).not.toHaveBeenCalled();
+  });
+
+  it.each(["previous binding", "archived session", "unavailable host", "workspace repair failed"])("rejects replanning without starting a turn: %s", async target => {
+    const ref = await run.proposals.create(sessionId, action);
+    if (target === "previous binding") {
+      run.sessions.push(nativeSession("local-replacement", { cwd: run.workspace.path }));
+      service.setBinding({ ...service.binding()!, nativeSessionId: "local-replacement", previousSessionIds: [sessionId] });
+    } else if (target === "archived session") {
+      run.sessions.find(session => session.sessionId === sessionId)!.archivedAt = 123;
+    } else if (target === "unavailable host") {
+      run.broker.capabilities.mockReturnValue([]);
+    } else {
+      run.workspace.repairFailed = true;
+    }
+    const snapshot = vi.spyOn(run.controller.assistantMailCoordinator!, "snapshot");
+
+    await expect(run.request("assistant.proposal.replan", { ...ref, feedback: "Find a later time" }))
+      .rejects.toMatchObject({ code: "UNSUPPORTED", message: "此提案所属的托管会话不可用。" });
+    expect(run.broker.startTurn).not.toHaveBeenCalled();
+    expect(snapshot).not.toHaveBeenCalled();
   });
 });
 

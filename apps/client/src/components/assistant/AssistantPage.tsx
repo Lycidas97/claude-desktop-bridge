@@ -266,7 +266,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
     {displayedView === "agenda" && agenda && <AgendaView />}
     {(displayedView === "mail" || filed) && mail && <>
       {!filed && !session && binding?.nativeSessionId && <MailReference sessionId={binding.nativeSessionId} />}
-      <InboxMailList mail={mail} filed={filed} canMarkJunk={!supportsFiling && capabilities.includes("plugin.assistant-mail.junk.v1")}
+      <InboxMailList mail={mail} mobile={mobile} filed={filed} canMarkJunk={!supportsFiling && capabilities.includes("plugin.assistant-mail.junk.v1")}
         onOpenFiled={() => setView("filed")} onDiscuss={() => setView("conversation")} />
     </>}
   </div>;

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import { sessionId } from "../config.mjs";
 import { desktopFixtureRequest, eventually, openMobileDrawer, openMobileSession } from "../helpers.mjs";
-import { fileMailInCategory, openDesktopAssistant } from "./assistant-mail.mjs";
+import { expandInboxMail, fileMailInCategory, openDesktopAssistant } from "./assistant-mail.mjs";
 
 export async function verifyAssistantAttention(page, host, steps, directory, viewports, baseUrl) {
   const native = host.nativeApproval;
@@ -33,6 +33,7 @@ export async function verifyAssistantAttention(page, host, steps, directory, vie
   await entry.click();
   await page.getByRole("button", { name: "收件", exact: true }).click();
   const unreadCard = page.locator(`.assistant-mail-list [data-mail-id="${worth.mailRefId}"]`);
+  await expandInboxMail(unreadCard);
   await unreadCard.getByText("状态", { exact: true }).click();
   await unreadCard.getByText("待处理", { exact: true }).waitFor();
   assert.equal(host.requests.some(request => request.method === "plugin.assistant-mail.read" && request.params.mailRefId === worth.mailRefId), false);
@@ -89,6 +90,7 @@ export async function verifyAssistantAttention(page, host, steps, directory, vie
     const inboxCard = client => client.getByLabel("邮件输入", { exact: true }).locator(`[data-mail-id="${action.mailRefId}"]`);
     for (const client of [page, desktop]) {
       await client.getByRole("button", { name: "收件", exact: true }).click();
+      if (client === page) await expandInboxMail(inboxCard(page));
       await mark(client).waitFor();
     }
     const desktopPicker = desktop.getByRole("dialog", { name: "收入分类", exact: true });

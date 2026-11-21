@@ -1178,6 +1178,38 @@ describe("mobile session creation", () => {
     expect(onLoadSessionConfiguration).toHaveBeenCalledExactlyOnceWith("__default__");
   });
 
+  it("uses the configured default model's effort support without selecting or writing that model", async () => {
+    const created = { ...props.snapshot!.sessions[0]!, sessionId: "created-with-native-default" };
+    props = {
+      ...props,
+      onLoadSessionConfiguration: vi.fn().mockResolvedValue({
+        sessionId: "__default__",
+        model: "group/no-effort",
+        availableModels: [
+          { value: "group/no-effort", displayName: "Native default", supportsEffort: false },
+          { value: "group/effort", displayName: "Explicit model", supportedEffortLevels: ["high"] },
+        ],
+        availableEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+      }),
+      onCreateSession: vi.fn().mockResolvedValue(created),
+    };
+    draw();
+    startNewChatFromDrawer();
+    await settle();
+    const modelMenu = () => elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "模型")!;
+    expect(modelMenu().props.value).toBe("");
+    expect(elements(tree).some(element => element.props["aria-label"] === "思考强度")).toBe(false);
+
+    modelMenu().props.onChange("group/effort"); draw();
+    elements(tree).find(element => element.type === "button" && element.props.children === "高")!.props.onClick(); draw();
+    modelMenu().props.onChange(""); draw();
+    expect(elements(tree).some(element => element.props["aria-label"] === "思考强度")).toBe(false);
+    elements(tree).find(element => element.type === "button" && String(element.props.className).includes("new-chat-empty-create-btn"))!.props.onClick();
+    await settle();
+    expect(props.onCreateSession).toHaveBeenCalledOnce();
+    expect(props.onConfigureSession).not.toHaveBeenCalled();
+  });
+
   it.each([false, true])("shows and submits only explicitly selected effort on a model switch (explicit: %s)", async (explicitEffort) => {
     const created = { ...props.snapshot!.sessions[0]!, sessionId: "created-mixed-effort", model: "native-model" };
     delete created.effort;

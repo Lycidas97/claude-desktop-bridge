@@ -334,10 +334,11 @@ export function NewChatCanvas({
 
   const modelOptions = configuration?.availableModels ?? [];
   const draftModel = newChatDraft.draft.newChatModel;
-  const selectedModel = modelOptions.find(candidate => candidate.value === draftModel?.value) ?? draftModel;
-
+  const effortModelId = draftModel?.value
+    ?? (configuration?.sessionId === DEFAULT_CONFIGURATION_SESSION_ID ? configuration.model : undefined);
+  const effortModel = modelOptions.find(candidate => candidate.value === effortModelId) ?? draftModel;
   const reasoningEfforts = configuration?.availableReasoningEfforts;
-  const effortLevels = modelEffortLevels(selectedModel,
+  const effortLevels = modelEffortLevels(effortModel,
     reasoningEfforts?.length ? reasoningEfforts.filter(isBridgeEffort)
       : configuration?.availableEffortLevels.length ? configuration.availableEffortLevels : BRIDGE_EFFORT_LEVELS,
   );

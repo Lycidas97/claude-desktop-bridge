@@ -20,6 +20,8 @@ export interface BridgeAgendaSnapshot {
   changeToken: string;
   /** List invalidation, independent of source health and sync timestamps. */
   recordsToken?: string;
+  /** Invalidation for the clock-dependent recurrence window of unfiltered todos. */
+  unfilteredTodosToken?: string;
   credentialsSupported: boolean;
   sources: BridgeAgendaSource[];
 }

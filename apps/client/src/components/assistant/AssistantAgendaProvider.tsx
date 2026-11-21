@@ -131,7 +131,7 @@ export function AssistantAgendaProvider({ snapshot, online, request, children }:
   const todos = useAgendaPages<BridgeAgendaTodo>("plugin.assistant-agenda.todo.list", request, opened && Boolean(activeDay), token,
     activeDay && window ? { dueOn: { ...window, date: activeDay } } : undefined);
   const allTodos = useAgendaPages<BridgeAgendaTodo>("plugin.assistant-agenda.todo.list", request,
-    opened && !calendarOnly && (dayKey === todayKey || allTodosOpen || !daySupported), token);
+    opened && !calendarOnly && (dayKey === todayKey || allTodosOpen || !daySupported), `${token}:${agenda?.unfilteredTodosToken ?? ""}`);
 
   return <AssistantAgendaContext.Provider value={enabled ? {
     snapshot: agenda,

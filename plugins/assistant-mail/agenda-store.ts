@@ -5,7 +5,7 @@ import type {
   BridgeAgendaEvent, BridgeAgendaSource, BridgeAgendaTodo,
 } from "../../packages/protocol/src/assistant-agenda.js";
 import type { AssistantAttentionItem } from "../../packages/protocol/src/assistant-mail.js";
-import { AgendaExpansionLimitError, parseAgendaObject } from "./agenda-ical.js";
+import { AgendaExpansionLimitError, hasRollingTodoSeries, parseAgendaObject } from "./agenda-ical.js";
 import { agendaInstant, collectionZone } from "./agenda-time.js";
 import { AssistantError } from "./assistant-error.js";
 
@@ -157,13 +157,14 @@ export class AgendaStore {
       const zone = collectionZone(timeZone, this.timeZone);
       parsed = changed.map(item => ({ ...item, ...parseAgendaObject(item.data, zone) }));
     } catch (cause) { throw new AgendaCalendarDataError("Invalid calendar data", { cause }); }
-    let recordsChanged = parsed.length > 0;
+    let recordsChanged = parsed.some(item => item.todos.length || item.events.length);
     this.db.exec("BEGIN");
     try {
       for (const href of [...delta.removed, ...parsed.map(item => item.href)]) {
-        this.db.prepare("DELETE FROM todos WHERE source_id = ? AND href = ?").run(sourceId, href);
-        this.db.prepare("DELETE FROM calendar_events WHERE source_id = ? AND href = ?").run(sourceId, href);
-        if (this.db.prepare("DELETE FROM agenda_caldav_objects WHERE source_id = ? AND href = ?").run(sourceId, href).changes) recordsChanged = true;
+        const todos = this.db.prepare("DELETE FROM todos WHERE source_id = ? AND href = ?").run(sourceId, href);
+        const events = this.db.prepare("DELETE FROM calendar_events WHERE source_id = ? AND href = ?").run(sourceId, href);
+        if (todos.changes || events.changes) recordsChanged = true;
+        this.db.prepare("DELETE FROM agenda_caldav_objects WHERE source_id = ? AND href = ?").run(sourceId, href);
       }
       for (const { href, etag, data, uid, recurring, todos, events } of parsed) {
         this.db.prepare("INSERT INTO agenda_caldav_objects VALUES (?, ?, ?, ?, ?, ?)").run(sourceId, href, etag, uid, data, Number(recurring));
@@ -379,6 +380,11 @@ export class AgendaStore {
         .sort((a, b) => this.eventStart(a) - this.eventStart(b) || a.id.localeCompare(b.id)),
       incomplete,
     };
+  }
+
+  hasRollingTodos(): boolean {
+    for (const { data } of this.recurringObjects(2)) if (hasRollingTodoSeries(data)) return true;
+    return false;
   }
 
   private recurringObjects(kind: 1 | 2) {

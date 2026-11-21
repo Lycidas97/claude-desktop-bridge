@@ -16,13 +16,18 @@ export interface AgendaCredentials {
 export class AssistantAgendaService extends EventEmitter {
   private changeToken = randomUUID();
   private recordsToken = randomUUID();
+  private unfilteredTodosToken?: string;
   private timer?: ReturnType<typeof setInterval>;
   private readonly active = new Map<string, { abort: AbortController; task: Promise<void> }>();
 
   constructor(private readonly store: AgendaStore, private readonly credentials?: AgendaCredentials, private readonly readRemote = readCalDav) { super(); }
 
   snapshot(): BridgeAgendaSnapshot {
-    return { changeToken: this.changeToken, recordsToken: this.recordsToken, credentialsSupported: this.credentials?.available() ?? false, sources: this.store.sources() };
+    return {
+      changeToken: this.changeToken, recordsToken: this.recordsToken,
+      ...(this.unfilteredTodosToken ? { unfilteredTodosToken: this.unfilteredTodosToken } : {}),
+      credentialsSupported: this.credentials?.available() ?? false, sources: this.store.sources(),
+    };
   }
 
   start() {
@@ -122,6 +127,8 @@ export class AssistantAgendaService extends EventEmitter {
           ...(source.ctag ? { ctag: source.ctag } : {}), ...(source.token ? { syncToken: source.token } : {}), knownEtags: this.store.knownEtags(id) });
         if (abort.signal.aborted) return;
         recordsChanged = this.store.applySync(id, delta);
+        // Unfiltered open-ended todos can change as the 366-day window moves, even with no DAV writes.
+        if (!recordsChanged && this.store.hasRollingTodos()) this.unfilteredTodosToken = randomUUID();
       } catch (error) {
         if (abort.signal.aborted) return;
         if (error instanceof CalDavError) this.store.markError(id, error.code);

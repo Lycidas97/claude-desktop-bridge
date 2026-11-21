@@ -12,6 +12,7 @@ import { AssistantMailService } from "./desktop.js";
 const closers: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
   for (const close of closers.splice(0).reverse()) await close();
+  vi.useRealTimers();
 });
 
 function testStore() {
@@ -233,4 +234,41 @@ test("resume catches up using the last committed token and publishes fixed healt
   expect(service.snapshot().recordsToken).not.toBe(ready.recordsToken);
   expect(service.listTodos({}).records).toEqual([]);
   expect(store.source(id).token).toBe("token-3");
+});
+
+test("invalidates the unfiltered todo list when the rolling horizon admits a recurring task without record changes", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2027-01-02T11:59:00Z"));
+  const store = testStore();
+  const annual = object("annual", wrap("BEGIN:VTODO", "UID:annual", "SUMMARY:Annual task",
+    "DTSTART:20280103T120000Z", "DUE:20280103T120000Z", "RRULE:FREQ=YEARLY", "END:VTODO"));
+  const unchanged = { ctag: "same", changed: [], removed: [] };
+  const remote = vi.fn().mockResolvedValueOnce({ ...unchanged, changed: [annual] }).mockResolvedValue(unchanged);
+  const service = new AssistantAgendaService(store, {
+    available: () => true, encrypt: value => Buffer.from(value), decrypt: value => Buffer.from(value).toString(),
+  }, remote);
+  closers.push(() => service.close());
+  await service.addSource({ ...source, credential: "fixture" });
+  const id = store.enabledSourceIds()[0]!;
+  const before = service.snapshot();
+  expect(service.listTodos({}).records).toEqual([]);
+  vi.setSystemTime(new Date("2027-01-02T12:14:00Z"));
+  await service.refresh(id);
+  const after = service.snapshot();
+  expect(service.listTodos({}).records).toMatchObject([{ uid: "annual", dueAt: "2028-01-03T12:00:00.000Z" }]);
+  expect(after.recordsToken).toBe(before.recordsToken);
+  expect(after.unfilteredTodosToken).toEqual(expect.any(String));
+  expect(after.unfilteredTodosToken).not.toBe(before.unfilteredTodosToken);
+
+  remote.mockRejectedValueOnce(new CalDavError("connection"));
+  await service.refresh(id);
+  expect(service.snapshot().unfilteredTodosToken).toBe(after.unfilteredTodosToken);
+
+  remote.mockResolvedValueOnce({ ...unchanged, changed: [{ ...annual, etag: '"2"', data: annual.data.replace("FREQ=YEARLY", "FREQ=YEARLY;COUNT=2") }] });
+  await service.refresh(id);
+  expect(service.listTodos({}).records).toHaveLength(2);
+  const bounded = service.snapshot();
+  vi.setSystemTime(new Date("2027-01-02T12:29:00Z"));
+  await service.refresh(id);
+  expect(service.snapshot()).toMatchObject({ recordsToken: bounded.recordsToken, unfilteredTodosToken: bounded.unfilteredTodosToken });
 });

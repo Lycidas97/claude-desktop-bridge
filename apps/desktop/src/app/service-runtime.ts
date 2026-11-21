@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import {
   ASSISTANT_MEMORY_POLICY,
+  ASSISTANT_WORKSPACE_POLICY,
   DEFAULT_BRIDGE_ICE_SERVERS_JSON,
   DEFAULT_BRIDGE_SERVICE_ORIGIN,
   DEFAULT_PUBLIC_RELAY_URL,
@@ -152,7 +153,8 @@ export async function createServiceRuntime(options: {
     resources.defer("Evidence store", () => evidence.close());
     options.onStage?.("打开成果数据库");
     await evidence.initialize();
-    const assistantMail = new AssistantMailService({ userDataPath, attachmentCMapUrl: join(app.getAppPath(), "dist", "renderer", "pdfjs", "cmaps") + "/" });
+    const cMapUrl = join(app.getAppPath(), "dist", "renderer", "pdfjs", "cmaps") + "/";
+    const assistantMail = new AssistantMailService({ userDataPath, attachmentCMapUrl: cMapUrl });
     assistantMail.on("error", (_error: unknown, account?: MailAccountFailure) => process.stderr.write(account
       ? `Bridge assistant mail account ${account.accountKey}: ${account.errorCode}; receiving paused.\n`
       : "Bridge assistant mail MIME backfill failed.\n"));
@@ -186,6 +188,15 @@ export async function createServiceRuntime(options: {
     const mailTools = await serveAssistantMailTools({
       userDataPath, service: assistantMail, agenda: assistantAgenda, proposals,
       lookupMemory: (sessionId, entryId) => ruleProposalPolicy(sessionId) === ASSISTANT_MEMORY_POLICY ? workspace.memory.lookup(entryId) : undefined,
+      directoryAccess: {
+        cMapUrl,
+        grants: (sessionId, token) => {
+          const binding = assistantMail.binding();
+          if (binding?.nativeSessionId === sessionId && binding.managed?.policy === ASSISTANT_WORKSPACE_POLICY && binding.managed.token === token) {
+            return { workspace: binding.managed.path, directories: workspace.readDirectories(token) };
+          }
+        },
+      },
       authorizeManagedToken: token => {
         const binding = assistantMail.binding();
         return !workspace.repairFailed && binding?.managed?.token === token ? binding.nativeSessionId ?? undefined : undefined;

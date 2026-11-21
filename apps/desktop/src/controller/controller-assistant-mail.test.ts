@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   ARTIFACT_MAX_BYTES, ASSISTANT_MEMORY_POLICY, ASSISTANT_MEMORY_PROPOSAL_CAPABILITY, BridgeCrypto, PROTOCOL_VERSION,
@@ -64,8 +64,10 @@ async function fixture(proposalStore: ProposalStore, agenda: AgendaStore) {
     permissionsList: () => [], promptsList: () => [], magpieSettings: async () => ({}),
     archive: vi.fn(async (_sessionId: string, _archived: boolean) => undefined),
     deleteSession: vi.fn(async (_sessionId: string) => undefined),
-    canProvisionAssistantWorkspace: () => true,
+    canProvisionAssistantWorkspace: (): boolean => true,
     session: (id: string) => sessions.find(session => session.sessionId === id),
+    readNativeSessionIdentity: vi.fn(async (id: string) => ({ cwd: sessions.find(session => session.sessionId === id)?.cwd,
+      permissionMode: "dontAsk", archived: false, cliSessionId: "synthetic-cli-session" })),
     createSession: vi.fn(async (cwd: string) => {
       const created = nativeSession("local-managed", { cwd, projectName: "助理", projectId: "managed-project" });
       sessions.push(created);
@@ -780,7 +782,7 @@ it("binds the provisioned Native conversation only after checking the confirmed 
   await expect(run.request("session.fork", { sessionId: "local-managed" })).rejects.toMatchObject({ code: "INVALID_TARGET" });
   expect(run.broker.forkSession).not.toHaveBeenCalled();
   run.broker.emit("system.init", "native-first", ["Bash"]);
-  run.broker.emit("system.init", "local-managed", ["Read", "Task", "mcp__assistant-mail__mail_read_event", "Bash", "mcp__ccd_session__start_session"]);
+  run.broker.emit("system.init", "local-managed", ["Read", "WebSearch", "Task", "mcp__assistant-mail__mail_read_event", "Bash", "mcp__ccd_session__start_session"]);
   expect((await run.publish()).assistantMail).toMatchObject({
     changeToken: initial.assistantMail?.changeToken,
     workspace: { toolIsolation: "warning", unexpectedTools: ["Bash", "mcp__ccd_session__start_session"] },
@@ -789,6 +791,61 @@ it("binds the provisioned Native conversation only after checking the confirmed 
   expect(store.binding()).toMatchObject({ nativeSessionId: "native-second", previousSessionIds: ["local-managed"] });
   expect(store.binding()).not.toHaveProperty("managed");
   expect((await run.publish()).assistantMail?.workspace).toMatchObject({ toolIsolation: "unobserved" });
+});
+
+it("changes directory grants only for the current managed binding", async () => {
+  const method = "plugin.assistant-mail.read-directory.change";
+  const directory = await realpath(await mkdtemp(join(process.env.BRIDGE_TEST_TEMP_ROOT!, "assistant-readable-")));
+  const grant = { action: "add", directory, sessionId: "local-managed" };
+  await expect(run.request(method, grant)).rejects.toMatchObject({ code: "INVALID_TARGET" });
+  await run.request("plugin.assistant-mail.workspace.initialize", { workspacePath: run.workspace.path });
+  await expect(run.request(method, { ...grant, directory: root })).rejects.toMatchObject({ code: "INVALID_DIRECTORY" });
+  await expect(run.request(method, { ...grant, sessionId: "native-first" })).rejects.toMatchObject({ code: "INVALID_TARGET" });
+  run.broker.readNativeSessionIdentity.mockResolvedValueOnce({ cwd: run.workspace.path, permissionMode: "default", archived: false, cliSessionId: "synthetic-cli-session" });
+  await expect(run.request(method, grant)).rejects.toMatchObject({ code: "INVALID_TARGET" });
+  await expect(run.request(method, grant)).resolves.toMatchObject({ assistantMail: { workspace: { readDirectories: [directory] } } });
+  await expect(run.request(method, { ...grant, action: "remove" })).resolves.toMatchObject({ assistantMail: { workspace: { readDirectories: [] } } });
+  await run.request(method, grant);
+  const token = store.binding()!.managed!.token;
+  await run.request("plugin.assistant-mail.bind", { sessionId: "native-second" });
+  expect(run.workspace.readDirectories(token)).toEqual([]);
+  await expect(run.request(method, grant)).rejects.toMatchObject({ code: "INVALID_TARGET" });
+});
+
+it("continues to expose and revoke grants while Claude Desktop is disconnected", async () => {
+  const method = "plugin.assistant-mail.read-directory.change";
+  const directory = await realpath(await mkdtemp(join(process.env.BRIDGE_TEST_TEMP_ROOT!, "assistant-readable-")));
+  await run.request("plugin.assistant-mail.workspace.initialize", { workspacePath: run.workspace.path });
+  const grant = { action: "add", directory, sessionId: "local-managed" };
+  await run.request(method, grant);
+  vi.spyOn(run.broker, "canProvisionAssistantWorkspace").mockReturnValue(false);
+  run.broker.capabilities.mockReturnValue([]);
+  run.broker.readNativeSessionIdentity.mockClear();
+
+  const snapshot = await run.controller.snapshot();
+  expect(snapshot.host.capabilities).toContain("plugin.assistant-mail.read-directories.v1");
+  expect(snapshot.host.capabilities).not.toContain("plugin.assistant-mail.workspace.v1");
+  expect(snapshot.assistantMail).toMatchObject({ bindingState: "unavailable", workspace: { readDirectories: [directory] } });
+  await expect(run.request(method, grant)).rejects.toMatchObject({ code: "INVALID_TARGET" });
+  await expect(run.request(method, { ...grant, action: "remove" })).resolves.toMatchObject({ assistantMail: { workspace: { readDirectories: [] } } });
+  expect(run.broker.readNativeSessionIdentity).not.toHaveBeenCalled();
+});
+
+it.each(["session.archive", "session.delete"] as const)("persists %s even if Native directory settings are missing", async method => {
+  const directory = await realpath(await mkdtemp(join(process.env.BRIDGE_TEST_TEMP_ROOT!, "assistant-readable-")));
+  await run.request("plugin.assistant-mail.workspace.initialize", { workspacePath: run.workspace.path });
+  const sessionId = "local-managed";
+  await run.request("plugin.assistant-mail.read-directory.change", { action: "add", directory, sessionId });
+  const token = store.binding()!.managed!.token;
+  const settings = join(run.workspace.path, ".claude", "settings.json");
+  await rename(settings, `${settings}.fixture`);
+
+  await run.request(method, { sessionId });
+  expect(store.binding()).toMatchObject({ nativeSessionId: null, previousSessionIds: [sessionId] });
+  expect(run.workspace.readDirectories(token)).toEqual([]);
+  expect(run.eventLog.append).toHaveBeenCalledWith(expect.objectContaining({
+    type: method === "session.archive" ? "session.archived" : "session.deleted", sessionId,
+  }));
 });
 
 it.each(["session.command", "turn.start", "turn.steer"] as const)("reserves the assistant receipt key for %s", async method => {

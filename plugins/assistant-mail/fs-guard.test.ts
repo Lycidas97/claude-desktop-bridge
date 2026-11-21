@@ -1,9 +1,10 @@
+import { existsSync, realpathSync, statSync } from "node:fs";
 import { link, mkdir, mkdtemp, realpath, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, expect, it } from "vitest";
 import { ASSISTANT_MEMORY_POLICY } from "../../packages/protocol/src/assistant-mail.js";
-import { ASSISTANT_TOOLS, allowAssistantTool } from "./fs-guard.js";
+import { ASSISTANT_TOOLS, allowAssistantTool, assistantReadDirectoriesPath, overlapsAssistantData } from "./fs-guard.js";
 import { MAIL_TOOLS } from "./tool-contract.js";
 
 let root: string;
@@ -14,7 +15,7 @@ let privateFile: string;
 
 beforeEach(async () => {
   root = await realpath(await mkdtemp(join(tmpdir(), "assistant-guard-")));
-  workspace = join(root, "workspace");
+  workspace = join(root, "bridge-data", "private", "assistant", "workspace");
   outputs = join(workspace, "outputs");
   uploads = join(workspace, ".bridge-uploads", "upload");
   privateFile = join(root, "assistant.sqlite");
@@ -30,6 +31,43 @@ beforeEach(async () => {
 function check(tool_name: string, tool_input: Record<string, unknown>, cwd = workspace) {
   return allowAssistantTool(workspace, { hook_event_name: "PreToolUse", cwd, tool_name, tool_input });
 }
+
+it("recognizes physical identities for aliases of the data directory, its parents, and its children", async () => {
+  const dataAlias = join(root, "data-alias");
+  const parentAlias = join(root, "parent-alias");
+  const unrelated = join(root, "unrelated");
+  await Promise.all([
+    symlink(join(root, "bridge-data"), dataAlias, "junction"),
+    symlink(root, parentAlias, "junction"),
+    mkdir(unrelated),
+  ]);
+  expect(overlapsAssistantData(workspace, dataAlias)).toBe(true);
+  expect(overlapsAssistantData(workspace, join(dataAlias, "private"))).toBe(true);
+  expect(overlapsAssistantData(workspace, parentAlias)).toBe(true);
+  expect(overlapsAssistantData(workspace, unrelated)).toBe(false);
+});
+
+it.skipIf(process.platform !== "darwin")("recognizes distinct APFS realpath spellings of a directory", async ({ skip }) => {
+  const name = "Sample-café";
+  const directory = join(root, name);
+  const alias = join(root, name.normalize("NFD"));
+  await mkdir(directory);
+  if (!existsSync(alias)) skip();
+  const physicalDirectory = realpathSync(directory);
+  const physicalAlias = realpathSync(alias);
+  if (physicalAlias === physicalDirectory) skip();
+  expect(overlapsAssistantData(join(physicalDirectory, "private", "assistant", "workspace"), physicalAlias)).toBe(true);
+});
+
+it.skipIf(process.platform !== "darwin")("excludes the APFS data volume containing the workspace's data directory", ({ skip }) => {
+  const dataVolume = "/System/Volumes/Data";
+  const userData = join(root, "bridge-data");
+  const original = statSync(userData, { bigint: true });
+  const mounted = statSync(join(dataVolume, userData), { bigint: true, throwIfNoEntry: false });
+  if (mounted?.dev !== original.dev || mounted.ino !== original.ino) skip();
+  // Only directory metadata for an owned temporary workspace and its mount is used.
+  expect(overlapsAssistantData(workspace, dataVolume)).toBe(true);
+});
 
 it("allows workspace reads and output writes, including files with missing ancestors", async () => {
   await expect(check("Read", { file_path: ".bridge-uploads/upload/attachment.txt" })).resolves.toBe(true);
@@ -58,6 +96,35 @@ it("rejects recursive credential reads and confines recursive searches to checke
   await expect(check("Glob", { pattern: "../../*/**", path: outputs })).resolves.toBe(false);
 });
 
+it("limits the directory MCP tool to the bound main CLI and keeps Native path checks fenced", async () => {
+  const directory = join(root, "shared");
+  const file = join(directory, "readable.txt");
+  await mkdir(directory);
+  await writeFile(file, "owned fixture");
+  const bindingToken = "current-binding";
+  const cliSessionId = "current-cli";
+  const configure = (token: string) => writeFile(join(workspace, ".mcp.json"), JSON.stringify({
+    mcpServers: { "assistant-mail": { env: { BRIDGE_ASSISTANT_SESSION_TOKEN: token } } },
+  }));
+  const call = { hook_event_name: "PreToolUse", cwd: workspace, tool_name: "mcp__assistant-mail__files_read",
+    tool_input: { path: file }, session_id: cliSessionId };
+  await configure(bindingToken);
+  await expect(allowAssistantTool(workspace, call)).resolves.toBe(false);
+  await writeFile(assistantReadDirectoriesPath(workspace), JSON.stringify({ bindingToken, cliSessionId, directories: [directory] }));
+  await expect(allowAssistantTool(workspace, call)).resolves.toBe(true);
+  await expect(allowAssistantTool(workspace, { ...call, session_id: "other-cli" })).resolves.toBe(false);
+  await expect(allowAssistantTool(workspace, { ...call, agent_id: "helper-fixture" })).resolves.toBe(false);
+  await expect(allowAssistantTool(workspace, { ...call, cwd: directory })).resolves.toBe(false);
+  await expect(allowAssistantTool(workspace, call, ASSISTANT_MEMORY_POLICY)).resolves.toBe(false);
+  for (const tool of ["Read", "Write", "Edit", "MultiEdit"]) {
+    await expect(check(tool, { file_path: file })).resolves.toBe(false);
+  }
+  await expect(check("Glob", { path: directory, pattern: "**/*.txt" })).resolves.toBe(false);
+  await expect(check("Grep", { path: directory, pattern: "fixture" })).resolves.toBe(false);
+  await configure("replacement-binding");
+  await expect(allowAssistantTool(workspace, call)).resolves.toBe(false);
+});
+
 it("rejects symlink escapes, output aliases and searches whose results could traverse links", async () => {
   await symlink(root, join(workspace, "outside"), "junction");
   await symlink(uploads, join(outputs, "upload-alias"), "junction");
@@ -81,7 +148,7 @@ it.skipIf(process.platform === "win32")("rejects a direct credential symlink and
 
 it("uses the exact mail tool names and limits delegation to the foreground project helper", async () => {
   expect(ASSISTANT_TOOLS.filter(name => name.startsWith("mcp__"))).toEqual(
-    MAIL_TOOLS.filter(tool => tool.name !== "memory.lookup_entry").map(tool => `mcp__assistant-mail__${tool.name.replaceAll(".", "_")}`),
+    MAIL_TOOLS.filter(tool => tool.name !== "memory.lookup_entry" && tool.name !== "files.read").map(tool => `mcp__assistant-mail__${tool.name.replaceAll(".", "_")}`),
   );
   for (const name of ["mcp__assistant-mail__mail_read_event", "mcp__assistant-mail__mail_mark_read", "ToolSearch", "TodoWrite"]) {
     await expect(check(name, {})).resolves.toBe(true);
@@ -97,6 +164,16 @@ it("uses the exact mail tool names and limits delegation to the foreground proje
   await expect(check("Agent", { ...helper, isolation: "worktree" })).resolves.toBe(false);
   await expect(check("Agent", { ...helper, run_in_background: true })).resolves.toBe(false);
   await expect(allowAssistantTool(workspace, null)).resolves.toBe(false);
+});
+
+it("permits native web search without granting fetch, shell or proposal execution", async () => {
+  const search = { hook_event_name: "PreToolUse", cwd: workspace, tool_name: "WebSearch", tool_input: { query: "Node.js release schedule" } };
+  await expect(allowAssistantTool(workspace, search)).resolves.toBe(true);
+  await expect(allowAssistantTool(workspace, { ...search, agent_id: "helper-fixture", agent_type: "assistant-helper" })).resolves.toBe(false);
+  await expect(allowAssistantTool(workspace, search, ASSISTANT_MEMORY_POLICY)).resolves.toBe(false);
+  for (const name of ["WebFetch", "Bash", "PowerShell", "mcp__assistant-mail__proposal_commit", "mcp__assistant-mail__mail_send"]) {
+    await expect(check(name, {})).resolves.toBe(false);
+  }
 });
 
 it.each(["proposal_create", "proposal_update_pending"])("limits Stage 1 %s rule drafts to the main session", async tool => {

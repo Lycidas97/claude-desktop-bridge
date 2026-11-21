@@ -221,6 +221,7 @@ export async function startNativeApprovalHost(options: {
         const created = {
           ...native,
           sessionId: input.sessionId ?? `local_${randomUUID()}`,
+          cliSessionId: randomUUID(),
           cwd: input.cwd,
           harnessCwd: input.cwd,
           title: input.title?.trim() || "新建会话",

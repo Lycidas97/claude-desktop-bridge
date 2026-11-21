@@ -1010,6 +1010,34 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   steps.push("mobile and desktop settings offer only native efforts and save and reopen a Native effort on the same managed session, preserving its draft, binding and dontAsk permission");
   const settingsHeader = page.locator(".assistant-page .m-header").filter({ hasText: "助理设置" });
   if (!await settingsHeader.count()) await page.locator(".assistant-view-tabs").getByRole("button", { name: "助理设置", exact: true }).click();
+  const readDirectories = page.getByRole("region", { name: "可读目录", exact: true });
+  await readDirectories.getByText("未授权工作区外的文件夹。", { exact: true }).waitFor();
+  const previousSessions = await page.locator(".assistant-binding summary").filter({ hasText: /^以前的会话$/u }).boundingBox();
+  const directorySettings = await readDirectories.boundingBox();
+  assert.ok(previousSessions && directorySettings && previousSessions.y + previousSessions.height <= directorySettings.y,
+    "Former sessions remain above the separate read-only directory settings");
+  await readDirectories.getByRole("button", { name: "添加可读目录", exact: true }).click();
+  const readPicker = page.getByRole("dialog", { name: "选择文件夹", exact: true });
+  const readablePath = host.nativeApproval.cwd;
+  await readPicker.getByRole("button", { name: `选择 ${readablePath}`, exact: true }).click();
+  await readDirectories.getByText(readablePath, { exact: true }).waitFor();
+  assert.deepEqual(host.snapshot.assistantMail.workspace.readDirectories, [], "Picking a folder does not grant access");
+  await readDirectories.getByRole("button", { name: "授权读取", exact: true }).click();
+  await eventually(() => host.snapshot.assistantMail.workspace.readDirectories[0], readablePath, "Confirmed directory is projected by the host");
+  const revoke = readDirectories.getByRole("button", { name: `撤销读取 ${readablePath}`, exact: true });
+  await revoke.waitFor();
+  await capture("mobile-assistant-read-directory");
+  await host.send({ kind: "snapshot", snapshot: { ...host.snapshot,
+    host: { ...host.snapshot.host, capabilities: host.snapshot.host.capabilities.filter(cap => cap !== "plugin.assistant-mail.workspace.v1") },
+    assistantMail: { ...host.snapshot.assistantMail, bindingState: "unavailable" },
+  } });
+  const addDirectory = readDirectories.getByRole("button", { name: "添加可读目录", exact: true });
+  await addDirectory.and(page.locator(":disabled")).waitFor();
+  assert.equal(await revoke.isEnabled(), true, "Existing directories can be revoked while Native is disconnected");
+  await revoke.click();
+  await readDirectories.getByText("未授权工作区外的文件夹。", { exact: true }).waitFor();
+  assert.deepEqual(host.snapshot.assistantMail.workspace.readDirectories, []);
+  steps.push("managed assistant directory picker grants only after confirmation and revokes through the paired host");
   const proactive = page.getByRole("switch", { name: "主动助理" });
   assert.equal(await proactive.isChecked(), false);
   await page.locator("label.toggle-row").filter({ has: proactive }).click();

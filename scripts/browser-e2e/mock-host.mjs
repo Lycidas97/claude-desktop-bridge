@@ -503,6 +503,7 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
         case "plugin.assistant-mail.bind":
         case "plugin.assistant-mail.workspace.initialize":
         case "plugin.assistant-mail.automatic-delivery.set":
+        case "plugin.assistant-mail.read-directory.change":
         case "plugin.assistant-mail.account.add":
         case "plugin.assistant-mail.account.save":
         case "plugin.assistant-mail.account.set-smtp":
@@ -521,6 +522,10 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
             }
             if (request.method === "plugin.assistant-mail.workspace.initialize") {
               await syncNativeSections(host);
+              await host.send({ kind: "snapshot", snapshot });
+            }
+            if (request.method === "plugin.assistant-mail.read-directory.change") {
+              snapshot.assistantMail = result.assistantMail;
               await host.send({ kind: "snapshot", snapshot });
             }
           } catch (failure) { error = { code: failure.code ?? "MAIL_REJECTED", message: failure.message }; }

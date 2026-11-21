@@ -15,13 +15,14 @@ export interface AgendaCredentials {
 
 export class AssistantAgendaService extends EventEmitter {
   private changeToken = randomUUID();
+  private recordsToken = randomUUID();
   private timer?: ReturnType<typeof setInterval>;
   private readonly active = new Map<string, { abort: AbortController; task: Promise<void> }>();
 
   constructor(private readonly store: AgendaStore, private readonly credentials?: AgendaCredentials, private readonly readRemote = readCalDav) { super(); }
 
   snapshot(): BridgeAgendaSnapshot {
-    return { changeToken: this.changeToken, credentialsSupported: this.credentials?.available() ?? false, sources: this.store.sources() };
+    return { changeToken: this.changeToken, recordsToken: this.recordsToken, credentialsSupported: this.credentials?.available() ?? false, sources: this.store.sources() };
   }
 
   start() {
@@ -66,7 +67,7 @@ export class AssistantAgendaService extends EventEmitter {
     if (url.username || url.password || url.search || url.hash) throw new AssistantError("INVALID_PARAMS", "请输入不含账号、密码或查询参数的日历集合地址。");
     if (!url.pathname.endsWith("/")) url.pathname += "/";
     const id = this.store.addSource({ url: url.href, label: input.label, user: input.user }, this.seal(input.credential));
-    this.changed();
+    this.changed(false);
     await this.refresh(id);
   }
 
@@ -74,7 +75,7 @@ export class AssistantAgendaService extends EventEmitter {
     const source = this.store.source(id);
     this.store.setCredential(id, this.seal(credential));
     this.active.get(id)?.abort.abort();
-    this.changed();
+    this.changed(false);
     if (source.enabled) await this.refresh(id);
   }
 
@@ -83,7 +84,7 @@ export class AssistantAgendaService extends EventEmitter {
     if (Boolean(source.enabled) === enabled) return;
     this.active.get(id)?.abort.abort();
     this.store.setEnabled(id, enabled);
-    this.changed();
+    this.changed(false);
     if (enabled) await this.refresh(id);
   }
 
@@ -112,21 +113,22 @@ export class AssistantAgendaService extends EventEmitter {
         if (!source.credential || !this.credentials?.available()) throw new Error("Credentials unavailable");
         credential = this.credentials.decrypt(source.credential);
       } catch {
-        if (!abort.signal.aborted) { this.store.markError(id, "credentials"); this.changed(); }
+        if (!abort.signal.aborted) { this.store.markError(id, "credentials"); this.changed(false); }
         return;
       }
+      let recordsChanged = false;
       try {
         const delta = await this.readRemote({ url: source.url!, user: source.user!, credential, signal,
           ...(source.ctag ? { ctag: source.ctag } : {}), ...(source.token ? { syncToken: source.token } : {}), knownEtags: this.store.knownEtags(id) });
         if (abort.signal.aborted) return;
-        this.store.applySync(id, delta);
+        recordsChanged = this.store.applySync(id, delta);
       } catch (error) {
         if (abort.signal.aborted) return;
         if (error instanceof CalDavError) this.store.markError(id, error.code);
         else if (error instanceof AgendaCalendarDataError) this.store.markError(id, "response");
         else throw error;
       }
-      this.changed();
+      this.changed(recordsChanged);
     }).finally(() => this.active.delete(id));
     this.active.set(id, { abort, task });
     return task;
@@ -144,8 +146,9 @@ export class AssistantAgendaService extends EventEmitter {
     catch { throw new AssistantError("UNSUPPORTED", "系统凭据库暂不可用。"); }
   }
 
-  private changed() {
+  private changed(recordsChanged = true) {
     this.changeToken = randomUUID();
+    if (recordsChanged) this.recordsToken = randomUUID();
     this.emit("changed", this.snapshot());
   }
 }

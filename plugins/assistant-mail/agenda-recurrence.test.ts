@@ -191,7 +191,8 @@ test("uses collection VTIMEZONE for floating DTSTART and DUE, with host fallback
   expect(store.listTodos({}).records[0]?.dueAt).toBe("2027-01-04T09:00:00.000Z");
   // A calendar can change its timezone while keeping the member ETags unchanged.
   const delta = { removed: [], changed: [], calendarTimeZone: ics(...customZone) };
-  store.applySync(source, delta);
+  expect(store.applySync(source, delta)).toBe(true);
+  expect(store.applySync(source, delta)).toBe(false);
   expect(store.listEvents(window).records[0]).toMatchObject({ startAt: "2027-01-04T14:00:00.000Z", timeZone: "Eastern Standard Time" });
   expect(store.listTodos({}).records[0]?.dueAt).toBe("2027-01-04T14:00:00.000Z");
   expect(store.freeSlots({ from: "2027-01-04T14:00:00.000Z", to: "2027-01-04T15:00:00.000Z", durationMinutes: 30 }).slots).toEqual([]);

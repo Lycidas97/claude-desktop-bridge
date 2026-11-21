@@ -198,19 +198,39 @@ test("resume catches up using the last committed token and publishes fixed healt
   const store = testStore();
   const remote = vi.fn().mockResolvedValueOnce({ syncToken: "token-1", changed: [todo], removed: [] })
     .mockRejectedValueOnce(new CalDavError("credentials"))
-    .mockResolvedValueOnce({ syncToken: "token-2", changed: [], removed: [todo.href] });
+    .mockResolvedValueOnce({ syncToken: "token-2", changed: [], removed: [`${url}not-mirrored.ics`] })
+    .mockResolvedValueOnce({ syncToken: "token-3", changed: [], removed: [todo.href] });
   const service = new AssistantAgendaService(store, { available: () => true, encrypt: () => Buffer.from("sealed"), decrypt: () => "fixture-access" }, remote);
   closers.push(() => service.close());
+  const initial = service.snapshot();
   await service.addSource({ ...source, credential: "fixture-access" });
   const id = store.enabledSourceIds()[0]!;
+  const ready = service.snapshot();
+  expect(ready.recordsToken).not.toBe(initial.recordsToken);
   expect(store.source(id).credential).toEqual(new Uint8Array(Buffer.from("sealed")));
   await service.refresh(id);
-  expect(service.snapshot().sources).toContainEqual(expect.objectContaining({ status: "error", errorCode: "credentials" }));
-  expect(JSON.stringify(service.snapshot())).not.toContain("fixture-access");
+  const failed = service.snapshot();
+  expect(failed.sources).toContainEqual(expect.objectContaining({ status: "error", errorCode: "credentials" }));
+  expect(failed.changeToken).not.toBe(ready.changeToken);
+  expect(failed.recordsToken).toBe(ready.recordsToken);
+  expect(JSON.stringify(failed)).not.toContain("fixture-access");
+
+  const recovered = once(service, "changed");
+  await service.refresh(id);
+  const [published] = await recovered;
+  expect(published).toMatchObject({ recordsToken: ready.recordsToken, sources: expect.arrayContaining([
+    expect.objectContaining({ id, status: "ready", refreshedAt: expect.any(String) }),
+  ]) });
+  expect(published.changeToken).not.toBe(failed.changeToken);
+  expect(remote.mock.calls[2]?.[0]).toMatchObject({ syncToken: "token-1", knownEtags: new Map([[todo.href, todo.etag]]) });
+  expect(service.listTodos({}).records.map(record => record.uid)).toEqual(["todo1"]);
+  expect(store.source(id).token).toBe("token-2");
+
   const changed = once(service, "changed");
   service.resume();
   await changed;
-  expect(remote.mock.calls[2]?.[0]).toMatchObject({ syncToken: "token-1", knownEtags: new Map([[todo.href, todo.etag]]) });
+  expect(remote.mock.calls[3]?.[0]).toMatchObject({ syncToken: "token-2" });
+  expect(service.snapshot().recordsToken).not.toBe(ready.recordsToken);
   expect(service.listTodos({}).records).toEqual([]);
-  expect(store.source(id).token).toBe("token-2");
+  expect(store.source(id).token).toBe("token-3");
 });

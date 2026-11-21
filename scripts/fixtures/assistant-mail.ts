@@ -2,6 +2,7 @@ import { EventEmitter, once } from "node:events";
 import type { FetchMessageObject, ImapFlow } from "imapflow";
 import { AssistantAgendaService } from "../../plugins/assistant-mail/agenda.js";
 import { AgendaStore } from "../../plugins/assistant-mail/agenda-store.js";
+import { readCalDav } from "../../plugins/assistant-mail/caldav.js";
 import { AssistantMailService } from "../../plugins/assistant-mail/desktop.js";
 import { ProposalExecutor } from "../../plugins/assistant-mail/proposal-executor.js";
 import { ProposalStore } from "../../plugins/assistant-mail/proposal-store.js";
@@ -54,7 +55,12 @@ export async function startAssistantMailFixture(directory: string, historyCount 
   let store!: AgendaStore;
   let proposalStore!: ProposalStore;
   await service.initialize(db => { store = new AgendaStore(db); proposalStore = new ProposalStore(db); });
-  const agenda = new AssistantAgendaService(store);
+  let calendarFetch: typeof fetch | undefined;
+  const agenda = new AssistantAgendaService(store, {
+    available: () => calendarFetch !== undefined,
+    encrypt: value => Buffer.from(value),
+    decrypt: value => Buffer.from(value).toString(),
+  }, options => readCalDav({ ...options, fetch: (...args) => calendarFetch!(...args) }));
   const smtp: { attempts: SmtpMessage[]; resultGate?: Promise<void> | undefined; result?: SmtpResult } = { attempts: [] };
   const proposals = new ProposalExecutor(proposalStore, store, {
     available: () => false, encrypt: () => { throw new Error("No calendar credentials in fixture"); },
@@ -69,6 +75,7 @@ export async function startAssistantMailFixture(directory: string, historyCount 
   await idle;
   return {
     service, agenda, proposals, smtp,
+    setCalendarFetch(fetch: typeof globalThis.fetch) { calendarFetch = fetch; },
     isApprovedProfile: (hash: string) => proposalStore.isApprovedProfile(hash),
     seedCalendar(...resources: string[]) {
       const url = "https://caldav.example.test/fixtures/";

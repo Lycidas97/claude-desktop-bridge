@@ -18,6 +18,8 @@ export interface BridgeAgendaSource {
 
 export interface BridgeAgendaSnapshot {
   changeToken: string;
+  /** List invalidation, independent of source health and sync timestamps. */
+  recordsToken?: string;
   credentialsSupported: boolean;
   sources: BridgeAgendaSource[];
 }

@@ -222,7 +222,6 @@ export function NewChatCanvas({
 
   const [configuration, setConfiguration] = useState<BridgeSessionConfiguration>();
   const [configLoading, setConfigLoading] = useState(false);
-  const [model, setModel] = useState<string>(() => referenceSession?.model ?? "");
   const [effortDraft, setEffortDraft] = useState<BridgeEffort>();
   const [permissionMode, setPermissionMode] = useState<BridgeSDKPermissionMode>(
     () => referenceSession?.nativePermissionMode ?? "default",
@@ -234,7 +233,6 @@ export function NewChatCanvas({
   const userTouchedRef = useRef({
     cwd: false,
     section: initialProjectId !== undefined,
-    model: false,
     permission: false,
   });
 
@@ -302,9 +300,6 @@ export function NewChatCanvas({
       .then((next) => {
         if (!active || !next) return;
         setConfiguration(next);
-        if (!userTouchedRef.current.model) {
-          setModel(next.model ?? next.availableModels[0]?.value ?? referenceSession?.model ?? "");
-        }
         if (!userTouchedRef.current.permission && next.nativePermissionMode) {
           setPermissionMode(next.nativePermissionMode);
         }
@@ -315,7 +310,8 @@ export function NewChatCanvas({
     return () => {
       active = false;
     };
-  }, [connected, effectiveHostId, onLoadSessionConfiguration, referenceSession?.sessionId, runtimeAvailable]);
+  // Recent activity only supplies an existing-session fallback for older hosts.
+  }, [connected, effectiveHostId, onLoadSessionConfiguration, canConfigureRuntime, runtimeAvailable]);
 
   useEffect(() => {
     if (!sectionCreate) return;
@@ -336,25 +332,13 @@ export function NewChatCanvas({
     }, 155);
   }, [pendingBypassConfirm]);
 
-  const modelOptions = useMemo(() => {
-    const all = configuration?.availableModels ?? [];
-    if (all.length > 0) return all;
-    if (referenceSession?.model) {
-      return [{
-        value: referenceSession.model,
-        displayName: referenceSession.modelDisplayName ?? referenceSession.model,
-      }];
-    }
-    return [];
-  }, [configuration?.availableModels, referenceSession?.model, referenceSession?.modelDisplayName]);
-
-  const selectedModel = useMemo(
-    () => modelOptions.find((candidate) => candidate.value === model),
-    [model, modelOptions],
-  );
-
+  const modelOptions = configuration?.availableModels ?? [];
+  const draftModel = newChatDraft.draft.newChatModel;
+  const effortModelId = draftModel?.value
+    ?? (configuration?.sessionId === DEFAULT_CONFIGURATION_SESSION_ID ? configuration.model : undefined);
+  const effortModel = modelOptions.find(candidate => candidate.value === effortModelId) ?? draftModel;
   const reasoningEfforts = configuration?.availableReasoningEfforts;
-  const effortLevels = modelEffortLevels(selectedModel,
+  const effortLevels = modelEffortLevels(effortModel,
     reasoningEfforts?.length ? reasoningEfforts.filter(isBridgeEffort)
       : configuration?.availableEffortLevels.length ? configuration.availableEffortLevels : BRIDGE_EFFORT_LEVELS,
   );
@@ -397,11 +381,6 @@ export function NewChatCanvas({
 
   function setPrompt(value: string): void {
     newChatDraft.setText(value);
-  }
-
-  function chooseModel(nextModelValue: string): void {
-    userTouchedRef.current.model = true;
-    setModel(nextModelValue);
   }
 
   function choosePermissionMode(nextMode: BridgeSDKPermissionMode): void {
@@ -482,20 +461,17 @@ export function NewChatCanvas({
     const createdEffort = created.effort ?? (isBridgeEffort(created.reasoningEffort) ? created.reasoningEffort : undefined);
     const createdPermission = created.nativePermissionMode ?? "default";
 
-    // The created session can display a catalog fallback before Desktop applies a model.
-    const needsModel = Boolean(
-      model && (userTouchedRef.current.model || (created.model && model !== created.model)),
-    );
     const needsEffort = pickedEffort !== undefined && pickedEffort !== createdEffort;
     const needsPermission = Boolean(permissionMode && permissionMode !== createdPermission);
     const needsOutputStyle = outputStyle && outputStyle !== created.outputStyle;
 
-    if (!needsModel && !needsEffort && !needsPermission && !needsOutputStyle) {
+    if (!draftModel && !needsEffort && !needsPermission && !needsOutputStyle) {
       return undefined;
     }
 
     return {
-      ...(needsModel ? { model } : {}),
+      // A projected created.model does not prove that Desktop applied the selection.
+      ...(draftModel ? { model: draftModel.value } : {}),
       ...(needsEffort ? { effort: pickedEffort } : {}),
       ...(needsPermission ? { permissionMode } : {}),
       ...(needsOutputStyle ? { outputStyle } : {}),
@@ -562,6 +538,8 @@ export function NewChatCanvas({
       setSessionTitle("");
       if (withPrompt) {
         drafts.resetSession(effectiveHostId, NEW_CHAT_DRAFT_SESSION_ID);
+      } else if (draftModel) {
+        newChatDraft.updateDraft(current => ({ ...current, newChatModel: undefined }));
       }
       await onSessionCreated?.(created, {
         ...(withPrompt && trimmedPrompt ? { initialPrompt: trimmedPrompt } : {}),
@@ -736,15 +714,20 @@ export function NewChatCanvas({
               <span className="new-chat-config-label">模型</span>
               <SelectMenu
                 ariaLabel="模型"
-                value={model}
-                placeholder={configLoading ? "正在读取模型…" : "默认"}
-                disabled={!connected || locked || modelOptions.length === 0}
-                options={modelOptions.map((candidate) => ({
-                  value: candidate.value,
-                  label: sanitizeModelDisplayName(candidate.displayName, candidate.resolvedModel ?? candidate.value),
-                  meta: quota?.snapshot ? (modelQuotaLabel(quota.snapshot, candidate) || undefined) : undefined,
+                value={draftModel?.value ?? ""}
+                placeholder={draftModel ? sanitizeModelDisplayName(draftModel.displayName, draftModel.resolvedModel ?? draftModel.value) : undefined}
+                disabled={!connected || locked || (!modelOptions.length && !draftModel)}
+                options={[
+                  { value: "", label: configLoading && !modelOptions.length && !draftModel ? "正在读取模型…" : "默认" },
+                  ...modelOptions.map((candidate) => ({
+                    value: candidate.value,
+                    label: sanitizeModelDisplayName(candidate.displayName, candidate.resolvedModel ?? candidate.value),
+                    meta: quota?.snapshot ? (modelQuotaLabel(quota.snapshot, candidate) || undefined) : undefined,
+                  })),
+                ]}
+                onChange={(value) => newChatDraft.updateDraft(current => ({
+                  ...current, newChatModel: modelOptions.find(candidate => candidate.value === value),
                 }))}
-                onChange={chooseModel}
               />
             </div>
 

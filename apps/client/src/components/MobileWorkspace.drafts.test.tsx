@@ -989,7 +989,7 @@ describe("mobile session creation", () => {
       outputStyle: "Learning",
       projectId: "project-2",
       projectName: "Second project",
-      model: "claude-sonnet-4-6",
+      model: "mythos-magpie-1111111111[1m]",
       effort: "medium",
       nativePermissionMode: "default",
     };
@@ -1088,7 +1088,7 @@ describe("mobile session creation", () => {
     draw();
     expect(dirPathText()).toBe("/tmp/custom-picked");
 
-    // Creating an empty session with unchanged defaults when created already matches sends zero redundant configure RPCs
+    // Creating an empty session without a model choice must not configure the projected Native model.
     elements(tree).find(element => element.type === "button" && String(element.props.className).includes("new-chat-empty-create-btn"))!.props.onClick();
     await settle();
     expect(props.onConfigureSession).not.toHaveBeenCalled();
@@ -1096,26 +1096,28 @@ describe("mobile session creation", () => {
 
     backToCatalog();
     elements(tree).find(element => element.type === IconButton && element.props.label === "新建会话：First project")!.props.onClick();
+    draw();
     await settle();
 
     expect(props.onLoadSessionConfiguration).toHaveBeenCalledWith("__default__");
     expect(sectionMenu().props.value).toBe("project-1");
 
-    // Type a draft in NewChatCanvas, back out to catalog, and reopen via top-right 新建会话 -> draft persists!
+    // The first prompt and its selected model survive reopening the same new-session draft from a different entry.
     const newChatTextarea = () => elements(tree).find(element => element.type === "textarea" && element.props["aria-label"] === "给 Claude 发指令")!;
+    const modelMenu = () => elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "模型")!;
     newChatTextarea().props.onChange({ target: { value: "跨入口保留的新建草稿" } });
+    modelMenu().props.onChange("claude-opus-4-7");
     draw();
+    expect(modelMenu().props.value).toBe("claude-opus-4-7");
     expect(dispatchMobileBack()).toBe(true); draw();
-    elements(tree).find(element => element.type === IconButton && element.props.label === "新建会话")!.props.onClick();
-    draw();
+    startNewChatFromDrawer();
     await settle();
     expect(newChatTextarea().props.value).toBe("跨入口保留的新建草稿");
+    expect(modelMenu().props.value).toBe("claude-opus-4-7");
 
-    // Select section project-2 (auto-updates cwd to /tmp/project-2), model Opus 4.7, effort 极高, and verify bypassPermissions confirmation guard + plan mode
+    // Select section project-2 (auto-updates cwd to /tmp/project-2), effort 极高, and verify bypassPermissions confirmation guard + plan mode.
     sectionMenu().props.onChange("project-2"); draw();
     expect(dirPathText()).toBe("/tmp/project-2");
-    const modelMenu = () => elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "模型")!;
-    modelMenu().props.onChange("claude-opus-4-7"); draw();
     const effortBtn = elements(tree).find(element => element.type === "button" && element.props.children === "极高")!;
     effortBtn.props.onClick(); draw();
     const permissionMenu = () => elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "权限模式")!;
@@ -1145,6 +1147,67 @@ describe("mobile session creation", () => {
       "configure:created-1:claude-opus-4-7:xhigh:plan:Personal notes",
       "send:created-1:跨入口保留的新建草稿",
     ]);
+  });
+
+  it("keeps the new-chat model steady when a different session becomes active", async () => {
+    const recent = { ...props.snapshot!.sessions[0]!, model: "mythos-magpie-1111111111[1m]", lastActivityAt: 2 };
+    const other = { ...props.snapshot!.sessions[1]!, model: "mythos-magpie-2222222222[1m]" };
+    const onLoadSessionConfiguration = vi.fn().mockResolvedValue({
+      sessionId: "__default__",
+      model: "group/opus[1m]",
+      availableModels: [{ value: "group/opus[1m]", displayName: "Opus" }],
+      availableEffortLevels: [],
+    });
+    props = {
+      ...props,
+      snapshot: { ...props.snapshot!, sessions: [recent, other] },
+      onLoadSessionConfiguration,
+    };
+    draw();
+    startNewChatFromDrawer();
+    const modelMenu = () => elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "模型")!;
+    expect(modelMenu().props.value).toBe("");
+    expect(modelMenu().props.options).toEqual([{ value: "", label: "正在读取模型…" }]);
+    await settle();
+    expect(modelMenu().props.options).toEqual([{ value: "", label: "默认" }, { value: "group/opus[1m]", label: "Opus" }]);
+
+    props = { ...props, snapshot: { ...props.snapshot!, sessions: [recent, { ...other, lastActivityAt: 3 }] } };
+    draw();
+    await settle();
+    expect(modelMenu().props.value).toBe("");
+    expect(onLoadSessionConfiguration).toHaveBeenCalledExactlyOnceWith("__default__");
+  });
+
+  it("uses the configured default model's effort support without selecting or writing that model", async () => {
+    const created = { ...props.snapshot!.sessions[0]!, sessionId: "created-with-native-default" };
+    props = {
+      ...props,
+      onLoadSessionConfiguration: vi.fn().mockResolvedValue({
+        sessionId: "__default__",
+        model: "group/no-effort",
+        availableModels: [
+          { value: "group/no-effort", displayName: "Native default", supportsEffort: false },
+          { value: "group/effort", displayName: "Explicit model", supportedEffortLevels: ["high"] },
+        ],
+        availableEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+      }),
+      onCreateSession: vi.fn().mockResolvedValue(created),
+    };
+    draw();
+    startNewChatFromDrawer();
+    await settle();
+    const modelMenu = () => elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "模型")!;
+    expect(modelMenu().props.value).toBe("");
+    expect(elements(tree).some(element => element.props["aria-label"] === "思考强度")).toBe(false);
+
+    modelMenu().props.onChange("group/effort"); draw();
+    elements(tree).find(element => element.type === "button" && element.props.children === "高")!.props.onClick(); draw();
+    modelMenu().props.onChange(""); draw();
+    expect(elements(tree).some(element => element.props["aria-label"] === "思考强度")).toBe(false);
+    elements(tree).find(element => element.type === "button" && String(element.props.className).includes("new-chat-empty-create-btn"))!.props.onClick();
+    await settle();
+    expect(props.onCreateSession).toHaveBeenCalledOnce();
+    expect(props.onConfigureSession).not.toHaveBeenCalled();
   });
 
   it.each([false, true])("shows and submits only explicitly selected effort on a model switch (explicit: %s)", async (explicitEffort) => {
@@ -1236,6 +1299,9 @@ describe("mobile session creation", () => {
     elements(tree).find(element => element.type === "button" && String(element.props.className).includes("new-chat-empty-create-btn"))!.props.onClick();
     await settle();
     expect(props.onConfigureSession).toHaveBeenCalledExactlyOnceWith(created.sessionId, { model: "gateway-model" });
+    startNewChatFromDrawer();
+    await settle();
+    expect(elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "模型")!.props.value).toBe("");
   });
 
   it("keeps the first prompt as a draft when configuration fails without an error message", async () => {

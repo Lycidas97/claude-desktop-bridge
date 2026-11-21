@@ -235,7 +235,7 @@ describe("native session configuration", () => {
     } finally { await f.close(); }
   });
 
-  it("resolves host defaultConfiguration() from the most recent active session or catalog defaults when zero sessions exist", async () => {
+  it("keeps the configured new-session model independent of recent session activity", async () => {
     const f = await fixture();
     try {
       // Zero sessions and no model catalog yet.
@@ -254,10 +254,11 @@ describe("native session configuration", () => {
         appliesAfterTurn: false,
       });
 
-      // Zero sessions with saved modelPicker catalog.
+      // The configured default need not be the first picker option.
       const primaryModel = "fixture-provider/model-primary";
       const secondaryModel = "fixture-provider/model-secondary[1m]";
       await writeFile(f.options.settingsPath, JSON.stringify({
+        model: secondaryModel,
         modelPicker: {
           options: [
             { model: primaryModel, label: "Primary Saved Model" },
@@ -268,8 +269,8 @@ describe("native session configuration", () => {
       const emptyCatalogued = await f.bridge.defaultConfiguration();
       expect(emptyCatalogued).toEqual({
         sessionId: DEFAULT_CONFIGURATION_SESSION_ID,
-        model: primaryModel,
-        modelDisplayName: "Primary Saved Model",
+        model: secondaryModel,
+        modelDisplayName: "Secondary Long Context",
         effort: "high",
         nativePermissionMode: "default",
         modelSource: "claude-desktop",
@@ -283,11 +284,11 @@ describe("native session configuration", () => {
         appliesAfterTurn: false,
       });
 
-      // Active and archived sessions exist: picks most recent non-archived session and keeps appliesAfterTurn=false.
+      // Recent activity still informs the non-model defaults, but not the model.
       const secondaryAlias = `mythos-magpie-${magpieModelIdHash("fixture-provider/model-secondary")}[1m]`;
       f.native.sessions = [
-        { sessionId: "older-active", cwd: "/project", model: primaryModel, effort: "low", permissionMode: "default", lastActivityAt: 100, turnRunning: false },
-        { sessionId: "recent-active", cwd: "/project", model: secondaryAlias, effort: "max", permissionMode: "acceptEdits", lastActivityAt: 500, turnRunning: true },
+        { sessionId: "older-active", cwd: "/project", model: secondaryAlias, effort: "low", permissionMode: "default", lastActivityAt: 100, turnRunning: false },
+        { sessionId: "recent-active", cwd: "/project", model: primaryModel, effort: "max", permissionMode: "acceptEdits", lastActivityAt: 500, turnRunning: true },
         { sessionId: "newest-archived", cwd: "/project", model: primaryModel, effort: "medium", permissionMode: "plan", lastActivityAt: 900, isArchived: true, turnRunning: false },
       ];
       await f.bridge.refreshRuntime();

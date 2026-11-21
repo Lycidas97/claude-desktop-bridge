@@ -1,6 +1,6 @@
 import { ARTIFACT_MAX_BYTES, mailAttachmentPreviewKind, type BridgeMailCategoryEntry, type BridgeMailFolder, type BridgeHistoryItem, type BridgeMailAttachment, type BridgeMailCard, type BridgeMailDetail } from "@bridge/protocol";
 import { ChevronRight, Download, Folder, Mail, Paperclip } from "lucide-react";
-import { useEffect, useState, type MouseEvent } from "react";
+import { useEffect, useState, type MouseEvent, type ReactNode } from "react";
 import { downloadMailAttachment } from "../../lib/artifact-download.js";
 import { formatBytes } from "../../lib/media-preview.js";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
@@ -94,12 +94,18 @@ export function MailCard(props: MailCardProps) {
   const [open, setOpen] = useState(false);
   const subject = card.subject || "无主题";
   const sender = card.from.map(({ name, address }) => [name, address].filter(Boolean).join(" ")).join("，") || "未知发件人";
+  const receivedTime = <time dateTime={card.receivedAt}>{new Date(card.receivedAt).toLocaleString("zh-CN", {
+    month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit",
+  })}</time>;
   const delivery = showBatchDelivery || !card.nativeDelivery.batchId ? DELIVERY_STATUS[card.nativeDelivery.state] : undefined;
-  const content = <MailCardContent {...props} subject={subject} sender={sender} delivery={delivery} />;
+  const content = <MailCardContent {...props} subject={subject} sender={sender} delivery={delivery} receivedTime={compact ? null : receivedTime} />;
   return <article className="assistant-mail-card" data-mail-id={card.mailRefId} data-stream-key={`mail:${card.mailRefId}`} aria-label={`邮件：${subject}`}>
     {compact ? <details className="assistant-mail-row" open={open} onToggle={event => setOpen(event.currentTarget.open)}>
       <summary>
-        <span className="assistant-mail-row-subject">{subject}</span>
+        <span className="assistant-mail-row-heading">
+          <span className="assistant-mail-row-subject">{subject}</span>
+          {receivedTime}
+        </span>
         <span className="assistant-mail-row-meta">
           <span className="assistant-mail-row-from">{sender}</span>
           {!open && delivery?.hint === "failed" && <span className="assistant-mail-hint" data-tone="failed">{MAIL_HINT_LABELS.failed}</span>}
@@ -111,8 +117,8 @@ export function MailCard(props: MailCardProps) {
   </article>;
 }
 
-function MailCardContent({ card, compact, subject, sender, delivery, nativeMessage, onDiscuss, junkAction, filing }: MailCardProps & {
-  subject: string; sender: string; delivery: DeliveryStatus | undefined;
+function MailCardContent({ card, compact, subject, sender, delivery, receivedTime, nativeMessage, onDiscuss, junkAction, filing }: MailCardProps & {
+  subject: string; sender: string; delivery: DeliveryStatus | undefined; receivedTime: ReactNode;
 }) {
   const mail = useAssistantMail();
   const accountLabel = mail?.accountLabel(card.accountKey) ?? "邮件插件";
@@ -131,7 +137,7 @@ function MailCardContent({ card, compact, subject, sender, delivery, nativeMessa
   const links = detail ? [...new Set(detail.bodyText.match(/https?:\/\/[^\s<>"']+/gu) ?? [])].filter(href => URL.canParse(href)).map(href => new URL(href)) : [];
   const hint = delivery?.hint === "failed" ? "failed" : card.processingStatus === "processing" ? "processing" : delivery?.hint;
   return <>
-    <header><span><Mail size={15} aria-hidden="true" />{accountLabel}</span><time dateTime={card.receivedAt}>{new Date(card.receivedAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</time></header>
+    <header><span><Mail size={15} aria-hidden="true" />{accountLabel}</span>{receivedTime}</header>
     {folderLabel && <p className="assistant-mail-folder-label">{folderLabel}</p>}
     {!compact && <><h3>{subject}</h3><p className="assistant-mail-from">{sender}</p></>}
     {card.preview && <p className="assistant-mail-preview">{card.preview}</p>}

@@ -245,7 +245,9 @@ export async function verifyAssistantMailHistory(page, host, steps, directory, v
     return reply;
   };
   await page.getByRole("button", { name: "刷新邮件列表", exact: true }).click();
-  await cards.first().locator("summary").getByText("助理任务失败", { exact: true }).waitFor();
+  const failedSummary = cards.first().locator("summary");
+  await failedSummary.getByText("助理任务失败", { exact: true }).waitFor();
+  await failedSummary.locator("time").waitFor();
   assert.equal(await cards.locator("summary").getByText("助理任务失败", { exact: true }).count(), 1);
   await page.screenshot({ path: resolve(directory, "mobile-inbox-failed-delivery.png") });
   host.handleRequest = handleRequest;
@@ -378,8 +380,14 @@ export async function verifyAssistantMailHistory(page, host, steps, directory, v
     return preview.textContent();
   };
   const summary = card => card.locator(".assistant-mail-row > summary");
-  await summary(brokenCard).waitFor();
+  const receivedTime = summary(brokenCard).locator("time");
+  await receivedTime.waitFor();
   await summary(longCard).waitFor();
+  assert.equal(await receivedTime.getAttribute("datetime"), brokenPreview.receivedAt);
+  const receivedLabel = await receivedTime.innerText();
+  assert.equal(receivedLabel, await page.evaluate(receivedAt => new Date(receivedAt).toLocaleString("zh-CN", {
+    month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit",
+  }), brokenPreview.receivedAt));
   const [shortBounds, longBounds] = await Promise.all([brokenCard.boundingBox(), longCard.boundingBox()]);
   assert.ok(shortBounds && longBounds && shortBounds.height === longBounds.height && shortBounds.height >= 44 && shortBounds.height <= 64,
     "Collapsed mail rows have the same compact height regardless of body length and retain a touch target");
@@ -439,7 +447,9 @@ export async function verifyAssistantMailHistory(page, host, steps, directory, v
   await search.fill(brokenPreview.subject);
   await search.press("Enter");
   const resultCard = page.getByLabel("搜索结果").locator(`[data-mail-id="${brokenPreview.mailRefId}"]`);
-  await summary(resultCard).waitFor();
+  const searchTime = summary(resultCard).locator("time");
+  await searchTime.waitFor();
+  assert.equal(await searchTime.innerText(), receivedLabel);
   assert.equal(await resultCard.locator(".assistant-mail-preview").count(), 0);
   await page.screenshot({ path: resolve(directory, "mobile-mail-compact-search.png") });
   await expandInboxMail(resultCard);

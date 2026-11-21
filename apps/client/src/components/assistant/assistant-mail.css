@@ -137,6 +137,8 @@ body:has(.assistant-mail-category-options) .diagnostic-floating-entry { display:
 .assistant-mail-row > summary:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: -2px; }
 .assistant-mail-row > summary > svg { grid-column: 2; grid-row: 1 / span 2; }
 .assistant-mail-row[open] > summary > svg { transform: rotate(90deg); }
+.assistant-mail-row-heading { grid-column: 1; display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.assistant-mail-row-heading > time { flex-shrink: 0; white-space: nowrap; font-size: calc(11px * var(--font-scale)); font-variant-numeric: tabular-nums; }
 .assistant-mail-row-subject { font-size: calc(15px * var(--font-scale)); font-weight: 600; line-height: 1.4; color: var(--text); }
 .assistant-mail-row-meta { grid-column: 1; display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .assistant-mail-row-meta > .assistant-mail-hint { flex: none; margin: 0; }

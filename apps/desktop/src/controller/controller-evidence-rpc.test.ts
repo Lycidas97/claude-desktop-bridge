@@ -90,6 +90,8 @@ it.each([
   ["evidence.list", { sessionId: "codex-desktop:saved" }, "UNSUPPORTED", "当前仅支持 Claude Desktop，其他 Agent 适配已停用。"],
   ["runtime.file.open", {}, "UNSUPPORTED", "当前仅支持 Claude Desktop，其他 Agent 适配已停用。"],
   ["artifact.transfer.other", {}, "UNSUPPORTED_REQUEST_METHOD", "Unsupported request method"],
+  ["artifact.preview", { mailAttachment: null }, "UNSUPPORTED", "当前电脑不支持邮件附件。"],
+  ["artifact.transfer.open", { mailAttachment: null }, "UNSUPPORTED", "当前电脑不支持邮件附件。"],
   ["file.upload.other", {}, "UPLOADID_IS_REQUIRED", "uploadId is required"],
   ["evidence.details", { kind: "invalid" }, "UNKNOWN_EVIDENCE_DETAIL_KIND", "Unknown evidence detail kind"],
 ] as const)("preserves the error for local %s", async (method, params, code, message) => {
@@ -109,45 +111,42 @@ it("dispatches phone transfers and uploads for the paired owner with the existin
   const evidence = {
     openTransfer: vi.fn().mockResolvedValue(transfer), readTransfer: vi.fn().mockReturnValue(chunk),
     closeTransfer: vi.fn().mockReturnValue(true), preview: vi.fn().mockResolvedValue(preview),
+    openFileTransfer: vi.fn().mockResolvedValue({ transferId: "file-transfer" }),
   };
   const upload = { uploadId: "upload-1" };
   const file = { ...upload, path: ".bridge-uploads/upload-1/note.txt" };
   const uploads = {
     open: vi.fn().mockResolvedValue(upload), write: vi.fn().mockReturnValue(1), commit: vi.fn().mockResolvedValue(file),
   };
-  const handleAttachment = vi.fn().mockResolvedValue({ transfer });
   const sendToDevice = vi.fn().mockResolvedValue("response");
   const ack = vi.fn();
   const controller = createControllerFixture({
-    evidence, uploads, sendToDevice, socket: { ack }, assistantMailCoordinator: { handleAttachment, assertSessionRequest: vi.fn() },
+    evidence, uploads, sendToDevice, socket: { ack }, broker: { executionCwd: () => "/project/worktree" },
     allSessions: () => [{ sessionId: "session-1", cwd: "/project" }],
   });
   const uploadParams = { sessionId: "session-1", name: "note.txt", size: 1, sha256: createHash("sha256").update("a").digest("hex") };
 
-  for (const [method, params, result, cached, ttl] of [
+  for (const [index, [method, params, result, cached, ttl]] of ([
     ["artifact.transfer.open", { artifactId: "artifact-1", purpose: "text-preview" }, { transfer }, true, ARTIFACT_TRANSFER_TTL_MS],
+    ["artifact.transfer.open", { sessionId: "session-1", path: "note.txt" }, { transfer: { transferId: "file-transfer" } }, true, ARTIFACT_TRANSFER_TTL_MS],
     ["artifact.transfer.read", { transferId: transfer.transferId, index: 0 }, { chunk }, false, ARTIFACT_TRANSFER_TTL_MS],
     ["artifact.transfer.close", { transferId: transfer.transferId }, { closed: true }, true, ARTIFACT_TRANSFER_TTL_MS],
     ["artifact.preview", { artifactId: "artifact-1" }, { preview }, false, ARTIFACT_TRANSFER_TTL_MS],
     ["file.upload.open", uploadParams, { upload }, true, undefined],
     ["file.upload.write", { uploadId: upload.uploadId, index: 0, data: "YQ==" }, { received: 1 }, true, undefined],
     ["file.upload.commit", { uploadId: upload.uploadId }, { file }, true, undefined],
-  ] as const) {
-    const envelope = await phone.encrypt({ kind: "request", requestId: method, idempotencyKey: method, method, params }, "mobile", "desktop");
+  ] as const).entries()) {
+    const requestId = `request-${index}`;
+    const envelope = await phone.encrypt({ kind: "request", requestId, idempotencyKey: requestId, method, params }, "mobile", "desktop");
     await controller.receiveMessage(await desktopCrypto.decrypt(envelope), envelope);
     expect(sendToDevice).toHaveBeenLastCalledWith(
-      { kind: "response", requestId: method, ok: true, result }, pairing.deviceId, ttl, true, true,
+      { kind: "response", requestId, ok: true, result }, pairing.deviceId, ttl, true, true,
     );
-    expect(controller.responseCache.has(method)).toBe(cached);
+    expect(controller.responseCache.has(requestId)).toBe(cached);
     expect(ack).toHaveBeenLastCalledWith([envelope.id]);
   }
-  const mailParams = { mailAttachment: { mailRefId: "mail", attachmentId: "1" } };
-  const mailOpen = await phone.encrypt({ kind: "request", requestId: "mail-open", idempotencyKey: "mail-open", method: "artifact.transfer.open", params: mailParams }, "mobile", "desktop");
-  await controller.receiveMessage(await desktopCrypto.decrypt(mailOpen), mailOpen);
-  expect(handleAttachment).toHaveBeenCalledExactlyOnceWith("artifact.transfer.open", mailParams, evidence, pairing.deviceId);
-  expect(sendToDevice).toHaveBeenLastCalledWith({ kind: "response", requestId: "mail-open", ok: true, result: { transfer } }, pairing.deviceId, ARTIFACT_TRANSFER_TTL_MS, true, true);
-  expect(controller.responseCache.has("mail-open")).toBe(false);
   expect(evidence.openTransfer).toHaveBeenCalledExactlyOnceWith("artifact-1", pairing.deviceId, true);
+  expect(evidence.openFileTransfer).toHaveBeenCalledExactlyOnceWith("/project", "note.txt", pairing.deviceId, false, "/project/worktree", undefined);
   expect(evidence.readTransfer).toHaveBeenCalledExactlyOnceWith(transfer.transferId, 0, pairing.deviceId);
   expect(evidence.closeTransfer).toHaveBeenCalledExactlyOnceWith(transfer.transferId, pairing.deviceId);
   expect(evidence.preview).toHaveBeenCalledExactlyOnceWith("artifact-1");

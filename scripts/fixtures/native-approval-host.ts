@@ -442,7 +442,7 @@ export async function startNativeApprovalHost(options: {
   });
   const mailSnapshot = () => assistantMailCoordinator?.snapshot();
   const controller = createControllerFixture({
-    broker, evidence, eventLog, assistantMailCoordinator, assistantAgenda: assistantMail?.agenda, proposals,
+    broker, evidence, eventLog, assistantMailCoordinator, assistantMail: assistantMail?.service, assistantAgenda: assistantMail?.agenda, proposals,
     allSessions: () => broker.listSessions(), allProjects: () => broker.listProjects(),
     publish: async () => ({ assistantMail: mailSnapshot() }),
     config: { hostDeviceId: "synthetic-desktop", desktopName: "隔离电脑", devices: [{ deviceId: options.deviceId, name: "隔离手机", platform: "android", pairedAt: 1 }] },

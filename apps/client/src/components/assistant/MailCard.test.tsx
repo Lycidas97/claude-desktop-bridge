@@ -27,6 +27,12 @@ describe("MailCard plain text rendering", () => {
     expect(html).not.toMatch(/Mail preview|Preview error|状态|原文/u);
   });
 
+  it("keeps an unparseable received date from breaking the inbox", () => {
+    const html = renderToStaticMarkup(createElement(MailCard, { card: card({ receivedAt: "invalid" }), compact: true }));
+
+    expect(html).toContain("Invalid Date</time>");
+  });
+
   it("keeps a failed assistant task visible on a collapsed inbox row", () => {
     const html = renderToStaticMarkup(createElement(MailCard, { compact: true, card: card({
       processingStatus: "processing", nativeDelivery: { state: "failed", batchId: "batch-1" },

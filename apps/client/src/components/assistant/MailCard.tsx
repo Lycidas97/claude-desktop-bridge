@@ -24,6 +24,7 @@ const DELIVERY_STATUS: Record<BridgeMailCard["nativeDelivery"]["state"], Deliver
 };
 const MAIL_HINT_LABELS = { waiting: "等待助理", processing: "处理中", failed: "助理任务失败" };
 const PROCESSING_LABELS = { pending: "待处理", processing: "处理中", processed: "已处理" };
+const RECEIVED_TIME_FORMAT = new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
 
 function MailAttachmentRow({ attachment, mailRefId, enabled }: { attachment: BridgeMailAttachment; mailRefId: string; enabled: boolean }) {
   const openPreview = useMediaPreview();
@@ -94,9 +95,8 @@ export function MailCard(props: MailCardProps) {
   const [open, setOpen] = useState(false);
   const subject = card.subject || "无主题";
   const sender = card.from.map(({ name, address }) => [name, address].filter(Boolean).join(" ")).join("，") || "未知发件人";
-  const receivedTime = <time dateTime={card.receivedAt}>{new Date(card.receivedAt).toLocaleString("zh-CN", {
-    month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit",
-  })}</time>;
+  const receivedDate = new Date(card.receivedAt);
+  const receivedTime = <time dateTime={card.receivedAt}>{Number.isNaN(receivedDate.getTime()) ? "Invalid Date" : RECEIVED_TIME_FORMAT.format(receivedDate)}</time>;
   const delivery = showBatchDelivery || !card.nativeDelivery.batchId ? DELIVERY_STATUS[card.nativeDelivery.state] : undefined;
   const content = <MailCardContent {...props} subject={subject} sender={sender} delivery={delivery} receivedTime={compact ? null : receivedTime} />;
   return <article className="assistant-mail-card" data-mail-id={card.mailRefId} data-stream-key={`mail:${card.mailRefId}`} aria-label={`邮件：${subject}`}>

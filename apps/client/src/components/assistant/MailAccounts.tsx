@@ -29,7 +29,7 @@ export function MailAccounts({ accounts, configUnavailable, credentialsSupported
   const [action, setAction] = useState<{ kind: "add" } | { kind: "edit" | "share" | "remove" | "smtp"; accountKey: string }>();
   const [busy, setBusy] = useState(false);
   const [pendingInterval, setPendingInterval] = useState<{ accountKey: string; value: string }>();
-  const [error, setError] = useState("");
+  const [error, setError] = useState<{ message: string; placement: "form" | "section" }>();
   const disabled = !online || configUnavailable || !credentialsSupported || busy;
   const editedAccount = action?.kind === "edit" || action?.kind === "share" ? accounts.find(account => account.accountKey === action.accountKey) : undefined;
   const hasSeparateSmtp = supportsSharedAuth && !!editedAccount?.smtp && !editedAccount.smtpSharedAuth;
@@ -44,14 +44,14 @@ export function MailAccounts({ accounts, configUnavailable, credentialsSupported
     }, 200);
   }, [removedAccount, busy]);
 
-  async function update(method: BridgeMethod, params: Record<string, unknown>) {
+  async function update(method: BridgeMethod, params: Record<string, unknown>, placement: "form" | "section" = "section") {
     setBusy(true);
-    setError("");
+    setError(undefined);
     try {
       mailResult(await request(method, params));
       if (method !== "plugin.assistant-mail.account.set-poll-interval") setAction(undefined);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "邮箱账号设置失败");
+      setError({ message: reason instanceof Error ? reason.message : "邮箱账号设置失败", placement });
     } finally {
       setPendingInterval(undefined);
       setBusy(false);
@@ -71,17 +71,19 @@ export function MailAccounts({ accounts, configUnavailable, credentialsSupported
     if (smtpAccount) {
       void update("plugin.assistant-mail.account.set-smtp", { accountKey: smtpAccount.accountKey, smtp: {
         ...smtp, user, credential,
-      } });
+      } }, "form");
     } else if (editedAccount) {
       void update(supportsSharedAuth ? "plugin.assistant-mail.account.save" : "plugin.assistant-mail.account.update-credential",
-        { accountKey: editedAccount.accountKey, ...(credential ? { credential } : {}), ...(smtp ? { smtp } : {}) });
+        { accountKey: editedAccount.accountKey, ...(credential ? { credential } : {}), ...(smtp ? { smtp } : {}) }, "form");
     } else {
       const port = data.get("port");
       void update(supportsSharedAuth ? "plugin.assistant-mail.account.save" : "plugin.assistant-mail.account.add",
-        { host: String(data.get("host")).trim(), user, ...(port ? { port: Number(port) } : {}), credential, ...(smtp ? { smtp } : {}) });
+        { host: String(data.get("host")).trim(), user, ...(port ? { port: Number(port) } : {}), credential, ...(smtp ? { smtp } : {}) }, "form");
     }
   }
 
+  const errorAlert = error && <p role="alert">{error.message}</p>;
+  const inlineError = error?.placement === "form" && (editedAccount || smtpAccount || action?.kind === "add");
   const accountForm = <form key={action?.kind} onSubmit={save} autoComplete="off"
     aria-label={editedAccount ? `${supportsSharedAuth ? "账号设置" : "更新密码"}：${editedAccount.user}` : "添加邮箱"}>
     <fieldset className="assistant-account-form" disabled={disabled}>
@@ -96,12 +98,13 @@ export function MailAccounts({ accounts, configUnavailable, credentialsSupported
       {showSharedSmtp
         ? <SmtpFields account={editedAccount} shared allowKeepCredential={supportsKeepCredential && editedAccount?.smtpSharedAuth === true} />
         : <label>密码<input name="credential" type="password" autoComplete="new-password" required /></label>}
+      {inlineError && errorAlert}
       <div className="assistant-actions">
-        <button type="button" className="secondary-button" onClick={() => { setError(""); setAction(undefined); }}>取消</button>
+        <button type="button" className="secondary-button" onClick={() => { setError(undefined); setAction(undefined); }}>取消</button>
         {hasSeparateSmtp && action?.kind !== "share" && <button type="button" className="secondary-button"
-          onClick={() => { setError(""); setAction({ kind: "share", accountKey: editedAccount.accountKey }); }}>改为共用授权</button>}
+          onClick={() => { setError(undefined); setAction({ kind: "share", accountKey: editedAccount.accountKey }); }}>改为共用授权</button>}
         {supportsSharedAuth && editedAccount?.smtp && <button type="button" className="secondary-button"
-          onClick={() => void update("plugin.assistant-mail.account.set-smtp", { accountKey: editedAccount.accountKey, smtp: null })}>关闭发信</button>}
+          onClick={() => void update("plugin.assistant-mail.account.set-smtp", { accountKey: editedAccount.accountKey, smtp: null }, "form")}>关闭发信</button>}
         <button type="submit" className="primary-button">{!editedAccount ? "添加账号" : action?.kind === "share" ? "保存并共用授权"
           : hasSeparateSmtp ? "保存收信密码" : supportsSharedAuth ? "保存设置" : "保存密码"}</button>
       </div>
@@ -111,7 +114,7 @@ export function MailAccounts({ accounts, configUnavailable, credentialsSupported
   return <section className="assistant-accounts" aria-labelledby={headingId}>
     <div className="assistant-accounts-heading">
       <h2 id={headingId}>邮箱账号</h2>
-      <button type="button" className="assistant-session-link" disabled={disabled || action?.kind === "add"} onClick={() => { setError(""); setAction({ kind: "add" }); }}>添加邮箱</button>
+      <button type="button" className="assistant-session-link" disabled={disabled || action?.kind === "add"} onClick={() => { setError(undefined); setAction({ kind: "add" }); }}>添加邮箱</button>
     </div>
     {configUnavailable ? <p role="alert">无法读取邮箱配置。修复本机配置后重启 Bridge。</p>
       : !credentialsSupported ? <p role="status">当前电脑不支持存储邮箱凭据。</p>
@@ -124,6 +127,8 @@ export function MailAccounts({ accounts, configUnavailable, credentialsSupported
         : supportsPolling && account.errorCode === "mail_idle_unsupported" && state === "unsupported"
           ? "不支持持续收件，轮询已关闭"
           : failure?.label ?? RECEIVER_LABELS[state];
+      const editing = editedAccount?.accountKey === account.accountKey;
+      const configuringSmtp = smtpAccount?.accountKey === account.accountKey;
       return <div className="assistant-account-row" key={account.accountKey}>
         <div className="assistant-account-identity">
           <strong>{account.user}</strong>
@@ -136,15 +141,15 @@ export function MailAccounts({ accounts, configUnavailable, credentialsSupported
         <span className="assistant-account-state" data-state={failure?.state ?? state}>{status}</span>
         <div className="assistant-actions assistant-account-actions">
           <button type="button" className="assistant-session-link" aria-label={`${supportsSharedAuth ? "账号设置" : "更新密码"}：${account.user}`}
-            aria-expanded={editedAccount?.accountKey === account.accountKey} disabled={disabled}
-            onClick={() => { setError(""); setAction({ kind: "edit", accountKey: account.accountKey }); }}>{supportsSharedAuth ? "账号设置" : "更新密码"}</button>
+            aria-expanded={editing} disabled={disabled}
+            onClick={() => { setError(undefined); setAction(editing ? undefined : { kind: "edit", accountKey: account.accountKey }); }}>{supportsSharedAuth ? "账号设置" : "更新密码"}</button>
           <button type="button" className="assistant-session-link" aria-label={`${account.enabled ? "停用" : "启用"}：${account.user}`} disabled={disabled} onClick={() => { void update("plugin.assistant-mail.account.set-enabled", { accountKey: account.accountKey, enabled: !account.enabled }); }}>{account.enabled ? "停用" : "启用"}</button>
           {supportsSmtp && !supportsSharedAuth && <button type="button" className="assistant-session-link" disabled={disabled}
-            aria-label={`${account.smtp ? "SMTP 已配置" : "配置 SMTP"}：${account.user}`} aria-expanded={smtpAccount?.accountKey === account.accountKey}
-            onClick={() => { setError(""); setAction({ kind: "smtp", accountKey: account.accountKey }); }}>
+            aria-label={`${account.smtp ? "SMTP 已配置" : "配置 SMTP"}：${account.user}`} aria-expanded={configuringSmtp}
+            onClick={() => { setError(undefined); setAction(configuringSmtp ? undefined : { kind: "smtp", accountKey: account.accountKey }); }}>
             {account.smtp ? "SMTP 已配置" : "配置 SMTP"}
           </button>}
-          <button type="button" className="assistant-session-link assistant-remove" aria-label={`移除：${account.user}`} disabled={disabled} onClick={() => { setError(""); setAction({ kind: "remove", accountKey: account.accountKey }); }}>移除</button>
+          <button type="button" className="assistant-session-link assistant-remove" aria-label={`移除：${account.user}`} disabled={disabled} onClick={() => { setError(undefined); setAction({ kind: "remove", accountKey: account.accountKey }); }}>移除</button>
         </div>
         {supportsPolling && account.pollIntervalSeconds !== undefined && <label className="assistant-account-polling">
           备用轮询间隔
@@ -159,14 +164,15 @@ export function MailAccounts({ accounts, configUnavailable, credentialsSupported
             {MAIL_POLL_INTERVALS.map(seconds => <option key={seconds} value={seconds}>{seconds < 60 ? `${seconds} 秒` : `${seconds / 60} 分钟`}</option>)}
           </select>
         </label>}
-        {editedAccount?.accountKey === account.accountKey && accountForm}
-        {smtpAccount?.accountKey === account.accountKey && <form key="smtp" onSubmit={save} autoComplete="off" aria-label={`${account.user} 的发信设置`}>
+        {editing && accountForm}
+        {configuringSmtp && <form key="smtp" onSubmit={save} autoComplete="off" aria-label={`${account.user} 的发信设置`}>
           <fieldset className="assistant-account-form" disabled={disabled}>
             <SmtpFields account={account} shared={false} />
             <label>SMTP 密码<input name="credential" type="password" autoComplete="new-password" required /></label>
+            {inlineError && errorAlert}
             <div className="assistant-actions">
-              <button type="button" className="secondary-button" onClick={() => { setError(""); setAction(undefined); }}>取消</button>
-              {account.smtp && <button type="button" className="secondary-button" onClick={() => void update("plugin.assistant-mail.account.set-smtp", { accountKey: account.accountKey, smtp: null })}>关闭发信</button>}
+              <button type="button" className="secondary-button" onClick={() => { setError(undefined); setAction(undefined); }}>取消</button>
+              {account.smtp && <button type="button" className="secondary-button" onClick={() => void update("plugin.assistant-mail.account.set-smtp", { accountKey: account.accountKey, smtp: null }, "form")}>关闭发信</button>}
               <button type="submit" className="primary-button">保存发信设置</button>
             </div>
           </fieldset>
@@ -178,15 +184,15 @@ export function MailAccounts({ accounts, configUnavailable, credentialsSupported
       open={Boolean(removedAccount)}
       title="移除邮箱？"
       description={`移除「${removedAccount?.user ?? ""}」？已收取的邮件仍可查看。`}
-      error={removedAccount ? error : undefined}
+      error={removedAccount ? error?.message : undefined}
       confirmLabel="确认移除"
       danger
       busy={busy}
       confirmDisabled={disabled}
-      onCancel={() => { setError(""); setAction(undefined); }}
+      onCancel={() => { setError(undefined); setAction(undefined); }}
       onConfirm={() => { if (removedAccount) void update("plugin.assistant-mail.account.remove", { accountKey: removedAccount.accountKey }); }}
     />
-    {error && !removedAccount && <p role="alert">{error}</p>}
+    {!removedAccount && !inlineError && errorAlert}
   </section>;
 }
 

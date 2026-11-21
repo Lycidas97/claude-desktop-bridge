@@ -49,6 +49,22 @@ export async function verifyAssistantMailAccounts(page, host, steps, directory, 
   const { client: _accountClient, ...accountParams } = accountRequests[0].params;
   assert.deepEqual(accountParams, { host: "imap.second.example.test", user: extraUser, credential: "fixture-credential-add",
     smtp: { host: "smtp.second.example.test", port: 465, security: "tls", from: extraUser } });
+  const firstAccount = accounts.locator(".assistant-account-row").first();
+  const firstSettings = firstAccount.getByRole("button", { name: /^账号设置：/u });
+  await firstSettings.click();
+  await smtpHost.fill("invalid_smtp.example.test");
+  await firstAccount.getByLabel("密码", { exact: true }).fill("synthetic-invalid-settings");
+  await firstAccount.getByRole("button", { name: "保存设置", exact: true }).click();
+  await accounts.getByRole("alert").getByText("请检查邮箱服务器、端口、发件地址和密码。", { exact: true }).waitFor();
+  const saveError = firstAccount.locator("form").getByRole("alert");
+  assert.equal(await saveError.count(), 1, "The save error stays with the expanded first account");
+  await saveError.scrollIntoViewIfNeeded();
+  await capture("mobile-mail-account-error");
+  await firstSettings.click();
+  assert.equal(await firstSettings.getAttribute("aria-expanded"), "false");
+  await firstAccount.locator("form").waitFor({ state: "hidden" });
+  assert.equal(await accounts.getByRole("alert").count(), 0);
+
   const accountSettings = extraAccount.getByRole("button", { name: `账号设置：${extraUser}`, exact: true });
   const credential = extraAccount.getByLabel("密码", { exact: true });
   const fromAddress = extraAccount.getByLabel("发件地址", { exact: true });

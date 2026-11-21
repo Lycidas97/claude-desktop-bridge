@@ -322,6 +322,7 @@ body:has(.assistant-mail-category-options) .diagnostic-floating-entry { display:
 .assistant-accounts p { color: var(--muted); font-size: calc(13px * var(--font-scale)); line-height: 1.6; }
 .assistant-accounts p[role="alert"], .assistant-accounts .assistant-remove { color: var(--danger-ink); }
 .assistant-account-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 4px 18px; padding: 9px 0; border-bottom: 1px solid var(--line); }
+.assistant-account-row > form { grid-column: 1 / -1; margin-bottom: 7px; }
 .assistant-account-identity { display: grid; gap: 3px; overflow-wrap: anywhere; }
 .assistant-account-identity strong { font-size: calc(14px * var(--font-scale)); font-weight: 600; }
 .assistant-account-identity span, .assistant-account-state { color: var(--muted); font-size: calc(12px * var(--font-scale)); }
@@ -336,6 +337,7 @@ body:has(.assistant-mail-category-options) .diagnostic-floating-entry { display:
 .assistant-page-mobile .assistant-session-link { font-size: var(--m-fs-callout); }
 .assistant-account-form { display: grid; min-width: 0; max-width: 30rem; gap: 12px; margin: 16px 0 0; padding: 0; border: 0; }
 .assistant-account-form legend { margin-bottom: 12px; padding: 0; font-size: calc(14px * var(--font-scale)); font-weight: 600; overflow-wrap: anywhere; }
+.assistant-account-form > p[role="alert"] { margin: 0; }
 .assistant-smtp-fields { display: grid; min-width: 0; gap: 12px; margin: 0; padding: 0; border: 0; }
 .assistant-smtp-fields legend { width: 100%; padding-top: 12px; border-top: 1px solid var(--line); }
 .assistant-account-form label { display: grid; gap: 5px; color: var(--muted); font-size: calc(13px * var(--font-scale)); }

@@ -19,6 +19,7 @@ export function isMailPollInterval(value: unknown): value is MailPollInterval {
 }
 
 export const ASSISTANT_MAIL_SHARED_AUTH_CAPABILITY = "plugin.assistant-mail.shared-auth.v1";
+export const ASSISTANT_MAIL_KEEP_CREDENTIAL_CAPABILITY = "plugin.assistant-mail.keep-credential.v1";
 export const ASSISTANT_SMTP_CAPABILITY = "plugin.assistant-mail.smtp.v1";
 export const MAIL_ATTENTION_LEVELS = ["ignore", "read", "action"] as const;
 export type MailAttentionLevel = (typeof MAIL_ATTENTION_LEVELS)[number];

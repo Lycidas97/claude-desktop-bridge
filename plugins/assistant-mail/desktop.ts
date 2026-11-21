@@ -194,6 +194,19 @@ export class AssistantMailService extends EventEmitter {
     });
   }
 
+  updateSharedSmtp(accountKey: string, smtp: SharedSmtpSettings): Promise<void> {
+    return this.mutateAccount(accountKey, async () => {
+      const { config } = this.requireAccount(accountKey);
+      const previous = config.smtp;
+      if (!config.smtpSharedAuth || !previous || previous.host !== smtp.host || previous.port !== smtp.port || previous.security !== smtp.security) {
+        throw new AssistantError("INVALID_PARAMS", "启用发信、更换发信连接或切换为共用授权时，请输入密码。");
+      }
+      if (previous.from === smtp.from) return;
+      this.persistSmtp(accountKey, config, { ...previous, from: smtp.from, version: randomUUID() }, true);
+      this.emit("changed");
+    });
+  }
+
   private async saveSharedSmtp(key: string, config: SavedAccount, smtp: SharedSmtpSettings, password: string): Promise<void> {
     const fields = sharedSmtpSettings(smtp, config.user);
     const { smtp: previous, smtpSharedAuth } = config;

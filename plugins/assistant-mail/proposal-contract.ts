@@ -27,6 +27,7 @@ export const saveMailAccount = z.union([
   z.strictObject({ host: z.string().trim().min(1).regex(/^\S+$/u), port: z.number().int().min(1).max(65535).optional(),
     user: z.string().trim().min(1), ...sharedMailSettings }),
   z.strictObject({ accountKey: mailDraft.accountKey, ...sharedMailSettings }),
+  z.strictObject({ accountKey: mailDraft.accountKey, smtp: sharedSmtpChannel }),
 ]);
 export const configureSmtp = z.strictObject({ accountKey: mailDraft.accountKey,
   smtp: smtpChannel.extend({ credential: z.string().min(1).max(1800) }).nullable() });

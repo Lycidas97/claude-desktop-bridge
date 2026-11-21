@@ -39,9 +39,10 @@ import { handleAssistantAgenda } from "./assistant-agenda.js";
 import { handleAssistantProposal } from "./assistant-proposal.js";
 import type { ProposalExecutor } from "../../../../plugins/assistant-mail/proposal-executor.js";
 import type { AssistantMailCoordinator } from "./assistant-mail.js";
+import type { AssistantMailService } from "../../../../plugins/assistant-mail/desktop.js";
 import {
-  closeArtifactTransfer, getEvidence, getEvidenceDetails, handleFileUpload, listEvidence,
-  openArtifactTransfer, previewArtifact, readArtifactTransfer,
+  closeArtifactTransfer, getEvidence, getEvidenceDetails, handleArtifactTarget, handleFileUpload, listEvidence,
+  readArtifactTransfer,
 } from "./controller-evidence-rpc.js";
 import { AssistantError } from "../../../../plugins/assistant-mail/assistant-error.js";
 import { MailCategoryError } from "../../../../plugins/assistant-mail/store.js";
@@ -152,6 +153,7 @@ export interface ControllerRpcHost {
   readonly magpieQuota: ReturnType<typeof createMagpieQuotaPlugin>;
   readonly updater?: DesktopUpdater;
   readonly assistantMailCoordinator?: AssistantMailCoordinator;
+  readonly assistantMail?: Pick<AssistantMailService, "attachment" | "attachmentBytes">;
   readonly assistantAgenda?: AssistantAgendaService;
   readonly proposals?: ProposalExecutor;
   snapshot(): Promise<DesktopControlSnapshot>;
@@ -758,13 +760,8 @@ async function dispatchControllerRequestInner(
   if (request.method.startsWith("file.upload.")) {
     return handleFileUpload(host.uploads, () => host.allSessions(), request.method, params, sourceDeviceId);
   }
-  if ((request.method === "artifact.preview" || request.method === "artifact.transfer.open") && params.mailAttachment !== undefined) {
-    if (!host.assistantMailCoordinator) throw new BridgeRequestError("UNSUPPORTED", "当前电脑不支持邮件附件。");
-    return host.assistantMailCoordinator.handleAttachment(request.method, params, host.evidence, sourceDeviceId ?? origin);
-  }
-  if (request.method === "artifact.preview") return previewArtifact(host.evidence, params);
-  if (request.method === "artifact.transfer.open") {
-    return openArtifactTransfer(host.evidence, host.broker, () => host.allSessions(), params, sourceDeviceId);
+  if (request.method === "artifact.preview" || request.method === "artifact.transfer.open") {
+    return handleArtifactTarget(host, request.method, params, origin, sourceDeviceId);
   }
   if (request.method === "artifact.transfer.read") return readArtifactTransfer(host.evidence, params, sourceDeviceId);
   if (request.method === "artifact.transfer.close") return closeArtifactTransfer(host.evidence, params, sourceDeviceId);

@@ -1,8 +1,11 @@
-import { evidenceSummary, isBridgeNativeImageRef, type BridgeSessionInfo } from "@bridge/protocol";
+import { ARTIFACT_MAX_BYTES, evidenceSummary, isBridgeNativeImageRef, mailAttachmentPreviewKind, type BridgeSessionInfo } from "@bridge/protocol";
+import { MailAttachmentError } from "../../../../plugins/assistant-mail/desktop.js";
 import type { ClaudeDesktopBridge } from "../claude/claude-desktop-bridge.js";
 import type { EvidenceManager } from "../evidence/evidence-manager.js";
 import type { FileUploadManager } from "../evidence/file-upload.js";
-import { integerParam, numberParam, stringParam } from "./request-error.js";
+import { parseMailAttachmentRef } from "./assistant-mail.js";
+import type { ControllerRpcHost } from "./controller-rpc.js";
+import { BridgeRequestError, integerParam, numberParam, stringParam } from "./request-error.js";
 
 export function listEvidence(evidence: EvidenceManager, broker: Pick<ClaudeDesktopBridge, "session">, params: Record<string, unknown>) {
   const sessionId = stringParam(params, "sessionId")!;
@@ -57,11 +60,40 @@ export async function handleFileUpload(
   return { cancelled: uploads.cancel(uploadId, owner) };
 }
 
-export async function previewArtifact(evidence: EvidenceManager, params: Record<string, unknown>) {
-  return { preview: await evidence.preview(stringParam(params, "artifactId")!) };
+export async function handleArtifactTarget(
+  host: Pick<ControllerRpcHost, "evidence" | "broker" | "allSessions" | "assistantMail">,
+  method: "artifact.preview" | "artifact.transfer.open",
+  params: Record<string, unknown>,
+  origin: "desktop" | "mobile",
+  sourceDeviceId?: string,
+) {
+  if (params.mailAttachment !== undefined) {
+    if (!host.assistantMail) throw new BridgeRequestError("UNSUPPORTED", "当前电脑不支持邮件附件。");
+    if (["artifactId", "sessionId", "path", "nativeImage", "resolveRelativeLink"].some(key => params[key] !== undefined)) {
+      throw new BridgeRequestError("INVALID_PARAMS", "需要独立的邮件附件引用。");
+    }
+    const ref = parseMailAttachmentRef(params.mailAttachment);
+    try {
+      const { filename: name, mimeType, size } = host.assistantMail.attachment(ref);
+      if (method === "artifact.transfer.open" && params.purpose === "stat") return { metadata: { name, mimeType, size } };
+      if (method === "artifact.preview" && mailAttachmentPreviewKind(mimeType) !== "image") {
+        throw new BridgeRequestError("UNSUPPORTED", "此附件不支持图片预览。");
+      }
+      const bytes = await host.assistantMail.attachmentBytes(ref, ARTIFACT_MAX_BYTES);
+      const artifactId = `mail:${ref.mailRefId}:${ref.attachmentId}`;
+      return method === "artifact.preview"
+        ? { preview: await host.evidence.previewUnstoredImage(artifactId, bytes, mimeType) }
+        : { transfer: host.evidence.openBytesTransfer({ artifactId, name, mimeType, bytes }, sourceDeviceId ?? origin) };
+    } catch (error) {
+      if (error instanceof MailAttachmentError) throw new BridgeRequestError(error.code, error.message);
+      throw error;
+    }
+  }
+  if (method === "artifact.preview") return { preview: await host.evidence.preview(stringParam(params, "artifactId")!) };
+  return openArtifactTransfer(host.evidence, host.broker, () => host.allSessions(), params, sourceDeviceId);
 }
 
-export async function openArtifactTransfer(
+async function openArtifactTransfer(
   evidence: EvidenceManager,
   broker: Pick<ClaudeDesktopBridge, "readNativeImage" | "executionCwd" | "resolveSessionFile">,
   allSessions: () => BridgeSessionInfo[],

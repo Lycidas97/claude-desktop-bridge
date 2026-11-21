@@ -1,10 +1,12 @@
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { mkdtemp, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
-  ARTIFACT_MAX_BYTES, ASSISTANT_MEMORY_POLICY, ASSISTANT_MEMORY_PROPOSAL_CAPABILITY, BridgeCrypto, PROTOCOL_VERSION,
-  type BridgeArtifactTransferInfo, type BridgeTransport, type BridgeEvent, type EncryptedEnvelope,
-  type BridgeMailDetail, type BridgeMailPage, type BridgeProposalPage, type BridgeRequest, type BridgeSessionInfo, type DesktopControlSnapshot,
+  ARTIFACT_MAX_BYTES, ARTIFACT_TRANSFER_CHUNK_BYTES, ARTIFACT_TRANSFER_TTL_MS,
+  ASSISTANT_MEMORY_POLICY, ASSISTANT_MEMORY_PROPOSAL_CAPABILITY, BridgeCrypto, PROTOCOL_VERSION,
+  type BridgeArtifactTransferInfo, type BridgeTransport, type BridgeEvent, type DecryptedEnvelope, type EncryptedEnvelope,
+  type BridgeMailDetail, type BridgeMailPage, type BridgeProposalPage, type BridgeRequest, type BridgeResponse, type BridgeSessionInfo, type DesktopControlSnapshot,
 } from "@bridge/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgendaStore } from "../../../../plugins/assistant-mail/agenda-store.js";
@@ -27,6 +29,8 @@ type ControllerArguments = ConstructorParameters<typeof DesktopController>;
 type ControllerInternals = {
   publish(): Promise<DesktopControlSnapshot>;
   handleRequest(request: BridgeRequest, origin: "mobile", deviceId?: string): Promise<unknown>;
+  receiveMessage(message: DecryptedEnvelope, encrypted: EncryptedEnvelope): Promise<void>;
+  responseCache: ReadonlyMap<string, BridgeResponse>;
   setMailWakeRelay(socket?: BridgeTransport): void;
   acknowledgeMailWake(ids: string[]): void;
 };
@@ -87,6 +91,10 @@ async function fixture(proposalStore: ProposalStore, agenda: AgendaStore) {
   }));
   const relayUrl = "ws://127.0.0.1:18789/ws";
   const host = await BridgeCrypto.createHost(relayUrl, "Mail fixture");
+  const paired = await BridgeCrypto.createDevicePairing({
+    hostId: host.crypto.identity.deviceId, roomId: host.crypto.identity.roomId, relayUrl,
+    desktopName: "Mail fixture", deviceId: "synthetic-phone",
+  });
   const config: LoadedDesktopConfig = {
     configVersion: 4, protocolVersion: PROTOCOL_VERSION, pairingEpoch: 1,
     hostDeviceId: host.crypto.identity.deviceId, roomId: host.crypto.identity.roomId,
@@ -95,7 +103,8 @@ async function fixture(proposalStore: ProposalStore, agenda: AgendaStore) {
     relayEndpoints: [{ id: "local", kind: "public-relay", url: relayUrl, priority: 1 }], activeEndpoint: "local",
     iceServers: [], createdAt: 1, launchAtLogin: false, managedDesktopEnabled: false, diagnosticsEnabled: false,
     defaultPermissionMode: "standard", runtimePermissionModes: {},
-    devices: [{ deviceId: "synthetic-phone", name: "Phone", platform: "android", secret: host.secret, createdAt: 1, expiresAt: 2, pairedAt: 1 }],
+    devices: [{ deviceId: paired.pairing.deviceId, name: "Phone", platform: "android", secret: paired.pairing.secret,
+      createdAt: paired.pairing.createdAt, expiresAt: paired.pairing.expiresAt, pairedAt: 1 }],
   };
   const receiptStore = new ConversationStateStore({ databasePath: join(root, "receipts.sqlite") });
   await receiptStore.initialize();
@@ -116,7 +125,8 @@ async function fixture(proposalStore: ProposalStore, agenda: AgendaStore) {
   await controller.initialize();
   const internals = controller as unknown as ControllerInternals;
   return {
-    controller, broker, eventLog, sessions, projects, workspace, proposals, evidenceStore, receiptStore, internals, broadcast: boundaries.broadcast, queuePublish: boundaries.queuePublish,
+    controller, broker, eventLog, sessions, projects, workspace, proposals, evidenceStore, receiptStore, internals, paired,
+    broadcast: boundaries.broadcast, queuePublish: boundaries.queuePublish,
     publish: () => internals.publish(),
     request: <T = unknown>(method: BridgeRequest["method"], params: Record<string, unknown> = {}, deviceId = "synthetic-phone", idempotencyKey = "mail-key") => internals.handleRequest(
       { kind: "request", requestId: "mail-request", idempotencyKey, method, params }, "mobile", deviceId,
@@ -436,7 +446,7 @@ describe("assistant mail mobile RPC projections", () => {
     expect(service.binding()).toBeUndefined();
   });
 
-  it("probes without decoding, isolates leases per device and bypasses evidence storage", async () => {
+  it("probes without decoding, enforces owner and expiry, and bypasses evidence storage", async () => {
     const event = await record(1, 'Content-Type: text/plain\r\nContent-Disposition: attachment; filename="notes.txt"\r\n\r\nBounded bytes');
     const mailAttachment = { mailRefId: event.mailRefId, attachmentId: "0" };
     const extract = vi.spyOn(service, "attachmentBytes");
@@ -453,9 +463,74 @@ describe("assistant mail mobile RPC projections", () => {
     expect(await run.request("artifact.transfer.close", { transferId: transfers[0]!.transferId }, "other-phone")).toEqual({ closed: false });
     expect(await run.request("artifact.transfer.read", { transferId: transfers[0]!.transferId, index: 0 })).toMatchObject({ chunk: { data: Buffer.from("Bounded bytes").toString("base64") } });
     expect(await run.request("artifact.transfer.close", { transferId: transfers[0]!.transferId })).toEqual({ closed: true });
-    await expect(run.request("artifact.transfer.open", { mailAttachment, path: "anything" })).rejects.toMatchObject({ code: "INVALID_PARAMS" });
+    await expect(run.request("artifact.transfer.open", { mailAttachment, path: "anything" })).rejects.toMatchObject({ code: "INVALID_PARAMS", message: "需要独立的邮件附件引用。" });
+    await expect(run.request("artifact.preview", { mailAttachment: { ...mailAttachment, attachmentId: "invalid" } }))
+      .rejects.toMatchObject({ code: "INVALID_PARAMS", message: "邮件附件引用无效。" });
+    await expect(run.request("artifact.transfer.open", { mailAttachment: { ...mailAttachment, attachmentId: "1" }, purpose: "stat" }))
+      .rejects.toMatchObject({ code: "MAIL_ATTACHMENT_NOT_FOUND" });
+    vi.spyOn(Date, "now").mockReturnValue(transfers[1]!.expiresAt);
+    await expect(run.request("artifact.transfer.read", { transferId: transfers[1]!.transferId, index: 0 })).rejects.toThrow(/expired/u);
     expect(evidenceLookup).not.toHaveBeenCalled();
     expect(evidenceWrite).not.toHaveBeenCalled();
+  });
+
+  it.each(["desktop", "paired phone"])("preflights, previews and downloads attachments from %s", async (surface) => {
+    const image = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+l2p0AAAAASUVORK5CYII=";
+    const photo = await record(1, ["Content-Type: image/png", 'Content-Disposition: attachment; filename="photo.png"',
+      "Content-Transfer-Encoding: base64", "", image].join("\r\n"));
+    const bytes = Buffer.concat([Buffer.alloc(ARTIFACT_TRANSFER_CHUNK_BYTES, 0x61), Buffer.from("tail")]);
+    const file = await record(2, `Content-Type: application/octet-stream\r\nContent-Disposition: attachment; filename="notes.bin"\r\n\r\n${bytes.toString("ascii")}`);
+    const imageParams = { mailAttachment: { mailRefId: photo.mailRefId, attachmentId: "0" } };
+    const fileParams = { mailAttachment: { mailRefId: file.mailRefId, attachmentId: "0" } };
+    const extract = vi.spyOn(service, "attachmentBytes");
+    const cachePreview = vi.spyOn(run.evidenceStore, "cachePreview");
+    const device = run.paired.pairing;
+    const phone = await BridgeCrypto.fromPairing(device);
+    const desktop = run.paired.desktopCrypto.withSenderDevice(device.hostId);
+    let outgoing: EncryptedEnvelope | undefined;
+    const send: BridgeTransport["send"] = async (payload, to, options) => {
+      outgoing = await options!.crypto!.encrypt(payload, "desktop", to, Date.now(), options!.ttlMs, options!.toDeviceId, options!.temporary);
+      return outgoing.id;
+    };
+    const ack = vi.fn();
+    if (surface === "paired phone") Object.assign(run.controller, { connection: "connected", socket: { send, ack, close: vi.fn() } });
+    let requestIndex = 0;
+    const request = async (method: BridgeRequest["method"], params: Record<string, unknown>) => {
+      if (surface === "desktop") return run.controller.dispatchLocal({ method, params });
+      const requestId = `attachment-${++requestIndex}`;
+      outgoing = undefined;
+      const envelope = await phone.encrypt({ kind: "request", requestId, idempotencyKey: requestId, method, params }, "mobile", "desktop");
+      await run.internals.receiveMessage(await desktop.decrypt(envelope), envelope);
+      expect(ack).toHaveBeenLastCalledWith([envelope.id]);
+      expect(outgoing).toMatchObject({ toDeviceId: device.deviceId, temporary: true });
+      const { header, payload } = await phone.decrypt(outgoing!);
+      expect(header.expiresAt - header.sentAt).toBe(ARTIFACT_TRANSFER_TTL_MS);
+      expect(run.internals.responseCache.has(requestId)).toBe(method === "artifact.transfer.close");
+      return payload;
+    };
+
+    expect(await request("artifact.transfer.open", { ...fileParams, purpose: "stat" })).toMatchObject({
+      ok: true, result: { metadata: { name: "notes.bin", mimeType: "application/octet-stream", size: bytes.length } },
+    });
+    expect(await request("artifact.preview", fileParams)).toMatchObject({ ok: false, error: { code: "UNSUPPORTED" } });
+    expect(extract).not.toHaveBeenCalled();
+    expect(await request("artifact.preview", imageParams)).toMatchObject({ ok: true, result: { preview: {
+      artifactId: `mail:${photo.mailRefId}:0`, mode: "image", mimeType: "image/png", encoding: "base64", data: image,
+    } } });
+    expect(cachePreview).not.toHaveBeenCalled();
+
+    const opened = await request("artifact.transfer.open", fileParams);
+    if (opened.kind !== "response" || !opened.ok) throw new Error("Expected attachment transfer");
+    const { transfer } = opened.result as { transfer: BridgeArtifactTransferInfo };
+    expect(transfer).toMatchObject({ artifactId: `mail:${file.mailRefId}:0`, size: bytes.length, totalChunks: 2,
+      sha256: createHash("sha256").update(bytes).digest("hex") });
+    for (let index = 0; index < transfer.totalChunks; index++) {
+      const start = index * ARTIFACT_TRANSFER_CHUNK_BYTES;
+      expect(await request("artifact.transfer.read", { transferId: transfer.transferId, index })).toMatchObject({
+        ok: true, result: { chunk: { transferId: transfer.transferId, index, data: bytes.subarray(start, start + ARTIFACT_TRANSFER_CHUNK_BYTES).toString("base64") } },
+      });
+    }
+    expect(await request("artifact.transfer.close", { transferId: transfer.transferId })).toMatchObject({ ok: true, result: { closed: true } });
   });
 
   it("reports the original size of an oversized attachment and refuses transfer before reading it", async () => {

@@ -28,6 +28,7 @@ export const ASSISTANT_MAIL_CATEGORIES_CAPABILITY = "plugin.assistant-mail.categ
 export const ASSISTANT_MAIL_RECEIVED_ORDER_CAPABILITY = "plugin.assistant-mail.received-order.v1";
 export const ASSISTANT_ATTENTION_CAPABILITY = "plugin.assistant-mail.attention.v1";
 export const ASSISTANT_READ_DIRECTORIES_CAPABILITY = "plugin.assistant-mail.read-directories.v1";
+export const ASSISTANT_DIRECTORY_TOOL = "files.read";
 
 export type AssistantAttentionItem = { id: string; title: string } & (
   | { kind: "mail"; reason: "new" | "unscreened" | "read" | "action" }

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { lstat, readdir, realpath, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
-import { ASSISTANT_MEMORY_POLICY, ASSISTANT_WORKSPACE_POLICY, isAssistantWorkspacePolicy } from "../../packages/protocol/src/assistant-mail.js";
+import { ASSISTANT_DIRECTORY_TOOL, ASSISTANT_MEMORY_POLICY, ASSISTANT_WORKSPACE_POLICY, isAssistantWorkspacePolicy } from "../../packages/protocol/src/assistant-mail.js";
 import { PROPOSAL_TOOLS } from "../../packages/protocol/src/assistant-proposal.js";
 
 const readTools = ["Read", "Glob", "Grep"];
@@ -18,6 +18,7 @@ export const ASSISTANT_TOOLS = [
   ...AGENDA_TOOLS, ...PROPOSAL_NATIVE_TOOLS, ...fileTools, "Agent", "ToolSearch", "TodoWrite", ...mailTools, ASSISTANT_MARK_READ_TOOL,
 ];
 export const ASSISTANT_WEB_SEARCH_TOOL = "WebSearch";
+export const ASSISTANT_DIRECTORY_NATIVE_TOOL = `mcp__${ASSISTANT_MCP}__${ASSISTANT_DIRECTORY_TOOL.replace(".", "_")}`;
 export const MEMORY_LOOKUP_TOOL = `mcp__${ASSISTANT_MCP}__memory_lookup_entry`;
 const proposalDraftTools = PROPOSAL_NATIVE_TOOLS.slice(0, 2);
 const triageTools = mailTools.filter(name => !name.endsWith("__mail_list_unfinished_triggers") && !name.endsWith("__mail_set_processing_status"));
@@ -30,7 +31,7 @@ export const ASSISTANT_MEMORY_ROOTS = ["memory/threads", "memory/notes"];
 
 export function isAssistantTool(name: string, policy: string = ASSISTANT_WORKSPACE_POLICY): boolean {
   return ASSISTANT_TOOLS.includes(name) || (policy === ASSISTANT_MEMORY_POLICY && name === MEMORY_LOOKUP_TOOL) ||
-    (policy === ASSISTANT_WORKSPACE_POLICY && name === ASSISTANT_WEB_SEARCH_TOOL);
+    (policy === ASSISTANT_WORKSPACE_POLICY && (name === ASSISTANT_WEB_SEARCH_TOOL || name === ASSISTANT_DIRECTORY_NATIVE_TOOL));
 }
 
 export function withinPath(root: string, path: string): boolean {
@@ -66,7 +67,7 @@ function safePathInput(value: unknown): value is string {
     part === "." || (!/[<>:"|?*]|[. ]$/.test(part) && !/^(?:CON(?:IN\$|OUT\$)?|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])(?:\.|$)/i.test(part)));
 }
 
-function isMcpConfig(path: string): boolean {
+export function isMcpConfig(path: string): boolean {
   return basename(path).toLowerCase() === ".mcp.json";
 }
 
@@ -134,6 +135,17 @@ export async function allowAssistantTool(workspace: string, input: unknown, poli
     if (specialist && (typeof kind !== "string" || !(agentType === "mail-triager" ? kind.startsWith("mail.")
       : agentType === "schedule-planner" ? /^(todo|calendar)\./.test(kind) : kind === "memory.rule_upsert"))) return false;
   }
+  if (name === ASSISTANT_DIRECTORY_NATIVE_TOOL) {
+    if (agentId !== undefined || !safePathInput(cwd) || !isAbsolute(cwd)) return false;
+    const root = await realpath(workspace);
+    if (relative(root, await realpath(cwd)) !== "") return false;
+    const grants = loadAssistantReadDirectories(root);
+    if (!grants || grants.cliSessionId !== cliSessionId) return false;
+    const config = JSON.parse(readFileSync(join(root, ".mcp.json"), "utf8")) as {
+      mcpServers?: Record<string, { env?: Record<string, string> }>;
+    };
+    return config.mcpServers?.[ASSISTANT_MCP]?.env?.[ASSISTANT_TOKEN_ENV] === grants.bindingToken;
+  }
   if (!fileTools.includes(name)) return true;
   if (!safePathInput(cwd) || !isAbsolute(cwd)) return false;
   const search = name === "Glob" || name === "Grep";
@@ -146,22 +158,10 @@ export async function allowAssistantTool(workspace: string, input: unknown, poli
   const dir = await realpath(cwd);
   if (!withinPath(root, dir)) return false;
   const candidate = resolve(dir, target);
-  if (isMcpConfig(candidate)) return false;
+  if (!withinPath(root, candidate) || isMcpConfig(candidate)) return false;
   const writing = ASSISTANT_FILE_WRITES.includes(name);
-  let allowedRoots = [root];
-  if (!withinPath(root, candidate)) {
-    if (writing || memory || agentId !== undefined) return false;
-    const grants = loadAssistantReadDirectories(root);
-    if (!grants || grants.cliSessionId !== cliSessionId) return false;
-    allowedRoots = grants.directories.filter(path => withinPath(path, candidate));
-    if (!allowedRoots.length) return false;
-    const config = JSON.parse(readFileSync(join(root, ".mcp.json"), "utf8")) as {
-      mcpServers?: Record<string, { env?: Record<string, string> }>;
-    };
-    if (config.mcpServers?.[ASSISTANT_MCP]?.env?.[ASSISTANT_TOKEN_ENV] !== grants.bindingToken) return false;
-  }
   const physical = await resolveWorkspacePath(candidate, writing);
-  if (!allowedRoots.some(path => withinPath(path, physical.path)) || isMcpConfig(physical.path) ||
+  if (!withinPath(root, physical.path) || isMcpConfig(physical.path) ||
     (!physical.info.isDirectory() && !(physical.info.isFile() && physical.info.nlink === 1))) return false;
   if (!writing) return physical.info.isDirectory() ? search && await searchableTree(physical.path) : true;
 

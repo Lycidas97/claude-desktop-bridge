@@ -335,7 +335,8 @@ export class AssistantMailCoordinator {
       ...(repairFailed ? { repairFailed: true as const } : {}),
       policy: isAssistantWorkspacePolicy(policy) ? policy : this.workspace.policy,
       ...(nativeSessionId ? { nativeSessionId } : {}),
-      ...(nativeSessionId && policy === ASSISTANT_WORKSPACE_POLICY && !repairFailed ? { readDirectories: [...this.workspace.readDirectories] } : {}),
+      ...(nativeSessionId && binding?.managed && policy === ASSISTANT_WORKSPACE_POLICY && !repairFailed
+        ? { readDirectories: [...this.workspace.readDirectories(binding.managed.token)] } : {}),
       toolIsolation: !catalog ? "unobserved" : catalog.unexpectedTools.length ? "warning" : "compatible",
       ...(catalog?.unexpectedTools.length ? { unexpectedTools: catalog.unexpectedTools } : {}),
     } };
@@ -586,12 +587,7 @@ export class AssistantMailCoordinator {
       if (this.initializingWorkspace || this.mail.binding()?.managed?.token !== binding.managed.token) {
         throw new BridgeRequestError("INVALID_TARGET", "托管助理已更换，请重新选择文件夹。");
       }
-      try {
-        this.workspace.changeReadDirectory(binding.managed.token, native?.cliSessionId, action, directory);
-      } catch (error) {
-        if (error instanceof BridgeRequestError && error.code === "DIRECTORY_NATIVE_REVOKE_FAILED") this.publishMailChange();
-        throw error;
-      }
+      this.workspace.changeReadDirectory(binding.managed.token, native?.cliSessionId, action, directory);
     } else if (method.startsWith("plugin.assistant-mail.account.")) {
       if (!this.mail.status().credentialsSupported) {
         throw new BridgeRequestError("UNSUPPORTED", "当前电脑不支持存储邮箱凭据。");

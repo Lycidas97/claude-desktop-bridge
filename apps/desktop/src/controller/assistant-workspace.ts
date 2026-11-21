@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { lstatSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { lstatSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { chmod, lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import { ASSISTANT_MEMORY_POLICY, ASSISTANT_WORKSPACE_POLICY, isAssistantWorkspacePolicy, type AssistantWorkspacePolicy } from "@bridge/protocol";
@@ -8,7 +8,7 @@ import type { AssistantBinding } from "../../../../plugins/assistant-mail/store.
 import { BridgeRequestError } from "./request-error.js";
 import { MAIL_TRIAGE_INSTRUCTION } from "../../../../plugins/assistant-mail/tool-contract.js";
 import {
-  AGENDA_TOOLS, ASSISTANT_FILE_WRITES, ASSISTANT_HELPER, ASSISTANT_MARK_READ_TOOL, ASSISTANT_MCP,
+  AGENDA_TOOLS, ASSISTANT_DIRECTORY_NATIVE_TOOL, ASSISTANT_FILE_WRITES, ASSISTANT_HELPER, ASSISTANT_MARK_READ_TOOL, ASSISTANT_MCP,
   ASSISTANT_MEMORY_ROOTS, ASSISTANT_SPECIALISTS, ASSISTANT_TOKEN_ENV, ASSISTANT_TOOLS, ASSISTANT_WEB_SEARCH_TOOL,
   MEMORY_LOOKUP_TOOL, PROPOSAL_NATIVE_TOOLS, assistantReadDirectoriesPath, isAssistantReadDirectory,
   isMissingPath, loadAssistantReadDirectories, withinPath, type AssistantReadDirectories,
@@ -78,17 +78,6 @@ function updateWorkspaceJson(path: string, data: unknown) {
   const temporary = `${path}.${randomUUID()}.tmp`;
   writeFileSync(temporary, `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600, flag: "wx" });
   renameSync(temporary, path);
-}
-
-function directoryPermissions(directories: readonly string[], platform: NodeJS.Platform) {
-  return {
-    additionalDirectories: directories,
-    deny: [...deny, "Read(//**/.mcp.json)", ...directories.map(directory => {
-      const path = platform === "win32" ? `/${directory[0]!.toLowerCase()}${directory.slice(2).replaceAll("\\", "/")}` : directory;
-      // Claude applies Edit(path) rules to Write and MultiEdit as well.
-      return `Edit(/${path.replace(/[\\*?\[\]]/gu, "\\$&")}/**)`;
-    })],
-  };
 }
 
 async function writeWorkspaceFile(path: string, text: string, replace: boolean, posix: boolean) {
@@ -182,15 +171,15 @@ export class WorkspaceProvisioner {
     return binding.managed.policy;
   }
 
-  get readDirectories(): readonly string[] {
-    return this.directoryGrants?.directories ?? [];
+  readDirectories(bindingToken: string): readonly string[] {
+    return this.directoryGrants?.bindingToken === bindingToken ? this.directoryGrants.directories : [];
   }
 
   changeReadDirectory(bindingToken: string, cliSessionId: string | undefined, action: "add" | "remove", directory: string): void {
     if (action === "remove") {
       const current = this.directoryGrants;
       if (current?.bindingToken === bindingToken && current.directories.includes(directory)) {
-        this.removeReadDirectories({ ...current, directories: current.directories.filter(path => path !== directory) });
+        this.saveReadDirectories({ ...current, directories: current.directories.filter(path => path !== directory) });
       }
       return;
     }
@@ -208,47 +197,21 @@ export class WorkspaceProvisioner {
       if (!(error instanceof Error) || !("code" in error) || !["ENOENT", "ENOTDIR", "EACCES", "EPERM", "ELOOP"].includes(String(error.code))) throw error;
       throw new BridgeRequestError("INVALID_DIRECTORY", "无法打开此文件夹。请检查路径和系统访问权限。");
     }
-    const directories = this.directoryGrants?.bindingToken === bindingToken ? this.readDirectories : [];
-    const grants = { bindingToken, cliSessionId, directories: [...new Set([...directories, physical])] };
-    const settingsPath = join(this.physicalPath, ".claude", "settings.json");
-    const previousSettings = this.writeReadDirectorySettings(grants.directories);
-    try {
-      updateWorkspaceJson(assistantReadDirectoriesPath(this.physicalPath), grants);
-    } catch (error) {
-      updateWorkspaceJson(settingsPath, previousSettings);
-      throw error;
-    }
-    this.directoryGrants = grants;
+    this.saveReadDirectories({ bindingToken, cliSessionId, directories: [...new Set([...this.readDirectories(bindingToken), physical])] });
   }
 
   revokeReadDirectories(): void {
-    if (this.directoryGrants?.directories.length) this.removeReadDirectories({ ...this.directoryGrants, directories: [] });
+    if (this.directoryGrants?.directories.length) this.saveReadDirectories({ ...this.directoryGrants, directories: [] });
   }
 
-  private removeReadDirectories(grants: AssistantReadDirectories): void {
-    // Revoke at the guard before updating the Native directory settings.
+  private saveReadDirectories(grants: AssistantReadDirectories): void {
     try {
       updateWorkspaceJson(assistantReadDirectoriesPath(this.physicalPath), grants);
     } catch (error) {
       if (!(error instanceof WorkspaceLayoutError) && !(error instanceof Error && "code" in error)) throw error;
-      throw new BridgeRequestError("DIRECTORY_GUARD_REVOKE_FAILED", "Bridge 守卫未能撤销目录授权。");
+      throw new BridgeRequestError("DIRECTORY_GRANTS_SAVE_FAILED", "无法保存助理的目录授权。");
     }
     this.directoryGrants = grants;
-    try {
-      this.writeReadDirectorySettings(grants.directories);
-    } catch (error) {
-      if (!(error instanceof WorkspaceLayoutError || error instanceof SyntaxError) && !(error instanceof Error && "code" in error)) throw error;
-      throw new BridgeRequestError("DIRECTORY_NATIVE_REVOKE_FAILED", "Bridge 守卫已撤销目录授权，Claude Desktop 的目录配置未能更新。");
-    }
-  }
-
-  private writeReadDirectorySettings(directories: readonly string[]) {
-    const settingsPath = join(this.physicalPath, ".claude", "settings.json");
-    const settings = JSON.parse(readFileSync(settingsPath, "utf8")) as { permissions: Record<string, unknown> };
-    updateWorkspaceJson(settingsPath, { ...settings, permissions: {
-      ...settings.permissions, ...directoryPermissions(directories, this.platform),
-    } });
-    return settings;
   }
 
   async restore(sessionToken: string, savedPath: string, policy: string = ASSISTANT_WORKSPACE_POLICY): Promise<string> {
@@ -286,12 +249,12 @@ export class WorkspaceProvisioner {
     const compactHook = {
       type: "command", ...hookCommand(execPath, join(appPath, "dist", "assistant-compact-hook.cjs"), workspace, this.platform), timeout: 5,
     };
-    const allow = [...ASSISTANT_TOOLS, memory ? MEMORY_LOOKUP_TOOL : ASSISTANT_WEB_SEARCH_TOOL];
+    const allow = [...ASSISTANT_TOOLS, ...(memory ? [MEMORY_LOOKUP_TOOL] : [ASSISTANT_WEB_SEARCH_TOOL, ASSISTANT_DIRECTORY_NATIVE_TOOL])];
     const settings = {
       agent: await writeAssistantRunner(agents, posix, allow, memory),
       permissions: {
         defaultMode: "dontAsk", allow,
-        ...(memory ? { deny: [...deny, ASSISTANT_WEB_SEARCH_TOOL] } : directoryPermissions(grants?.directories ?? [], this.platform)),
+        deny: memory ? [...deny, ASSISTANT_WEB_SEARCH_TOOL, ASSISTANT_DIRECTORY_NATIVE_TOOL] : deny,
         blockReadsOutsideWorkingDirectories: true, blockWritesOutsideWorkingDirectories: true,
       },
       autoMemoryEnabled: false,

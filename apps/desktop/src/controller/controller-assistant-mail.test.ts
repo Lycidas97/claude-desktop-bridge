@@ -806,8 +806,9 @@ it("changes directory grants only for the current managed binding", async () => 
   await expect(run.request(method, grant)).resolves.toMatchObject({ assistantMail: { workspace: { readDirectories: [directory] } } });
   await expect(run.request(method, { ...grant, action: "remove" })).resolves.toMatchObject({ assistantMail: { workspace: { readDirectories: [] } } });
   await run.request(method, grant);
+  const token = store.binding()!.managed!.token;
   await run.request("plugin.assistant-mail.bind", { sessionId: "native-second" });
-  expect(run.workspace.readDirectories).toEqual([]);
+  expect(run.workspace.readDirectories(token)).toEqual([]);
   await expect(run.request(method, grant)).rejects.toMatchObject({ code: "INVALID_TARGET" });
 });
 
@@ -835,14 +836,13 @@ it.each(["session.archive", "session.delete"] as const)("persists %s even if Nat
   await run.request("plugin.assistant-mail.workspace.initialize", { workspacePath: run.workspace.path });
   const sessionId = "local-managed";
   await run.request("plugin.assistant-mail.read-directory.change", { action: "add", directory, sessionId });
+  const token = store.binding()!.managed!.token;
   const settings = join(run.workspace.path, ".claude", "settings.json");
-  const warning = vi.spyOn(process.stderr, "write");
   await rename(settings, `${settings}.fixture`);
 
   await run.request(method, { sessionId });
   expect(store.binding()).toMatchObject({ nativeSessionId: null, previousSessionIds: [sessionId] });
-  expect(run.workspace.readDirectories).toEqual([]);
-  expect(warning).toHaveBeenCalledWith(expect.stringContaining("DIRECTORY_NATIVE_REVOKE_FAILED"));
+  expect(run.workspace.readDirectories(token)).toEqual([]);
   expect(run.eventLog.append).toHaveBeenCalledWith(expect.objectContaining({
     type: method === "session.archive" ? "session.archived" : "session.deleted", sessionId,
   }));

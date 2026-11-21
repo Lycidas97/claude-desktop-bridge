@@ -107,6 +107,34 @@ it("uses one persisted credential for IMAP and SMTP, including after password re
   expect(secrets.size).toBe(0);
 });
 
+it("updates the shared From address without touching credentials or reconnecting IMAP", async () => {
+  const { service, createClient, credentials } = await createService([new Inbox(), new Inbox()]);
+  const smtp = { host: "smtp.example.test", port: 465, security: "tls", from: account.user } as const;
+  await service.enable(account);
+  const { accountKey } = service.status().accounts[0]!;
+  await expect(service.updateSharedSmtp(accountKey, smtp)).rejects.toMatchObject({ code: "INVALID_PARAMS" });
+  await service.setSmtp(accountKey, { ...smtp, user: account.user, credential: "separate-fixture-password" });
+  await expect(service.updateSharedSmtp(accountKey, smtp)).rejects.toMatchObject({ code: "INVALID_PARAMS" });
+
+  await service.replacePassword(accountKey, account.password, smtp);
+  await vi.waitFor(() => expect(service.status().state).toBe("connected"));
+  const previous = service.smtpAccount(accountKey)!.smtp;
+  vi.clearAllMocks();
+  await service.updateSharedSmtp(accountKey, smtp);
+  expect(service.smtpAccount(accountKey)?.smtp).toEqual(previous);
+  const from = "alias@example.test";
+  await service.updateSharedSmtp(accountKey, { ...smtp, from });
+  const updated = service.smtpAccount(accountKey)!.smtp;
+  expect(updated).toMatchObject({ ...smtp, from });
+  expect(updated.version).not.toBe(previous.version);
+  expect(createClient).not.toHaveBeenCalled();
+  expect(credentials.get).not.toHaveBeenCalled();
+  expect(credentials.set).not.toHaveBeenCalled();
+  expect(credentials.delete).not.toHaveBeenCalled();
+  expect(await service.smtpPassword(accountKey, previous.version)).toBeUndefined();
+  expect(await service.smtpPassword(accountKey, updated.version)).toBe(account.password);
+});
+
 it.each(["update password", "add again"])("requires sending settings before changing a shared credential via %s", async method => {
   const { service } = await createService([new Inbox(), new Inbox()]);
   const smtp = { host: "smtp.example.test", port: 465, security: "tls", from: account.user } as const;

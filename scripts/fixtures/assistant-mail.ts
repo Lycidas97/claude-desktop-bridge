@@ -5,7 +5,7 @@ import { AgendaStore } from "../../plugins/assistant-mail/agenda-store.js";
 import { AssistantMailService } from "../../plugins/assistant-mail/desktop.js";
 import { ProposalExecutor } from "../../plugins/assistant-mail/proposal-executor.js";
 import { ProposalStore } from "../../plugins/assistant-mail/proposal-store.js";
-import type { SmtpMessage } from "../../plugins/assistant-mail/smtp.js";
+import type { SmtpMessage, SmtpResult } from "../../plugins/assistant-mail/smtp.js";
 
 /** Synthetic IMAP boundary; the real receiver, SQLite store and MIME reader run unchanged. */
 export async function startAssistantMailFixture(directory: string, historyCount = 0, profile?: ConstructorParameters<typeof ProposalExecutor>[7]) {
@@ -55,14 +55,14 @@ export async function startAssistantMailFixture(directory: string, historyCount 
   let proposalStore!: ProposalStore;
   await service.initialize(db => { store = new AgendaStore(db); proposalStore = new ProposalStore(db); });
   const agenda = new AssistantAgendaService(store);
-  const smtp = { attempts: [] as SmtpMessage[], resultGate: undefined as Promise<void> | undefined };
+  const smtp: { attempts: SmtpMessage[]; resultGate?: Promise<void> | undefined; result?: SmtpResult } = { attempts: [] };
   const proposals = new ProposalExecutor(proposalStore, store, {
     available: () => false, encrypt: () => { throw new Error("No calendar credentials in fixture"); },
     decrypt: () => { throw new Error("No calendar credentials in fixture"); },
   }, sourceId => { void agenda.proposalChanged(sourceId); }, undefined, service, async (_channel, _credential, message) => {
     smtp.attempts.push(message);
     await smtp.resultGate;
-    return { state: "applied", accepted: [...message.to, ...message.cc], rejected: [] };
+    return smtp.result ?? { state: "applied", accepted: [...message.to, ...message.cc], rejected: [] };
   }, profile);
   const idle = once(seedInbox, "idle");
   await service.enable({ ...seedAccount, password: "synthetic-only" });

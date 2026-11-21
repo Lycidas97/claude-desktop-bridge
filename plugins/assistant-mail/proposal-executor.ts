@@ -150,7 +150,8 @@ export class ProposalExecutor extends EventEmitter {
   private async applySmtp(proposal: StoredProposal, channel: BridgeSmtpChannel & { version: string }, messageId: string) {
     if (!("accountKey" in proposal.action)) throw new Error("Expected an SMTP proposal");
     const password = await this.mailService().smtpPassword(proposal.action.accountKey, channel.version);
-    return this.finishSmtp(proposal, password ? await this.send(channel, password, proposal.action, messageId) : { state: "failed" });
+    return this.finishSmtp(proposal, password ? await this.send(channel, password, proposal.action, messageId)
+      : { state: "failed", failure: { reason: "credential" } });
   }
 
   private finishSmtp(proposal: StoredProposal, result: SmtpResult) {
@@ -258,7 +259,7 @@ export class ProposalExecutor extends EventEmitter {
       this.changed();
       return result;
     }
-    if (intent.backend === "smtp") return this.finishSmtp(proposal, { state: "delivery_uncertain" });
+    if (intent.backend === "smtp") return this.finishSmtp(proposal, { state: "delivery_uncertain", failure: { reason: "interrupted" } });
     if (intent.backend !== "caldav") throw new Error("A local proposal cannot have an interrupted execution");
     const credentials = this.remoteCredentials(proposal, intent.collection);
     if (!credentials) return this.finishRemote(proposal, "uncertain");

@@ -1,4 +1,4 @@
-import { ASSISTANT_MAIL_SHARED_AUTH_CAPABILITY, ASSISTANT_SMTP_CAPABILITY, type BridgeActionProposal, type BridgeDirectoryListing, type BridgeHostSnapshot, type BridgeSessionInfo } from "@bridge/protocol";
+import { ASSISTANT_MAIL_KEEP_CREDENTIAL_CAPABILITY, ASSISTANT_MAIL_SHARED_AUTH_CAPABILITY, ASSISTANT_SMTP_CAPABILITY, type BridgeActionProposal, type BridgeDirectoryListing, type BridgeHostSnapshot, type BridgeSessionInfo } from "@bridge/protocol";
 import { ArrowLeft, Check, ChevronRight, ListChecks, LoaderCircle, RefreshCw, Settings } from "lucide-react";
 import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
@@ -259,6 +259,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
       supportsPolling={capabilities.includes("plugin.assistant-mail.polling.v1")}
       supportsSmtp={capabilities.includes(ASSISTANT_SMTP_CAPABILITY)}
       supportsSharedAuth={capabilities.includes(ASSISTANT_MAIL_SHARED_AUTH_CAPABILITY)}
+      supportsKeepCredential={capabilities.includes(ASSISTANT_MAIL_KEEP_CREDENTIAL_CAPABILITY)}
       request={mail.request}
     />}
     {displayedView === "settings" && agenda && <AgendaSources />}

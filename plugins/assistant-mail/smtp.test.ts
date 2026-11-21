@@ -23,10 +23,14 @@ it.each([
   ["non-SMTP greeting", "* OK IMAP ready", null, false, "failed", undefined, "connection"],
   ["authentication refusal", "220 capture ESMTP", null, false, "failed", 535, "auth", "auth"],
   ["STARTTLS refusal", "220 capture ESMTP", null, false, "failed", 454, "tls", "starttls"],
+  ["STARTTLS handshake timeout", "220 capture ESMTP", null, false, "failed", undefined, "tls", "starttls-timeout"],
+  ["disconnect at MAIL FROM", "220 capture ESMTP", null, false, "failed", undefined, "connection", "MAIL FROM"],
+  ["disconnect before DATA permission", "220 capture ESMTP", null, false, "failed", undefined, "connection", "DATA"],
   ["implicit TLS against a cleartext port", "220 capture ESMTP", null, false, "failed", undefined, "tls", "tls"],
 ] as const)("records SMTP %s", async (_label, greeting, response, partial, state, responseCode, reason, setup?) => {
   const recipients: string[] = [];
   const messages: string[] = [];
+  let stoppedAt: "MAIL FROM" | "DATA" | "STARTTLS" | undefined;
   const server = createServer(socket => {
     let buffered = "";
     let data: string[] | undefined;
@@ -45,9 +49,21 @@ it.each([
           data = undefined;
           if (response) socket.write(`${response}\r\n`);
           else socket.destroy();
-        } else if (line.startsWith("EHLO ")) socket.write(setup === "starttls" ? "250-capture\r\n250 STARTTLS\r\n" : "250-capture\r\n250 AUTH PLAIN\r\n");
-        else if (line === "STARTTLS") socket.write("454 TLS unavailable\r\n");
-        else if (line.startsWith("AUTH PLAIN ")) socket.write(setup === "auth" ? "535 refused\r\n" : "235 authenticated\r\n");
+        } else if ((setup === "MAIL FROM" && line === `MAIL FROM:<${message.from}>`) || (setup === "DATA" && line === "DATA")) {
+          stoppedAt = setup;
+          socket.destroy();
+          return;
+        } else if (line.startsWith("EHLO ")) {
+          socket.write(setup?.startsWith("starttls") ? "250-capture\r\n250 STARTTLS\r\n" : "250-capture\r\n250 AUTH PLAIN\r\n");
+        } else if (line === "STARTTLS") {
+          if (setup === "starttls-timeout") {
+            stoppedAt = "STARTTLS";
+            socket.removeAllListeners("data");
+            socket.write("220 ready for TLS\r\n");
+            return;
+          }
+          socket.write("454 TLS unavailable\r\n");
+        } else if (line.startsWith("AUTH PLAIN ")) socket.write(setup === "auth" ? "535 refused\r\n" : "235 authenticated\r\n");
         else if (line === `MAIL FROM:<${message.from}>`) socket.write("250 sender accepted\r\n");
         else if (line.startsWith("RCPT TO:<")) {
           const address = line.slice(9, -1);
@@ -66,14 +82,18 @@ it.each([
     const result = await submitSmtp({ host: "127.0.0.1", port: (server.address() as AddressInfo).port,
       security: setup === "tls" ? "tls" : "starttls", user: "fixture", from: message.from }, "fixture-password", message, messageId, options => {
       expect(options).toMatchObject({ requireTLS: setup !== "tls", secure: setup === "tls", auth: { user: "fixture" } });
-      // Except when testing handshake rejection, exercise MIME/envelope on the cleartext capture.
+      // Keep TLS enabled for handshake tests; the other cases exercise SMTP on a cleartext capture.
+      if (setup === "starttls-timeout") return createTransport({ ...options, greetingTimeout: 1_000 });
       return createTransport(setup === "tls" || setup === "starttls" ? options : { ...options, requireTLS: false });
     });
     expect(result).toEqual(state === "delivery_partial" ? { state, accepted: message.to, rejected: message.cc }
       : state === "applied" ? { state, accepted: [...message.to, ...message.cc], rejected: [] }
       : { state, failure: { reason, ...(responseCode !== undefined ? { responseCode } : {}) } });
     if (setup || greeting !== "220 capture ESMTP") {
-      expect(recipients).toEqual([]);
+      if (setup === "MAIL FROM" || setup === "DATA" || setup === "starttls-timeout") {
+        expect(stoppedAt).toBe(setup === "starttls-timeout" ? "STARTTLS" : setup);
+      }
+      expect(recipients).toEqual(setup === "DATA" ? [...message.to, ...message.cc] : []);
       expect(messages).toEqual([]);
       return;
     }

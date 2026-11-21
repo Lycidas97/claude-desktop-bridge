@@ -271,3 +271,5 @@ export async function fixture(legacy = false, evidence?: ConstructorParameters<t
 }
 
 export const turnInput = { sessionId: "local-native", text: "hello", requestId: "request", idempotencyKey: "key", origin: "mobile" } as const;
+
+export const planMessage = (id: string, input: Record<string, unknown>, timestamp = 1, name = "mcp__ccd_turn__update_plan") => ({ type: "assistant", uuid: id, timestamp, message: { content: [{ type: "tool_use", id, name, input }] } });

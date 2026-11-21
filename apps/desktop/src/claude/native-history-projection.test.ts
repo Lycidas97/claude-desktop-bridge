@@ -87,7 +87,28 @@ describe("native user code examples", () => {
   });
 });
 
+describe("native task-plan cards", () => {
+  it("projects native task-plan updates and wrap-up onto one stable card", () => {
+    const tool = (id: string, name: string, input: unknown) => ({ type: "assistant", uuid: id, timestamp: 1, message: { content: [{ type: "tool_use", id, name, input }] } });
+    const items = nativeHistoryItems("native", [
+      tool("plan", "mcp__ccd_turn__update_plan", { items: [{ content: "Read", status: "in_progress" }, { content: "Verify", status: "pending" }] }),
+      tool("advance", "mcp__ccd_turn__update_plan", { advance: true }),
+      tool("wrap", "mcp__ccd_turn__wrap_up", { recap: "Done" }),
+    ]);
+    const plans = items.filter(item => item.taskPlan);
+    expect(plans).toHaveLength(1);
+    expect(plans[0]?.id).toBe("plan:plan");
+    expect(plans[0]?.taskPlan?.items.map(item => item.status)).toEqual(["completed", "completed"]);
+  });
+});
+
 describe("native question answers", () => {
+  it("filters control messages and preserves native question cards", () => {
+    const items = nativeHistoryItems("native", [{ type: "user", uuid: "hidden", message: { content: "[Request interrupted by user]" } }, { type: "assistant", uuid: "question", message: { content: [{ type: "tool_use", id: "ask", name: "AskUserQuestion", input: { questions: [{ question: "Continue?", options: [{ label: "Yes" }, { label: "No" }] }] } }] } }]);
+    expect(items.some(item => item.text.includes("Request interrupted"))).toBe(false);
+    expect(items.find(item => item.interactivePrompt)?.interactivePrompt?.kind).toBe("question");
+  });
+
   it.each([{ checks: "类型检查, 回归测试" }, { checks: ["类型检查", "回归测试"] }])("restores every selection from a native history tool result ($checks)", ({ checks }) => {
     expectSelected(nativeHistoryItems("session", [ask("question", "ask-1"), answer("ask-1", checks)]), "question");
   });

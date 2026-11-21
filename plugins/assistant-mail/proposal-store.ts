@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import type { BridgeActionProposal, BridgeProposalPage, ProposalRevisionRef, ProposalState } from "../../packages/protocol/src/assistant-proposal.js";
+import type { BridgeActionProposal, BridgeProposalPage, MailSendFailure, ProposalRevisionRef, ProposalState } from "../../packages/protocol/src/assistant-proposal.js";
 import { AssistantError } from "./assistant-error.js";
 import type { CalDavWrite } from "./caldav.js";
 import { ASSISTANT_PROFILE_TEMPLATE_HASH, type ProfileIntent } from "./assistant-memory.js";
@@ -13,10 +13,12 @@ export type ProposalPayload = Pick<BridgeActionProposal, "action" | "sourceId" |
 export type StoredProposal = BridgeActionProposal & { intent: Intent; nativeRevision?: number };
 type ExecutionState = Exclude<ProposalState, "pending">;
 type ResultState = Exclude<ExecutionState, "executing">;
-type ProposalRow = { ordinal: number; id: string; revision: number; session_id: string; payload: string; hash: string; state: ProposalState | null; rejected: string | null };
+type ProposalRow = { ordinal: number; id: string; revision: number; session_id: string; payload: string; hash: string;
+  state: ProposalState | null; rejected: string | null; failure: string | null };
 
 const projection = `SELECT p.rowid AS ordinal, p.id, p.revision, p.session_id, p.payload, p.hash, e.state,
-  CASE WHEN e.state = 'delivery_partial' THEN json_extract(s.result, '$.rejected') END AS rejected
+  CASE WHEN e.state = 'delivery_partial' THEN json_extract(s.result, '$.rejected') END AS rejected,
+  json_extract(s.result, '$.failure') AS failure
   FROM action_proposals p LEFT JOIN proposal_executions e ON p.id = e.id AND p.revision = e.revision
   LEFT JOIN send_attempts s ON p.id = s.id AND p.revision = s.revision`;
 const latest = "NOT EXISTS (SELECT 1 FROM action_proposals newer WHERE newer.id = p.id AND newer.revision > p.revision)";
@@ -28,9 +30,10 @@ function visibleProposals(includeMail?: boolean, includeMemory?: boolean): strin
 }
 
 function stored(row: ProposalRow): StoredProposal {
-  const { id, revision, hash, session_id, payload, state, rejected } = row;
+  const { id, revision, hash, session_id, payload, state, rejected, failure } = row;
   return { ...JSON.parse(payload) as ProposalPayload, proposalId: id, revision, payloadHash: hash, sessionId: session_id, state: state ?? "pending",
-    ...(rejected ? { rejectedRecipients: JSON.parse(rejected) as string[] } : {}) };
+    ...(rejected ? { rejectedRecipients: JSON.parse(rejected) as string[] } : {}),
+    ...(failure ? { mailSendFailure: JSON.parse(failure) as MailSendFailure } : {}) };
 }
 
 export function publicProposal({ intent: _intent, nativeRevision: _nativeRevision, ...proposal }: StoredProposal): BridgeActionProposal { return proposal; }
@@ -92,7 +95,8 @@ export class ProposalStore {
     return this.transaction(() => {
       this.db.prepare("UPDATE send_attempts SET result = ?, finished_at = ? WHERE id = ? AND revision = ?")
         .run(JSON.stringify(result), Date.now(), proposal.proposalId, proposal.revision);
-      return { ...this.finish(proposal, result.state), ...(result.state === "delivery_partial" ? { rejectedRecipients: result.rejected } : {}) };
+      return { ...this.finish(proposal, result.state), ...(result.state === "delivery_partial" ? { rejectedRecipients: result.rejected } : {}),
+        ...("failure" in result ? { mailSendFailure: result.failure } : {}) };
     });
   }
 

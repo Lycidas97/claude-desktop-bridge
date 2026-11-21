@@ -121,7 +121,8 @@ it.each(["proposal.create", "proposal.update_pending"] as const)("does not let %
 });
 
 it.each([{ state: "applied", accepted: [...draft.to, ...draft.cc], rejected: [] },
-  { state: "failed", responseCode: 550 }, { state: "delivery_uncertain" }] as const)("persists one exact attempt for $state", async result => {
+  { state: "failed", failure: { reason: "rejected", responseCode: 550 } },
+  { state: "delivery_uncertain", failure: { reason: "unconfirmed" } }] as const)("persists one exact attempt for $state", async result => {
   const action = { ...draft, to: [...draft.to], cc: [...draft.cc] };
   const first = await executor.create("bound", action);
   const approved = await executor.revise(first, { ...action, to: ["updated@example.net", ...draft.to], subject: "Final", bodyText: "Final text" });
@@ -138,13 +139,30 @@ it.each([{ state: "applied", accepted: [...draft.to, ...draft.cc], rejected: [] 
   await expect(executor.commit({ ...approved, confirmMail: true }, "desktop")).rejects.toMatchObject({ code: "CONFLICT" });
   await expect(committing).resolves.toMatchObject({ state: "executing" });
   await executor.close();
-  expect(executor.resolve("bound", [first], false, true)[0]?.state).toBe(result.state);
+  const resolved = executor.resolve("bound", [first], false, true)[0];
+  expect(resolved?.state).toBe(result.state);
+  expect(resolved?.mailSendFailure).toEqual("failure" in result ? result.failure : undefined);
+  expect(executor.page({ limit: 10, includeMail: true, history: true }).proposals).toEqual([resolved]);
+  expect(executor.page({ limit: 10, includeMail: true }).proposals).toEqual([]);
   expect(send).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ host: channel.host }), channel.credential, approved.action,
     `<${approved.proposalId}.2@example.com>`);
   const stored = db.prepare("SELECT result, finished_at FROM send_attempts").all();
   expect(stored).toHaveLength(1);
   expect(stored[0]!.finished_at).toEqual(expect.any(Number));
-  expect(JSON.parse(String(stored[0]!.result))).toMatchObject({ state: result.state });
+  expect(JSON.parse(String(stored[0]!.result))).toEqual(result.state === "applied"
+    ? { ...result, accepted: ["updated@example.net", ...result.accepted] } : result);
+});
+
+it("reads a legacy failed attempt with no reason", async () => {
+  const ref = await executor.create("bound", { ...draft, to: [...draft.to], cc: [...draft.cc] });
+  ledger.transaction(() => {
+    ledger.claim(ledger.requirePending(ref), "phone", "executing", "<legacy@example.com>");
+    db.prepare("UPDATE proposal_executions SET state = 'failed'").run();
+    db.prepare("UPDATE send_attempts SET result = ?").run('{"state":"failed","responseCode":550}');
+  });
+  const [result] = executor.page({ limit: 10, includeMail: true, history: true }).proposals;
+  expect(result).toMatchObject({ proposalId: ref.proposalId, state: "failed" });
+  expect(result).not.toHaveProperty("mailSendFailure");
 });
 
 it("recovers a consumed but interrupted approval without SMTP, and never reopens it", async () => {
@@ -157,9 +175,9 @@ it("recovers a consumed but interrupted approval without SMTP, and never reopens
   executor.start();
   await executor.close();
   expect(send).not.toHaveBeenCalled();
-  expect(executor.resolve("bound", [ref], false, true)[0]?.state).toBe("delivery_uncertain");
+  expect(executor.resolve("bound", [ref], false, true)[0]).toMatchObject({ state: "delivery_uncertain", mailSendFailure: { reason: "interrupted" } });
   expect(db.prepare("SELECT message_id, result FROM send_attempts").all()).toEqual([
-    { message_id: "<interrupted@example.com>", result: '{"state":"delivery_uncertain"}' },
+    { message_id: "<interrupted@example.com>", result: '{"state":"delivery_uncertain","failure":{"reason":"interrupted"}}' },
   ]);
   await expect(executor.commit({ ...ref, confirmMail: true }, "desktop")).rejects.toMatchObject({ code: "CONFLICT" });
 });

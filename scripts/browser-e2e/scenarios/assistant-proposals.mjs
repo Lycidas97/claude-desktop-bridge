@@ -345,6 +345,42 @@ export async function verifyAssistantProposals(page, host, steps, directory, vie
   assert.deepEqual(attempts.map(({ from, to, cc, subject, bodyText }) => ({ from, to, cc, subject, bodyText })),
     [{ from: "writer@example.test", to: finalTo, cc: mailCc, subject: finalSubject, bodyText: finalBody }]);
   steps.push("Mail confirmation displays the pinned envelope, rejects a stale confirmation, and keeps its in-flight state until one send finishes");
+
+  const accountKey = host.nativeApproval.assistantMail.service.status().accounts.find(account => account.smtp).accountKey;
+  const failureSubject = "发信连接失败测试";
+  const { result: failingMail } = await host.nativeApproval.draftProposal({
+    kind: "mail.send", accountKey, to: mailTo, subject: failureSubject, bodyText: "连接失败时不应发出此邮件。",
+  });
+  smtp.result = { state: "failed", failure: { reason: "connection" } };
+  await page.locator(".assistant-page-mobile").getByRole("button", { name: "返回", exact: true }).click();
+  const failingRow = rows.getByRole("button", { name: new RegExp(`^${failureSubject}`, "u") });
+  await failingRow.click();
+  await detail.getByRole("button", { name: "核对并发送…" }).click();
+  await sheet.getByRole("button", { name: "确认立即发出" }).click();
+  await sheet.waitFor({ state: "hidden" });
+  const errorMessage = "发送失败：无法连接发信服务器。邮件未发出。请检查 SMTP 地址、端口和网络。";
+  const failure = detail.getByRole("status").filter({ hasText: errorMessage });
+  await failure.waitFor();
+  const { actual, danger } = await failure.evaluate(element => {
+    const actual = getComputedStyle(element).color;
+    element.style.color = "var(--danger-ink)";
+    const danger = getComputedStyle(element).color;
+    element.style.removeProperty("color");
+    return { actual, danger };
+  });
+  assert.equal(actual, danger, "SMTP failure status must use the theme's error color");
+  await capture(page, "mobile-mail-send-failed");
+  assert.equal(await detail.getByRole("button", { name: "核对并发送…" }).count(), 0);
+  await page.locator(".assistant-page-mobile").getByRole("button", { name: "返回", exact: true }).click();
+  await failingRow.waitFor({ state: "hidden" });
+  await page.getByRole("region", { name: "待确认提案" }).getByRole("button", { name: "处理记录", exact: true }).click();
+  await failingRow.getByText(/发送失败：无法连接发信服务器/u).waitFor();
+  await failingRow.click();
+  await detail.getByRole("status").filter({ hasText: errorMessage }).waitFor();
+  await assert.rejects(mailRequest("assistant.proposal.commit", { ...failingMail, confirmMail: true }), { code: "CONFLICT" });
+  assert.equal(attempts.filter(({ subject }) => subject === failureSubject).length, 1);
+  steps.push("A failed SMTP connection displays a definite failure in phone detail and history without re-opening approval");
+
   await desktop.getByRole("button", { name: "助理设置", exact: true }).click();
   const legacyAccount = desktop.locator(".assistant-account-row").filter({ hasText: "发信使用独立授权" });
   await legacyAccount.getByRole("button", { name: /^账号设置：/u }).click();

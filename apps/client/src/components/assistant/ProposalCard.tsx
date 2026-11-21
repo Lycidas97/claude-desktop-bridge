@@ -1,4 +1,4 @@
-import type { AgendaEventInput, AgendaPage, AgendaProposalAction, AgendaTodoInput, BridgeActionProposal, BridgeAgendaEvent, ProposalState } from "@bridge/protocol";
+import type { AgendaEventInput, AgendaPage, AgendaProposalAction, AgendaTodoInput, BridgeActionProposal, BridgeAgendaEvent, MailSendFailure, ProposalState } from "@bridge/protocol";
 import { CalendarDays, FilePenLine, ListTodo, Mail } from "lucide-react";
 import { useEffect, useId, useState, type FormEvent } from "react";
 import { agendaInputTime, agendaInstant, agendaTimedRange } from "../../lib/assistant-agenda.js";
@@ -27,11 +27,31 @@ const proposalStateDetail: Partial<Record<ProposalState, string>> = {
   conflict: "目标记录已更新，未写入。", uncertain: "结果不确定，请核对来源。不会自动重试。",
 };
 
+const mailSendReason: Record<MailSendFailure["reason"], { label: string; guidance?: string }> = {
+  connection: { label: "无法连接发信服务器", guidance: "请检查 SMTP 地址、端口和网络。" },
+  tls: { label: "无法建立 TLS 连接", guidance: "请检查 SMTP 端口、加密方式和服务器证书。" },
+  auth: { label: "SMTP 认证失败", guidance: "请检查邮箱账号的发信授权。" },
+  rejected: { label: "服务器未接受邮件", guidance: "请核对发件人、收件地址和邮件内容。" },
+  credential: { label: "发信授权不可用", guidance: "请在邮箱账号设置中核对发信授权。" },
+  unconfirmed: { label: "未收到有效的发送回执" },
+  interrupted: { label: "发送过程未能完成记录" },
+};
+
+function mailFailureSummary(failure: MailSendFailure | undefined) {
+  if (!failure || !Object.hasOwn(mailSendReason, failure.reason)) return;
+  const { label, guidance } = mailSendReason[failure.reason];
+  return { label: `${label}${failure.responseCode ? `（SMTP ${failure.responseCode}）` : ""}`, guidance };
+}
+
 export function proposalStatus(proposal: BridgeActionProposal): string {
   if ("accountKey" in proposal.action) {
     if (proposal.state === "applied") return "发送服务器已接受";
     if (proposal.state === "executing") return "正在发送…";
-    if (proposal.state === "failed") return "发送失败";
+    if (proposal.state === "failed" || proposal.state === "delivery_uncertain") {
+      const label = proposal.state === "failed" ? "发送失败" : proposalStateLabel.delivery_uncertain;
+      const failure = mailFailureSummary(proposal.mailSendFailure);
+      return failure ? `${label}：${failure.label}` : label;
+    }
   }
   return proposalStateLabel[proposal.state];
 }
@@ -84,6 +104,7 @@ export function ProposalCard({ proposal, mobile, review = false, replaced = fals
   const calendar = action.kind.startsWith("calendar.");
   const memory = action.kind === "memory.rule_upsert";
   const mail = "accountKey" in action;
+  const failure = mail ? mailFailureSummary(current.mailSendFailure) : undefined;
   const Icon = mail ? Mail : memory ? FilePenLine : calendar ? CalendarDays : ListTodo;
   const disabled = !controller?.online || busy || replaced;
   const desired = "value" in action ? action.value : action.kind === "todo.complete" && current.before && "status" in current.before
@@ -124,8 +145,9 @@ export function ProposalCard({ proposal, mobile, review = false, replaced = fals
     {state === "pending" && calendar && current.before && "attendees" in current.before && Array.isArray(current.before.attendees) && current.before.attendees.length > 0 &&
       <p className="proposal-status">参与者：{current.before.attendees.join("、")}。日历服务可能发送变更通知。</p>}
     {replaced && <p role="status">提案已更新，请返回待确认列表核对。</p>}
-    {state !== "pending" && <p className="proposal-status" data-state={state} role="status">{mail && state === "failed" ? "发送失败，未自动重试。"
-      : state === "delivery_uncertain" ? "投递不确定。请核查「已发送」；找不到副本不代表未发送。Bridge 不会自动重发。"
+    {state !== "pending" && <p className="proposal-status" data-state={state} role="status">{mail && state === "failed" ? (failure
+      ? `发送失败：${failure.label}。邮件未发出。${failure.guidance ?? ""}` : "发送失败，未自动重试。")
+      : state === "delivery_uncertain" ? `投递不确定${failure ? `：${failure.label}` : ""}。请核查「已发送」；找不到副本不代表未发送。Bridge 不会自动重发。`
       : state === "delivery_partial" ? `发送服务器拒绝了以下地址：${current.rejectedRecipients?.join("、")}。其余地址已接受，不会自动重发。`
       : proposalStateDetail[state] ?? proposalStatus(current)}</p>}
     {error && <p role="alert">{error}</p>}

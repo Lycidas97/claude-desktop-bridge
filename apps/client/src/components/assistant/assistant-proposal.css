@@ -19,7 +19,8 @@
 .proposal-fields dt { color: var(--muted); }
 .proposal-fields dd { margin: 0; white-space: pre-wrap; }
 .proposal-card summary { width: fit-content; padding: 5px 0; cursor: pointer; }
-.proposal-card p[role="alert"], .proposal-panel p[role="alert"], .proposal-status:is([data-state="conflict"], [data-state="failed"], [data-state="uncertain"]) { color: var(--danger-ink); }
+.proposal-card p[role="alert"], .proposal-panel p[role="alert"],
+.proposal-card .proposal-status:is([data-state="conflict"], [data-state="failed"], [data-state="uncertain"], [data-state="delivery_partial"], [data-state="delivery_uncertain"]) { color: var(--danger-ink); }
 .proposal-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
 .proposal-actions > .assistant-session-link { margin-inline-start: auto; padding-inline: 8px; }
 .proposal-inline-editor { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
@@ -55,8 +56,7 @@
 .assistant-proposal-dock .permission-dock[data-empty="true"] .permission-dock-icon { background: none; color: var(--muted); }
 .mail-proposal-sheet { overflow-wrap: anywhere; color: var(--text); }
 .mail-proposal-sheet > .proposal-fields { margin: 0 0 12px; gap: 6px 16px; }
-.mail-proposal-sheet > p[role="alert"], .mail-proposal-sheet > p[role="status"],
-.proposal-status:is([data-state="delivery_partial"], [data-state="delivery_uncertain"]) { color: var(--danger-ink); }
+.mail-proposal-sheet > p[role="alert"], .mail-proposal-sheet > p[role="status"] { color: var(--danger-ink); }
 .mail-proposal-address-warning { padding: 10px 12px; margin: 12px 0; background: var(--surface); border-inline-start: 3px solid var(--line); font-size: calc(13px * var(--font-scale)); }
 .mail-proposal-address-warning[data-foreign="true"] { background: var(--danger-soft); border-color: var(--danger-ink); }
 .mail-proposal-address-warning[data-foreign="true"] > strong { color: var(--danger-ink); }

@@ -167,7 +167,7 @@ async function runScenario(theme, scenario, mockHostRuntime) {
     assert.equal(await page.evaluate(() => Boolean(window.bridgeDesktop)), false, "Test must load the mobile App path");
     assert.equal(await page.evaluate(() => innerWidth), 375);
     steps.push("real App pairing and encrypted snapshot synchronize the session list at 375x812");
-    if (scenario === "assistant-mail") await verifyAssistantMail(page, host, steps, directory, viewports, baseUrl);
+    if (scenario === "assistant-mail") await verifyAssistantMail(page, host, steps, directory, viewports, baseUrl, theme === "dark");
     else if (scenario === "assistant-mail-reference") await verifyAssistantMailReference(page, host, steps, directory, viewports);
     else if (scenario === "assistant-mail-categories") await verifyAssistantMailCategories(page, host, steps, directory, viewports, baseUrl);
     else if (scenario === "assistant-mail-history") await verifyAssistantMailHistory(page, host, steps, directory, viewports);

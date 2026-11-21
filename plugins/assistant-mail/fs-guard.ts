@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync, type BigIntStats } from "node:fs";
 import { lstat, readdir, realpath, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import { ASSISTANT_DIRECTORY_TOOL, ASSISTANT_MEMORY_POLICY, ASSISTANT_WORKSPACE_POLICY, isAssistantWorkspacePolicy } from "../../packages/protocol/src/assistant-mail.js";
@@ -95,6 +95,23 @@ export const assistantReadDirectoriesPath = (workspace: string) => join(dirname(
 export function isAssistantReadDirectory(workspace: string, value: unknown): value is string {
   const userData = dirname(dirname(dirname(workspace)));
   return safePathInput(value) && isAbsolute(value) && !withinPath(userData, value) && !withinPath(value, userData);
+}
+
+function ancestryContains(path: string, { dev, ino }: BigIntStats): boolean {
+  for (;;) {
+    const identity = statSync(path, { bigint: true });
+    if (identity.dev === dev && identity.ino === ino) return true;
+    const parent = dirname(path);
+    if (parent === path) return false;
+    path = parent;
+  }
+}
+
+export function overlapsAssistantData(workspace: string, physicalPath: string): boolean {
+  const userData = dirname(dirname(dirname(workspace)));
+  // APFS may preserve a different spelling for paths that identify the same directory.
+  return ancestryContains(physicalPath, statSync(userData, { bigint: true })) ||
+    ancestryContains(userData, statSync(physicalPath, { bigint: true }));
 }
 
 export function loadAssistantReadDirectories(workspace: string): AssistantReadDirectories | undefined {

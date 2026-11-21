@@ -1,9 +1,10 @@
+import { existsSync, realpathSync } from "node:fs";
 import { link, mkdir, mkdtemp, realpath, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, expect, it } from "vitest";
 import { ASSISTANT_MEMORY_POLICY } from "../../packages/protocol/src/assistant-mail.js";
-import { ASSISTANT_TOOLS, allowAssistantTool, assistantReadDirectoriesPath } from "./fs-guard.js";
+import { ASSISTANT_TOOLS, allowAssistantTool, assistantReadDirectoriesPath, overlapsAssistantData } from "./fs-guard.js";
 import { MAIL_TOOLS } from "./tool-contract.js";
 
 let root: string;
@@ -30,6 +31,33 @@ beforeEach(async () => {
 function check(tool_name: string, tool_input: Record<string, unknown>, cwd = workspace) {
   return allowAssistantTool(workspace, { hook_event_name: "PreToolUse", cwd, tool_name, tool_input });
 }
+
+it("recognizes physical identities for aliases of the data directory, its parents, and its children", async () => {
+  const dataAlias = join(root, "data-alias");
+  const parentAlias = join(root, "parent-alias");
+  const unrelated = join(root, "unrelated");
+  await Promise.all([
+    symlink(join(root, "bridge-data"), dataAlias, "junction"),
+    symlink(root, parentAlias, "junction"),
+    mkdir(unrelated),
+  ]);
+  expect(overlapsAssistantData(workspace, dataAlias)).toBe(true);
+  expect(overlapsAssistantData(workspace, join(dataAlias, "private"))).toBe(true);
+  expect(overlapsAssistantData(workspace, parentAlias)).toBe(true);
+  expect(overlapsAssistantData(workspace, unrelated)).toBe(false);
+});
+
+it.skipIf(process.platform !== "darwin")("recognizes distinct APFS realpath spellings of a directory", async ({ skip }) => {
+  const name = "Sample-café";
+  const directory = join(root, name);
+  const alias = join(root, name.normalize("NFD"));
+  await mkdir(directory);
+  if (!existsSync(alias)) skip();
+  const physicalDirectory = realpathSync(directory);
+  const physicalAlias = realpathSync(alias);
+  if (physicalAlias === physicalDirectory) skip();
+  expect(overlapsAssistantData(join(physicalDirectory, "private", "assistant", "workspace"), physicalAlias)).toBe(true);
+});
 
 it("allows workspace reads and output writes, including files with missing ancestors", async () => {
   await expect(check("Read", { file_path: ".bridge-uploads/upload/attachment.txt" })).resolves.toBe(true);

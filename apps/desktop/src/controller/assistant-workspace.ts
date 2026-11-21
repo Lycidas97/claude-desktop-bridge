@@ -11,7 +11,7 @@ import {
   AGENDA_TOOLS, ASSISTANT_DIRECTORY_NATIVE_TOOL, ASSISTANT_FILE_WRITES, ASSISTANT_HELPER, ASSISTANT_MARK_READ_TOOL, ASSISTANT_MCP,
   ASSISTANT_MEMORY_ROOTS, ASSISTANT_SPECIALISTS, ASSISTANT_TOKEN_ENV, ASSISTANT_TOOLS, ASSISTANT_WEB_SEARCH_TOOL,
   MEMORY_LOOKUP_TOOL, PROPOSAL_NATIVE_TOOLS, assistantReadDirectoriesPath, isAssistantReadDirectory,
-  isMissingPath, loadAssistantReadDirectories, withinPath, type AssistantReadDirectories,
+  isMissingPath, loadAssistantReadDirectories, overlapsAssistantData, withinPath, type AssistantReadDirectories,
 } from "../../../../plugins/assistant-mail/fs-guard.js";
 
 export { isAssistantTool } from "../../../../plugins/assistant-mail/fs-guard.js";
@@ -190,7 +190,7 @@ export class WorkspaceProvisioner {
     let physical: string;
     try {
       physical = realpathSync.native(directory);
-      if (!isAssistantReadDirectory(this.physicalPath, physical) || !statSync(physical).isDirectory()) {
+      if (!isAssistantReadDirectory(this.physicalPath, physical) || !statSync(physical).isDirectory() || overlapsAssistantData(this.physicalPath, physical)) {
         throw new BridgeRequestError("INVALID_DIRECTORY", "请选择 Bridge 数据目录之外的文件夹。");
       }
     } catch (error) {

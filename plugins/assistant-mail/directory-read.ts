@@ -2,7 +2,7 @@ import { lstat, open, opendir, realpath } from "node:fs/promises";
 import { extname, relative, resolve } from "node:path";
 import { AssistantError } from "./assistant-error.js";
 import { attachmentText, MAIL_TEXT_MAX_BYTES } from "./attachment-text.js";
-import { isAssistantReadDirectory, isMcpConfig, withinPath } from "./fs-guard.js";
+import { isAssistantReadDirectory, isMcpConfig, overlapsAssistantData, withinPath } from "./fs-guard.js";
 import { MailAttachmentError } from "./mime.js";
 
 export class DirectoryReadDenied extends Error {}
@@ -16,7 +16,7 @@ export async function readGrantedDirectory(workspace: string, directories: reado
   try {
     const physical = await realpath(requested);
     // Grants record physical roots. The exact resolved path must stay in the granted root without aliases.
-    if (relative(requested, physical) !== "") throw new DirectoryReadDenied();
+    if (relative(requested, physical) !== "" || overlapsAssistantData(workspace, physical)) throw new DirectoryReadDenied();
     const info = await lstat(physical);
     if (info.isDirectory()) {
       const entries: { name: string; kind: "directory" | "file" }[] = [];

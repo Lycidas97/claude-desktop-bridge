@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { ARTIFACT_MAX_BYTES, ASSISTANT_ATTENTION_CAPABILITY, ASSISTANT_MAIL_CATEGORIES_CAPABILITY, ASSISTANT_MAIL_FILING_CAPABILITY, ASSISTANT_MAIL_KEEP_CREDENTIAL_CAPABILITY, ASSISTANT_MAIL_RECEIVED_ORDER_CAPABILITY, ASSISTANT_MAIL_SHARED_AUTH_CAPABILITY, ASSISTANT_MEMORY_POLICY, ASSISTANT_SMTP_CAPABILITY, isAssistantWorkspacePolicy, isMailPollInterval, mailAttachmentPreviewKind } from "@bridge/protocol";
+import { ARTIFACT_MAX_BYTES, ASSISTANT_ATTENTION_CAPABILITY, ASSISTANT_MAIL_CATEGORIES_CAPABILITY, ASSISTANT_MAIL_FILING_CAPABILITY, ASSISTANT_MAIL_KEEP_CREDENTIAL_CAPABILITY, ASSISTANT_MAIL_RECEIVED_ORDER_CAPABILITY, ASSISTANT_MAIL_SHARED_AUTH_CAPABILITY, ASSISTANT_MEMORY_POLICY, ASSISTANT_READ_DIRECTORIES_CAPABILITY, ASSISTANT_SMTP_CAPABILITY, ASSISTANT_WORKSPACE_POLICY, isAssistantWorkspacePolicy, isMailPollInterval, mailAttachmentPreviewKind } from "@bridge/protocol";
 import { AssistantError } from "../../../../plugins/assistant-mail/assistant-error.js";
 import type { AssistantAgendaService } from "../../../../plugins/assistant-mail/agenda.js";
 import { configureSmtp, saveMailAccount } from "../../../../plugins/assistant-mail/proposal-contract.js";
@@ -185,7 +185,7 @@ export class AssistantMailCoordinator {
   capabilities() {
     return [
       ...ASSISTANT_MAIL_CAPABILITIES,
-      ...(this.workspace && this.host.broker?.canProvisionAssistantWorkspace() ? ["plugin.assistant-mail.workspace.v1"] as const : []),
+      ...(this.workspace && this.host.broker?.canProvisionAssistantWorkspace() ? ["plugin.assistant-mail.workspace.v1", ASSISTANT_READ_DIRECTORIES_CAPABILITY] as const : []),
       ...(this.dispatcher ? ["plugin.assistant-mail.triggers.v1", "plugin.assistant-mail.batches.v1"] as const : []),
     ];
   }
@@ -334,6 +334,7 @@ export class AssistantMailCoordinator {
       ...(repairFailed ? { repairFailed: true as const } : {}),
       policy: isAssistantWorkspacePolicy(policy) ? policy : this.workspace.policy,
       ...(nativeSessionId ? { nativeSessionId } : {}),
+      ...(nativeSessionId && policy === ASSISTANT_WORKSPACE_POLICY && !repairFailed ? { readDirectories: [...this.workspace.readDirectories] } : {}),
       toolIsolation: !catalog ? "unobserved" : catalog.unexpectedTools.length ? "warning" : "compatible",
       ...(catalog?.unexpectedTools.length ? { unexpectedTools: catalog.unexpectedTools } : {}),
     } };
@@ -341,6 +342,7 @@ export class AssistantMailCoordinator {
 
   private bindSession(session: BridgeSessionInfo, managed?: NonNullable<ReturnType<AssistantMailService["binding"]>>["managed"]): void {
     const previous = this.mail.binding();
+    if (!managed && previous?.managed) this.workspace?.revokeReadDirectories();
     this.toolCatalog = undefined;
     this.mail.setBinding({
       assistantId: previous?.assistantId ?? randomUUID(),
@@ -389,6 +391,8 @@ export class AssistantMailCoordinator {
   }
 
   pauseBinding(sessionId: string): void {
+    const binding = this.mail.binding();
+    if (binding?.nativeSessionId === sessionId && binding.managed) this.workspace?.revokeReadDirectories();
     pauseAssistantBinding(this.mail, sessionId);
   }
 
@@ -557,6 +561,21 @@ export class AssistantMailCoordinator {
         throw new BridgeRequestError("INVALID_TARGET", "当前托管会话不可启用主动助理。请检查会话和权限模式。");
       }
       this.mail.setAutomaticDelivery(enabled);
+    } else if (method === "plugin.assistant-mail.read-directory.change") {
+      const { sessionId, action, directory } = params;
+      if (typeof sessionId !== "string" || (action !== "add" && action !== "remove") || typeof directory !== "string" || !directory) {
+        throw new BridgeRequestError("INVALID_PARAMS", "请选择要授权或撤销的文件夹。");
+      }
+      const binding = this.mail.binding();
+      if (!this.workspace || this.workspace.repairFailed || this.initializingWorkspace || binding?.nativeSessionId !== sessionId ||
+        binding.managed?.policy !== ASSISTANT_WORKSPACE_POLICY) {
+        throw new BridgeRequestError("INVALID_TARGET", "只能修改当前托管助理的可读目录。");
+      }
+      const native = action === "add" ? await this.readManagedNativeSession(sessionId) : undefined;
+      if (this.initializingWorkspace || this.mail.binding()?.managed?.token !== binding.managed.token) {
+        throw new BridgeRequestError("INVALID_TARGET", "托管助理已更换，请重新选择文件夹。");
+      }
+      this.workspace.changeReadDirectory(binding.managed.token, native?.cliSessionId, action, directory);
     } else if (method.startsWith("plugin.assistant-mail.account.")) {
       if (!this.mail.status().credentialsSupported) {
         throw new BridgeRequestError("UNSUPPORTED", "当前电脑不支持存储邮箱凭据。");

@@ -1,4 +1,4 @@
-import { ASSISTANT_MAIL_KEEP_CREDENTIAL_CAPABILITY, ASSISTANT_MAIL_SHARED_AUTH_CAPABILITY, ASSISTANT_SMTP_CAPABILITY, type BridgeActionProposal, type BridgeDirectoryListing, type BridgeHostSnapshot, type BridgeSessionInfo } from "@bridge/protocol";
+import { ASSISTANT_MAIL_KEEP_CREDENTIAL_CAPABILITY, ASSISTANT_MAIL_SHARED_AUTH_CAPABILITY, ASSISTANT_READ_DIRECTORIES_CAPABILITY, ASSISTANT_SMTP_CAPABILITY, type BridgeActionProposal, type BridgeDirectoryListing, type BridgeHostSnapshot, type BridgeSessionInfo } from "@bridge/protocol";
 import { ArrowLeft, Check, ChevronRight, ListChecks, LoaderCircle, RefreshCw, Settings } from "lucide-react";
 import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
@@ -16,6 +16,7 @@ import { AgendaView } from "./AgendaView.js";
 import { useAssistantAgenda } from "./AssistantAgendaProvider.js";
 import { pendingProposalCount, useAssistantProposals } from "./AssistantProposalProvider.js";
 import { AssistantAttention } from "./AssistantAttention.js";
+import { AssistantReadDirectories } from "./AssistantReadDirectories.js";
 import { ProposalPanel } from "./ProposalPanel.js";
 import { InboxMailList } from "./InboxMailList.js";
 import { MailAccounts } from "./MailAccounts.js";
@@ -203,6 +204,10 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
           {mail.assistant?.automaticDelivery && !mail.assistant.automaticDeliveryAvailable && <p role="status">自动投递已暂停，等待托管会话就绪。</p>}
           {deliveryError && <p role="alert">{deliveryError}</p>}
         </div> : !mail.assistant?.automaticDelivery && <span className="assistant-delivery-disabled">自动投递未启用</span>}
+      {snapshot && capabilities.includes(ASSISTANT_READ_DIRECTORIES_CAPABILITY) && workspace?.nativeSessionId && workspace.readDirectories && (
+        <AssistantReadDirectories key={workspace.nativeSessionId} directories={workspace.readDirectories} sessionId={workspace.nativeSessionId}
+          snapshot={snapshot} disabled={!mail.online || bindingBusy} request={mail.request} browse={browseDirectory} />
+      )}
       {binding?.previousSessionIds.length ? <details><summary>以前的会话</summary><ul>{binding.previousSessionIds.map(sessionId => {
         const previous = snapshot?.sessions.find(candidate => candidate.sessionId === sessionId);
         return <li key={sessionId}>{previous ? <button type="button" className="assistant-session-link" onClick={() => onOpenSession(sessionId)}>{previous.title || sessionId}</button> : <span>{sessionId}</span>}</li>;

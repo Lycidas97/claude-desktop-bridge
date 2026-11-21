@@ -125,6 +125,7 @@ const METHODS = new Set([
   "plugin.assistant-mail.bind",
   "plugin.assistant-mail.workspace.initialize",
   "plugin.assistant-mail.automatic-delivery.set",
+  "plugin.assistant-mail.read-directory.change",
   "plugin.assistant-mail.account.add",
   "plugin.assistant-mail.account.save",
   "plugin.assistant-mail.account.update-credential",

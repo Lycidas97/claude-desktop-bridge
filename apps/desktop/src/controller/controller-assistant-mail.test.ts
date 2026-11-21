@@ -66,6 +66,8 @@ async function fixture(proposalStore: ProposalStore, agenda: AgendaStore) {
     deleteSession: vi.fn(async (_sessionId: string) => undefined),
     canProvisionAssistantWorkspace: () => true,
     session: (id: string) => sessions.find(session => session.sessionId === id),
+    readNativeSessionIdentity: vi.fn(async (id: string) => ({ cwd: sessions.find(session => session.sessionId === id)?.cwd,
+      permissionMode: "dontAsk", archived: false, cliSessionId: "synthetic-cli-session" })),
     createSession: vi.fn(async (cwd: string) => {
       const created = nativeSession("local-managed", { cwd, projectName: "助理", projectId: "managed-project" });
       sessions.push(created);
@@ -780,7 +782,7 @@ it("binds the provisioned Native conversation only after checking the confirmed 
   await expect(run.request("session.fork", { sessionId: "local-managed" })).rejects.toMatchObject({ code: "INVALID_TARGET" });
   expect(run.broker.forkSession).not.toHaveBeenCalled();
   run.broker.emit("system.init", "native-first", ["Bash"]);
-  run.broker.emit("system.init", "local-managed", ["Read", "Task", "mcp__assistant-mail__mail_read_event", "Bash", "mcp__ccd_session__start_session"]);
+  run.broker.emit("system.init", "local-managed", ["Read", "WebSearch", "Task", "mcp__assistant-mail__mail_read_event", "Bash", "mcp__ccd_session__start_session"]);
   expect((await run.publish()).assistantMail).toMatchObject({
     changeToken: initial.assistantMail?.changeToken,
     workspace: { toolIsolation: "warning", unexpectedTools: ["Bash", "mcp__ccd_session__start_session"] },
@@ -789,6 +791,24 @@ it("binds the provisioned Native conversation only after checking the confirmed 
   expect(store.binding()).toMatchObject({ nativeSessionId: "native-second", previousSessionIds: ["local-managed"] });
   expect(store.binding()).not.toHaveProperty("managed");
   expect((await run.publish()).assistantMail?.workspace).toMatchObject({ toolIsolation: "unobserved" });
+});
+
+it("changes directory grants only for the current managed binding", async () => {
+  const method = "plugin.assistant-mail.read-directory.change";
+  const directory = await realpath(await mkdtemp(join(process.env.BRIDGE_TEST_TEMP_ROOT!, "assistant-readable-")));
+  const grant = { action: "add", directory, sessionId: "local-managed" };
+  await expect(run.request(method, grant)).rejects.toMatchObject({ code: "INVALID_TARGET" });
+  await run.request("plugin.assistant-mail.workspace.initialize", { workspacePath: run.workspace.path });
+  await expect(run.request(method, { ...grant, directory: root })).rejects.toMatchObject({ code: "INVALID_DIRECTORY" });
+  await expect(run.request(method, { ...grant, sessionId: "native-first" })).rejects.toMatchObject({ code: "INVALID_TARGET" });
+  run.broker.readNativeSessionIdentity.mockResolvedValueOnce({ cwd: run.workspace.path, permissionMode: "default", archived: false, cliSessionId: "synthetic-cli-session" });
+  await expect(run.request(method, grant)).rejects.toMatchObject({ code: "INVALID_TARGET" });
+  await expect(run.request(method, grant)).resolves.toMatchObject({ assistantMail: { workspace: { readDirectories: [directory] } } });
+  await expect(run.request(method, { ...grant, action: "remove" })).resolves.toMatchObject({ assistantMail: { workspace: { readDirectories: [] } } });
+  await run.request(method, grant);
+  await run.request("plugin.assistant-mail.bind", { sessionId: "native-second" });
+  expect(run.workspace.readDirectories).toEqual([]);
+  await expect(run.request(method, grant)).rejects.toMatchObject({ code: "INVALID_TARGET" });
 });
 
 it.each(["session.command", "turn.start", "turn.steer"] as const)("reserves the assistant receipt key for %s", async method => {

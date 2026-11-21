@@ -312,7 +312,8 @@ export async function deliverTransportMessage(
   try {
     const deviceId = message.header.fromDeviceId;
     if ((requestMethod.startsWith("assistant.proposal.") || requestMethod === "plugin.assistant-mail.junk.set" ||
-      requestMethod === "plugin.assistant-mail.filing.set" || requestMethod === "plugin.assistant-mail.category.change") && !host.isPairedDevice(deviceId)) {
+      requestMethod === "plugin.assistant-mail.filing.set" || requestMethod === "plugin.assistant-mail.category.change" ||
+      requestMethod === "plugin.assistant-mail.read-directory.change") && !host.isPairedDevice(deviceId)) {
       await host.sendToDevice({ kind: "response", requestId: message.payload.requestId, ok: false,
         error: { code: "PAIRING_REQUIRED", message: "请先完成设备配对。", retryable: false } }, deviceId, undefined, true);
       host.socket?.ack([encrypted.id]);

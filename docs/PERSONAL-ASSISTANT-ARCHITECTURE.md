@@ -31,7 +31,7 @@
 
 现有 `plugin.assistant-mail.bind` 继续支持用户选择原生会话和手动引用邮件。托管初始化使用单独入口，展示将被信任的 `<userData>/private/assistant/workspace/`。用户确认后，宿主先写入受控的 `.mcp.json`、`.claude/settings.json` 和引导文件，再由现有原生建会话接口申请信任并创建会话。设置并核对原生权限模式后提交绑定。托管资格记录与 `nativeSessionId`、工作区物理路径和策略版本关联。归档或删除成功后保留历史引用并提示换绑。断连和暂时缺席分别展示 `unavailable` 和 `missing`，保留绑定记录。[现有绑定入口](../apps/desktop/src/controller/assistant-mail.ts#L160) · [原生会话创建](../apps/desktop/src/claude/claude-desktop-bridge.ts#L745)
 
-Stage 1–2 的唯一托管档位为 `stage1-fenced-workspace`。内建 `Read / Glob / Grep` 只读工作区，`Write / Edit / MultiEdit` 只写 `outputs/`。配置、规则、上传文件对模型只读。用户目录、业务数据库、邮件原文和凭据由守卫在文件工具边界拒绝访问。禁用 Shell、外部网络、跨会话操作及继承的非助理 MCP。`dontAsk` 控制权限问询，最终工具集合和受控路径由原生配置及守卫共同约束。Stage 3 若开放记忆写入，须按新档位重新过门禁。[阶段 0 实测](SECURITY.md#外部邮件自动投递门禁)
+Stage 1–2 的唯一托管档位为 `stage1-fenced-workspace`。内建 `Read / Glob / Grep` 默认只读工作区。主助理可读取用户在 **助理设置 → 可读目录** 明确授权的外部文件夹；授权绑定当前托管会话，默认没有外部目录，不授予子代理。`Write / Edit / MultiEdit` 仍只写 `outputs/`。配置、规则、上传文件对模型只读；凭据配置、Bridge 私有数据、邮件原文及未授权用户目录不在新增文件访问范围内。主助理仅新增 `WebSearch`，搜索词会传给搜索服务；`WebFetch`、Shell、跨会话操作及继承的非助理 MCP 仍禁用。发信和提案执行仍需用户确认。`dontAsk` 控制权限问询，最终工具集合和受控路径由原生配置及守卫共同约束。Stage 3 若开放记忆写入，须按新档位重新过门禁。[阶段 0 实测](SECURITY.md#外部邮件自动投递门禁)
 
 ### 打包与工具网关
 

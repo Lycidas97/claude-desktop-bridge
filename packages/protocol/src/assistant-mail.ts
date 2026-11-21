@@ -27,6 +27,7 @@ export const ASSISTANT_MAIL_FILING_CAPABILITY = "plugin.assistant-mail.filing.v1
 export const ASSISTANT_MAIL_CATEGORIES_CAPABILITY = "plugin.assistant-mail.categories.v1";
 export const ASSISTANT_MAIL_RECEIVED_ORDER_CAPABILITY = "plugin.assistant-mail.received-order.v1";
 export const ASSISTANT_ATTENTION_CAPABILITY = "plugin.assistant-mail.attention.v1";
+export const ASSISTANT_READ_DIRECTORIES_CAPABILITY = "plugin.assistant-mail.read-directories.v1";
 
 export type AssistantAttentionItem = { id: string; title: string } & (
   | { kind: "mail"; reason: "new" | "unscreened" | "read" | "action" }
@@ -72,6 +73,7 @@ export interface BridgeAssistantWorkspace {
   nativeSessionId?: string;
   toolIsolation: "unobserved" | "compatible" | "warning";
   unexpectedTools?: string[];
+  readDirectories?: string[];
   repairFailed?: true;
 }
 

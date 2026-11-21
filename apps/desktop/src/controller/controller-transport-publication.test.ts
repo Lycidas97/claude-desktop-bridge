@@ -241,6 +241,7 @@ describe("controller transport publication", () => {
     ["plugin.assistant-mail.junk.set", { mailRefId: "saved-mail", junk: true }],
     ["plugin.assistant-mail.filing.set", { mailRefId: "saved-mail", folder: "marketing" }],
     ["plugin.assistant-mail.category.change", { action: "add", label: "订单" }],
+    ["plugin.assistant-mail.read-directory.change", { action: "add", sessionId: "local-managed", directory: "/fixture/readable" }],
   ] as const)("requires the encrypted snapshot handshake before routing %s", async (mailMethod, mutation) => {
     const { ws, controller, paired, config } = await fixture();
     const device = config.devices[0]!;

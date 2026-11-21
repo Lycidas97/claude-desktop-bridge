@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, expect, it } from "vitest";
 import { ASSISTANT_MEMORY_POLICY } from "../../packages/protocol/src/assistant-mail.js";
-import { ASSISTANT_TOOLS, allowAssistantTool } from "./fs-guard.js";
+import { ASSISTANT_TOOLS, allowAssistantTool, assistantReadDirectoriesPath } from "./fs-guard.js";
 import { MAIL_TOOLS } from "./tool-contract.js";
 
 let root: string;
@@ -14,7 +14,7 @@ let privateFile: string;
 
 beforeEach(async () => {
   root = await realpath(await mkdtemp(join(tmpdir(), "assistant-guard-")));
-  workspace = join(root, "workspace");
+  workspace = join(root, "bridge-data", "private", "assistant", "workspace");
   outputs = join(workspace, "outputs");
   uploads = join(workspace, ".bridge-uploads", "upload");
   privateFile = join(root, "assistant.sqlite");
@@ -58,6 +58,46 @@ it("rejects recursive credential reads and confines recursive searches to checke
   await expect(check("Glob", { pattern: "../../*/**", path: outputs })).resolves.toBe(false);
 });
 
+it("permits read tools only inside a granted root for the current managed session, with immediate revocation", async () => {
+  const directory = join(root, "shared");
+  const adjacent = join(root, "shared-copy");
+  await Promise.all([mkdir(directory), mkdir(adjacent)]);
+  const file = join(directory, "readable.txt");
+  await writeFile(file, "owned fixture");
+  await writeFile(join(adjacent, "outside.txt"), "ungranted fixture");
+  const bindingToken = "current-binding";
+  const cliSessionId = "current-cli";
+  const grantPath = assistantReadDirectoriesPath(workspace);
+  const config = join(workspace, ".mcp.json");
+  const configure = (token: string) => writeFile(config, JSON.stringify({ mcpServers: { "assistant-mail": { env: { BRIDGE_ASSISTANT_SESSION_TOKEN: token } } } }));
+  const grants = (directories: string[]) => writeFile(grantPath, JSON.stringify({ bindingToken, cliSessionId, directories }));
+  const call = (tool_name: string, tool_input: Record<string, string>, session_id = cliSessionId) => ({
+    hook_event_name: "PreToolUse", cwd: workspace, tool_name, tool_input, session_id,
+  });
+  const read = call("Read", { file_path: file });
+  await configure(bindingToken);
+  await expect(allowAssistantTool(workspace, read)).resolves.toBe(false);
+  await grants([directory]);
+  await expect(allowAssistantTool(workspace, read)).resolves.toBe(true);
+  await expect(allowAssistantTool(workspace, call("Glob", { path: directory, pattern: "**/*.txt" }))).resolves.toBe(true);
+  await expect(allowAssistantTool(workspace, call("Grep", { path: directory, pattern: "fixture" }))).resolves.toBe(true);
+  for (const tool of ["Write", "Edit", "MultiEdit"]) {
+    await expect(allowAssistantTool(workspace, call(tool, { file_path: file }))).resolves.toBe(false);
+  }
+  await expect(allowAssistantTool(workspace, { ...read, session_id: "former-cli" })).resolves.toBe(false);
+  await expect(allowAssistantTool(workspace, { ...read, agent_id: "helper-fixture" })).resolves.toBe(false);
+  await expect(allowAssistantTool(workspace, read, ASSISTANT_MEMORY_POLICY)).resolves.toBe(false);
+  await expect(allowAssistantTool(workspace, call("Read", { file_path: join(adjacent, "outside.txt") }))).resolves.toBe(false);
+  await symlink(adjacent, join(directory, "alias"), "junction");
+  await expect(allowAssistantTool(workspace, call("Read", { file_path: join(directory, "alias", "outside.txt") }))).resolves.toBe(false);
+  await expect(allowAssistantTool(workspace, call("Grep", { path: directory, pattern: "fixture" }))).resolves.toBe(false);
+  await configure("replacement-binding");
+  await expect(allowAssistantTool(workspace, read)).resolves.toBe(false);
+  await configure(bindingToken);
+  await grants([]);
+  await expect(allowAssistantTool(workspace, read)).resolves.toBe(false);
+});
+
 it("rejects symlink escapes, output aliases and searches whose results could traverse links", async () => {
   await symlink(root, join(workspace, "outside"), "junction");
   await symlink(uploads, join(outputs, "upload-alias"), "junction");
@@ -97,6 +137,16 @@ it("uses the exact mail tool names and limits delegation to the foreground proje
   await expect(check("Agent", { ...helper, isolation: "worktree" })).resolves.toBe(false);
   await expect(check("Agent", { ...helper, run_in_background: true })).resolves.toBe(false);
   await expect(allowAssistantTool(workspace, null)).resolves.toBe(false);
+});
+
+it("permits native web search without granting fetch, shell or proposal execution", async () => {
+  const search = { hook_event_name: "PreToolUse", cwd: workspace, tool_name: "WebSearch", tool_input: { query: "Node.js release schedule" } };
+  await expect(allowAssistantTool(workspace, search)).resolves.toBe(true);
+  await expect(allowAssistantTool(workspace, { ...search, agent_id: "helper-fixture", agent_type: "assistant-helper" })).resolves.toBe(false);
+  await expect(allowAssistantTool(workspace, search, ASSISTANT_MEMORY_POLICY)).resolves.toBe(false);
+  for (const name of ["WebFetch", "Bash", "PowerShell", "mcp__assistant-mail__proposal_commit", "mcp__assistant-mail__mail_send"]) {
+    await expect(check(name, {})).resolves.toBe(false);
+  }
 });
 
 it.each(["proposal_create", "proposal_update_pending"])("limits Stage 1 %s rule drafts to the main session", async tool => {

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { lstat, readdir, realpath, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import { ASSISTANT_MEMORY_POLICY, ASSISTANT_WORKSPACE_POLICY, isAssistantWorkspacePolicy } from "../../packages/protocol/src/assistant-mail.js";
@@ -16,6 +17,7 @@ const mailTools = ["list_events", "list_unfinished_triggers", "read_event", "rea
 export const ASSISTANT_TOOLS = [
   ...AGENDA_TOOLS, ...PROPOSAL_NATIVE_TOOLS, ...fileTools, "Agent", "ToolSearch", "TodoWrite", ...mailTools, ASSISTANT_MARK_READ_TOOL,
 ];
+export const ASSISTANT_WEB_SEARCH_TOOL = "WebSearch";
 export const MEMORY_LOOKUP_TOOL = `mcp__${ASSISTANT_MCP}__memory_lookup_entry`;
 const proposalDraftTools = PROPOSAL_NATIVE_TOOLS.slice(0, 2);
 const triageTools = mailTools.filter(name => !name.endsWith("__mail_list_unfinished_triggers") && !name.endsWith("__mail_set_processing_status"));
@@ -26,8 +28,9 @@ export const ASSISTANT_SPECIALISTS: ReadonlyMap<string, readonly string[]> = new
 ]);
 export const ASSISTANT_MEMORY_ROOTS = ["memory/threads", "memory/notes"];
 
-export function isAssistantTool(name: string, policy?: string): boolean {
-  return ASSISTANT_TOOLS.includes(name) || (policy === ASSISTANT_MEMORY_POLICY && name === MEMORY_LOOKUP_TOOL);
+export function isAssistantTool(name: string, policy: string = ASSISTANT_WORKSPACE_POLICY): boolean {
+  return ASSISTANT_TOOLS.includes(name) || (policy === ASSISTANT_MEMORY_POLICY && name === MEMORY_LOOKUP_TOOL) ||
+    (policy === ASSISTANT_WORKSPACE_POLICY && name === ASSISTANT_WEB_SEARCH_TOOL);
 }
 
 export function withinPath(root: string, path: string): boolean {
@@ -80,9 +83,36 @@ async function searchableTree(path: string): Promise<boolean> {
 
 const protectedNames = new Set(["claude.md", "claude.local.md", "agents.md", ".claude", ".mcp.json", ".bridge-uploads"]);
 
+export interface AssistantReadDirectories {
+  bindingToken: string;
+  cliSessionId: string;
+  directories: string[];
+}
+
+export const assistantReadDirectoriesPath = (workspace: string) => join(dirname(workspace), "read-directories.json");
+
+export function isAssistantReadDirectory(workspace: string, value: unknown): value is string {
+  const userData = dirname(dirname(dirname(workspace)));
+  return safePathInput(value) && isAbsolute(value) && !withinPath(userData, value) && !withinPath(value, userData);
+}
+
+export function loadAssistantReadDirectories(workspace: string): AssistantReadDirectories | undefined {
+  try {
+    const grants = JSON.parse(readFileSync(assistantReadDirectoriesPath(workspace), "utf8")) as Partial<AssistantReadDirectories> | null;
+    if (typeof grants?.bindingToken === "string" && typeof grants.cliSessionId === "string" &&
+      Array.isArray(grants.directories) && grants.directories.every(path => isAssistantReadDirectory(workspace, path))) {
+      return { bindingToken: grants.bindingToken, cliSessionId: grants.cliSessionId, directories: grants.directories };
+    }
+  } catch (error) {
+    if (!isMissingPath(error) && !(error instanceof SyntaxError)) throw error;
+  }
+  return undefined;
+}
+
 export async function allowAssistantTool(workspace: string, input: unknown, policy: string = ASSISTANT_WORKSPACE_POLICY): Promise<boolean> {
   if (!isAssistantWorkspacePolicy(policy) || typeof input !== "object" || input === null) return false;
-  const { cwd, tool_name: rawName, tool_input: args, hook_event_name: event, agent_id: agentId, agent_type: agentType } = input as Record<string, unknown>;
+  const { cwd, tool_name: rawName, tool_input: args, hook_event_name: event, agent_id: agentId, agent_type: agentType,
+    session_id: cliSessionId } = input as Record<string, unknown>;
   const name = rawName === "Task" ? "Agent" : rawName;
   const memory = policy === ASSISTANT_MEMORY_POLICY;
   if (event !== "PreToolUse" || typeof name !== "string" || !isAssistantTool(name, policy) ||
@@ -90,7 +120,7 @@ export async function allowAssistantTool(workspace: string, input: unknown, poli
   const params = args as Record<string, unknown>;
   const specialist = memory && typeof agentType === "string" ? ASSISTANT_SPECIALISTS.get(agentType) : undefined;
   if (memory && (specialist ? !specialist.includes(name) : agentId !== undefined)) return false;
-  if (name === ASSISTANT_MARK_READ_TOOL && agentId !== undefined) return false;
+  if ((name === ASSISTANT_MARK_READ_TOOL || name === ASSISTANT_WEB_SEARCH_TOOL) && agentId !== undefined) return false;
   if (name === "Agent") {
     // Resume, worktree, background and teammate modes carry a different execution scope.
     const target = params.subagent_type;
@@ -116,10 +146,22 @@ export async function allowAssistantTool(workspace: string, input: unknown, poli
   const dir = await realpath(cwd);
   if (!withinPath(root, dir)) return false;
   const candidate = resolve(dir, target);
-  if (!withinPath(root, candidate) || isMcpConfig(candidate)) return false;
+  if (isMcpConfig(candidate)) return false;
   const writing = ASSISTANT_FILE_WRITES.includes(name);
+  let allowedRoots = [root];
+  if (!withinPath(root, candidate)) {
+    if (writing || memory || agentId !== undefined) return false;
+    const grants = loadAssistantReadDirectories(root);
+    if (!grants || grants.cliSessionId !== cliSessionId) return false;
+    allowedRoots = grants.directories.filter(path => withinPath(path, candidate));
+    if (!allowedRoots.length) return false;
+    const config = JSON.parse(readFileSync(join(root, ".mcp.json"), "utf8")) as {
+      mcpServers?: Record<string, { env?: Record<string, string> }>;
+    };
+    if (config.mcpServers?.[ASSISTANT_MCP]?.env?.[ASSISTANT_TOKEN_ENV] !== grants.bindingToken) return false;
+  }
   const physical = await resolveWorkspacePath(candidate, writing);
-  if (!withinPath(root, physical.path) || isMcpConfig(physical.path) ||
+  if (!allowedRoots.some(path => withinPath(path, physical.path)) || isMcpConfig(physical.path) ||
     (!physical.info.isDirectory() && !(physical.info.isFile() && physical.info.nlink === 1))) return false;
   if (!writing) return physical.info.isDirectory() ? search && await searchableTree(physical.path) : true;
 

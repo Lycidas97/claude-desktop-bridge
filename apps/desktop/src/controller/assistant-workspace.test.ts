@@ -55,11 +55,13 @@ it("writes the exact project policy and bundled MCP launch, preserving templates
     autoMemoryEnabled: false, enableAllProjectMcpServers: false, enabledMcpjsonServers: ["assistant-mail"],
     permissions: {
       defaultMode: "dontAsk",
-      deny: expect.arrayContaining(["Bash", "NotebookEdit", "WebFetch", "WebSearch", "SendMessage", "mcp__ccd_*", "Read(./.mcp.json)"]),
+      allow: expect.arrayContaining(["WebSearch"]),
+      deny: expect.arrayContaining(["Bash", "PowerShell", "NotebookEdit", "WebFetch", "SendMessage", "mcp__ccd_*", "Read(./.mcp.json)"]),
     },
     hooks: { PreToolUse: [{ matcher: "*", hooks: [{ type: "command", onFailure: "block" }] }] },
   });
-  expect(policy.permissions.allow.every(isAssistantTool)).toBe(true);
+  expect(policy.permissions.deny).not.toContain("WebSearch");
+  expect(policy.permissions.allow.every((tool: string) => isAssistantTool(tool, ASSISTANT_WORKSPACE_POLICY))).toBe(true);
   expect(await readFile(runner, "utf8")).toBe(`---\n# Managed by Bridge: assistant-runner\nname: assistant-runner\ndescription: 托管助理主会话\ntools: ${policy.permissions.allow.join(", ")}\n---\n`);
   expect(JSON.stringify(policy)).not.toContain(rotated);
   if (process.platform !== "win32") {
@@ -71,6 +73,26 @@ it("writes the exact project policy and bundled MCP launch, preserving templates
     }
     for (const file of [config, settings]) expect((await stat(file)).mode & 0o777).toBe(0o600);
   }
+});
+
+it("restores read-only grants for the same binding and does not carry them to a new token", async () => {
+  const provisioner = new WorkspaceProvisioner({ ...options, userDataPath: join(root, "bridge-data") });
+  const directory = join(root, "Readable [QA]");
+  await mkdir(directory);
+  const path = await provisioner.prepare("first-token");
+  const settings = async () => JSON.parse(await readFile(join(path, ".claude", "settings.json"), "utf8"));
+  expect((await settings()).permissions.additionalDirectories).toEqual([]);
+  provisioner.changeReadDirectory("first-token", "fixture-cli", "add", directory);
+  const restored = new WorkspaceProvisioner({ ...options, userDataPath: join(root, "bridge-data") });
+  await restored.restore("first-token", path);
+  expect(restored.readDirectories).toEqual([directory]);
+  expect((await settings()).permissions).toMatchObject({ additionalDirectories: [directory],
+    blockReadsOutsideWorkingDirectories: true, blockWritesOutsideWorkingDirectories: true,
+    deny: expect.arrayContaining([expect.stringContaining("Readable \\[QA\\]/**")]),
+  });
+  await restored.prepare("replacement-token");
+  expect(restored.readDirectories).toEqual([]);
+  expect((await settings()).permissions.additionalDirectories).toEqual([]);
 });
 
 it("upgrades to the verified policy without replacing user rules or indexing untrusted file names and contents", async () => {
@@ -103,7 +125,10 @@ it("upgrades to the verified policy without replacing user rules or indexing unt
   expect(context).not.toMatch(/injected title|External mail|用户确认的助理规则/u);
   const config = JSON.parse(await readFile(join(workspace, ".claude/settings.json"), "utf8"));
   const agents = join(workspace, ".claude/agents");
-  expect(await readFile(join(agents, `${config.agent}.md`), "utf8")).toContain("Agent(mail-triager, schedule-planner, memory-curator)");
+  const runner = await readFile(join(agents, `${config.agent}.md`), "utf8");
+  expect(runner).toContain("Agent(mail-triager, schedule-planner, memory-curator)");
+  expect(runner).not.toContain("WebSearch");
+  expect(config.permissions.deny).toContain("WebSearch");
   for (const name of ["mail-triager", "schedule-planner", "memory-curator"]) {
     const definition = await readFile(join(agents, `${name}.md`), "utf8");
     expect(definition).toContain("mcpServers: [assistant-mail]");

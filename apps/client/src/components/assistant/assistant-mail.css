@@ -322,6 +322,7 @@ body:has(.assistant-mail-category-options) .diagnostic-floating-entry { display:
 .assistant-accounts p { color: var(--muted); font-size: calc(13px * var(--font-scale)); line-height: 1.6; }
 .assistant-accounts p[role="alert"], .assistant-accounts .assistant-remove { color: var(--danger-ink); }
 .assistant-account-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 4px 18px; padding: 9px 0; border-bottom: 1px solid var(--line); }
+.assistant-account-row > form { grid-column: 1 / -1; margin-bottom: 7px; }
 .assistant-account-identity { display: grid; gap: 3px; overflow-wrap: anywhere; }
 .assistant-account-identity strong { font-size: calc(14px * var(--font-scale)); font-weight: 600; }
 .assistant-account-identity span, .assistant-account-state { color: var(--muted); font-size: calc(12px * var(--font-scale)); }

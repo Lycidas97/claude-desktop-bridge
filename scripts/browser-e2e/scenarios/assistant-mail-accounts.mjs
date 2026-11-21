@@ -49,8 +49,34 @@ export async function verifyAssistantMailAccounts(page, host, steps, directory, 
   const { client: _accountClient, ...accountParams } = accountRequests[0].params;
   assert.deepEqual(accountParams, { host: "imap.second.example.test", user: extraUser, credential: "fixture-credential-add",
     smtp: { host: "smtp.second.example.test", port: 465, security: "tls", from: extraUser } });
-  await extraAccount.getByRole("button", { name: `账号设置：${extraUser}`, exact: true }).click();
-  await accounts.getByRole("button", { name: "关闭发信", exact: true }).click();
+  const accountSettings = extraAccount.getByRole("button", { name: `账号设置：${extraUser}`, exact: true });
+  const credential = extraAccount.getByLabel("密码", { exact: true });
+  const fromAddress = extraAccount.getByLabel("发件地址", { exact: true });
+  await accountSettings.click();
+  assert.equal(await accountSettings.getAttribute("aria-expanded"), "true");
+  assert.equal(await credential.inputValue(), "", "Stored credentials are never prefilled");
+  assert.equal(await credential.getAttribute("required"), null);
+  await smtpHost.fill("new-smtp.example.test");
+  assert.equal(await credential.evaluate(input => input.required), true);
+  await smtpHost.fill(smtp.host);
+  await smtpPort.fill("2525");
+  assert.equal(await credential.evaluate(input => input.required), true);
+  await smtpPort.fill(String(smtp.port));
+  await extraAccount.getByLabel("加密方式").selectOption("starttls");
+  assert.equal(await credential.evaluate(input => input.required), true);
+  await extraAccount.getByLabel("加密方式").selectOption(smtp.security);
+  assert.equal(await credential.evaluate(input => input.required), false);
+  const from = "alias@example.test";
+  await fromAddress.fill(from);
+  await capture("mobile-mail-account-inline");
+  await extraAccount.getByRole("button", { name: "保存设置", exact: true }).click();
+  await credential.waitFor({ state: "hidden" });
+  assert.deepEqual(host.snapshot.assistantMail.accounts.find(account => account.accountKey === accountKey)?.smtp, { ...smtp, from });
+  const { client: _fromClient, ...fromParams } = host.requests.findLast(request => request.method === "plugin.assistant-mail.account.save").params;
+  assert.deepEqual(fromParams, { accountKey, smtp: { host: smtp.host, port: smtp.port, security: smtp.security, from } });
+  steps.push("the selected account expands inline and saves its From address without submitting a stored credential; changing the SMTP connection requires a password");
+  await accountSettings.click();
+  await extraAccount.getByRole("button", { name: "关闭发信", exact: true }).click();
   await extraAccount.getByText("SMTP smtp.second.example.test:465", { exact: true }).waitFor({ state: "hidden" });
   assert.equal(host.snapshot.assistantMail.accounts.find(account => account.accountKey === accountKey)?.enabled, true);
   await extraAccount.getByText("定时轮询", { exact: true }).waitFor();
@@ -119,9 +145,9 @@ export async function verifyAssistantMailAccounts(page, host, steps, directory, 
     120, "Desktop saves the same account's polling interval");
   assert.deepEqual(desktopRequests.findLast(request => request.method === "plugin.assistant-mail.account.set-poll-interval").params,
     { accountKey, pollIntervalSeconds: 120 });
-  await accounts.getByRole("button", { name: `账号设置：${extraUser}`, exact: true }).click();
-  const credential = accounts.getByLabel("密码", { exact: true });
+  await accountSettings.click();
   assert.equal(await credential.inputValue(), "", "Stored credentials are never prefilled");
+  assert.equal(await credential.evaluate(input => input.required), true, "Re-enabling SMTP requires explicit authorization");
   await smtpHost.fill(smtp.host);
   await credential.fill("fixture-credential-replacement");
   await accounts.getByRole("button", { name: "保存设置", exact: true }).click();
@@ -136,6 +162,17 @@ export async function verifyAssistantMailAccounts(page, host, steps, directory, 
   await page.evaluate(assistantMail => window.assistantDesktopSnapshot({ assistantMail }), host.snapshot.assistantMail);
   await extraAccount.getByText("定时轮询", { exact: true }).waitFor();
   assert.equal(await pollInterval.inputValue(), "120");
+  await accountSettings.click();
+  assert.equal(await credential.inputValue(), "");
+  await fromAddress.fill(from);
+  await extraAccount.getByRole("button", { name: "保存设置", exact: true }).click();
+  await credential.waitFor({ state: "hidden" });
+  assert.deepEqual(desktopRequests.findLast(request => request.method === "plugin.assistant-mail.account.save").params, fromParams);
+  await page.evaluate(host => window.assistantDesktopSnapshot({ host }), { ...host.snapshot.host,
+    capabilities: host.snapshot.host.capabilities.filter(capability => capability !== "plugin.assistant-mail.keep-credential.v1") });
+  await accountSettings.click();
+  assert.equal(await credential.evaluate(input => input.required), true, "Older hosts still require the password");
+  await extraAccount.getByRole("button", { name: "取消", exact: true }).click();
   await accounts.getByRole("button", { name: `移除：${extraUser}`, exact: true }).click();
   assert.ok(host.snapshot.assistantMail.accounts.some(account => account.accountKey === accountKey));
   await page.getByRole("alertdialog", { name: "移除邮箱？" }).getByRole("button", { name: "确认移除", exact: true }).click();

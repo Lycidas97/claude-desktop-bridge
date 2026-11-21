@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { ARTIFACT_MAX_BYTES, ASSISTANT_ATTENTION_CAPABILITY, ASSISTANT_MAIL_CATEGORIES_CAPABILITY, ASSISTANT_MAIL_FILING_CAPABILITY, ASSISTANT_MAIL_RECEIVED_ORDER_CAPABILITY, ASSISTANT_MAIL_SHARED_AUTH_CAPABILITY, ASSISTANT_MEMORY_POLICY, ASSISTANT_SMTP_CAPABILITY, isAssistantWorkspacePolicy, isMailPollInterval, mailAttachmentPreviewKind } from "@bridge/protocol";
+import { ARTIFACT_MAX_BYTES, ASSISTANT_ATTENTION_CAPABILITY, ASSISTANT_MAIL_CATEGORIES_CAPABILITY, ASSISTANT_MAIL_FILING_CAPABILITY, ASSISTANT_MAIL_KEEP_CREDENTIAL_CAPABILITY, ASSISTANT_MAIL_RECEIVED_ORDER_CAPABILITY, ASSISTANT_MAIL_SHARED_AUTH_CAPABILITY, ASSISTANT_MEMORY_POLICY, ASSISTANT_SMTP_CAPABILITY, isAssistantWorkspacePolicy, isMailPollInterval, mailAttachmentPreviewKind } from "@bridge/protocol";
 import { AssistantError } from "../../../../plugins/assistant-mail/assistant-error.js";
 import type { AssistantAgendaService } from "../../../../plugins/assistant-mail/agenda.js";
 import { configureSmtp, saveMailAccount } from "../../../../plugins/assistant-mail/proposal-contract.js";
@@ -32,6 +32,7 @@ export const ASSISTANT_MAIL_CAPABILITIES = [
   "plugin.assistant-mail.account.v1",
   ASSISTANT_SMTP_CAPABILITY,
   ASSISTANT_MAIL_SHARED_AUTH_CAPABILITY,
+  ASSISTANT_MAIL_KEEP_CREDENTIAL_CAPABILITY,
   "plugin.assistant-mail.polling.v1",
   "plugin.assistant-mail.attachments.v1",
   "plugin.assistant-mail.history.v1",
@@ -564,11 +565,13 @@ export class AssistantMailCoordinator {
         const { client: _client, ...input } = params;
         const parsed = saveMailAccount.safeParse(input);
         if (!parsed.success) throw new BridgeRequestError("INVALID_PARAMS", "请检查邮箱服务器、端口、发件地址和密码。");
-        const { credential, smtp, ...account } = parsed.data;
+        const account = parsed.data;
         if ("accountKey" in account) {
-          await this.mail.replacePassword(account.accountKey, credential, smtp);
+          if ("credential" in account) await this.mail.replacePassword(account.accountKey, account.credential, account.smtp);
+          else await this.mail.updateSharedSmtp(account.accountKey, account.smtp);
         } else {
-          await this.mail.enable({ ...account, password: credential, smtp, createOnly: true });
+          const { credential, ...settings } = account;
+          await this.mail.enable({ ...settings, password: credential, createOnly: true });
         }
       } else if (method === "plugin.assistant-mail.account.add") {
         const { port } = params;

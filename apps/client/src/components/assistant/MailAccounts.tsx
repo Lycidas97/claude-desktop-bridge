@@ -14,7 +14,7 @@ const RECEIVER_ERRORS = new Map([
   ["mail_idle_unsupported", { label: "不支持持续收件", state: "unsupported" }],
 ]);
 
-export function MailAccounts({ accounts, configUnavailable, credentialsSupported, online, supportsPolling, supportsSmtp, supportsSharedAuth, request }: {
+export function MailAccounts({ accounts, configUnavailable, credentialsSupported, online, supportsPolling, supportsSmtp, supportsSharedAuth, supportsKeepCredential, request }: {
   accounts: BridgeMailAccount[];
   configUnavailable: boolean;
   credentialsSupported: boolean;
@@ -22,6 +22,7 @@ export function MailAccounts({ accounts, configUnavailable, credentialsSupported
   supportsPolling: boolean;
   supportsSmtp: boolean;
   supportsSharedAuth: boolean;
+  supportsKeepCredential: boolean;
   request: AssistantRequest;
 }) {
   const headingId = useId();
@@ -73,13 +74,39 @@ export function MailAccounts({ accounts, configUnavailable, credentialsSupported
       } });
     } else if (editedAccount) {
       void update(supportsSharedAuth ? "plugin.assistant-mail.account.save" : "plugin.assistant-mail.account.update-credential",
-        { accountKey: editedAccount.accountKey, credential, ...(smtp ? { smtp } : {}) });
+        { accountKey: editedAccount.accountKey, ...(credential ? { credential } : {}), ...(smtp ? { smtp } : {}) });
     } else {
       const port = data.get("port");
       void update(supportsSharedAuth ? "plugin.assistant-mail.account.save" : "plugin.assistant-mail.account.add",
         { host: String(data.get("host")).trim(), user, ...(port ? { port: Number(port) } : {}), credential, ...(smtp ? { smtp } : {}) });
     }
   }
+
+  const accountForm = <form key={action?.kind} onSubmit={save} autoComplete="off"
+    aria-label={editedAccount ? `${supportsSharedAuth ? "账号设置" : "更新密码"}：${editedAccount.user}` : "添加邮箱"}>
+    <fieldset className="assistant-account-form" disabled={disabled}>
+      {!editedAccount && <>
+        <legend>添加邮箱</legend>
+        <label>邮箱地址<input name="user" required inputMode="email" autoCapitalize="none" spellCheck={false} /></label>
+        <div className="assistant-account-server">
+          <label>IMAP 服务器<input name="host" required autoCapitalize="none" spellCheck={false} /></label>
+          <label>端口<input name="port" type="number" min={1} max={65535} placeholder="993" /></label>
+        </div>
+      </>}
+      {showSharedSmtp
+        ? <SmtpFields account={editedAccount} shared allowKeepCredential={supportsKeepCredential && editedAccount?.smtpSharedAuth === true} />
+        : <label>密码<input name="credential" type="password" autoComplete="new-password" required /></label>}
+      <div className="assistant-actions">
+        <button type="button" className="secondary-button" onClick={() => { setError(""); setAction(undefined); }}>取消</button>
+        {hasSeparateSmtp && action?.kind !== "share" && <button type="button" className="secondary-button"
+          onClick={() => { setError(""); setAction({ kind: "share", accountKey: editedAccount.accountKey }); }}>改为共用授权</button>}
+        {supportsSharedAuth && editedAccount?.smtp && <button type="button" className="secondary-button"
+          onClick={() => void update("plugin.assistant-mail.account.set-smtp", { accountKey: editedAccount.accountKey, smtp: null })}>关闭发信</button>}
+        <button type="submit" className="primary-button">{!editedAccount ? "添加账号" : action?.kind === "share" ? "保存并共用授权"
+          : hasSeparateSmtp ? "保存收信密码" : supportsSharedAuth ? "保存设置" : "保存密码"}</button>
+      </div>
+    </fieldset>
+  </form>;
 
   return <section className="assistant-accounts" aria-labelledby={headingId}>
     <div className="assistant-accounts-heading">
@@ -108,11 +135,12 @@ export function MailAccounts({ accounts, configUnavailable, credentialsSupported
         </div>
         <span className="assistant-account-state" data-state={failure?.state ?? state}>{status}</span>
         <div className="assistant-actions assistant-account-actions">
-          <button type="button" className="assistant-session-link" aria-label={`${supportsSharedAuth ? "账号设置" : "更新密码"}：${account.user}`} disabled={disabled}
+          <button type="button" className="assistant-session-link" aria-label={`${supportsSharedAuth ? "账号设置" : "更新密码"}：${account.user}`}
+            aria-expanded={editedAccount?.accountKey === account.accountKey} disabled={disabled}
             onClick={() => { setError(""); setAction({ kind: "edit", accountKey: account.accountKey }); }}>{supportsSharedAuth ? "账号设置" : "更新密码"}</button>
           <button type="button" className="assistant-session-link" aria-label={`${account.enabled ? "停用" : "启用"}：${account.user}`} disabled={disabled} onClick={() => { void update("plugin.assistant-mail.account.set-enabled", { accountKey: account.accountKey, enabled: !account.enabled }); }}>{account.enabled ? "停用" : "启用"}</button>
           {supportsSmtp && !supportsSharedAuth && <button type="button" className="assistant-session-link" disabled={disabled}
-            aria-label={`${account.smtp ? "SMTP 已配置" : "配置 SMTP"}：${account.user}`}
+            aria-label={`${account.smtp ? "SMTP 已配置" : "配置 SMTP"}：${account.user}`} aria-expanded={smtpAccount?.accountKey === account.accountKey}
             onClick={() => { setError(""); setAction({ kind: "smtp", accountKey: account.accountKey }); }}>
             {account.smtp ? "SMTP 已配置" : "配置 SMTP"}
           </button>}
@@ -131,46 +159,21 @@ export function MailAccounts({ accounts, configUnavailable, credentialsSupported
             {MAIL_POLL_INTERVALS.map(seconds => <option key={seconds} value={seconds}>{seconds < 60 ? `${seconds} 秒` : `${seconds / 60} 分钟`}</option>)}
           </select>
         </label>}
+        {editedAccount?.accountKey === account.accountKey && accountForm}
+        {smtpAccount?.accountKey === account.accountKey && <form key="smtp" onSubmit={save} autoComplete="off" aria-label={`${account.user} 的发信设置`}>
+          <fieldset className="assistant-account-form" disabled={disabled}>
+            <SmtpFields account={account} shared={false} />
+            <label>SMTP 密码<input name="credential" type="password" autoComplete="new-password" required /></label>
+            <div className="assistant-actions">
+              <button type="button" className="secondary-button" onClick={() => { setError(""); setAction(undefined); }}>取消</button>
+              {account.smtp && <button type="button" className="secondary-button" onClick={() => void update("plugin.assistant-mail.account.set-smtp", { accountKey: account.accountKey, smtp: null })}>关闭发信</button>}
+              <button type="submit" className="primary-button">保存发信设置</button>
+            </div>
+          </fieldset>
+        </form>}
       </div>;
     })}
-    {(action?.kind === "add" || editedAccount) && <form key={editedAccount ? `${action?.kind}:${editedAccount.accountKey}` : "add"} onSubmit={save} autoComplete="off">
-      <fieldset className="assistant-account-form" disabled={disabled}>
-        <legend>{editedAccount ? supportsSharedAuth ? editedAccount.user : `更新 ${editedAccount.user} 的密码` : "添加邮箱"}</legend>
-        {!editedAccount && <>
-          <label>邮箱地址<input name="user" required inputMode="email" autoCapitalize="none" spellCheck={false} /></label>
-          <div className="assistant-account-server">
-            <label>IMAP 服务器<input name="host" required autoCapitalize="none" spellCheck={false} /></label>
-            <label>端口<input name="port" type="number" min={1} max={65535} placeholder="993" /></label>
-          </div>
-        </>}
-        <label>密码<input name="credential" type="password" autoComplete="new-password" required /></label>
-        {showSharedSmtp && <fieldset className="assistant-smtp-fields">
-          <legend>{editedAccount?.smtp ? "发信" : "发信（选填）"}</legend>
-          <SmtpFields account={editedAccount} shared />
-        </fieldset>}
-        <div className="assistant-actions">
-          <button type="button" className="secondary-button" onClick={() => { setError(""); setAction(undefined); }}>取消</button>
-          {hasSeparateSmtp && action?.kind !== "share" && <button type="button" className="secondary-button"
-            onClick={() => { setError(""); setAction({ kind: "share", accountKey: editedAccount.accountKey }); }}>改为共用授权</button>}
-          {supportsSharedAuth && editedAccount?.smtp && <button type="button" className="secondary-button"
-            onClick={() => void update("plugin.assistant-mail.account.set-smtp", { accountKey: editedAccount.accountKey, smtp: null })}>关闭发信</button>}
-          <button type="submit" className="primary-button">{!editedAccount ? "添加账号" : action?.kind === "share" ? "保存并共用授权"
-            : hasSeparateSmtp ? "保存收信密码" : supportsSharedAuth ? "保存设置" : "保存密码"}</button>
-        </div>
-      </fieldset>
-    </form>}
-    {smtpAccount && <form key={`smtp:${smtpAccount.accountKey}`} onSubmit={save} autoComplete="off">
-      <fieldset className="assistant-account-form" disabled={disabled}>
-        <legend>{smtpAccount.user} 的发信设置</legend>
-        <SmtpFields account={smtpAccount} shared={false} />
-        <label>SMTP 密码<input name="credential" type="password" autoComplete="new-password" required /></label>
-        <div className="assistant-actions">
-          <button type="button" className="secondary-button" onClick={() => { setError(""); setAction(undefined); }}>取消</button>
-          {smtpAccount.smtp && <button type="button" className="secondary-button" onClick={() => void update("plugin.assistant-mail.account.set-smtp", { accountKey: smtpAccount.accountKey, smtp: null })}>关闭发信</button>}
-          <button type="submit" className="primary-button">保存发信设置</button>
-        </div>
-      </fieldset>
-    </form>}
+    {action?.kind === "add" && accountForm}
     <ConfirmationDialog
       open={Boolean(removedAccount)}
       title="移除邮箱？"
@@ -187,23 +190,37 @@ export function MailAccounts({ accounts, configUnavailable, credentialsSupported
   </section>;
 }
 
-function SmtpFields({ account, shared }: { account: BridgeMailAccount | undefined; shared: boolean }) {
+function SmtpFields({ account, shared, allowKeepCredential }: { account: BridgeMailAccount | undefined; shared: boolean; allowKeepCredential?: boolean }) {
   const [host, setHost] = useState(account?.smtp?.host ?? "");
+  const [port, setPort] = useState(String(account?.smtp?.port ?? 465));
+  const [security, setSecurity] = useState<string>(account?.smtp?.security ?? "tls");
   const disabled = shared && !host.trim();
-  return <>
+  const fields = <>
     <div className="assistant-account-server">
       <label>SMTP 服务器<input name="smtpHost" required={!shared || !!account?.smtp} value={host} onChange={event => setHost(event.target.value)} autoCapitalize="none" spellCheck={false} /></label>
-      <label>端口<input name="smtpPort" aria-label={shared ? "SMTP 端口" : undefined} type="number" required disabled={disabled} min={1} max={65535} defaultValue={account?.smtp?.port ?? 465} /></label>
+      <label>端口<input name="smtpPort" aria-label={shared ? "SMTP 端口" : undefined} type="number" required disabled={disabled} min={1} max={65535} value={port} onChange={event => setPort(event.target.value)} /></label>
     </div>
-    <label>加密方式<select name="security" disabled={disabled} defaultValue={account?.smtp?.security ?? "tls"} onChange={event => {
-      const port = event.currentTarget.form!.elements.namedItem("smtpPort") as HTMLInputElement;
-      const startTls = event.currentTarget.value === "starttls";
-      if (port.value === (startTls ? "465" : "587")) port.value = startTls ? "587" : "465";
+    <label>加密方式<select name="security" disabled={disabled} value={security} onChange={event => {
+      const next = event.currentTarget.value;
+      const startTls = next === "starttls";
+      if (port === (startTls ? "465" : "587")) setPort(startTls ? "587" : "465");
+      setSecurity(next);
     }}>
       <option value="tls">TLS</option><option value="starttls">STARTTLS</option>
     </select></label>
     {!shared && <label>登录名<input name="user" required defaultValue={account?.smtp?.user ?? account?.user} autoCapitalize="none" spellCheck={false} /></label>}
     <label>发件地址<input name="from" type="email" required={!shared} disabled={disabled} defaultValue={account?.smtp?.from ?? (shared ? undefined : account?.user)}
       placeholder={shared ? "默认使用邮箱地址" : undefined} /></label>
+  </>;
+  if (!shared) return fields;
+  const smtp = account?.smtp;
+  const keepCredential = allowKeepCredential && smtp && smtp.host === host.trim().toLowerCase() && smtp.port === Number(port) && smtp.security === security;
+  return <>
+    <label>密码<input name="credential" type="password" autoComplete="new-password" required={!keepCredential}
+      placeholder={keepCredential ? "留空不修改" : undefined} /></label>
+    <fieldset className="assistant-smtp-fields">
+      <legend>{smtp ? "发信" : "发信（选填）"}</legend>
+      {fields}
+    </fieldset>
   </>;
 }

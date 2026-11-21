@@ -1,9 +1,10 @@
 import type { BridgeMailCache, BridgeMailCard, BridgeMailCategory, BridgeMailFolder, BridgeMailPage } from "@bridge/protocol";
 import { ChevronRight, Search, X } from "lucide-react";
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { mergeMailCards, refreshMailPages } from "../../lib/assistant-mail.js";
 import { mailResult, type useAssistantMail } from "./AssistantMailProvider.js";
 import { MailCard } from "./MailCard.js";
+import { useVisibleMailRead } from "./useVisibleMailRead.js";
 
 export function InboxMailList({ mail, mobile, filed, canMarkJunk, onOpenFiled, onDiscuss }: {
   mail: NonNullable<ReturnType<typeof useAssistantMail>>; mobile: boolean; filed: boolean; canMarkJunk: boolean;
@@ -78,7 +79,7 @@ export function InboxMailList({ mail, mobile, filed, canMarkJunk, onOpenFiled, o
           }}>
             <summary><span>{label}</span><small>{count} 封</small><ChevronRight size={16} aria-hidden="true" /></summary>
             {openedFolders.has(category) && <div className="assistant-mail-group-cards">
-              <ScopedMailList mail={mail} folder={category} renderCard={card => renderCard(card, false)} />
+              <ScopedMailList mail={mail} folder={category} visible={filed} renderCard={card => renderCard(card, false)} />
               {count > 1 && <button type="button" className="assistant-session-link assistant-mail-close-folder" onClick={event => {
                 const details = event.currentTarget.closest("details")!;
                 details.open = false;
@@ -112,8 +113,8 @@ export function InboxMailList({ mail, mobile, filed, canMarkJunk, onOpenFiled, o
   </>;
 }
 
-function ScopedMailList({ mail, folder, query, renderCard }: {
-  mail: NonNullable<ReturnType<typeof useAssistantMail>>; folder?: BridgeMailCategory; query?: string; renderCard(card: BridgeMailCard): ReactNode;
+function ScopedMailList({ mail, folder, query, visible = true, renderCard }: {
+  mail: NonNullable<ReturnType<typeof useAssistantMail>>; folder?: BridgeMailCategory; query?: string; visible?: boolean; renderCard(card: BridgeMailCard): ReactNode;
 }) {
   const { online, request, supportsCategories, order } = mail;
   const changeToken = mail.assistant?.changeToken ?? "";
@@ -126,16 +127,18 @@ function ScopedMailList({ mail, folder, query, renderCard }: {
     includeHistory: true, ...(folder ? { folder } : { query }), ...(cursor ? { cursor } : {}),
     ...(supportsCategories ? { includeCustomCategories: true } : {}), ...(order ? { order } : {}),
   })).mailPage, [request, folder, query, supportsCategories, order]);
+  const read = useVisibleMailRead(useMemo(() => online ? { loadPage, changeToken } : undefined,
+    [online, loadPage, changeToken]), visible);
   useEffect(() => {
-    if (!online) return;
+    if (!read) return;
     let current = true;
     setLoading(true); setError("");
-    void refreshMailPages(loadPage, pageRef.current, changeToken)
+    void refreshMailPages(read.loadPage, pageRef.current, read.changeToken)
       .then(next => { if (current) setPage(next); })
       .catch(reason => { if (current) setError(reason instanceof Error ? reason.message : "邮件读取失败"); })
       .finally(() => { if (current) setLoading(false); });
     return () => { current = false; };
-  }, [online, loadPage, changeToken]);
+  }, [read]);
   async function loadMore() {
     setLoading(true); setError("");
     try {

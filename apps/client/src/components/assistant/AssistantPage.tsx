@@ -16,6 +16,7 @@ import { AgendaView } from "./AgendaView.js";
 import { useAssistantAgenda } from "./AssistantAgendaProvider.js";
 import { pendingProposalCount, useAssistantProposals } from "./AssistantProposalProvider.js";
 import { AssistantAttention } from "./AssistantAttention.js";
+import { AssistantTranscriptVisibleContext } from "./AssistantTriggerBatch.js";
 import { AssistantReadDirectories } from "./AssistantReadDirectories.js";
 import { ProposalPanel } from "./ProposalPanel.js";
 import { InboxMailList } from "./InboxMailList.js";
@@ -312,11 +313,15 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
       onTodo={() => { agenda?.setCalendarOnly(false); agenda?.setAllTodosOpen(true); setView("agenda"); }} />}
     {session ? <>
       {displayedView === "conversation" && <div className="assistant-page-content">{notices}</div>}
-      <div className="assistant-conversation">{renderConversation(session.sessionId, {
-        alternateStage: displayedView === "conversation" ? undefined : stage,
-        assistantReplyTarget: replyTarget,
-        hideComposer: filed || displayedView === "settings" || displayedView === "agenda" || displayedView === "proposals" || workspace?.repairFailed === true,
-      })}</div>
+      <div className="assistant-conversation">
+        <AssistantTranscriptVisibleContext.Provider value={displayedView === "conversation"}>
+          {renderConversation(session.sessionId, {
+            alternateStage: displayedView === "conversation" ? undefined : stage,
+            assistantReplyTarget: replyTarget,
+            hideComposer: filed || displayedView === "settings" || displayedView === "agenda" || displayedView === "proposals" || workspace?.repairFailed === true,
+          })}
+        </AssistantTranscriptVisibleContext.Provider>
+      </div>
     </> : stage()}
     {creating && snapshot && mail && <SessionCreateDialog snapshot={snapshot} connected={mail.online}
       {...(snapshot.host.capabilities.includes("directory.browse.v1") ? { onBrowseDirectory: browseDirectory } : {})}

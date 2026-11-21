@@ -1,7 +1,10 @@
 import type { BridgeHistoryItem, BridgeMailCard, BridgeMailPage } from "@bridge/protocol";
-import { useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { mailResult, useAssistantMail } from "./AssistantMailProvider.js";
 import { MailCard } from "./MailCard.js";
+import { useVisibleMailRead } from "./useVisibleMailRead.js";
+
+export const AssistantTranscriptVisibleContext = createContext(true);
 
 const DELIVERY_LABELS: Record<BridgeMailCard["nativeDelivery"]["state"], string> = {
   "not-submitted": "未提交", pending: "待提交", paused: "已暂停", submitting: "提交中", submitted: "已提交", queued: "排队中",
@@ -19,12 +22,17 @@ export function AssistantTriggerBatch({ sessionId, batchId, cards, nativeMessage
   const { online, request, supportsBatches } = mail ?? {};
   const changeToken = mail?.assistant?.changeToken;
   const linked = Boolean(nativeMessage);
+  const visible = useContext(AssistantTranscriptVisibleContext);
+  const read = useVisibleMailRead(useMemo(() => linked && supportsBatches && online && request
+    ? { request, sessionId, batchId, changeToken } : undefined,
+  [linked, supportsBatches, online, request, sessionId, batchId, changeToken]), visible);
   const [loaded, setLoaded] = useState<BridgeMailCard[]>();
   const [readError, setReadError] = useState("");
   const [cancelling, setCancelling] = useState(false);
   const [cancelError, setCancelError] = useState("");
   useEffect(() => {
-    if (!linked || !supportsBatches || !online || !request) return;
+    if (!read) return;
+    const { request, sessionId, batchId } = read;
     let active = true;
     setReadError("");
     void (async () => {
@@ -43,7 +51,7 @@ export function AssistantTriggerBatch({ sessionId, batchId, cards, nativeMessage
       if (active) setReadError(error instanceof Error ? error.message : "助理批次读取失败");
     });
     return () => { active = false; };
-  }, [batchId, changeToken, linked, online, request, sessionId, supportsBatches]);
+  }, [read]);
 
   const visibleCards = loaded ?? cards;
   const nativeDelivery = visibleCards[0]?.nativeDelivery;

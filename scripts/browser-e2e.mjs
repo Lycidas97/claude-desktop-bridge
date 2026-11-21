@@ -23,6 +23,7 @@ import { verifyAssistantAgenda } from "./browser-e2e/scenarios/assistant-agenda.
 import { verifyAssistantAttention } from "./browser-e2e/scenarios/assistant-attention.mjs";
 import { verifyAssistantMail, verifyAssistantMailHistory, verifyAssistantMailReference, verifyAssistantMailUnread } from "./browser-e2e/scenarios/assistant-mail.mjs";
 import { verifyAssistantMailAccounts } from "./browser-e2e/scenarios/assistant-mail-accounts.mjs";
+import { verifyAssistantMailRefresh } from "./browser-e2e/scenarios/assistant-mail-refresh.mjs";
 import { verifyAssistantMailCategories } from "./browser-e2e/scenarios/assistant-mail-categories.mjs";
 import { verifyAssistantReplies } from "./browser-e2e/scenarios/assistant-replies.mjs";
 import { memoryProposalFixture, seedAssistantProposals, seedMailProposal, verifyAssistantProposals } from "./browser-e2e/scenarios/assistant-proposals.mjs";
@@ -51,7 +52,7 @@ let vite;
 let browser;
 let baseUrl;
 const nativeHosts = [];
-const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "round4-boundaries", "round5-ux", "desktop-diagnostics", "desktop-quota", "desktop-conversation", "mobile-safe-area", "assistant-mail", "assistant-mail-accounts", "assistant-mail-reference", "assistant-mail-categories", "assistant-mail-history", "assistant-mail-unread", "assistant-agenda", "assistant-attention", "assistant-replies", "assistant-proposals", "incoming-file", "paired-host-status", "pairing-qr"];
+const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "round4-boundaries", "round5-ux", "desktop-diagnostics", "desktop-quota", "desktop-conversation", "mobile-safe-area", "assistant-mail", "assistant-mail-accounts", "assistant-mail-reference", "assistant-mail-categories", "assistant-mail-history", "assistant-mail-unread", "assistant-mail-refresh", "assistant-agenda", "assistant-attention", "assistant-replies", "assistant-proposals", "incoming-file", "paired-host-status", "pairing-qr"];
 const scenarios = process.env.BRIDGE_E2E_SCENARIOS ? process.env.BRIDGE_E2E_SCENARIOS.split(",") : allScenarios;
 assert.ok(scenarios.every(scenario => allScenarios.includes(scenario)), "BRIDGE_E2E_SCENARIOS must name existing scenarios");
 const themes = process.env.BRIDGE_QA_THEME ? [process.env.BRIDGE_QA_THEME] : ["light", "dark"];
@@ -72,7 +73,7 @@ async function runScenario(theme, scenario, mockHostRuntime) {
   const serverRoutes = [];
   const agendaScenario = scenario === "assistant-agenda";
   const accountsScenario = scenario === "assistant-mail-accounts";
-  const assistantMail = agendaScenario || accountsScenario || ["assistant-mail", "assistant-mail-reference", "assistant-mail-categories", "assistant-mail-history", "assistant-mail-unread", "assistant-attention", "assistant-replies", "assistant-proposals", "round5-ux"].includes(scenario);
+  const assistantMail = agendaScenario || accountsScenario || ["assistant-mail", "assistant-mail-reference", "assistant-mail-categories", "assistant-mail-history", "assistant-mail-unread", "assistant-mail-refresh", "assistant-attention", "assistant-replies", "assistant-proposals", "round5-ux"].includes(scenario);
   let context;
   let page;
   let host;
@@ -179,6 +180,7 @@ async function runScenario(theme, scenario, mockHostRuntime) {
     else if (scenario === "assistant-mail-reference") await verifyAssistantMailReference(page, host, steps, directory, viewports);
     else if (scenario === "assistant-mail-categories") await verifyAssistantMailCategories(page, host, steps, directory, viewports, baseUrl);
     else if (scenario === "assistant-mail-history") await verifyAssistantMailHistory(page, host, steps, directory, viewports);
+    else if (scenario === "assistant-mail-refresh") await verifyAssistantMailRefresh(page, host, steps);
     else if (scenario === "assistant-mail-unread") await verifyAssistantMailUnread(page, host, steps, directory, viewports, baseUrl);
     else if (agendaScenario) await verifyAssistantAgenda(page, host, steps, directory, viewports, baseUrl);
     else if (scenario === "assistant-attention") await verifyAssistantAttention(page, host, steps, directory, viewports, baseUrl);

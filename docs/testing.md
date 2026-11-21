@@ -271,8 +271,8 @@ or invent a marker.` 标记只存在于自有记忆文件中。
 
 后两行均调用真实源码的公开 `startTurn` 与 `resolveUncertainDelivery`。复现步骤：
 
-1. 按 `claude-desktop-bridge.test.ts` 的 fixture 装配 `ConversationStateStore` 和
-   `SessionEventLog`，所有路径及随机主密钥只用于自有实验库；`settingsPath` 指向
+1. 按[共享原生桥夹具](../apps/desktop/src/claude/claude-desktop-bridge-fixture.ts)装配
+   `ConversationStateStore` 和 `SessionEventLog`，所有路径及随机主密钥只用于自有实验库；`settingsPath` 指向
    自有文件，`scanCatalog` 返回空。注入本地 EventEmitter transport，不订阅 Desktop
    事件；`getAll` 仅返回指定 QA 会话的真实 `getSession`，避免枚举用户会话。
 2. transport 仅支持 `getAll`、`sendMessage`、`getTranscript`，提供 `ready`、
@@ -291,7 +291,7 @@ or invent a marker.` 标记只存在于自有记忆文件中。
 原生事件先到、确认时收到结果等分支仍由现有契约测试覆盖：
 
 ```bash
-npm run ci:run -- exec -w @bridge/desktop -- vitest run src/claude/claude-desktop-inspector.test.ts src/claude/claude-desktop-bridge.test.ts
+npm run ci:run -- exec -w @bridge/desktop -- vitest run src/claude/claude-desktop-inspector.test.ts src/claude/claude-desktop-bridge-delivery.test.ts
 ```
 
 ### 未运行项与启用条件

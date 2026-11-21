@@ -47,9 +47,9 @@ export function InboxMailList({ mail, mobile, filed, canMarkJunk, onOpenFiled, o
     } finally { setBusy(false); }
   }
 
-  const renderCard = (card: BridgeMailCard, compact: boolean) => <MailCard key={card.mailRefId} card={card} compact={compact} onDiscuss={onDiscuss}
+  const renderCard = (card: BridgeMailCard, compact: boolean, stale = false) => <MailCard key={card.mailRefId} card={card} compact={compact} onDiscuss={onDiscuss}
     junkAction={canMarkJunk ? { disabled, onMark: event => { void move(card, { junk: true }, { junk: false }, event.detail === 0 ? event.currentTarget : undefined); } } : undefined}
-    filing={mail.supportsFiling ? { disabled, showFolder: Boolean(query), move: (folder, control) => {
+    filing={mail.supportsFiling ? { disabled: disabled || stale, showFolder: Boolean(query), move: (folder, control) => {
       void move(card, { folder }, { folder: card.folder ?? "inbox" }, control);
     } } : undefined} />;
 
@@ -79,7 +79,7 @@ export function InboxMailList({ mail, mobile, filed, canMarkJunk, onOpenFiled, o
           }}>
             <summary><span>{label}</span><small>{count} 封</small><ChevronRight size={16} aria-hidden="true" /></summary>
             {openedFolders.has(category) && <div className="assistant-mail-group-cards">
-              <ScopedMailList mail={mail} folder={category} visible={filed} renderCard={card => renderCard(card, false)} />
+              <ScopedMailList mail={mail} folder={category} visible={filed} renderCard={(card, stale) => renderCard(card, false, stale)} />
               {count > 1 && <button type="button" className="assistant-session-link assistant-mail-close-folder" onClick={event => {
                 const details = event.currentTarget.closest("details")!;
                 details.open = false;
@@ -114,7 +114,7 @@ export function InboxMailList({ mail, mobile, filed, canMarkJunk, onOpenFiled, o
 }
 
 function ScopedMailList({ mail, folder, query, visible = true, renderCard }: {
-  mail: NonNullable<ReturnType<typeof useAssistantMail>>; folder?: BridgeMailCategory; query?: string; visible?: boolean; renderCard(card: BridgeMailCard): ReactNode;
+  mail: NonNullable<ReturnType<typeof useAssistantMail>>; folder?: BridgeMailCategory; query?: string; visible?: boolean; renderCard(card: BridgeMailCard, stale: boolean): ReactNode;
 }) {
   const { online, request, supportsCategories, order } = mail;
   const changeToken = mail.assistant?.changeToken ?? "";
@@ -144,12 +144,14 @@ function ScopedMailList({ mail, folder, query, visible = true, renderCard }: {
     try {
       const cursor = page.order === order ? page.nextCursor : undefined;
       const next = await loadPage(cursor);
-      setPage({ ...next, cards: cursor ? mergeMailCards(page.cards, next.cards, next.order) : next.cards, changeToken });
+      setPage({ ...next, cards: cursor ? mergeMailCards(page.cards, next.cards, next.order) : next.cards,
+        changeToken: cursor ? page.changeToken : changeToken });
     } catch (reason) { setError(reason instanceof Error ? reason.message : "邮件读取失败"); }
     finally { setLoading(false); }
   }
+  const stale = page.changeToken !== changeToken;
   return <>
-    {page.cards.map(renderCard)}
+    {page.cards.map(card => renderCard(card, stale))}
     {error ? <p className="assistant-mail-empty" role="alert">{error}</p>
       : !online ? <p className="assistant-mail-empty" role="status">连接电脑后可{query ? "搜索邮件" : "读取分类邮件"}。</p>
       : loading && !page.cards.length ? <p className="assistant-mail-empty" role="status">正在读取邮件…</p>

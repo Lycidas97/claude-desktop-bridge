@@ -56,8 +56,10 @@ export function AssistantTriggerBatch({ sessionId, batchId, cards, nativeMessage
   const visibleCards = loaded ?? cards;
   const nativeDelivery = visibleCards[0]?.nativeDelivery;
   const delivery = nativeMessage?.delivery;
-  const state = loaded?.[0]?.nativeDelivery.state ?? (delivery === "queued" || delivery === "uncertain" || delivery === "cancelled" || delivery === "failed"
-    ? delivery : nativeMessage ? "observed" : nativeDelivery?.state ?? "pending");
+  // The native receipt can report a withdrawal before the deferred mail read catches up.
+  const state = delivery === "cancelled" ? delivery : loaded?.[0]?.nativeDelivery.state ?? (
+    delivery === "queued" || delivery === "uncertain" || delivery === "failed"
+      ? delivery : nativeMessage ? "observed" : nativeDelivery?.state ?? "pending");
   const commandId = nativeMessage?.commandId ?? nativeDelivery?.commandId;
   return <section className="assistant-trigger-batch" data-stream-key={`assistant-trigger:${batchId}`} aria-label="助理唤醒">
     <header><strong>助理唤醒</strong><span>{DELIVERY_LABELS[state]}</span>

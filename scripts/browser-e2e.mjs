@@ -21,7 +21,8 @@ import { verifyDesktopDiagnostics, verifyDesktopQuota, verifyDesktopConversation
 import { verifyMobileSafeArea } from "./browser-e2e/scenarios/mobile-safe-area.mjs";
 import { verifyAssistantAgenda } from "./browser-e2e/scenarios/assistant-agenda.mjs";
 import { verifyAssistantAttention } from "./browser-e2e/scenarios/assistant-attention.mjs";
-import { verifyAssistantMail, verifyAssistantMailAccounts, verifyAssistantMailHistory, verifyAssistantMailReference, verifyAssistantMailUnread } from "./browser-e2e/scenarios/assistant-mail.mjs";
+import { verifyAssistantMail, verifyAssistantMailHistory, verifyAssistantMailReference, verifyAssistantMailUnread } from "./browser-e2e/scenarios/assistant-mail.mjs";
+import { verifyAssistantMailAccounts } from "./browser-e2e/scenarios/assistant-mail-accounts.mjs";
 import { verifyAssistantMailCategories } from "./browser-e2e/scenarios/assistant-mail-categories.mjs";
 import { verifyAssistantReplies } from "./browser-e2e/scenarios/assistant-replies.mjs";
 import { memoryProposalFixture, seedAssistantProposals, seedMailProposal, verifyAssistantProposals } from "./browser-e2e/scenarios/assistant-proposals.mjs";

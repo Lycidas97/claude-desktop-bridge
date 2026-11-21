@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
-import { fileMailInCategory, openDesktopAssistant } from "./assistant-mail.mjs";
+import { expandInboxMail, fileMailInCategory, openDesktopAssistant } from "./assistant-mail.mjs";
 import { eventually } from "../helpers.mjs";
 
 export async function verifyAssistantMailCategories(page, host, steps, directory, viewports, baseUrl) {
@@ -55,7 +55,8 @@ export async function verifyAssistantMailCategories(page, host, steps, directory
   await page.getByRole("button", { name: "返回收件" }).click();
   await page.getByRole("searchbox", { name: "搜索邮件" }).fill(service.event(mailRefId).subject);
   await page.getByRole("button", { name: "搜索", exact: true }).click();
-  await card(page.locator('[aria-label="搜索结果"]')).getByText("采购记录", { exact: true }).waitFor();
+  const found = await expandInboxMail(card(page.getByLabel("搜索结果")));
+  await found.getByText("采购记录", { exact: true }).waitFor();
   await page.getByRole("button", { name: "清除搜索" }).click();
   await fileMailInCategory(page, page.locator(`[aria-label="邮件输入"] [data-mail-id="${secondMail.mailRefId}"]`), "采购记录");
 
@@ -87,8 +88,9 @@ export async function verifyAssistantMailCategories(page, host, steps, directory
   assert.equal(await page.getByRole("button", { name: "撤销", exact: true }).count(), 0);
   await page.getByRole("button", { name: "返回收件" }).click();
   await page.getByRole("button", { name: "已收纳 0 封" }).waitFor();
-  await card(page.locator('[aria-label="邮件输入"]')).getByText("原文", { exact: true }).click();
-  await card(page.locator('[aria-label="邮件输入"]')).locator("details[open] pre").waitFor();
+  const restored = await expandInboxMail(card(page.getByLabel("邮件输入")));
+  await restored.getByText("原文", { exact: true }).click();
+  await restored.locator("details[open] pre").waitFor();
 
   const start = host.requests.length;
   host.snapshot.host.capabilities = host.snapshot.host.capabilities.filter(value => value !== "plugin.assistant-mail.categories.v1");

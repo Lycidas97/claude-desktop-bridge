@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { eventually } from "../helpers.mjs";
-import { assistantViewCapture, openDesktopAssistant, openMobileAssistant } from "./assistant-mail.mjs";
+import { assistantViewCapture, expandInboxMail, openDesktopAssistant, openMobileAssistant } from "./assistant-mail.mjs";
 
 export async function verifyAssistantMailAccounts(page, host, steps, directory, viewports, baseUrl) {
   const capture = assistantViewCapture(page, directory, viewports);
@@ -105,7 +105,8 @@ export async function verifyAssistantMailAccounts(page, host, steps, directory, 
   } } });
   await page.locator(".assistant-page .m-header").getByRole("button", { name: "返回", exact: true }).click();
   await page.getByRole("button", { name: "收件", exact: true }).click();
-  await page.locator(`.assistant-mail-list [data-mail-id="${originalMail.mailRefId}"] header`).getByText(`${originalAccount.user} (${originalAccount.host}:${originalAccount.port})`, { exact: true }).waitFor();
+  const originalCard = await expandInboxMail(page.locator(`.assistant-mail-list [data-mail-id="${originalMail.mailRefId}"]`));
+  await originalCard.locator("header").getByText(`${originalAccount.user} (${originalAccount.host}:${originalAccount.port})`, { exact: true }).waitFor();
   await host.send({ kind: "snapshot", snapshot: host.snapshot });
   steps.push("mobile account settings add and disable a second inbox, report account errors, and disambiguate the cards of same-name accounts");
 

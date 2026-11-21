@@ -1,5 +1,5 @@
 import { ARTIFACT_MAX_BYTES, mailAttachmentPreviewKind, type BridgeMailCategoryEntry, type BridgeMailFolder, type BridgeHistoryItem, type BridgeMailAttachment, type BridgeMailCard, type BridgeMailDetail } from "@bridge/protocol";
-import { Download, Folder, Mail, Paperclip } from "lucide-react";
+import { ChevronRight, Download, Folder, Mail, Paperclip } from "lucide-react";
 import { useEffect, useState, type MouseEvent } from "react";
 import { downloadMailAttachment } from "../../lib/artifact-download.js";
 import { formatBytes } from "../../lib/media-preview.js";
@@ -82,10 +82,31 @@ function MailCategoryPicker({ categories, disabled, move }: {
   </>;
 }
 
-export function MailCard({ card, nativeMessage, onDiscuss, showBatchDelivery = true, junkAction, filing }: {
-  card: BridgeMailCard; nativeMessage?: BridgeHistoryItem; onDiscuss?(): void; showBatchDelivery?: boolean;
+type MailCardProps = {
+  card: BridgeMailCard; compact?: boolean; nativeMessage?: BridgeHistoryItem; onDiscuss?(): void; showBatchDelivery?: boolean;
   junkAction?: { disabled: boolean; onMark(event: MouseEvent<HTMLButtonElement>): void } | undefined;
   filing?: { disabled: boolean; showFolder: boolean; move(folder: BridgeMailFolder, control: HTMLElement): void } | undefined;
+};
+
+export function MailCard(props: MailCardProps) {
+  const { card, compact } = props;
+  const [open, setOpen] = useState(false);
+  const subject = card.subject || "无主题";
+  const sender = card.from.map(({ name, address }) => [name, address].filter(Boolean).join(" ")).join("，") || "未知发件人";
+  return <article className="assistant-mail-card" data-mail-id={card.mailRefId} data-stream-key={`mail:${card.mailRefId}`} aria-label={`邮件：${subject}`}>
+    {compact ? <details className="assistant-mail-row" open={open} onToggle={event => setOpen(event.currentTarget.open)}>
+      <summary>
+        <span className="assistant-mail-row-subject">{subject}</span>
+        <span className="assistant-mail-row-from">{sender}</span>
+        <ChevronRight size={16} aria-hidden="true" />
+      </summary>
+      {open && <div className="assistant-mail-row-content"><MailCardContent {...props} subject={subject} sender={sender} /></div>}
+    </details> : <MailCardContent {...props} subject={subject} sender={sender} />}
+  </article>;
+}
+
+function MailCardContent({ card, compact, subject, sender, nativeMessage, onDiscuss, showBatchDelivery = true, junkAction, filing }: MailCardProps & {
+  subject: string; sender: string;
 }) {
   const mail = useAssistantMail();
   const accountLabel = mail?.accountLabel(card.accountKey) ?? "邮件插件";
@@ -104,11 +125,10 @@ export function MailCard({ card, nativeMessage, onDiscuss, showBatchDelivery = t
   const links = detail ? [...new Set(detail.bodyText.match(/https?:\/\/[^\s<>"']+/gu) ?? [])].filter(href => URL.canParse(href)).map(href => new URL(href)) : [];
   const delivery = showBatchDelivery || !card.nativeDelivery.batchId ? DELIVERY_STATUS[card.nativeDelivery.state] : undefined;
   const hint = delivery?.hint === "failed" ? "failed" : card.processingStatus === "processing" ? "processing" : delivery?.hint;
-  return <article className="assistant-mail-card" data-mail-id={card.mailRefId} data-stream-key={`mail:${card.mailRefId}`} aria-label={`邮件：${card.subject || "无主题"}`}>
+  return <>
     <header><span><Mail size={15} aria-hidden="true" />{accountLabel}</span><time dateTime={card.receivedAt}>{new Date(card.receivedAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</time></header>
     {folderLabel && <p className="assistant-mail-folder-label">{folderLabel}</p>}
-    <h3>{card.subject || "无主题"}</h3>
-    <p className="assistant-mail-from">{card.from.map(sender => [sender.name, sender.address].filter(Boolean).join(" ")).join("，") || "未知发件人"}</p>
+    {!compact && <><h3>{subject}</h3><p className="assistant-mail-from">{sender}</p></>}
     {card.preview && <p className="assistant-mail-preview">{card.preview}</p>}
     {card.previewError && <p className="assistant-mail-from" role="status">{card.previewError}</p>}
     {hint && <p className="assistant-mail-hint" data-tone={hint === "failed" ? "failed" : undefined}>{MAIL_HINT_LABELS[hint]}</p>}
@@ -154,5 +174,5 @@ export function MailCard({ card, nativeMessage, onDiscuss, showBatchDelivery = t
       </>}
       {junkAction && <button type="button" className="assistant-session-link assistant-mail-junk-action" disabled={junkAction.disabled} onClick={junkAction.onMark}>标为垃圾邮件</button>}
     </div>}
-  </article>;
+  </>;
 }

@@ -1,6 +1,7 @@
 import type {
   BridgeAttachment,
   BridgeHostSnapshot,
+  BridgeModelInfo,
   BridgeSessionInfo,
   BridgeSessionRewindResult,
   BridgeUploadedFile,
@@ -18,6 +19,7 @@ export interface ConversationDraftState {
   attachments: BridgeAttachment[];
   sending: boolean;
   imageError?: string | undefined;
+  newChatModel?: BridgeModelInfo | undefined;
 }
 
 export interface ConversationFileEntry {

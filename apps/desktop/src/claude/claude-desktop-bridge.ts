@@ -1198,31 +1198,23 @@ export class ClaudeDesktopBridge extends EventEmitter {
       Number(Boolean(left.isArchived)) - Number(Boolean(right.isArchived))
       || (right.lastActivityAt ?? right.createdAt ?? 0) - (left.lastActivityAt ?? left.createdAt ?? 0)
     ))[0];
-    const fromReference = reference ? this.resolveSessionModel(reference.sessionId, reference.model) : undefined;
-    const resolved = fromReference && !(
-      !fromReference.modelDisplayName
-      && fromReference.configModel
-      && parseMagpieSyntheticModelId(fromReference.configModel)
-      && this.models?.length
-    )
-      ? fromReference
-      : this.resolveSessionModel(undefined, undefined);
-    const fallbackLabel = resolved.modelDisplayName
-      ?? (resolved.configModel && /\[1m\]$/iu.test(resolved.configModel) ? "默认模型 · 1M" : "默认模型");
+    // The first catalog entry is a display fallback for existing sessions, not a Native creation default.
+    const resolved = this.defaultModel ? this.resolveSessionModel(undefined, undefined) : undefined;
+    const fallbackLabel = resolved?.modelDisplayName
+      ?? (resolved?.configModel && /\[1m\]$/iu.test(resolved.configModel) ? "默认模型 · 1M" : "默认模型");
     const availableModels = this.models
       ? [
           ...this.models,
-          ...(resolved.extraOption && !this.models.some(option => option.value === resolved.extraOption!.value) ? [resolved.extraOption] : []),
+          ...(resolved?.extraOption && !this.models.some(option => option.value === resolved.extraOption!.value) ? [resolved.extraOption] : []),
         ]
-      : resolved.configModel ? [{ value: resolved.configModel, displayName: fallbackLabel }] : [];
-    const defaultModel = resolved.configModel ?? availableModels[0]?.value;
-    const defaultDisplayName = resolved.modelDisplayName ?? (resolved.configModel ? undefined : availableModels[0]?.displayName);
+      : resolved?.configModel ? [{ value: resolved.configModel, displayName: fallbackLabel }] : [];
     const styleCatalog = this.inspector.supports("applyFlagSettings") && this.inspector.supports("listGlobalOutputStyles")
       ? record(await this.inspector.call("listGlobalOutputStyles")) : {};
     const styles = [...new Set([...outputStyleNames(styleCatalog.builtIns), ...outputStyleNames(styleCatalog.customs)])];
     return {
       sessionId: DEFAULT_CONFIGURATION_SESSION_ID,
-      ...(defaultModel ? { model: defaultModel, ...(defaultDisplayName ? { modelDisplayName: defaultDisplayName } : {}) } : {}),
+      ...(resolved?.configModel ? { model: resolved.configModel } : {}),
+      ...(resolved?.modelDisplayName ? { modelDisplayName: resolved.modelDisplayName } : {}),
       effort: reference?.effort ?? "high",
       nativePermissionMode: reference?.permissionMode ?? "default",
       ...(styles.length ? { availableOutputStyles: styles } : {}),

@@ -324,7 +324,7 @@ describe("session.configuration __default__", () => {
     expect(backgroundTaskDetails).not.toHaveBeenCalled();
   });
 
-  it("returns host defaults through ClaudeDesktopBridge both when zero sessions exist and when sessions exist", async () => {
+  it("returns the model directory without inventing a default model from catalog order or session activity", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-default-config-"));
     const state = new ConversationStateStore({
       databasePath: join(root, "state.sqlite"),
@@ -375,8 +375,6 @@ describe("session.configuration __default__", () => {
       expect(zeroSessions).toEqual({
         configuration: {
           sessionId: DEFAULT_CONFIGURATION_SESSION_ID,
-          model: "claude-sonnet-4-6",
-          modelDisplayName: "Claude Sonnet 4.6",
           effort: "high",
           nativePermissionMode: "default",
           modelSource: "claude-desktop",
@@ -401,8 +399,6 @@ describe("session.configuration __default__", () => {
       expect(withSessions).toEqual({
         configuration: {
           sessionId: DEFAULT_CONFIGURATION_SESSION_ID,
-          model: "claude-opus-4-6[1m]",
-          modelDisplayName: "Claude Opus 4.6 · 1M",
           effort: "xhigh",
           nativePermissionMode: "plan",
           modelSource: "claude-desktop",

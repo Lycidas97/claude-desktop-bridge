@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { expandInboxMail } from "../assistant-helpers.mjs";
 import { desktopFixtureRequest, eventually, openMobileDrawer } from "../helpers.mjs";
 
 function holdMailRead(host, method, match) {
@@ -160,7 +161,7 @@ export async function verifyAssistantMailRefresh(page, host, steps) {
     withdrawnBeforeBatchRead = await queuedBatch.getByText("已撤回", { exact: true }).isVisible() && await cancel.count() === 0;
   } finally { batchGate.release(); }
   await queuedBatch.getByText("已撤回", { exact: true }).waitFor();
-  await batchCard(historical[0]).locator(".assistant-mail-hint").filter({ hasText: "处理中" }).waitFor();
+  await (await expandInboxMail(batchCard(historical[0]))).locator(".assistant-mail-hint").filter({ hasText: "处理中" }).waitFor();
   assert.equal(native.receipts().find(({ commandId }) => commandId === receipt.commandId).state, "cancelled");
 
   await inboxTab.click();
@@ -182,7 +183,7 @@ export async function verifyAssistantMailRefresh(page, host, steps) {
   await remainingCard.locator(".assistant-mail-hint").filter({ hasText: "处理中" }).waitFor();
   await returnToInbox.click();
   await conversationTab.click();
-  await batchCard(historical[1]).locator(".assistant-mail-hint").filter({ hasText: "处理中" }).waitFor();
+  await (await expandInboxMail(batchCard(historical[1]))).locator(".assistant-mail-hint").filter({ hasText: "处理中" }).waitFor();
 
   assert.ok(withdrawnBeforeBatchRead, "Native withdrawal wins before the batch reply");
   assert.deepEqual({ ordinaryUpdate, batchUpdate }, {
@@ -194,7 +195,7 @@ export async function verifyAssistantMailRefresh(page, host, steps) {
   for (const state of ["started", "completed", "failed"]) {
     const { mail, batch, cancel, receipt } = await queueLinkedBatch();
     const status = batch.locator(":scope > header > span");
-    const processing = batchCard(mail).locator(".assistant-mail-hint").filter({ hasText: "处理中" });
+    const processing = (await expandInboxMail(batchCard(mail))).locator(".assistant-mail-hint").filter({ hasText: "处理中" });
     service.setProcessingStatus(mail.mailRefId, "processing");
     await processing.waitFor();
     assert.equal(await status.textContent(), "排队中");

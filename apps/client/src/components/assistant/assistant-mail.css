@@ -134,11 +134,12 @@ body:has(.assistant-mail-category-options) .diagnostic-floating-entry { display:
 .assistant-mail-junk-feedback [role="status"] { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .assistant-mail-junk-feedback [role="alert"] { flex-basis: 100%; color: var(--danger-ink); padding: 8px 0; }
 .assistant-mail-card { min-width: 0; max-width: 100%; padding: 16px; border: 1px solid var(--card-border); border-radius: var(--r-card); background: var(--card-fill); box-shadow: var(--card-hi); color: var(--text); overflow-wrap: anywhere; }
-/* Mail lists are first-level pages: hairline rows, no card frame. The conversation stream keeps cards. */
-:is(.assistant-mail-list, .assistant-mail-group-cards) > .assistant-mail-card { padding: 16px 0; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; box-shadow: none; }
-.assistant-mail-list > .assistant-mail-card:has(> .assistant-mail-row) { padding: 0; }
+:is(.assistant-mail-list, .assistant-mail-group-cards) > .assistant-mail-card { padding: 16px 0; }
+:is(.assistant-mail-list, .assistant-mail-group-cards) > .assistant-mail-card,
+.assistant-mail-card:has(> .assistant-mail-row) { border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; box-shadow: none; }
+.assistant-mail-card:has(> .assistant-mail-row) { padding: 0; }
 .assistant-mail-card > .assistant-mail-row { margin: 0; }
-.assistant-mail-card .assistant-mail-row > summary { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 2px 12px; padding: 8px 0; list-style: none; }
+.assistant-mail-card .assistant-mail-row > summary { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 2px 12px; min-height: 44px; padding: 8px 0; list-style: none; }
 .assistant-mail-row > summary::-webkit-details-marker { display: none; }
 .assistant-mail-row > summary:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: -2px; }
 .assistant-mail-row > summary > svg { grid-column: 2; grid-row: 1 / span 2; }
@@ -195,14 +196,13 @@ body:has(.assistant-mail-category-options) .diagnostic-floating-entry { display:
 .assistant-trigger-batch { min-width: 0; margin: 16px 0; border-block: 1px solid var(--line); }
 .assistant-trigger-batch > header { display: flex; justify-content: space-between; gap: 12px; padding: 10px 0; font-size: calc(13px * var(--font-scale)); }
 .assistant-trigger-batch > header span { color: var(--muted); }
-.assistant-trigger-batch > .assistant-mail-card { padding: 12px 0; border: 0; border-top: 1px solid var(--line); border-radius: 0; box-shadow: none; background: transparent; }
+.assistant-trigger-batch > .assistant-mail-card { border-top: 1px solid var(--line); border-bottom: 0; }
 .assistant-trigger-batch > details { padding: 8px 0; font-size: calc(12px * var(--font-scale)); color: var(--muted); overflow-wrap: anywhere; }
 .assistant-trigger-batch > details pre { white-space: pre-wrap; }
 .conversation-stream .assistant-mail-preview, .desktop-conversation-stream .assistant-mail-preview { -webkit-line-clamp: 3; white-space: normal; }
 .assistant-mail-empty { text-align: center; padding: 48px 8px; color: var(--muted); }
 .assistant-unbound { display: grid; justify-items: center; gap: 16px; padding: 48px 8px; color: var(--muted); }
 .assistant-mail-older { display: block; margin: 20px auto 0; }
-.conversation-stream > .assistant-mail-card, .desktop-conversation-stream > .assistant-mail-card { margin: 16px 0; }
 .assistant-page.has-conversation { display: flex; flex-direction: column; overflow: hidden; padding-bottom: 0; }
 .assistant-page.has-conversation > .assistant-page-content { flex: 0 0 auto; padding-bottom: 0; }
 .assistant-page.has-conversation > .assistant-page-content:empty { display: none; }

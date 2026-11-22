@@ -893,6 +893,7 @@ export function ConversationView({
             <MailCard
               key={`mail:${node.card.mailRefId}`}
               card={node.card}
+              compact
               {...(node.nativeMessage ? { nativeMessage: node.nativeMessage } : {})}
             />
           );

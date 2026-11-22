@@ -6,8 +6,8 @@ import { mailResult, type useAssistantMail } from "./AssistantMailProvider.js";
 import { MailCard } from "./MailCard.js";
 import { useVisibleMailRead } from "./useVisibleMailRead.js";
 
-export function InboxMailList({ mail, mobile, filed, canMarkJunk, onOpenFiled, onDiscuss }: {
-  mail: NonNullable<ReturnType<typeof useAssistantMail>>; mobile: boolean; filed: boolean; canMarkJunk: boolean;
+export function InboxMailList({ mail, filed, canMarkJunk, onOpenFiled, onDiscuss }: {
+  mail: NonNullable<ReturnType<typeof useAssistantMail>>; filed: boolean; canMarkJunk: boolean;
   onOpenFiled(): void; onDiscuss(): void;
 }) {
   const { cards, folderCounts } = mail.cache;
@@ -91,12 +91,12 @@ export function InboxMailList({ mail, mobile, filed, canMarkJunk, onOpenFiled, o
       </div> : <p className="assistant-mail-empty" role="status">{mail.loading ? "正在读取邮件…" : "暂无已收纳邮件"}</p>}
     </section>}
     {!filed && (mail.supportsFiling && query ? <div className="assistant-mail-list" aria-label="搜索结果">
-      <ScopedMailList key={query} mail={mail} query={query} renderCard={card => renderCard(card, mobile)} />
+      <ScopedMailList key={query} mail={mail} query={query} renderCard={card => renderCard(card, true)} />
     </div> : <>
       {mail.supportsFiling && <button ref={filedEntry} type="button" className="assistant-mail-filed-entry" onClick={onOpenFiled}>
         <span>已收纳</span><small>{filedCount} 封</small><ChevronRight size={16} aria-hidden="true" />
       </button>}
-      <div className="assistant-mail-list" aria-label="邮件输入">{inboxCards.map(card => renderCard(card, mobile))}</div>
+      <div className="assistant-mail-list" aria-label="邮件输入">{inboxCards.map(card => renderCard(card, true))}</div>
       {!inboxCards.length && <p className="assistant-mail-empty" role="status">{mail.loading ? "正在读取邮件…" : filedCount ? "暂无收件" : "暂无已记录邮件"}</p>}
       {mail.hasOlderMail && <button type="button" className="secondary-button assistant-mail-older" disabled={!mail.online || mail.loading} onClick={() => void mail.loadOlder()}>{mail.loading ? "正在读取…" : "更早邮件"}</button>}
     </>)}

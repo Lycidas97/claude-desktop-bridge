@@ -90,7 +90,7 @@ export async function verifyAssistantAttention(page, host, steps, directory, vie
     const inboxCard = client => client.getByLabel("邮件输入", { exact: true }).locator(`[data-mail-id="${action.mailRefId}"]`);
     for (const client of [page, desktop]) {
       await client.getByRole("button", { name: "收件", exact: true }).click();
-      if (client === page) await expandInboxMail(inboxCard(page));
+      await expandInboxMail(inboxCard(client));
       await mark(client).waitFor();
     }
     const desktopPicker = desktop.getByRole("dialog", { name: "收入分类", exact: true });
@@ -125,6 +125,7 @@ export async function verifyAssistantAttention(page, host, steps, directory, vie
     await page.getByRole("button", { name: "返回收件", exact: true }).click();
     await inboxCard(page).waitFor();
     await publishDesktop();
+    await expandInboxMail(inboxCard(desktop));
     await mark(desktop).waitFor();
     assert.equal(host.snapshot.assistantMail.attention.some(item => item.id === action.mailRefId), true);
     steps.push("Manual filing removes mail attention, leaves tasks alone, and restores the mail and attention on desktop and mobile");

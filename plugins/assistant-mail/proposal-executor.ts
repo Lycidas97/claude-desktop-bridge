@@ -149,9 +149,16 @@ export class ProposalExecutor extends EventEmitter {
 
   private async applySmtp(proposal: StoredProposal, channel: BridgeSmtpChannel & { version: string }, messageId: string) {
     if (!("accountKey" in proposal.action)) throw new Error("Expected an SMTP proposal");
-    const password = await this.mailService().smtpPassword(proposal.action.accountKey, channel.version);
-    return this.finishSmtp(proposal, password ? await this.send(channel, password, proposal.action, messageId)
-      : { state: "failed", failure: { reason: "credential" } });
+    const mail = this.mailService();
+    const { accountKey } = proposal.action;
+    const password = await mail.smtpPassword(accountKey, channel.version);
+    if (!password) return this.finishSmtp(proposal, { state: "failed", failure: { reason: "credential" } });
+    const { source, ...result } = await this.send(channel, password, proposal.action, messageId);
+    const finished = this.finishSmtp(proposal, result);
+    if (source && "accepted" in result && result.accepted.length) {
+      this.store.recordSentCopy(proposal, await mail.fileSentCopy(accountKey, messageId, source));
+    }
+    return finished;
   }
 
   private finishSmtp(proposal: StoredProposal, result: SmtpResult) {

@@ -753,6 +753,16 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   assert.equal(await page.locator(".assistant-page .m-header").count(), 1, "Mobile assistant has one header");
   assert.equal(await page.locator(".assistant-page").getByRole("button", { name: /^成果/u }).count(), 0, "Assistant conversation has no evidence view toggle");
   await capture("mobile-mail-timeline");
+  await host.syncNativeQueue(await host.nativeApproval.event({ type: "message", message: {
+    type: "assistant", uuid: "mail-following-tool", timestamp: Date.now(), message: {
+      content: [{ type: "tool_use", id: "mail-following-tool-call", name: "Read", input: { file_path: "/fixture/mail.txt" } }],
+    },
+  } }));
+  const toolGroupAfterMail = page.locator(".assistant-conversation .conversation-stream > [data-mail-id] + .conversation-tool-group");
+  await toolGroupAfterMail.waitFor();
+  const mailToToolGap = await toolGroupAfterMail.evaluate(group =>
+    group.offsetTop - group.previousElementSibling.offsetTop - group.previousElementSibling.offsetHeight);
+  assert.equal(mailToToolGap, 16, "A tool group after consecutive mail rows gets the conversation spacing");
   assert.equal(host.requests.some(request => request.method === "turn.start"), false);
   await page.locator(".assistant-conversation textarea").fill("手机跨页共享草稿");
   const uploadName = "assistant-upload.txt";
@@ -820,12 +830,6 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await host.syncNativeQueue(await host.nativeApproval.event({ type: "message", message: {
     type: "user", uuid: messageId, timestamp: Date.now(), message: { content },
   } }));
-  const mobileMessage = page.locator(`.assistant-conversation .conversation-stream > [data-stream-key="${messageId}"]`);
-  const mailToMessageGap = await mobileMessage.evaluate(message => {
-    const previous = message.previousElementSibling;
-    return previous?.matches("[data-mail-id]") ? message.offsetTop - previous.offsetTop - previous.offsetHeight : null;
-  });
-  assert.ok(mailToMessageGap > 0, `A mobile message after consecutive mail rows has breathing room (gap: ${mailToMessageGap}px)`);
 
   const otherMail = host.nativeApproval.assistantMail.service.page({ limit: 2 }).events[1];
   const otherCard = cards().and(page.locator(`[data-mail-id="${otherMail.mailRefId}"]`));

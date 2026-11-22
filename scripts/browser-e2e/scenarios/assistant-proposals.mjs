@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import { desktopFixtureRequest, eventually, openMobileDrawer } from "../helpers.mjs";
-import { expandInboxMail, openDesktopAssistant } from "./assistant-mail.mjs";
+import { expandInboxMail, openDesktopAssistant } from "../assistant-helpers.mjs";
 
 const action = { kind: "calendar.create", sourceId: "local", value: {
   title: "项目评审", startAt: "2027-01-04T14:00:00.000Z", endAt: "2027-01-04T15:00:00.000Z", allDay: false, timeZone: "UTC",

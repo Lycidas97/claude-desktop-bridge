@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
-import { expandInboxMail, fileMailInCategory, openDesktopAssistant } from "./assistant-mail.mjs";
+import { expandInboxMail, fileMailInCategory, openDesktopAssistant } from "../assistant-helpers.mjs";
 import { eventually } from "../helpers.mjs";
 
 export async function verifyAssistantMailCategories(page, host, steps, directory, viewports, baseUrl) {

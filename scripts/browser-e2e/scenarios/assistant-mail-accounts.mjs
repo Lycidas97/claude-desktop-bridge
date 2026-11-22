@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { eventually } from "../helpers.mjs";
-import { assistantViewCapture, expandInboxMail, openDesktopAssistant, openMobileAssistant } from "./assistant-mail.mjs";
+import { assistantViewCapture, expandInboxMail, openDesktopAssistant, openMobileAssistant } from "../assistant-helpers.mjs";
 
 export async function verifyAssistantMailAccounts(page, host, steps, directory, viewports, baseUrl) {
   const capture = assistantViewCapture(page, directory, viewports);

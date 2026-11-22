@@ -820,6 +820,12 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await host.syncNativeQueue(await host.nativeApproval.event({ type: "message", message: {
     type: "user", uuid: messageId, timestamp: Date.now(), message: { content },
   } }));
+  const mobileMessage = page.locator(`.assistant-conversation .conversation-stream > [data-stream-key="${messageId}"]`);
+  const mailToMessageGap = await mobileMessage.evaluate(message => {
+    const previous = message.previousElementSibling;
+    return previous?.matches("[data-mail-id]") ? message.offsetTop - previous.offsetTop - previous.offsetHeight : null;
+  });
+  assert.ok(mailToMessageGap > 0, `A mobile message after consecutive mail rows has breathing room (gap: ${mailToMessageGap}px)`);
 
   const otherMail = host.nativeApproval.assistantMail.service.page({ limit: 2 }).events[1];
   const otherCard = cards().and(page.locator(`[data-mail-id="${otherMail.mailRefId}"]`));
@@ -1209,15 +1215,11 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   assert.equal(await page.locator(".assistant-page").getByRole("navigation", { name: "会话视图" }).count(), 0, "Assistant conversation has no separate evidence view");
   assert.equal(await page.locator(".assistant-conversation .desktop-session-sidebar").count(), 0);
   assert.equal(await page.locator(".assistant-conversation .desktop-session-layout, .assistant-conversation .is-fixed-session").count(), 0, "Desktop AssistantPage mounts DesktopSessionConversation directly without DesktopSessions layout");
-  await verifyCollapsedConversationMail(page.locator(".assistant-conversation .desktop-conversation-stream > [data-mail-id]").first());
-  const historicalMessage = page.locator(`.assistant-conversation .desktop-conversation-stream > [data-stream-key="${messageId}"]`);
-  const historicalReference = historicalMessage.getByRole("button", { name: "打开邮件：邮件引用", exact: true });
-  await historicalReference.waitFor();
-  const mailToMessageGap = await historicalMessage.evaluate(message => {
-    const previous = message.previousElementSibling;
-    return previous?.matches("[data-mail-id]") ? message.getBoundingClientRect().top - previous.getBoundingClientRect().bottom : null;
-  });
-  assert.ok(mailToMessageGap > 0, `A message after consecutive mail rows has breathing room (gap: ${mailToMessageGap}px)`);
+  const desktopMail = page.locator(".assistant-conversation .desktop-conversation-stream > [data-mail-id]").first();
+  await desktopMail.waitFor();
+  assert.ok(await desktopMail.locator(".assistant-mail-preview").isVisible(), "Desktop conversation still shows full mail cards without expansion");
+  const historicalReference = page.locator(`.assistant-conversation .desktop-conversation-stream [data-stream-key="${messageId}"]`)
+    .getByRole("button", { name: "打开邮件：邮件引用", exact: true });
   await historicalReference.click();
   const historicalMail = page.getByRole("dialog", { name: "邮件引用", exact: true });
   await historicalMail.locator("pre").getByText(/<script>window.mailInjected=1<\/script>/u).waitFor();

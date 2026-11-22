@@ -9,13 +9,14 @@ function holdMailRead(host, method, match) {
     if (payload.kind === "response" && host.requests.some(request =>
       request.requestId === payload.requestId && request.method === method && match(request.params))) {
       held = true;
-      await gate.promise;
+      const error = await gate.promise;
+      if (error) return send({ kind: "response", requestId: payload.requestId, ok: false, error });
     }
     return send(payload);
   };
   return {
-    wait: () => eventually(() => held, true, `Hold the ${method} response`),
-    release() { host.send = send; gate.resolve(); },
+    wait: (message = `Hold the ${method} response`) => eventually(() => held, true, message),
+    release(error) { host.send = send; gate.resolve(error); },
   };
 }
 
@@ -111,20 +112,35 @@ export async function verifyAssistantMailRefresh(page, host, steps) {
   const ordinaryUpdate = await countReadsAfterProcessing(ordinary, "Ordinary second-page mail update while inbox is visible");
   const batchUpdate = await countReadsAfterProcessing(historical[0], "Linked batch member update while its transcript is hidden");
 
-  const folderGate = holdMailRead(host, "plugin.assistant-mail.list", params => params.folder === "marketing");
-  let staleFilingDisabled;
+  const marketingRead = params => params.folder === "marketing";
+  const folderError = { code: "MAIL_REJECTED", message: "隔离分类读取失败" };
+  const folderGate = holdMailRead(host, "plugin.assistant-mail.list", marketingRead);
+  const remainingCard = marketing.locator(`[data-mail-id="${staysFiled.mailRefId}"]`);
+  const remainingAction = remainingCard.getByRole("button", { name: "收回收件" });
   try {
     const beforeMove = host.requests.length;
     service.setFolder(filed.mailRefId, "verification", "user");
     await eventually(() => host.requests.slice(beforeMove).some(({ method, params }) =>
       method === "plugin.assistant-mail.list" && params.folder === "inbox"), true, "The client received the filing change while the category was hidden");
+    assert.ok(!host.requests.slice(beforeMove).some(({ method, params }) =>
+      method === "plugin.assistant-mail.list" && marketingRead(params)), "The hidden category does not read after the filing change");
     await filedEntry.click();
     await folderGate.wait();
-    staleFilingDisabled = await filedCard.getByRole("button", { name: "收回收件" }).isDisabled();
-  } finally { folderGate.release(); }
+    assert.ok(await filedCard.getByRole("button", { name: "收回收件" }).isDisabled());
+  } finally { folderGate.release(folderError); }
+  await marketing.getByRole("alert").filter({ hasText: folderError.message }).waitFor();
+  assert.ok(await remainingAction.isDisabled(), "The failed refresh leaves cached filing actions disabled");
+
+  await returnToInbox.click();
+  const retryGate = holdMailRead(host, "plugin.assistant-mail.list", marketingRead);
+  try {
+    await filedEntry.click();
+    await retryGate.wait("Reopening the same category retries the failed refresh without another change");
+    assert.ok(await remainingAction.isDisabled(), "Cached filing actions stay disabled while the retry is pending");
+  } finally { retryGate.release(); }
   await filedCard.waitFor({ state: "detached" });
-  const remainingCard = marketing.locator(`[data-mail-id="${staysFiled.mailRefId}"]`);
-  await remainingCard.getByRole("button", { name: "收回收件" }).and(page.locator(":enabled")).waitFor();
+  await remainingAction.and(page.locator(":enabled")).waitFor();
+  steps.push("Reopening the failed category retries the read and restores filing only after fresh cards arrive");
   await returnToInbox.click();
 
   const queuedInbox = inboxCard(queued);
@@ -164,9 +180,7 @@ export async function verifyAssistantMailRefresh(page, host, steps) {
   await conversationTab.click();
   await batchCard(historical[1]).locator(".assistant-mail-hint").filter({ hasText: "处理中" }).waitFor();
 
-  assert.deepEqual({ staleFilingDisabled, withdrawnBeforeBatchRead }, {
-    staleFilingDisabled: true, withdrawnBeforeBatchRead: true,
-  }, "Known stale folder cards cannot be moved, and Native withdrawal wins before the batch reply");
+  assert.ok(withdrawnBeforeBatchRead, "Native withdrawal wins before the batch reply");
   assert.deepEqual({ ordinaryUpdate, batchUpdate }, {
     ordinaryUpdate: { inbox: 2, filed: 0, search: 0, batch: 0 },
     batchUpdate: { inbox: 2, filed: 0, search: 0, batch: 0 },

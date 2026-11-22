@@ -1,6 +1,6 @@
 // Build this checkout as the macOS dogfood app and install it over /Applications/Bridge.app (docs/dogfood.md).
 import { execFileSync, spawnSync } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -8,8 +8,12 @@ import { fileURLToPath } from "node:url";
 
 export function installDogfoodApp({ built, installed, previousRoot, exec = execFileSync }) {
   const trash = path => exec("/usr/bin/trash", ["-s", path]);
-  const backup = existsSync(installed) ? `${installed}.rollback-${randomUUID()}` : null;
-  if (backup) renameSync(installed, backup);
+  const rollback = `${installed}.rollback`;
+  const retired = `${installed}.retired`;
+  if (existsSync(rollback)) throw new Error(`Resolve the saved Bridge bundle at ${rollback} before installing again.`);
+  if (existsSync(retired)) trash(retired);
+  const replacing = existsSync(installed);
+  if (replacing) renameSync(installed, rollback);
 
   let asar;
   try {
@@ -20,17 +24,18 @@ export function installDogfoodApp({ built, installed, previousRoot, exec = execF
   } catch (error) {
     try {
       if (existsSync(installed)) trash(installed);
-      if (backup) renameSync(backup, installed);
+      if (replacing) renameSync(rollback, installed);
     } catch (rollbackError) {
-      throw new AggregateError([error, rollbackError], backup
-        ? `Bridge installation and rollback failed; the previous Bridge is still at ${backup}.`
+      throw new AggregateError([error, rollbackError], replacing
+        ? `Bridge installation and rollback failed; the previous Bridge is still at ${rollback}.`
         : `Bridge installation failed and the incomplete app at ${installed} could not be recycled.`);
     }
     throw error;
   }
 
-  for (const path of [backup, join(previousRoot, "Bridge.app"), join(previousRoot, "Bridge.app.bak"), dirname(built)]) {
-    if (!path || !existsSync(path)) continue;
+  if (replacing) renameSync(rollback, retired);
+  for (const path of [retired, join(previousRoot, "Bridge.app"), join(previousRoot, "Bridge.app.bak"), dirname(built)]) {
+    if (!existsSync(path)) continue;
     try {
       trash(path);
     } catch (cause) {

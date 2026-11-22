@@ -551,7 +551,7 @@ process.stdout.write('{"state":"success"}\\n');
 });
 
 test('macOS dogfood recycles only its app copies after a verified install', async t => {
-  for (const scenario of ['update', 'first install', 'ditto', 'codesign', 'missing ASAR', 'open', 'rollback recycle', 'recycle']) {
+  for (const scenario of ['update', 'first install', 'ditto', 'codesign', 'missing ASAR', 'open', 'rollback recycle', 'recycle', 'retry recycle']) {
     await t.test(scenario, async t => {
       const directory = await mkdtemp(join(tmpdir(), 'bridge-mac-dogfood-'));
       t.after(() => rm(directory, { recursive: true, force: true }));
@@ -574,7 +574,9 @@ test('macOS dogfood recycles only its app copies after a verified install', asyn
       for (const path of [join(directory, 'Applications'), trash, ...unrelated]) await mkdir(path, { recursive: true });
 
       const trashed = new Map();
+      let trashCount = 0;
       let launched = false;
+      let failReplacedAppRecycle = scenario === 'retry recycle';
       const exec = (command, args) => {
         if (command === '/usr/bin/ditto') {
           assert.deepEqual(args, [built, installed]);
@@ -586,7 +588,7 @@ test('macOS dogfood recycles only its app copies after a verified install', asyn
           if (scenario === 'codesign' || scenario === 'rollback recycle') throw new Error('fixture codesign failed');
         } else if (command === 'open') {
           assert.deepEqual(args, [installed]);
-          assert.equal(trashed.size, 0, 'no old bundles or build output recycled before launch');
+          if (scenario !== 'retry recycle') assert.equal(trashed.size, 0, 'no old bundles or build output recycled before launch');
           if (scenario === 'open') throw new Error('fixture open failed');
           launched = true;
         } else {
@@ -594,10 +596,15 @@ test('macOS dogfood recycles only its app copies after a verified install', asyn
           const [flag, path] = args;
           assert.equal(flag, '-s');
           assert.ok(path.startsWith(`${directory}${sep}`), 'test recycler only accepts fixture paths');
+          if (launched && failReplacedAppRecycle) {
+            assert.equal(fs.readFileSync(asar(path), 'utf8'), 'installed');
+            failReplacedAppRecycle = false;
+            throw new Error('fixture recycle of replaced app failed');
+          }
           if ((scenario === 'recycle' && path === packageDir) || (scenario === 'rollback recycle' && path === installed)) {
             throw new Error('fixture recycle failed');
           }
-          const destination = join(trash, String(trashed.size));
+          const destination = join(trash, String(trashCount++));
           fs.renameSync(path, destination);
           trashed.set(path, destination);
         }
@@ -614,18 +621,25 @@ test('macOS dogfood recycles only its app copies after a verified install', asyn
         assert.deepEqual([...trashed.keys()], [installed]);
       } else if (scenario === 'rollback recycle') {
         assert.throws(install, {
-          message: /previous Bridge is still at .*Bridge\.app\.rollback-/,
+          message: /previous Bridge is still at .*Bridge\.app\.rollback\./,
           errors: [new Error('fixture codesign failed'), new Error('fixture recycle failed')],
         });
-        const backup = (await readdir(join(directory, 'Applications'))).find(name => name.startsWith('Bridge.app.rollback-'));
-        assert.ok(backup);
-        assert.equal(await readFile(asar(join(directory, 'Applications', backup)), 'utf8'), 'installed');
+        assert.throws(install, /Resolve the saved Bridge bundle at .*Bridge\.app\.rollback before installing again/);
+        assert.equal(await readFile(asar(`${installed}.rollback`), 'utf8'), 'installed');
         assert.equal(trashed.size, 0);
         assert.equal(launched, false);
       } else if (scenario === 'recycle') {
         assert.throws(install, { message: /Bridge was installed and verified, but could not recycle/, cause: new Error('fixture recycle failed') });
         assert.equal(await readFile(asar(installed), 'utf8'), 'new');
         assert.equal(await readFile(asar(built), 'utf8'), 'new');
+      } else if (scenario === 'retry recycle') {
+        assert.throws(install, { cause: new Error('fixture recycle of replaced app failed') });
+        assert.equal(await readFile(asar(installed), 'utf8'), 'new');
+        await writeFile(asar(built), 'next version');
+        install();
+        assert.equal(await readFile(asar(installed), 'utf8'), 'next version');
+        assert.deepEqual(await readdir(join(directory, 'Applications')), ['Bridge.app']);
+        assert.equal(fs.existsSync(packageDir), false);
       } else {
         assert.equal(install(), createHash('sha256').update('new').digest('hex'));
         assert.equal(launched, true);

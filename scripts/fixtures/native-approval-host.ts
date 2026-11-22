@@ -604,6 +604,18 @@ export async function startNativeApprovalHost(options: {
       assert.ok(target);
       target.turnRunning = busy;
     },
+    async advanceAssistantTrigger(sessionId: string, messageId: string, state: "started" | "completed" | "failed") {
+      assert.ok(queued.delete(messageId), "Advance a queued assistant trigger");
+      const type = state === "started" ? "turn.started" : state === "completed" ? "turn.completed" : "turn.failed";
+      const notifications = on(eventLog, "event", { signal: AbortSignal.timeout(15_000) });
+      inspector.emit("event", { type: "message", sessionId, message: { type: "command_lifecycle", command_uuid: messageId, state } });
+      for await (const [event] of notifications) {
+        if (event.type === type && event.sessionId === sessionId && event.itemId === messageId) {
+          options.onTriggerMessage?.(event);
+          break;
+        }
+      }
+    },
     queueResult(method: "promoteQueuedMessage" | "sendSteeredNow" | "cancelQueuedMessage", accepted: boolean) {
       queueResults.set(method, accepted);
     },

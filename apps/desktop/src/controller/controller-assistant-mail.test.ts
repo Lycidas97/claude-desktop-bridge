@@ -260,12 +260,13 @@ describe("assistant mail mobile RPC projections", () => {
     expect(result).toMatchObject({ assistantMail: { accounts: [{ ...account, port: 993, smtpSharedAuth: true, smtp: { ...smtp, user: account.user } }] } });
     expect(JSON.stringify(result)).not.toContain(credential);
     const { accountKey } = service.status().accounts[0]!;
-    for (const changes of [{ host: "unapproved.example.test" }, { port: 2525 }, { security: "tls" }]) {
+    for (const changes of [{ host: "unapproved.example.test" }, { security: "plain" }]) {
       await expect(run.request("plugin.assistant-mail.account.save", { accountKey, smtp: { ...smtp, ...changes } }))
         .rejects.toMatchObject({ code: "INVALID_PARAMS" });
     }
-    const changedSmtp = { ...smtp, from: "alias@example.test" };
-    const edited = await run.request("plugin.assistant-mail.account.save", { accountKey, smtp: changedSmtp });
+    expect(service.smtpAccount(accountKey)?.smtp).toMatchObject(smtp);
+    const changedSmtp = { ...smtp, port: 465, security: "tls", from: "alias@example.test" };
+    const edited = await run.request("plugin.assistant-mail.account.save", { accountKey, smtp: { ...changedSmtp, host: " SMTP.Example.Test " } });
     expect(edited).toMatchObject({ assistantMail: { accounts: [{ accountKey, smtpSharedAuth: true, smtp: { ...changedSmtp, user: account.user } }] } });
     expect(JSON.stringify(edited)).not.toContain(credential);
     await expect(run.request("plugin.assistant-mail.account.update-credential", { accountKey, credential }))

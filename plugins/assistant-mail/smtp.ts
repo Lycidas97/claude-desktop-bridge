@@ -1,4 +1,5 @@
 import { createTransport, type NodemailerError, type SMTPSentMessageInfo, type SMTPTransportOptions, type Transporter } from "nodemailer";
+import MailComposer from "nodemailer/lib/mail-composer";
 import type { BridgeSmtpChannel } from "../../packages/protocol/src/assistant-mail.js";
 import type { MailSendFailure } from "../../packages/protocol/src/assistant-proposal.js";
 
@@ -18,7 +19,11 @@ export type SmtpResult =
   | { state: "failed" | "delivery_uncertain"; failure: MailSendFailure };
 
 export async function submitSmtp(channel: BridgeSmtpChannel, password: string, message: SmtpMessage, messageId: string,
-  transport: (options: SMTPTransportOptions) => Pick<Transporter<SMTPSentMessageInfo>, "sendMail" | "close"> = createTransport): Promise<SmtpResult> {
+  transport: (options: SMTPTransportOptions) => Pick<Transporter<SMTPSentMessageInfo>, "sendMail" | "close"> = createTransport): Promise<SmtpResult & { source?: Buffer }> {
+  const source = await new MailComposer({
+    from: message.from, to: message.to, cc: message.cc, subject: message.subject, text: message.bodyText,
+    replyTo: message.replyTo, inReplyTo: message.inReplyTo, references: message.references, messageId, newline: "windows",
+  }).compile().build();
   const secure = channel.security === "tls";
   let terminatorQueued = false;
   const client = transport({ host: channel.host, port: channel.port, secure, requireTLS: !secure, forceAuth: true,
@@ -30,11 +35,9 @@ export async function submitSmtp(channel: BridgeSmtpChannel, password: string, m
     } } });
   try {
     const { accepted, rejected } = await client.sendMail({
-      from: message.from, to: message.to, cc: message.cc, subject: message.subject, text: message.bodyText,
-      replyTo: message.replyTo, inReplyTo: message.inReplyTo, references: message.references, messageId,
-      envelope: { from: message.from, to: [...message.to, ...message.cc] },
+      raw: source, envelope: { from: message.from, to: [...message.to, ...message.cc] },
     });
-    return { state: rejected.length ? "delivery_partial" : "applied", accepted, rejected };
+    return { state: rejected.length ? "delivery_partial" : "applied", accepted, rejected, source };
   } catch (error) {
     if (!(error instanceof Error) || !("code" in error)) throw error;
     const { code, originalCode, responseCode, timeoutType } = error as NodemailerError;

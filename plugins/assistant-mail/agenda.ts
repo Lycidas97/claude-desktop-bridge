@@ -118,7 +118,10 @@ export class AssistantAgendaService extends EventEmitter {
         if (!source.credential || !this.credentials?.available()) throw new Error("Credentials unavailable");
         credential = this.credentials.decrypt(source.credential);
       } catch {
-        if (!abort.signal.aborted) { this.store.markError(id, "credentials"); this.changed(false); }
+        if (!abort.signal.aborted) {
+          this.store.markError(id, "credentials");
+          this.refreshChanged(false);
+        }
         return;
       }
       let recordsChanged = false;
@@ -127,15 +130,13 @@ export class AssistantAgendaService extends EventEmitter {
           ...(source.ctag ? { ctag: source.ctag } : {}), ...(source.token ? { syncToken: source.token } : {}), knownEtags: this.store.knownEtags(id) });
         if (abort.signal.aborted) return;
         recordsChanged = this.store.applySync(id, delta);
-        // Unfiltered open-ended todos can change as the 366-day window moves, even with no DAV writes.
-        if (!recordsChanged && this.store.hasRollingTodos()) this.unfilteredTodosToken = randomUUID();
       } catch (error) {
         if (abort.signal.aborted) return;
         if (error instanceof CalDavError) this.store.markError(id, error.code);
         else if (error instanceof AgendaCalendarDataError) this.store.markError(id, "response");
         else throw error;
       }
-      this.changed(recordsChanged);
+      this.refreshChanged(recordsChanged);
     }).finally(() => this.active.delete(id));
     this.active.set(id, { abort, task });
     return task;
@@ -151,6 +152,12 @@ export class AssistantAgendaService extends EventEmitter {
     if (!this.credentials?.available()) throw new AssistantError("UNSUPPORTED", "此电脑没有可用的系统凭据库。");
     try { return this.credentials.encrypt(credential); }
     catch { throw new AssistantError("UNSUPPORTED", "系统凭据库暂不可用。"); }
+  }
+
+  private refreshChanged(recordsChanged: boolean) {
+    // The rolling window can admit open-ended todo occurrences even when CalDAV writes nothing.
+    if (!recordsChanged && this.store.hasRollingTodos()) this.unfilteredTodosToken = randomUUID();
+    this.changed(recordsChanged);
   }
 
   private changed(recordsChanged = true) {

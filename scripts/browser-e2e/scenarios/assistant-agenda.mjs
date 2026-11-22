@@ -174,12 +174,17 @@ async function verifyUnchangedCalDavRefresh(page, fixture, agendaView, settingsB
   const path = "/refresh-fixture/";
   const url = `https://caldav.example.test${path}`;
   const calendarDate = date.replaceAll("-", "");
+  const rollingTitle = "进入滚动窗口的待办";
+  fixture.setCalendarTime(Date.parse("1998-12-31T11:30:00Z"));
   const items = ["VEVENT", "VTODO"].flatMap(kind => Array.from({ length: 101 }, (_, index) => {
     const uid = `${kind}-${index}`;
     return { href: `${path}${uid}.ics`, etag: '"1"', data: ["BEGIN:VCALENDAR", "VERSION:2.0", `BEGIN:${kind}`, `UID:${uid}`, `SUMMARY:${uid}`,
       kind === "VEVENT" ? `DTSTART;VALUE=DATE:${calendarDate}` : `DUE;VALUE=DATE:${calendarDate}`,
       `END:${kind}`, "END:VCALENDAR", ""].join("\r\n") };
   }));
+  items.push({ href: `${path}rolling.ics`, etag: '"1"', data: ["BEGIN:VCALENDAR", "VERSION:2.0",
+    "BEGIN:VTODO", "UID:rolling", `SUMMARY:${rollingTitle}`, "DTSTART:20000101T120000Z", "DUE:20000101T120000Z",
+    "RRULE:FREQ=YEARLY", "END:VTODO", "END:VCALENDAR", ""].join("\r\n") });
   let unauthorized = false;
   let ctag = 1;
   const davRequests = [];
@@ -223,6 +228,7 @@ async function verifyUnchangedCalDavRefresh(page, fixture, agendaView, settingsB
   await openTwoPagesTomorrow();
   const first = requests.length;
   const davStart = davRequests.length;
+  fixture.setCalendarTime(Date.parse("1998-12-31T11:45:00Z"));
   const after = await refresh();
   assert.deepEqual(davRequests.slice(davStart), [["PROPFIND", "0"]], "The CalDAV collection tag stayed the same");
   assert.equal(after.status, "ready");
@@ -250,7 +256,8 @@ async function verifyUnchangedCalDavRefresh(page, fixture, agendaView, settingsB
   event.data = event.data.replace(`SUMMARY:${title}\r\n`, "SUMMARY:CalDAV record edited\r\n");
   ctag++;
   const beforeEdit = requests.length;
-  await refresh();
+  fixture.setCalendarTime(Date.parse("1998-12-31T11:59:00Z"));
+  const edited = await refresh();
   await sameDay.getByText("CalDAV record edited", { exact: true }).waitFor();
   assert.deepEqual(await agendaReadsSince(beforeEdit), { events: 2, todos: 2 }, "A CalDAV edit rereads both lists at their loaded depth");
   steps.push("CalDAV recovery with unchanged records makes zero list RPCs; a real edit reloads both open pages");
@@ -263,18 +270,23 @@ async function verifyUnchangedCalDavRefresh(page, fixture, agendaView, settingsB
   await eventually(() => moreOtherTodos.isEnabled(), true, "The unfiltered todo pages are settled");
   const depth = requests.slice(beforeOpening).filter(request => request.method === "plugin.assistant-agenda.todo.list" && !request.params?.dueOn).length;
   assert.ok(depth > 0);
-  const rollingBase = fixture.agenda.snapshot();
-  fixture.agenda.saveTodo({ value: { title: "进入滚动窗口的待办", status: "pending", dueAt: "2000-01-01" } });
+  const rollingTodo = otherTodos.getByText(rollingTitle, { exact: true });
+  assert.ok(!fixture.agenda.listTodos({}).records.some(record => record.title === rollingTitle));
+  assert.equal(await rollingTodo.count(), 0);
   const beforeRollingUpdate = requests.length;
-  await page.evaluate(assistantAgenda => window.assistantDesktopSnapshot({ assistantAgenda }), {
-    ...fixture.agenda.snapshot(), recordsToken: rollingBase.recordsToken, unfilteredTodosToken: "rolling-window-advanced",
-  });
-  await otherTodos.getByText("进入滚动窗口的待办", { exact: true }).waitFor();
-  assert.deepEqual(await agendaReadsSince(beforeRollingUpdate), { events: 0, todos: depth }, "Only the open unfiltered todo list responds to a horizon update");
+  fixture.setCalendarTime(Date.parse("1998-12-31T12:14:00Z"));
+  unauthorized = true;
+  const failed = await refresh();
+  assert.equal(failed.status, "error");
+  assert.equal(failed.errorCode, "credentials");
+  assert.equal(failed.refreshedAt, edited.refreshedAt);
+  assert.equal(fixture.agenda.listTodos({}).records.find(record => record.title === rollingTitle)?.dueAt, "2000-01-01T12:00:00.000Z");
+  await eventually(() => rollingTodo.isVisible(), true, "The open other todo list shows the same new CalDAV occurrence as a direct query");
+  assert.deepEqual(await agendaReadsSince(beforeRollingUpdate), { events: 0, todos: depth }, "Only the open unfiltered todo list responds to the failed refresh");
   assert.ok(requests.slice(beforeRollingUpdate).every(request => request.method !== "plugin.assistant-agenda.todo.list" || !request.params?.dueOn));
   await page.locator(".agenda-other-todos summary").click();
   await otherTodos.waitFor({ state: "hidden" });
-  steps.push("a rolling-horizon signal invalidates only the unfiltered todo query");
+  steps.push("a failed CalDAV refresh updates only the open unfiltered list when a recurring todo rolls into view");
 
   const publishLegacyAgenda = () => {
     const assistantAgenda = fixture.agenda.snapshot();
@@ -290,4 +302,9 @@ async function verifyUnchangedCalDavRefresh(page, fixture, agendaView, settingsB
   await publishLegacyAgenda();
   assert.deepEqual(await agendaReadsSince(beforeLegacyUpdate), { events: 2, todos: 2 }, "A legacy snapshot invalidates loaded pages using changeToken alone");
   steps.push("a legacy agenda snapshot without a records token still reloads the open pages on a content change");
+
+  await settingsButton.click();
+  const source = page.getByRole("article", { name: "同步夹具" });
+  await source.getByText("同步失败", { exact: true }).waitFor();
+  await source.getByText("请检查或更换凭据。", { exact: true }).waitFor();
 }

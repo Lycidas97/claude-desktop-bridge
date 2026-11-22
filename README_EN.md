@@ -52,7 +52,7 @@ The release also includes `SHA256SUMS.txt` and `SOURCE_COMMIT.txt`. A successful
 
 The packaged apps do not need a separate Node.js, npm or Android SDK installation.
 
-Bridge 1.3.8 gives the Assistant a combined view for events and to-dos and asks for confirmation before applying proposed changes or sending mail. The Assistant supports multiple mailboxes; IMAP receipt and SMTP sending both require a macOS Bridge host. Mobile improves reconnection, new-session drafts, and file previews. Android can also import files from other apps. See the [1.3.8 changelog](CHANGELOG.md#138).
+Bridge 1.3.9 lets the managed Assistant search the web and read folders outside its workspace that you allow under Readable directories (可读目录) in Assistant settings. Nothing is shared by default, and the write scope and send confirmation are unchanged. Mail updates no longer reload hidden mail categories or conversation batches, and CalDAV syncs that change no records no longer reload event lists. The Assistant supports multiple mailboxes; IMAP receipt and SMTP sending both require a macOS Bridge host. See the [1.3.9 changelog](CHANGELOG.md#139).
 
 ## First connection
 

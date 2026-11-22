@@ -38,7 +38,11 @@ function includeCivilDate(window: AgendaWindow, date: string): AgendaWindow {
 }
 
 export class AgendaStore {
-  constructor(private readonly db: DatabaseSync, private readonly timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone) {
+  constructor(
+    private readonly db: DatabaseSync,
+    private readonly timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone,
+    private readonly now = () => Date.now(),
+  ) {
     db.exec(`
       CREATE TABLE IF NOT EXISTS assistant_sources (
         id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('local', 'caldav')), label TEXT NOT NULL,
@@ -177,7 +181,7 @@ export class AgendaStore {
         }
       }
       this.db.prepare("UPDATE assistant_sources SET status = 'ready', error = NULL, ctag = ?, token = ?, calendar_timezone = ?, refreshed_at = ?, proposal_create_kinds = ? WHERE id = ?")
-        .run(delta.ctag ?? null, delta.syncToken ?? null, timeZone, new Date().toISOString(), JSON.stringify(delta.proposalCreateKinds ?? ["todo", "calendar"]), sourceId);
+        .run(delta.ctag ?? null, delta.syncToken ?? null, timeZone, new Date(this.now()).toISOString(), JSON.stringify(delta.proposalCreateKinds ?? ["todo", "calendar"]), sourceId);
       this.db.exec("COMMIT");
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }
     return recordsChanged;
@@ -313,10 +317,11 @@ export class AgendaStore {
     const cursor = [closed, date, id].join("\0");
     const entries = rows.map(row => JSON.parse(row.value as string) as BridgeAgendaTodo).map(record => ({ record, key: key(record) }));
     let incomplete = false;
+    const now = this.now();
     for (const row of this.recurringObjects(2)) {
       try {
         const { uid, todos } = parseAgendaObject(row.data, collectionZone(row.calendar_timezone, this.timeZone), {
-          todos: { limit, closed: Number(closed), date, window: recurrenceWindow },
+          todos: { limit, closed: Number(closed), date, window: recurrenceWindow, now },
         });
         for (const todo of todos) {
           if (query.status && todo.status !== query.status) continue;

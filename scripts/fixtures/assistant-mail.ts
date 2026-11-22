@@ -54,7 +54,11 @@ export async function startAssistantMailFixture(directory: string, historyCount 
   });
   let store!: AgendaStore;
   let proposalStore!: ProposalStore;
-  await service.initialize(db => { store = new AgendaStore(db); proposalStore = new ProposalStore(db); });
+  let calendarTime: number | undefined;
+  await service.initialize(db => {
+    store = new AgendaStore(db, undefined, () => calendarTime ?? Date.now());
+    proposalStore = new ProposalStore(db);
+  });
   let calendarFetch: typeof fetch | undefined;
   const agenda = new AssistantAgendaService(store, {
     available: () => calendarFetch !== undefined,
@@ -76,6 +80,7 @@ export async function startAssistantMailFixture(directory: string, historyCount 
   return {
     service, agenda, proposals, smtp,
     setCalendarFetch(fetch: typeof globalThis.fetch) { calendarFetch = fetch; },
+    setCalendarTime(now: number) { calendarTime = now; },
     isApprovedProfile: (hash: string) => proposalStore.isApprovedProfile(hash),
     seedCalendar(...resources: string[]) {
       const url = "https://caldav.example.test/fixtures/";

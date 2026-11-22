@@ -112,7 +112,7 @@ function ruleStarts(rule: ICAL.Recur, start: ICAL.Time, zone: AgendaZone, floor:
   return () => iterator.next();
 }
 
-type TodoPage = { limit: number; closed: number; date: string; window?: AgendaWindow | undefined };
+type TodoPage = { limit: number; closed: number; date: string; window?: AgendaWindow | undefined; now?: number };
 
 function expandSeries(items: Timing[], fallback: AgendaZone, window: AgendaWindow | undefined, expand: boolean, page?: TodoPage): Instance[] {
   const master = items.find(item => !item.component.hasProperty("recurrence-id"));
@@ -144,7 +144,7 @@ function expandSeries(items: Timing[], fallback: AgendaZone, window: AgendaWindo
     .sort((a, b) => b.original - a.original);
 
   const from = window ? Date.parse(window.from) : -Infinity;
-  const to = window ? Date.parse(window.to) : rules.some(isUnbounded) ? Date.now() + 366 * DAY : Infinity;
+  const to = window ? Date.parse(window.to) : rules.some(isUnbounded) ? (page?.now ?? Date.now()) + 366 * DAY : Infinity;
   const utcSeries = !start.isDate && start.zone === utc && ranges.every(range => !range.item.start || range.item.start.zone === utc);
   // Local recurrences are ordered by wall time, and a zone transition can move an instant back.
   const zoneMargin = utcSeries ? 0 : DAY;

@@ -199,11 +199,12 @@ export class AssistantMailService extends EventEmitter {
     return this.mutateAccount(accountKey, async () => {
       const { config } = this.requireAccount(accountKey);
       const previous = config.smtp;
-      if (!config.smtpSharedAuth || !previous || previous.host !== smtp.host || previous.port !== smtp.port || previous.security !== smtp.security) {
-        throw new AssistantError("INVALID_PARAMS", "启用发信、更换发信连接或切换为共用授权时，请输入密码。");
+      if (!config.smtpSharedAuth || !previous || previous.host !== smtp.host) {
+        throw new AssistantError("INVALID_PARAMS", "启用发信、更换 SMTP 服务器或切换为共用授权时，请输入密码。");
       }
-      if (previous.from === smtp.from) return;
-      this.persistSmtp(accountKey, config, { ...previous, from: smtp.from, version: randomUUID() }, true);
+      const fields = { ...smtp, user: previous.user };
+      if (sameSmtp(previous, fields)) return;
+      this.persistSmtp(accountKey, config, { ...fields, version: randomUUID() }, true);
       this.emit("changed");
     });
   }

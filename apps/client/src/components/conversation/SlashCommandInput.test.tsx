@@ -100,8 +100,8 @@ function cursor(position: number) {
   textarea.selectionStart = position; textarea.selectionEnd = position;
   input().props.onSelect({ currentTarget: textarea }); draw();
 }
-function key(key: string, nativeEvent: Record<string, unknown> = {}, ctrlKey = false) {
-  const event = { key, nativeEvent, ctrlKey, currentTarget: textarea, preventDefault: vi.fn(), stopPropagation: vi.fn() };
+function key(key: string, nativeEvent: Record<string, unknown> = {}, modifiers: { ctrlKey?: boolean; repeat?: boolean } = {}) {
+  const event = { key, nativeEvent, ...modifiers, currentTarget: textarea, preventDefault: vi.fn(), stopPropagation: vi.fn() };
   input().props.onKeyDown(event); draw();
   return event;
 }
@@ -167,19 +167,22 @@ describe("custom slash command composer", () => {
     expect(key("Enter").preventDefault).not.toHaveBeenCalled();
   });
 
-  it("submits on Ctrl+Enter only with the shortcut enabled and the slash menu closed", async () => {
+  it("submits on a fresh Ctrl+Enter press only with the shortcut enabled and the slash menu closed", async () => {
     type("Follow up");
-    expect(key("Enter", {}, true).preventDefault).not.toHaveBeenCalled();
+    expect(key("Enter", {}, { ctrlKey: true }).preventDefault).not.toHaveBeenCalled();
     props = { ...props, submitOnCtrlEnter: true };
     draw();
     expect(key("Enter").preventDefault).not.toHaveBeenCalled();
 
     type("/re"); await settle();
-    key("Enter", {}, true);
+    key("Enter", {}, { ctrlKey: true });
     expect(props.value).toBe("/review ");
     expect(textarea.form.requestSubmit).not.toHaveBeenCalled();
 
-    expect(key("Enter", {}, true).preventDefault).toHaveBeenCalledOnce();
+    expect(key("Enter", {}, { ctrlKey: true, repeat: true }).preventDefault).toHaveBeenCalledOnce();
+    expect(textarea.form.requestSubmit).not.toHaveBeenCalled();
+
+    expect(key("Enter", {}, { ctrlKey: true }).preventDefault).toHaveBeenCalledOnce();
     expect(textarea.form.requestSubmit).toHaveBeenCalledOnce();
   });
 
@@ -188,7 +191,7 @@ describe("custom slash command composer", () => {
     draw();
     type("中文草稿");
     if (mode === "composition") input().props.onCompositionStart();
-    const event = key("Enter", mode === "isComposing" ? { isComposing: true } : mode === "229" ? { keyCode: 229 } : {}, true);
+    const event = key("Enter", mode === "isComposing" ? { isComposing: true } : mode === "229" ? { keyCode: 229 } : {}, { ctrlKey: true });
     expect(event.preventDefault).not.toHaveBeenCalled();
     expect(textarea.form.requestSubmit).not.toHaveBeenCalled();
   });

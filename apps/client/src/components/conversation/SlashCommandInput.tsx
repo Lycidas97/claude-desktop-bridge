@@ -191,7 +191,7 @@ export function SlashCommandInput({
           if (!open) {
             if (submitOnCtrlEnter && event.key === "Enter" && event.ctrlKey) {
               event.preventDefault();
-              event.currentTarget.form?.requestSubmit();
+              if (!event.repeat) event.currentTarget.form?.requestSubmit();
             }
             return;
           }

@@ -1,9 +1,8 @@
-import { ARTIFACT_MAX_BYTES, evidenceSummary, isBridgeNativeImageRef, mailAttachmentPreviewKind, type BridgeSessionInfo } from "@bridge/protocol";
+import { ARTIFACT_MAX_BYTES, evidenceSummary, isBridgeNativeImageRef, mailAttachmentPreviewKind, type BridgeMailAttachmentRef, type BridgeSessionInfo } from "@bridge/protocol";
 import { MailAttachmentError } from "../../../../plugins/assistant-mail/desktop.js";
 import type { ClaudeDesktopBridge } from "../claude/claude-desktop-bridge.js";
 import type { EvidenceManager } from "../evidence/evidence-manager.js";
 import type { FileUploadManager } from "../evidence/file-upload.js";
-import { parseMailAttachmentRef } from "./assistant-mail.js";
 import type { ControllerRpcHost } from "./controller-rpc.js";
 import { BridgeRequestError, integerParam, numberParam, stringParam } from "./request-error.js";
 
@@ -72,7 +71,16 @@ export async function handleArtifactTarget(
     if (["artifactId", "sessionId", "path", "nativeImage", "resolveRelativeLink"].some(key => params[key] !== undefined)) {
       throw new BridgeRequestError("INVALID_PARAMS", "需要独立的邮件附件引用。");
     }
-    const ref = parseMailAttachmentRef(params.mailAttachment);
+    const reference = params.mailAttachment;
+    if (!reference || typeof reference !== "object" || Array.isArray(reference)) {
+      throw new BridgeRequestError("INVALID_PARAMS", "需要独立的邮件附件引用。");
+    }
+    const { mailRefId, attachmentId } = reference as Partial<BridgeMailAttachmentRef>;
+    if (typeof mailRefId !== "string" || !/^[a-f0-9-]{36}$/u.test(mailRefId) || typeof attachmentId !== "string" ||
+      attachmentId.length > 128 || !/^\d+(?:\.\d+)*$/u.test(attachmentId)) {
+      throw new BridgeRequestError("INVALID_PARAMS", "邮件附件引用无效。");
+    }
+    const ref = { mailRefId, attachmentId };
     try {
       const { filename: name, mimeType, size } = host.assistantMail.attachment(ref);
       if (method === "artifact.transfer.open" && params.purpose === "stat") return { metadata: { name, mimeType, size } };

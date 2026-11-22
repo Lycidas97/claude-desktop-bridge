@@ -236,7 +236,7 @@ test("resume catches up using the last committed token and publishes fixed healt
   expect(store.source(id).token).toBe("token-3");
 });
 
-test("invalidates the unfiltered todo list when the rolling horizon admits a recurring task without record changes", async () => {
+test.each(["unchanged", "connection", "credentials"] as const)("invalidates the unfiltered todo list when a recurring task rolls into view (%s)", async outcome => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date("2027-01-02T11:59:00Z"));
   const store = testStore();
@@ -244,25 +244,29 @@ test("invalidates the unfiltered todo list when the rolling horizon admits a rec
     "DTSTART:20280103T120000Z", "DUE:20280103T120000Z", "RRULE:FREQ=YEARLY", "END:VTODO"));
   const unchanged = { ctag: "same", changed: [], removed: [] };
   const remote = vi.fn().mockResolvedValueOnce({ ...unchanged, changed: [annual] }).mockResolvedValue(unchanged);
+  const available = vi.fn(() => true);
   const service = new AssistantAgendaService(store, {
-    available: () => true, encrypt: value => Buffer.from(value), decrypt: value => Buffer.from(value).toString(),
+    available, encrypt: value => Buffer.from(value), decrypt: value => Buffer.from(value).toString(),
   }, remote);
   closers.push(() => service.close());
   await service.addSource({ ...source, credential: "fixture" });
   const id = store.enabledSourceIds()[0]!;
   const before = service.snapshot();
   expect(service.listTodos({}).records).toEqual([]);
+  if (outcome === "connection") remote.mockRejectedValueOnce(new CalDavError("connection"));
+  if (outcome === "credentials") available.mockReturnValueOnce(false);
   vi.setSystemTime(new Date("2027-01-02T12:14:00Z"));
+  const change = once(service, "changed");
   await service.refresh(id);
   const after = service.snapshot();
+  expect(await change).toEqual([after]);
   expect(service.listTodos({}).records).toMatchObject([{ uid: "annual", dueAt: "2028-01-03T12:00:00.000Z" }]);
+  expect(after.sources.find(candidate => candidate.id === id)).toMatchObject(outcome === "unchanged"
+    ? { status: "ready", refreshedAt: "2027-01-02T12:14:00.000Z" }
+    : { status: "error", errorCode: outcome, refreshedAt: "2027-01-02T11:59:00.000Z" });
   expect(after.recordsToken).toBe(before.recordsToken);
   expect(after.unfilteredTodosToken).toEqual(expect.any(String));
   expect(after.unfilteredTodosToken).not.toBe(before.unfilteredTodosToken);
-
-  remote.mockRejectedValueOnce(new CalDavError("connection"));
-  await service.refresh(id);
-  expect(service.snapshot().unfilteredTodosToken).toBe(after.unfilteredTodosToken);
 
   remote.mockResolvedValueOnce({ ...unchanged, changed: [{ ...annual, etag: '"2"', data: annual.data.replace("FREQ=YEARLY", "FREQ=YEARLY;COUNT=2") }] });
   await service.refresh(id);

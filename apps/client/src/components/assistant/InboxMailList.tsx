@@ -123,19 +123,25 @@ function ScopedMailList({ mail, folder, query, visible = true, renderCard }: {
   pageRef.current = page;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [refreshFailed, setRefreshFailed] = useState(false);
   const loadPage = useCallback(async (cursor?: string) => mailResult<{ mailPage: BridgeMailPage }>(await request("plugin.assistant-mail.list", {
     includeHistory: true, ...(folder ? { folder } : { query }), ...(cursor ? { cursor } : {}),
     ...(supportsCategories ? { includeCustomCategories: true } : {}), ...(order ? { order } : {}),
   })).mailPage, [request, folder, query, supportsCategories, order]);
-  const read = useVisibleMailRead(useMemo(() => online ? { loadPage, changeToken } : undefined,
-    [online, loadPage, changeToken]), visible);
+  const input = useMemo(() => ({ loadPage, changeToken }), [loadPage, changeToken]);
+  // Forget a failed refresh only while hidden, so reopening can retry the same input.
+  const read = useVisibleMailRead(online && (visible || !refreshFailed) ? input : undefined, visible);
   useEffect(() => {
     if (!read) return;
     let current = true;
-    setLoading(true); setError("");
+    setLoading(true); setError(""); setRefreshFailed(false);
     void refreshMailPages(read.loadPage, pageRef.current, read.changeToken)
       .then(next => { if (current) setPage(next); })
-      .catch(reason => { if (current) setError(reason instanceof Error ? reason.message : "邮件读取失败"); })
+      .catch(reason => {
+        if (!current) return;
+        setRefreshFailed(true);
+        setError(reason instanceof Error ? reason.message : "邮件读取失败");
+      })
       .finally(() => { if (current) setLoading(false); });
     return () => { current = false; };
   }, [read]);

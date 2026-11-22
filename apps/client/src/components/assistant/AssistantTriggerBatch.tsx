@@ -6,9 +6,9 @@ import { useVisibleMailRead } from "./useVisibleMailRead.js";
 
 export const AssistantTranscriptVisibleContext = createContext(true);
 
-const DELIVERY_LABELS: Record<BridgeMailCard["nativeDelivery"]["state"], string> = {
+const DELIVERY_LABELS: Record<BridgeMailCard["nativeDelivery"]["state"] | "running" | "completed", string> = {
   "not-submitted": "未提交", pending: "待提交", paused: "已暂停", submitting: "提交中", submitted: "已提交", queued: "排队中",
-  observed: "原生已观测", uncertain: "不确定", failed: "失败", cancelled: "已撤回",
+  observed: "原生已观测", running: "运行中", completed: "已完成", uncertain: "不确定", failed: "失败", cancelled: "已撤回",
 };
 
 export function AssistantTriggerBatch({ sessionId, batchId, cards, nativeMessage, onCancel }: {
@@ -56,10 +56,10 @@ export function AssistantTriggerBatch({ sessionId, batchId, cards, nativeMessage
   const visibleCards = loaded ?? cards;
   const nativeDelivery = visibleCards[0]?.nativeDelivery;
   const delivery = nativeMessage?.delivery;
-  // The native receipt can report a withdrawal before the deferred mail read catches up.
-  const state = delivery === "cancelled" ? delivery : loaded?.[0]?.nativeDelivery.state ?? (
-    delivery === "queued" || delivery === "uncertain" || delivery === "failed"
-      ? delivery : nativeMessage ? "observed" : nativeDelivery?.state ?? "pending");
+  // A deferred mail read can still show a batch as queued after Native has started or ended it.
+  const state = delivery === "running" || delivery === "completed" || delivery === "failed" || delivery === "cancelled"
+    ? delivery : loaded?.[0]?.nativeDelivery.state ?? (
+      delivery === "queued" || delivery === "uncertain" ? delivery : nativeMessage ? "observed" : nativeDelivery?.state ?? "pending");
   const commandId = nativeMessage?.commandId ?? nativeDelivery?.commandId;
   return <section className="assistant-trigger-batch" data-stream-key={`assistant-trigger:${batchId}`} aria-label="助理唤醒">
     <header><strong>助理唤醒</strong><span>{DELIVERY_LABELS[state]}</span>

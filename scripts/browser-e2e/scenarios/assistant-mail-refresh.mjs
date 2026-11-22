@@ -52,18 +52,22 @@ export async function verifyAssistantMailRefresh(page, host, steps) {
   }
   const sessionId = host.snapshot.assistantMail.binding.nativeSessionId;
   native.setSessionBusy(sessionId, true);
-  const queued = await deliver(1);
-  const queuedBatch = batches.filter({ has: page.locator(`[data-mail-id="${queued.mailRefId}"]`) });
-  const cancel = queuedBatch.getByRole("button", { name: "撤回助理唤醒" });
-  await cancel.waitFor();
-  const receipt = native.receipts().find(receipt => receipt.source === "assistant-trigger" && receipt.sessionId === sessionId && receipt.state === "queued");
-  assert.ok(receipt);
-  // The synthetic busy session does not publish a transcript row for a queued command by default.
-  await host.emit("user.message.accepted", {
-    commandId: receipt.commandId, requestId: receipt.requestId, delivery: "queued", source: "assistant-trigger",
-    text: `助理事件批次 ${receipt.requestId}\nmail.received ${queued.mailRefId}`,
-  }, { sessionId, itemId: receipt.messageId, turnId: receipt.messageId });
-  await queuedBatch.getByText("关联原生消息", { exact: true }).waitFor();
+  async function queueLinkedBatch() {
+    const mail = await deliver(1);
+    const batch = batches.filter({ has: page.locator(`[data-mail-id="${mail.mailRefId}"]`) });
+    const cancel = batch.getByRole("button", { name: "撤回助理唤醒" });
+    await cancel.and(page.locator(":enabled")).waitFor();
+    const receipt = native.receipts().findLast(receipt => receipt.source === "assistant-trigger" && receipt.sessionId === sessionId && receipt.state === "queued");
+    assert.ok(receipt);
+    // The synthetic busy session does not publish a transcript row for a queued command by default.
+    await host.emit("user.message.accepted", {
+      commandId: receipt.commandId, requestId: receipt.requestId, delivery: "queued", source: "assistant-trigger",
+      text: `助理事件批次 ${receipt.requestId}\nmail.received ${mail.mailRefId}`,
+    }, { sessionId, itemId: receipt.messageId, turnId: receipt.messageId });
+    await batch.getByText("关联原生消息", { exact: true }).waitFor();
+    return { mail, batch, cancel, receipt };
+  }
+  const { mail: queued, batch: queuedBatch, cancel, receipt } = await queueLinkedBatch();
   await eventually(() => host.requests.some(({ method, params }) =>
     method === "plugin.assistant-mail.batch" && params.batchId === receipt.requestId), true, "Load the linked queued batch");
   assert.equal(await batches.count(), 3);
@@ -185,4 +189,34 @@ export async function verifyAssistantMailRefresh(page, host, steps) {
     ordinaryUpdate: { inbox: 2, filed: 0, search: 0, batch: 0 },
     batchUpdate: { inbox: 2, filed: 0, search: 0, batch: 0 },
   }, "Inbox updates read the two loaded inbox pages without refreshing hidden folders or batches");
+
+  const deliveryOnReopen = [];
+  for (const state of ["started", "completed", "failed"]) {
+    const { mail, batch, cancel, receipt } = await queueLinkedBatch();
+    const status = batch.locator(":scope > header > span");
+    const processing = batchCard(mail).locator(".assistant-mail-hint").filter({ hasText: "处理中" });
+    service.setProcessingStatus(mail.mailRefId, "processing");
+    await processing.waitFor();
+    assert.equal(await status.textContent(), "排队中");
+    assert.equal(await cancel.isEnabled(), true);
+    await inboxTab.click();
+    await batch.waitFor({ state: "hidden" });
+    const gate = holdMailRead(host, "plugin.assistant-mail.batch", params => params.batchId === receipt.requestId);
+    let before;
+    try {
+      await native.advanceAssistantTrigger(sessionId, receipt.messageId, state);
+      service.setProcessingStatus(mail.mailRefId, "pending");
+      await conversationTab.click();
+      await gate.wait();
+      await processing.waitFor();
+      before = { label: await status.textContent(), canCancel: await cancel.count() > 0 };
+    } finally { gate.release(); }
+    await processing.waitFor({ state: "hidden" });
+    const after = { label: await status.textContent(), canCancel: await cancel.count() > 0 };
+    deliveryOnReopen.push({ state, before, after });
+  }
+  assert.deepEqual(deliveryOnReopen, [["started", "运行中"], ["completed", "已完成"], ["failed", "失败"]].map(([state, label]) => ({
+    state, before: { label, canCancel: false }, after: { label, canCancel: false },
+  })), "Native lifecycle controls batch status and withdrawal before and after the delayed mail read");
+  steps.push("已加载的批次在补读前后都显示原生运行、完成或失败状态，只有排队时可撤回");
 }

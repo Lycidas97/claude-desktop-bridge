@@ -4,6 +4,7 @@ import { PassThrough, Readable } from "node:stream";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
+import type { ImapFlow, ImapFlowOptions } from "imapflow";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { AgendaStore } from "./agenda-store.js";
 import { AssistantMailService } from "./desktop.js";
@@ -19,6 +20,7 @@ const channel = { host: "smtp.example.com", port: 465, security: "tls", user: "l
 const draft = { kind: "mail.send", accountKey, to: ["first@example.net", "second@example.net"], cc: ["copy@example.org"],
   subject: "Draft", bodyText: "Draft body\r\nSecond line" } as const;
 const send = vi.fn<typeof submitSmtp>();
+const createClient = vi.fn<(options: ImapFlowOptions) => ImapFlow>();
 const vault = new Map<string, string>();
 const deleteCredential = async (key: string) => { vault.delete(key); };
 const credentials = { supported: true, get: async (key: string) => vault.get(key), set: async (key: string, value: string) => { vault.set(key, value); },
@@ -32,13 +34,14 @@ let executor: ProposalExecutor;
 let originalId: string;
 
 async function open() {
-  mail = new AssistantMailService({ userDataPath: directory, credentials });
+  mail = new AssistantMailService({ userDataPath: directory, credentials, createClient });
   await mail.initialize(database => { db = database; ledger = new ProposalStore(db); }, false);
   executor = new ProposalExecutor(ledger, new AgendaStore(db), agendaCredentials, () => {}, undefined, mail, send);
 }
 
 beforeEach(async () => {
   send.mockReset();
+  createClient.mockReset();
   credentials.delete.mockReset();
   vault.clear();
   vault.set(accountKey, "imap-fixture-value");
@@ -142,6 +145,7 @@ it.each([{ state: "applied", accepted: [...draft.to, ...draft.cc], rejected: [] 
   const resolved = executor.resolve("bound", [first], false, true)[0];
   expect(resolved?.state).toBe(result.state);
   expect(resolved?.mailSendFailure).toEqual("failure" in result ? result.failure : undefined);
+  if ("failure" in result) expect(createClient).not.toHaveBeenCalled();
   expect(executor.page({ limit: 10, includeMail: true, history: true }).proposals).toEqual([resolved]);
   expect(executor.page({ limit: 10, includeMail: true }).proposals).toEqual([]);
   expect(send).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ host: channel.host }), channel.credential, approved.action,
@@ -151,6 +155,41 @@ it.each([{ state: "applied", accepted: [...draft.to, ...draft.cc], rejected: [] 
   expect(stored[0]!.finished_at).toEqual(expect.any(Number));
   expect(JSON.parse(String(stored[0]!.result))).toEqual(result.state === "applied"
     ? { ...result, accepted: ["updated@example.net", ...result.accepted] } : result);
+});
+
+it.each([
+  ["applied", true, "filed"], ["delivery_partial", true, "filed"], ["applied", false, "unconfirmed"],
+] as const)("keeps SMTP %s independent of Sent APPEND success=%s", async (state, appended, sentCopy) => {
+  const path = "邮箱/已发送";
+  const proposal = await executor.create("bound", { ...draft, to: [...draft.to], cc: [...draft.cc] });
+  const action = executor.pending(proposal).action;
+  const messageId = `<${proposal.proposalId}.1@example.com>`;
+  const source = Buffer.from(`Message-ID: ${messageId}\r\nSubject: Draft\r\n\r\nDraft body\r\n`);
+  const accepted = state === "applied" ? [...draft.to, ...draft.cc] : [...draft.to];
+  const rejected = state === "applied" ? [] : [...draft.cc];
+  const imap = {
+    on: vi.fn(), connect: vi.fn(), close: vi.fn(),
+    list: vi.fn(async () => [{ path, flags: new Set(["\\Sent"]) }]),
+    mailboxOpen: vi.fn(), search: vi.fn(async () => []), append: vi.fn(async () => {
+      expect(executor.resolve("bound", [proposal], false, true)[0]?.state).toBe(state);
+      return appended ? { destination: path } : false;
+    }),
+  };
+  createClient.mockReturnValueOnce(imap as unknown as ImapFlow);
+  send.mockResolvedValueOnce({ state, accepted, rejected, source });
+  await executor.commit({ ...proposal, confirmMail: true }, "phone");
+  await executor.close();
+  const resolved = executor.resolve("bound", [proposal], false, true)[0];
+  expect(resolved?.state).toBe(state);
+  expect(resolved?.rejectedRecipients).toEqual(rejected.length ? rejected : undefined);
+  expect(resolved?.mailSendFailure).toBeUndefined();
+  expect(createClient).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ host: account.host, port: account.port, secure: true,
+    tls: { rejectUnauthorized: true }, auth: { user: account.user, pass: vault.get(accountKey) } }));
+  expect(imap.append).toHaveBeenCalledExactlyOnceWith(path, source, ["\\Seen"]);
+  expect(send).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ host: channel.host }), channel.credential, action, messageId);
+  expect(JSON.parse(String(db.prepare("SELECT result FROM send_attempts").get()!.result))).toEqual({ state, accepted, rejected, sentCopy });
+  await expect(executor.commit({ ...proposal, confirmMail: true }, "desktop")).rejects.toMatchObject({ code: "CONFLICT" });
+  expect(send).toHaveBeenCalledOnce();
 });
 
 it("reads a legacy failed attempt with no reason", async () => {

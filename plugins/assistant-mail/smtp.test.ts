@@ -86,9 +86,11 @@ it.each([
       if (setup === "starttls-timeout") return createTransport({ ...options, greetingTimeout: 1_000 });
       return createTransport(setup === "tls" || setup === "starttls" ? options : { ...options, requireTLS: false });
     });
-    expect(result).toEqual(state === "delivery_partial" ? { state, accepted: message.to, rejected: message.cc }
+    const { source, ...delivery } = result;
+    expect(delivery).toEqual(state === "delivery_partial" ? { state, accepted: message.to, rejected: message.cc }
       : state === "applied" ? { state, accepted: [...message.to, ...message.cc], rejected: [] }
       : { state, failure: { reason, ...(responseCode !== undefined ? { responseCode } : {}) } });
+    expect(source).toEqual(state === "applied" || state === "delivery_partial" ? Buffer.from(`${messages[0]}\r\n`) : undefined);
     if (setup || greeting !== "220 capture ESMTP") {
       if (setup === "MAIL FROM" || setup === "DATA" || setup === "starttls-timeout") {
         expect(stoppedAt).toBe(setup === "starttls-timeout" ? "STARTTLS" : setup);

@@ -74,7 +74,7 @@ let store: HookStore;
 let props: ComponentProps<typeof SlashCommandInput>;
 let tree: ReactElement<Record<string, any>>;
 let listeners: Map<string, (event: any) => void>;
-const textarea = { focus: vi.fn(), setSelectionRange: vi.fn(), selectionStart: 0, selectionEnd: 0 };
+const textarea = { focus: vi.fn(), setSelectionRange: vi.fn(), selectionStart: 0, selectionEnd: 0, form: { requestSubmit: vi.fn() } };
 class TestNode {}
 function draw() {
   for (let i = 0; i < 12; i++) {
@@ -100,8 +100,8 @@ function cursor(position: number) {
   textarea.selectionStart = position; textarea.selectionEnd = position;
   input().props.onSelect({ currentTarget: textarea }); draw();
 }
-function key(key: string, nativeEvent: Record<string, unknown> = {}) {
-  const event = { key, nativeEvent, preventDefault: vi.fn(), stopPropagation: vi.fn() };
+function key(key: string, nativeEvent: Record<string, unknown> = {}, modifiers: { ctrlKey?: boolean; repeat?: boolean } = {}) {
+  const event = { key, nativeEvent, ...modifiers, currentTarget: textarea, preventDefault: vi.fn(), stopPropagation: vi.fn() };
   input().props.onKeyDown(event); draw();
   return event;
 }
@@ -118,7 +118,7 @@ beforeEach(() => {
     addEventListener: (type: string, callback: (event: any) => void) => listeners.set(type, callback),
     removeEventListener: (type: string, callback: (event: any) => void) => { if (listeners.get(type) === callback) listeners.delete(type); },
   });
-  textarea.focus.mockClear(); textarea.setSelectionRange.mockClear();
+  textarea.focus.mockClear(); textarea.setSelectionRange.mockClear(); textarea.form.requestSubmit.mockClear();
   textarea.selectionStart = 0; textarea.selectionEnd = 0;
   props = { value: "", onChange: vi.fn(value => { props = { ...props, value }; }), onLoad: vi.fn().mockResolvedValue(catalog), "aria-label": "消息" };
   mount(); focus();
@@ -165,6 +165,35 @@ describe("custom slash command composer", () => {
     expect(textarea.setSelectionRange).toHaveBeenLastCalledWith(9, 9);
     expect(textarea.focus).toHaveBeenCalled();
     expect(key("Enter").preventDefault).not.toHaveBeenCalled();
+  });
+
+  it("submits on a fresh Ctrl+Enter press only with the shortcut enabled and the slash menu closed", async () => {
+    type("Follow up");
+    expect(key("Enter", {}, { ctrlKey: true }).preventDefault).not.toHaveBeenCalled();
+    props = { ...props, submitOnCtrlEnter: true };
+    draw();
+    expect(key("Enter").preventDefault).not.toHaveBeenCalled();
+
+    type("/re"); await settle();
+    key("Enter", {}, { ctrlKey: true });
+    expect(props.value).toBe("/review ");
+    expect(textarea.form.requestSubmit).not.toHaveBeenCalled();
+
+    expect(key("Enter", {}, { ctrlKey: true, repeat: true }).preventDefault).toHaveBeenCalledOnce();
+    expect(textarea.form.requestSubmit).not.toHaveBeenCalled();
+
+    expect(key("Enter", {}, { ctrlKey: true }).preventDefault).toHaveBeenCalledOnce();
+    expect(textarea.form.requestSubmit).toHaveBeenCalledOnce();
+  });
+
+  it.each(["composition", "isComposing", "229"])("does not submit Ctrl+Enter during IME confirmation (%s)", mode => {
+    props = { ...props, submitOnCtrlEnter: true };
+    draw();
+    type("中文草稿");
+    if (mode === "composition") input().props.onCompositionStart();
+    const event = key("Enter", mode === "isComposing" ? { isComposing: true } : mode === "229" ? { keyCode: 229 } : {}, { ctrlKey: true });
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(textarea.form.requestSubmit).not.toHaveBeenCalled();
   });
 
   it("wraps arrow navigation and marks the active option accessibly", async () => {

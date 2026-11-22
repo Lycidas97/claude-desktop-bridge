@@ -575,4 +575,18 @@ export async function verifyDesktopConversation(page, host, steps, directory, vi
   await sessionMenuSheet.waitFor({ state: "hidden" });
   assert.equal(await menuTrigger.evaluate(node => node === document.activeElement), true, "Closing 会话操作 Sheet restores focus to 会话操作 trigger");
   steps.push("Desktop 会话操作 Sheet supports 同步此会话 and keyboard focus trap/restore across 删除会话 ConfirmationDialog");
+
+  const composer = page.locator(".desktop-conversation .composer-form textarea");
+  const turnStarts = () => host.requests.filter(request => request.method === "turn.start");
+  await composer.fill("桌面快捷键第一行");
+  await composer.press("Enter");
+  assert.equal(await composer.inputValue(), "桌面快捷键第一行\n", "Plain Enter inserts a newline");
+  assert.equal(turnStarts().length, 0, "Plain Enter does not send the existing session draft");
+  await page.keyboard.insertText("第二行");
+  await composer.press("Control+Enter");
+  await eventually(() => turnStarts().length, 1, "Ctrl+Enter sends the existing desktop session draft exactly once");
+  assert.equal(turnStarts()[0].params.sessionId, sessionId);
+  assert.equal(turnStarts()[0].params.text, "桌面快捷键第一行\n第二行");
+  await eventually(() => composer.inputValue(), "", "The normal send path clears the submitted draft");
+  steps.push("Desktop existing session keeps plain Enter as a newline and submits the multiline draft once with Ctrl+Enter");
 }

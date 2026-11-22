@@ -115,6 +115,7 @@ export function MobileComposer({
   onRetry,
 }: MobileComposerProps) {
   const hasAttach = canAttachImages || Boolean(onUploadFile);
+  const sendDisabled = !canSendSession(selectedSession, snapshot) || sending || fileUploads.uploading || !hasDraft;
   const defaultOnlinePlaceholder = variant === "desktop"
     ? (sessionView === "evidence"
         ? "针对成果继续提问，或输入修改要求…"
@@ -177,6 +178,7 @@ export function MobileComposer({
           value={text}
           onChange={(value) => updateDraft((current) => ({ ...current, text: value }))}
           disabled={!canSendSession(selectedSession, snapshot)}
+          submitOnCtrlEnter={variant === "desktop" && !sendDisabled}
           placeholder={
             desktopRuntimeId(selectedSession) === "claude-desktop" && !canSendSession(selectedSession, snapshot)
               ? "请连接 Claude Desktop 原生会话"
@@ -239,7 +241,7 @@ export function MobileComposer({
                 type="submit"
                 className="send-button"
                 aria-label="发送"
-                disabled={!canSendSession(selectedSession, snapshot) || sending || fileUploads.uploading || !hasDraft}
+                disabled={sendDisabled}
               >
                 {sending
                   ? <LoaderCircle className="is-spinning" size={16} />

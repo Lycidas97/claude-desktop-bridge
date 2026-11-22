@@ -237,6 +237,7 @@ export type BridgeCapability =
   | "plugin.assistant-mail.smtp.v1"
   | "plugin.assistant-mail.shared-auth.v1"
   | "plugin.assistant-mail.keep-credential.v1"
+  | "plugin.assistant-mail.smtp-same-host-reuse.v1"
   | "plugin.assistant-mail.polling.v1"
   | "plugin.assistant-mail.attachments.v1"
   | "plugin.assistant-mail.history.v1"

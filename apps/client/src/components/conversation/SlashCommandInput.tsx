@@ -9,6 +9,7 @@ export function SlashCommandInput({
   onLoad,
   textareaRef,
   disabled,
+  submitOnCtrlEnter,
   placeholder,
   "aria-label": ariaLabel,
 }: {
@@ -18,6 +19,7 @@ export function SlashCommandInput({
   onLoad?: (() => Promise<BridgeSlashCommandCatalog>) | undefined;
   textareaRef?: RefObject<HTMLTextAreaElement | null>;
   disabled?: boolean;
+  submitOnCtrlEnter?: boolean;
   placeholder?: string;
   "aria-label"?: string;
 }) {
@@ -185,7 +187,14 @@ export function SlashCommandInput({
           }
         }}
         onKeyDown={(event) => {
-          if (!open || composing.current || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+          if (composing.current || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+          if (!open) {
+            if (submitOnCtrlEnter && event.key === "Enter" && event.ctrlKey) {
+              event.preventDefault();
+              if (!event.repeat) event.currentTarget.form?.requestSubmit();
+            }
+            return;
+          }
           if (!["Escape", "ArrowDown", "ArrowUp", "Enter", "Tab"].includes(event.key)) return;
           if ((event.key === "Enter" || event.key === "Tab") && !commands[active]) return;
           event.preventDefault();

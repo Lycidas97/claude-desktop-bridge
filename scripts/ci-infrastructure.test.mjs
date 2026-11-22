@@ -6,7 +6,7 @@ import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 import vm from 'node:vm';
@@ -15,6 +15,7 @@ import { runSuites } from './test.mjs';
 import { recycleEnv } from './ci-run.mjs';
 import { cancelWindowsRunCommand, LOCAL_CI_STATUS_CONTEXT, recordAndPublishLocalCi, validateStatusRepo } from './local-ci.mjs';
 import { buildAndroidDogfood } from './dogfood-android.mjs';
+import { installDogfoodApp } from './dogfood-install.mjs';
 
 const require = createRequire(import.meta.url);
 const preload = await readFile(new URL('./recycle-cleanup.cjs', import.meta.url), 'utf8');
@@ -546,6 +547,104 @@ process.stdout.write('{"state":"success"}\\n');
     assert.equal(await readFile(ghLog, 'utf8'), '');
   } finally {
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('macOS dogfood recycles only its app copies after a verified install', async t => {
+  for (const scenario of ['update', 'first install', 'ditto', 'codesign', 'missing ASAR', 'open', 'rollback recycle', 'recycle']) {
+    await t.test(scenario, async t => {
+      const directory = await mkdtemp(join(tmpdir(), 'bridge-mac-dogfood-'));
+      t.after(() => rm(directory, { recursive: true, force: true }));
+      const installed = join(directory, 'Applications', 'Bridge.app');
+      const out = join(directory, 'out');
+      const packageDir = join(out, `Bridge-darwin-${process.arch}`);
+      const built = join(packageDir, 'Bridge.app');
+      const previousRoot = join(directory, 'previous');
+      const previous = join(previousRoot, 'Bridge.app');
+      const legacyBackup = join(previousRoot, 'Bridge.app.bak');
+      const unrelated = [join(out, 'make'), join(previousRoot, 'Other.app'), join(directory, 'profile')];
+      const trash = join(directory, 'Trash');
+      const asar = app => join(app, 'Contents', 'Resources', 'app.asar');
+      const firstInstall = scenario === 'first install';
+      for (const [app, content] of [[built, 'new'], [legacyBackup, 'legacy backup'],
+        ...(firstInstall ? [] : [[installed, 'installed'], [previous, 'legacy previous']])]) {
+        await mkdir(join(app, 'Contents', 'Resources'), { recursive: true });
+        await writeFile(asar(app), content);
+      }
+      for (const path of [join(directory, 'Applications'), trash, ...unrelated]) await mkdir(path, { recursive: true });
+
+      const trashed = new Map();
+      let launched = false;
+      const exec = (command, args) => {
+        if (command === '/usr/bin/ditto') {
+          assert.deepEqual(args, [built, installed]);
+          fs.cpSync(built, installed, { recursive: true });
+          if (scenario === 'ditto') throw new Error('fixture ditto failed after writing');
+          if (scenario === 'missing ASAR') fs.renameSync(asar(installed), `${asar(installed)}.missing`);
+        } else if (command === 'codesign') {
+          assert.deepEqual(args, ['--verify', '--deep', '--strict', installed]);
+          if (scenario === 'codesign' || scenario === 'rollback recycle') throw new Error('fixture codesign failed');
+        } else if (command === 'open') {
+          assert.deepEqual(args, [installed]);
+          assert.equal(trashed.size, 0, 'no old bundles or build output recycled before launch');
+          if (scenario === 'open') throw new Error('fixture open failed');
+          launched = true;
+        } else {
+          assert.equal(command, '/usr/bin/trash');
+          const [flag, path] = args;
+          assert.equal(flag, '-s');
+          assert.ok(path.startsWith(`${directory}${sep}`), 'test recycler only accepts fixture paths');
+          if ((scenario === 'recycle' && path === packageDir) || (scenario === 'rollback recycle' && path === installed)) {
+            throw new Error('fixture recycle failed');
+          }
+          const destination = join(trash, String(trashed.size));
+          fs.renameSync(path, destination);
+          trashed.set(path, destination);
+        }
+      };
+      const install = () => installDogfoodApp({ built, installed, previousRoot, exec });
+
+      if (['ditto', 'codesign', 'missing ASAR', 'open'].includes(scenario)) {
+        assert.throws(install, scenario === 'missing ASAR' ? /ENOENT.*app\.asar/ : new RegExp(`fixture ${scenario} failed`));
+        assert.equal(await readFile(asar(installed), 'utf8'), 'installed');
+        assert.equal(await readFile(asar(built), 'utf8'), 'new');
+        assert.equal(await readFile(asar(previous), 'utf8'), 'legacy previous');
+        assert.equal(await readFile(asar(legacyBackup), 'utf8'), 'legacy backup');
+        assert.equal(launched, false);
+        assert.deepEqual([...trashed.keys()], [installed]);
+      } else if (scenario === 'rollback recycle') {
+        assert.throws(install, {
+          message: /previous Bridge is still at .*Bridge\.app\.rollback-/,
+          errors: [new Error('fixture codesign failed'), new Error('fixture recycle failed')],
+        });
+        const backup = (await readdir(join(directory, 'Applications'))).find(name => name.startsWith('Bridge.app.rollback-'));
+        assert.ok(backup);
+        assert.equal(await readFile(asar(join(directory, 'Applications', backup)), 'utf8'), 'installed');
+        assert.equal(trashed.size, 0);
+        assert.equal(launched, false);
+      } else if (scenario === 'recycle') {
+        assert.throws(install, { message: /Bridge was installed and verified, but could not recycle/, cause: new Error('fixture recycle failed') });
+        assert.equal(await readFile(asar(installed), 'utf8'), 'new');
+        assert.equal(await readFile(asar(built), 'utf8'), 'new');
+      } else {
+        assert.equal(install(), createHash('sha256').update('new').digest('hex'));
+        assert.equal(launched, true);
+        assert.equal(await readFile(asar(installed), 'utf8'), 'new');
+        assert.equal(fs.existsSync(packageDir), false, 'the package output must be recycled');
+        assert.equal(fs.existsSync(previous), false);
+        assert.equal(fs.existsSync(legacyBackup), false);
+        assert.deepEqual(await readdir(join(directory, 'Applications')), ['Bridge.app']);
+        assert.equal(await readFile(asar(join(trashed.get(packageDir), 'Bridge.app')), 'utf8'), 'new');
+        assert.equal(await readFile(asar(trashed.get(legacyBackup)), 'utf8'), 'legacy backup');
+        const replaced = [...trashed.keys()].filter(path => ![packageDir, previous, legacyBackup].includes(path));
+        assert.equal(replaced.length, firstInstall ? 0 : 1);
+        if (!firstInstall) {
+          assert.equal(await readFile(asar(trashed.get(previous)), 'utf8'), 'legacy previous');
+          assert.equal(await readFile(asar(trashed.get(replaced[0])), 'utf8'), 'installed');
+        }
+      }
+      for (const path of unrelated) assert.ok(fs.existsSync(path), `${path} must remain untouched`);
+    });
   }
 });
 

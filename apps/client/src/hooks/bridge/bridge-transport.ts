@@ -757,6 +757,7 @@ export async function refreshBridgeSnapshot(
   sendRequest: BridgeSendRequest,
   applyLanRelayAdvertisement: (roomId: string, snapshot: BridgeHostSnapshot) => void,
   verifiedSnapshot?: BridgeHostSnapshot,
+  timeoutMs = 20_000,
 ): Promise<boolean> {
   const { setState, stateRef, cryptoRef, socketRef } = refs;
   const crypto = cryptoRef.current;
@@ -764,10 +765,7 @@ export async function refreshBridgeSnapshot(
   if (!crypto) throw new Error("电脑当前离线");
   const isCurrent = () => cryptoRef.current === crypto && socketRef.current === socket;
   if (!verifiedSnapshot) {
-    const response = await sendRequest("snapshot.get", {}, {
-      wait: true,
-      timeoutMs: 20_000,
-    });
+    const response = await sendRequest("snapshot.get", {}, { wait: true, timeoutMs });
     if (!isCurrent()) return false;
     if (!response?.ok) throw new Error(response?.error?.message ?? "电脑端快照刷新失败");
     const result = response.result as { snapshot?: BridgeHostSnapshot } | undefined;
@@ -798,11 +796,13 @@ export async function refreshBridgeSnapshot(
   return true;
 }
 
+const DESKTOP_HANDSHAKE_TIMEOUT_MS = 25_000;
+
 export interface StartBridgeCallbacks {
   handlePayload: (payload: BridgePayload, encrypted: EncryptedEnvelope, crypto: BridgeCrypto) => void;
   notifyCompletedTurns: (events: BridgeEvent[], crypto: BridgeCrypto, options?: NotifyCompletedTurnsOptions) => void;
   refreshSessionList: () => Promise<boolean>;
-  refreshSnapshot: (verifiedSnapshot?: BridgeHostSnapshot) => Promise<boolean>;
+  refreshSnapshot: (verifiedSnapshot?: BridgeHostSnapshot, timeoutMs?: number) => Promise<boolean>;
   resumeEvents: (bootstrap?: boolean, fromSeq?: number) => Promise<void>;
 }
 
@@ -815,7 +815,7 @@ export async function startBridgeConnection(
   provisionalPairing?: PairingBundle,
   pairingPhase?: PairingConnectionPhase,
   restored?: StoredHostState,
-  quickReconnectAttempt?: symbol,
+  manualReconnectAttempt?: symbol,
 ): Promise<void> {
   const {
     setState,
@@ -844,11 +844,11 @@ export async function startBridgeConnection(
     nextCrypto: crypto,
     rejectPendingReason: "连接已重置",
   });
-  const attempt = quickReconnectAttempt ?? Symbol();
+  const attempt = manualReconnectAttempt ?? Symbol();
   connectionAttemptRef.current = attempt;
-  let awaitingQuickReconnect = quickReconnectAttempt !== undefined;
-  setState((current) => current.quickReconnect || quickReconnectAttempt
-    ? { ...current, quickReconnect: quickReconnectAttempt ? { status: "pending" } : undefined }
+  let awaitingManualReconnect = manualReconnectAttempt !== undefined;
+  setState((current) => current.manualReconnect || manualReconnectAttempt
+    ? { ...current, manualReconnect: manualReconnectAttempt ? { status: "pending" } : undefined }
     : current);
   const roomId = crypto.identity.roomId;
   if (!provisionalPairing) writeLastActiveHost(roomId);
@@ -906,7 +906,7 @@ export async function startBridgeConnection(
       ...current,
       connection: "closed",
       connectionIssue: { code: "pairing-invalid", message },
-      quickReconnect: quickReconnectAttempt ? { status: "failed", message } : undefined,
+      manualReconnect: manualReconnectAttempt ? { status: "failed", message } : undefined,
     }));
     return;
   }
@@ -1049,7 +1049,8 @@ export async function startBridgeConnection(
     const bootstrapResume = bootstrapPending;
     bootstrapPending = false;
     const previousSeq = stateRef.current.latestSeq;
-    const snapshotSynced = await refreshSnapshot().catch(() => false);
+    // A manual retry must still recognize its snapshot reply until the handshake expires.
+    const snapshotSynced = await refreshSnapshot(undefined, awaitingManualReconnect ? DESKTOP_HANDSHAKE_TIMEOUT_MS : undefined).catch(() => false);
     if (!isCurrent() || socket.state !== "connected") return;
     if (previousSeq > 0) {
       await resumeEvents(false, previousSeq);
@@ -1075,9 +1076,9 @@ export async function startBridgeConnection(
         ...current,
         desktopOnline: false,
         connectionIssue: issue,
-        quickReconnect: current.quickReconnect?.status === "pending"
+        manualReconnect: current.manualReconnect?.status === "pending"
           ? { status: "failed", message: issue.message }
-          : current.quickReconnect,
+          : current.manualReconnect,
       };
     });
   };
@@ -1109,7 +1110,7 @@ export async function startBridgeConnection(
         setState((current) => advancePairingSync(current, roomId, "verifying", 38));
       }
       // A manual attempt keeps its handshake deadline even if the Relay drops.
-      if (!awaitingQuickReconnect || !authenticationTimer) {
+      if (!awaitingManualReconnect || !authenticationTimer) {
         if (authenticationTimer) clearTimeout(authenticationTimer);
         authenticationTimer = setTimeout(() => {
           authenticationTimer = undefined;
@@ -1134,7 +1135,7 @@ export async function startBridgeConnection(
               message: "Relay 已连接，但电脑未通过加密握手，请在电脑端重新生成二维码。",
             });
           }
-        }, 25_000);
+        }, DESKTOP_HANDSHAKE_TIMEOUT_MS);
       }
       setState((current) => ({
         ...current,
@@ -1156,7 +1157,7 @@ export async function startBridgeConnection(
         }).catch(() => undefined);
       }
       if (!isProvisionalPairing() && linkHasDesktop) void synchronizeDesktop();
-    } else if (authenticationTimer && !awaitingQuickReconnect) {
+    } else if (authenticationTimer && !awaitingManualReconnect) {
       clearTimeout(authenticationTimer);
       authenticationTimer = undefined;
     }
@@ -1178,7 +1179,7 @@ export async function startBridgeConnection(
       linkHasDesktop = desktopHere;
       if (desktopHere) {
         learnHome(relay.endpoint);
-        if (!awaitingQuickReconnect) {
+        if (!awaitingManualReconnect) {
           setState((current) => ({ ...current, desktopOnline: true, error: undefined }));
         }
         void flushOutbox();
@@ -1192,7 +1193,7 @@ export async function startBridgeConnection(
       linkHasDesktop = frame.online;
       if (frame.online) {
         learnHome(relay.endpoint);
-        if (!awaitingQuickReconnect) {
+        if (!awaitingManualReconnect) {
           setState((current) => ({ ...current, desktopOnline: true, error: undefined }));
         }
         void flushOutbox();
@@ -1275,7 +1276,6 @@ export async function startBridgeConnection(
           clearPairingSyncTimer: true,
         });
         if (!isProvisionalPairing()) writeLastActiveHost();
-        const keepQuickSwitch = awaitingQuickReconnect;
         setState((current) => ({
           ...clearActiveHostState(current, {
             connection: "closed",
@@ -1288,10 +1288,10 @@ export async function startBridgeConnection(
                   : host),
           }),
           // Keep only the host identity so the open switcher can report why it stopped.
-          ...(keepQuickSwitch ? {
+          ...(awaitingManualReconnect ? {
             activeHostId: roomId,
             desktopName: current.desktopName,
-            quickReconnect: { status: "failed", message: issue.message } as const,
+            manualReconnect: { status: "failed", message: issue.message } as const,
           } : {}),
         }));
         return;
@@ -1306,10 +1306,10 @@ export async function startBridgeConnection(
     if (!isCurrent()) return;
     // Relay can replay old ciphertext even when the desktop is offline. A
     // reply to a request sent on this attempt proves it is reachable now.
-    const verifiedQuickReconnect = awaitingQuickReconnect && message.payload.kind === "response"
+    const verifiedManualReconnect = awaitingManualReconnect && message.payload.kind === "response"
       && pendingResponsesRef.current.has(message.payload.requestId);
-    if (verifiedQuickReconnect) awaitingQuickReconnect = false;
-    if (!awaitingQuickReconnect) {
+    if (verifiedManualReconnect) awaitingManualReconnect = false;
+    if (!awaitingManualReconnect) {
       authenticatedDesktop = true;
       if (authenticationTimer) {
         clearTimeout(authenticationTimer);
@@ -1324,7 +1324,7 @@ export async function startBridgeConnection(
         ...current,
         desktopOnline: true,
         connectionIssue: undefined,
-        ...(verifiedQuickReconnect ? { quickReconnect: undefined } : {}),
+        ...(verifiedManualReconnect ? { manualReconnect: undefined } : {}),
       }));
     }
     socket.ack([encrypted.id]);

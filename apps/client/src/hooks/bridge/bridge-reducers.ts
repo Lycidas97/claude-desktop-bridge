@@ -141,7 +141,7 @@ export interface PairingConnectionPhase {
   provisional: boolean;
 }
 
-export type QuickReconnectState = { status: "pending" } | { status: "failed"; message: string };
+export type ManualReconnectState = { status: "pending" } | { status: "failed"; message: string };
 
 export interface MobileBridgeState {
   loading: boolean;
@@ -150,7 +150,7 @@ export interface MobileBridgeState {
   desktopName: string | undefined;
   connection: SocketState;
   desktopOnline: boolean;
-  quickReconnect?: QuickReconnectState | undefined;
+  manualReconnect?: ManualReconnectState | undefined;
   foregroundRevision?: number;
   snapshot: BridgeHostSnapshot | undefined;
   snapshotSeq: number;
@@ -178,7 +178,7 @@ export const EMPTY_ACTIVE_HOST_STATE: Readonly<ActiveHostState> = Object.freeze(
   desktopName: undefined,
   connection: "idle",
   desktopOnline: false,
-  quickReconnect: undefined,
+  manualReconnect: undefined,
   snapshot: undefined,
   snapshotSeq: 0,
   permissions: Object.freeze([]) as unknown as BridgePermissionInfo[],

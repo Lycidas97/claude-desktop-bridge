@@ -134,7 +134,7 @@ export {
   type PairingSyncStage,
   type PairingSyncState,
   type ProjectCatalogPatch,
-  type QuickReconnectState,
+  type ManualReconnectState,
   type ReplaceActiveHostSnapshotOptions,
   type SessionEvidenceState,
   type SessionHistoryState,
@@ -190,7 +190,7 @@ export function useMobileBridge() {
   );
 
   const refreshSnapshot = useCallback(
-    (verifiedSnapshot?: BridgeHostSnapshot) => refreshBridgeSnapshot(transportRefs, sendRequest, applyLanRelayAdvertisement, verifiedSnapshot),
+    (verifiedSnapshot?: BridgeHostSnapshot, timeoutMs?: number) => refreshBridgeSnapshot(transportRefs, sendRequest, applyLanRelayAdvertisement, verifiedSnapshot, timeoutMs),
     [applyLanRelayAdvertisement, sendRequest],
   );
 
@@ -201,7 +201,7 @@ export function useMobileBridge() {
     provisionalPairing?: PairingBundle,
     pairingPhase?: PairingConnectionPhase,
     restored?: StoredHostState,
-    quickReconnectAttempt?: symbol,
+    manualReconnectAttempt?: symbol,
   ) => startBridgeConnection(
     transportRefs,
     { handlePayload, notifyCompletedTurns, refreshSessionList, refreshSnapshot, resumeEvents },
@@ -211,7 +211,7 @@ export function useMobileBridge() {
     provisionalPairing,
     pairingPhase,
     restored,
-    quickReconnectAttempt,
+    manualReconnectAttempt,
   ), [handlePayload, notifyCompletedTurns, refreshSessionList, refreshSnapshot, resumeEvents]);
 
   useEffect(() => {
@@ -825,16 +825,12 @@ export function useMobileBridge() {
     [start],
   );
 
-  const retryConnection = useCallback(async (fromQuickSwitch = false) => {
+  const retryConnection = useCallback(async () => {
     const crypto = cryptoRef.current;
-    if (!fromQuickSwitch) {
-      if (crypto) await start(crypto);
-      return;
-    }
     if (!crypto) {
       setState((current) => ({
         ...current,
-        quickReconnect: { status: "failed", message: "找不到这台电脑的配对密钥，请重新配对。" },
+        manualReconnect: { status: "failed", message: "找不到这台电脑的配对密钥，请重新配对。" },
       }));
       return;
     }
@@ -845,7 +841,7 @@ export function useMobileBridge() {
       if (transportRefs.connectionAttemptRef.current !== attempt) return;
       setState((current) => ({
         ...current,
-        quickReconnect: { status: "failed", message: error instanceof Error ? error.message : String(error) },
+        manualReconnect: { status: "failed", message: error instanceof Error ? error.message : String(error) },
       }));
     }
   }, [start]);

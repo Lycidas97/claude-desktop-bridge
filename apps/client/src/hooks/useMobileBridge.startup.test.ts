@@ -212,7 +212,7 @@ describe("startup and network recovery", () => {
     expect(latest.readyState).toBe(LocalWebSocket.OPEN);
   });
 
-  it("does not complete a quick switch retry from Relay presence or a replayed response", async () => {
+  it("does not complete a manual retry from Relay presence or a replayed response", async () => {
     const bridge = mount();
     await vi.waitFor(() => expect(bridgeVault.saveMessage).toHaveBeenCalledOnce());
     const priorRequest = harness.requests.find(request => request.method === "snapshot.get")!;
@@ -220,32 +220,50 @@ describe("startup and network recovery", () => {
     const answer = LocalWebSocket.prototype.answer;
     const held = vi.spyOn(LocalWebSocket.prototype, "answer").mockResolvedValue(undefined);
 
-    await bridge.retryConnection(true);
+    await bridge.retryConnection();
     const socket = LocalWebSocket.instances.at(-1)!;
     await vi.waitFor(() => expect(held).toHaveBeenCalledOnce());
     const sent = vi.spyOn(socket, "send");
     socket.receive({ type: "envelope", envelope: replayedReply });
     await vi.waitFor(() => expect(sent).toHaveBeenCalledWith(JSON.stringify({ type: "ack", ids: [replayedReply.id] })));
-    expect(harness.state.quickReconnect).toEqual({ status: "pending" });
+    expect(harness.state.manualReconnect).toEqual({ status: "pending" });
     expect(harness.state.desktopOnline).toBe(false);
 
     await answer.call(socket, held.mock.calls[0]![0]);
-    await vi.waitFor(() => expect(harness.state.quickReconnect).toBeUndefined());
+    await vi.waitFor(() => expect(harness.state.manualReconnect).toBeUndefined());
     expect(harness.state.desktopOnline).toBe(true);
   });
 
-  it("ends a quick switch retry when Relay drops before the first reply and stays unreachable", async () => {
+  it("completes a manual retry when the desktop answers within the handshake deadline", async () => {
+    const bridge = mount();
+    await vi.waitFor(() => expect(bridgeVault.saveMessage).toHaveBeenCalledOnce());
+    const answer = LocalWebSocket.prototype.answer;
+    const held = vi.spyOn(LocalWebSocket.prototype, "answer").mockResolvedValue(undefined);
+
+    await bridge.retryConnection();
+    const socket = LocalWebSocket.instances.at(-1)!;
+    await vi.waitFor(() => expect(held).toHaveBeenCalledOnce());
+    await vi.advanceTimersByTimeAsync(21_000);
+    expect(harness.state.manualReconnect).toEqual({ status: "pending" });
+
+    await answer.call(socket, held.mock.calls[0]![0]);
+    await vi.waitFor(() => expect(harness.state.manualReconnect).toBeUndefined());
+    expect(harness.state.desktopOnline).toBe(true);
+    expect(harness.state.connectionIssue).toBeUndefined();
+  });
+
+  it("ends a manual retry when Relay drops before the first reply and stays unreachable", async () => {
     const bridge = mount();
     await vi.waitFor(() => expect(bridgeVault.saveMessage).toHaveBeenCalledOnce());
     vi.spyOn(LocalWebSocket.prototype, "answer").mockResolvedValue(undefined);
-    await bridge.retryConnection(true);
+    await bridge.retryConnection();
     expect(harness.state.connection).toBe("connected");
-    expect(harness.state.quickReconnect).toEqual({ status: "pending" });
+    expect(harness.state.manualReconnect).toEqual({ status: "pending" });
     vi.spyOn(LocalWebSocket.prototype, "send").mockImplementation(() => {});
     LocalWebSocket.instances.at(-1)!.close();
 
     await vi.advanceTimersByTimeAsync(25_000);
-    expect(harness.state.quickReconnect).toMatchObject({ status: "failed", message: expect.stringContaining("检查网络") });
+    expect(harness.state.manualReconnect).toMatchObject({ status: "failed", message: expect.stringContaining("检查网络") });
   });
 
   it("keeps a revoked host selected to report the failure, but clears selection when the host is removed", async () => {
@@ -256,7 +274,7 @@ describe("startup and network recovery", () => {
     const bridge = mount();
     await vi.waitFor(() => expect(bridgeVault.saveMessage).toHaveBeenCalledOnce());
     vi.spyOn(LocalWebSocket.prototype, "answer").mockResolvedValue(undefined);
-    await bridge.retryConnection(true);
+    await bridge.retryConnection();
     const socket = LocalWebSocket.instances.at(-1)!;
     socket.receive({ type: "error", code: "DEVICE_REVOKED", message: "Revoked by desktop" });
 
@@ -264,14 +282,14 @@ describe("startup and network recovery", () => {
     expect(harness.state.activeHostId).toBe(pairing.roomId);
     expect(harness.state.hosts[0]).toMatchObject({ needsRepair: true, status: "offline" });
     expect(harness.state.snapshot).toBeUndefined();
-    expect(harness.state.quickReconnect).toMatchObject({ status: "failed", message: expect.stringContaining("撤销") });
+    expect(harness.state.manualReconnect).toMatchObject({ status: "failed", message: expect.stringContaining("撤销") });
 
     const remove = bridge.forgetHost(pairing.roomId);
     await vi.advanceTimersByTimeAsync(4_000);
     await remove;
     expect(harness.state.hosts.map(({ roomId }: { roomId: string }) => roomId)).toEqual([device.pairing.roomId]);
     expect(harness.state.activeHostId).toBeUndefined();
-    expect(harness.state.quickReconnect).toBeUndefined();
+    expect(harness.state.manualReconnect).toBeUndefined();
   });
 
   it("retries both Relay candidates and reports the pairing rejection when neither accepts it", async () => {
@@ -288,11 +306,11 @@ describe("startup and network recovery", () => {
       this.receive({ type: "error", code: "AUTH_FAILED", message: "Relay rejected the pairing" });
       this.close();
     });
-    await bridge.retryConnection(true);
+    await bridge.retryConnection();
     await vi.waitFor(() => expect(harness.state.connectionIssue?.code).toBe("pairing-invalid"));
     expect(attempted).toEqual(new Set(harness.hosts[0].relayEndpoints.map(({ url }: { url: string }) => url)));
     await vi.advanceTimersByTimeAsync(18_000);
-    expect(harness.state.quickReconnect).toMatchObject({ status: "failed", message: expect.stringContaining("新二维码") });
+    expect(harness.state.manualReconnect).toMatchObject({ status: "failed", message: expect.stringContaining("新二维码") });
     expect(harness.state.connectionIssue?.code).toBe("pairing-invalid");
   });
 

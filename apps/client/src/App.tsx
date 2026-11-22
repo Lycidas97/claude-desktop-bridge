@@ -377,6 +377,7 @@ function MobileApp({ themeControl }: { themeControl: ThemeControl }) {
     tab,
   ]);
 
+  const detailsHost = mobile.state.hosts.find((host) => host.roomId === computerDetailsHostId);
   return (
     <ConversationDraftsProvider activeHostId={mobile.state.activeHostId} controllerRef={draftsHandle}>
       {mobile.state.pairingSync ? (
@@ -456,7 +457,7 @@ function MobileApp({ themeControl }: { themeControl: ThemeControl }) {
               events={mobile.state.events}
               localTurns={mobile.state.localTurns}
               connectionIssue={mobile.state.connectionIssue}
-              quickReconnect={mobile.state.quickReconnect}
+              manualReconnect={mobile.state.manualReconnect}
               onInspectConnection={() => openComputerDetails("sessions")}
               transportMetrics={mobile.state.transportMetrics}
               pendingOutbound={mobile.state.pendingOutbound}
@@ -567,9 +568,9 @@ function MobileApp({ themeControl }: { themeControl: ThemeControl }) {
           </section>
         </main>
       ) : null}
-      {tab === "computers" && (computerDetailsHostId && computerDetailsHostId === mobile.state.activeHostId ? (
+      {tab === "computers" && (detailsHost && detailsHost.roomId === mobile.state.activeHostId && !detailsHost.needsRepair ? (
         <MobileHostDetails
-          activeHostId={mobile.state.activeHostId}
+          activeHostId={detailsHost.roomId}
           desktopName={mobile.state.desktopName ?? "我的电脑"}
           connection={mobile.state.connection}
           desktopOnline={mobile.state.desktopOnline}
@@ -577,7 +578,8 @@ function MobileApp({ themeControl }: { themeControl: ThemeControl }) {
           transportMetrics={mobile.state.transportMetrics}
           pendingOutbound={mobile.state.pendingOutbound}
           connectionIssue={mobile.state.connectionIssue}
-          relayUrl={mobile.state.hosts.find((host) => host.roomId === mobile.state.activeHostId)?.relayUrl ?? mobile.state.snapshot?.host.relayUrl ?? ""}
+          manualReconnect={mobile.state.manualReconnect}
+          relayUrl={detailsHost.relayUrl}
           onSetRelayUrl={mobile.setRelayUrl}
           onRetry={mobile.retryConnection}
           onRefresh={mobile.refresh}

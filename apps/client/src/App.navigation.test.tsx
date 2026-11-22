@@ -179,6 +179,18 @@ describe("mobile app parent navigation", () => {
     expect(hooks.mobile.selectHost).toHaveBeenCalledWith("work-room");
     expect(component(MobileWorkspace)?.props.focusRequest?.sessionId).toBe("pending-session");
   });
+  it("returns to the computer list if a manual reconnect revokes the pairing in details", () => {
+    tab("settings");
+    component(MobileSettings)!.props.computer.onOpen(); draw();
+    expect(component(MobileHostDetails)).toBeDefined();
+    hooks.mobile.state.hosts[0].needsRepair = true;
+    hooks.mobile.state.error = "手机配对已被电脑撤销";
+    draw();
+    expect(component(MobileHostDetails)).toBeUndefined();
+    const list = component(HostBrowser)!;
+    expect(list.props.error).toBe(hooks.mobile.state.error);
+    expect(list.props.hosts[0].needsRepair).toBe(true);
+  });
   it("returns home from connection details opened by the workspace inspection callback", () => {
     component(MobileWorkspace)!.props.onInspectConnection(); draw();
     expect(component(MobileAppShell)!.props.tab).toBe("computers");

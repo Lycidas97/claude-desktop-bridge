@@ -7,7 +7,7 @@ import type {
 } from "@bridge/protocol";
 import { Activity, LoaderCircle, Play, Power, RefreshCw, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
-import type { MobileConnectionIssue } from "../../hooks/useMobileBridge.js";
+import type { ManualReconnectState, MobileConnectionIssue } from "../../hooks/useMobileBridge.js";
 import { setDiagDialogOpen } from "../../lib/diagnostics.js";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
 import { desktopRuntimeName } from "../../lib/runtime-labels.js";
@@ -31,6 +31,7 @@ export interface MobileHostDetailsProps {
   transportMetrics?: BridgeTransportMetrics | undefined;
   pendingOutbound?: number | undefined;
   connectionIssue?: MobileConnectionIssue | undefined;
+  manualReconnect?: ManualReconnectState | undefined;
   relayUrl?: string;
   onSetRelayUrl?(url: string): Promise<void>;
   onRetry(): Promise<void>;
@@ -53,6 +54,7 @@ export function MobileHostDetails({
   transportMetrics,
   pendingOutbound,
   connectionIssue,
+  manualReconnect,
   relayUrl,
   onSetRelayUrl,
   onRetry,
@@ -65,6 +67,9 @@ export function MobileHostDetails({
   remoteUpdate,
 }: MobileHostDetailsProps) {
   const [connectionAction, setConnectionAction] = useState<"retry" | "refresh">();
+  const reconnecting = connectionAction === "retry" || manualReconnect?.status === "pending";
+  const connectionBusy = reconnecting || connectionAction === "refresh";
+  const connectionError = manualReconnect?.status === "failed" ? manualReconnect.message : connectionIssue?.message;
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [desktopAction, setDesktopAction] = useState<{ runtimeId: BridgeDesktopRuntimeId; action: "launch" | "quit" }>();
@@ -200,13 +205,13 @@ export function MobileHostDetails({
             <span>待发送消息</span><span className="mobile-settings-value">{pendingOutbound}</span>
           </div>
         )}
-        {connectionIssue && <p className="inline-error" role="alert">{connectionIssue.message}</p>}
+        {connectionError && <p className="inline-error" role="alert">{connectionError}</p>}
         <div className="mobile-settings-row mobile-settings-actions">
-          <button type="button" className="secondary-button" disabled={Boolean(connectionAction) || removing} onClick={() => void runConnectionAction("retry")}>
-            {connectionAction === "retry" && <LoaderCircle className="is-spinning" size={16} />}
-            {connectionAction === "retry" ? "重连中" : "重新连接"}
+          <button type="button" className="secondary-button" disabled={connectionBusy || removing} onClick={() => void runConnectionAction("retry")}>
+            {reconnecting && <LoaderCircle className="is-spinning" size={16} aria-hidden="true" />}
+            {reconnecting ? "正在重连" : "重新连接"}
           </button>
-          <button type="button" className="secondary-button" disabled={Boolean(connectionAction) || removing} onClick={() => void runConnectionAction("refresh")}>
+          <button type="button" className="secondary-button" disabled={connectionBusy || removing} onClick={() => void runConnectionAction("refresh")}>
             {connectionAction === "refresh" ? <LoaderCircle className="is-spinning" size={16} /> : <RefreshCw size={16} />}
             {connectionAction === "refresh" ? "同步中" : "强制同步"}
           </button>

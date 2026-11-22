@@ -73,7 +73,7 @@ export function AssistantTriggerBatch({ sessionId, batchId, cards, nativeMessage
     </header>
     {readError && <p role="alert">{readError}</p>}
     {cancelError && <p role="alert">{cancelError}</p>}
-    {visibleCards.map(card => <MailCard key={card.mailRefId} card={card} showBatchDelivery={false} />)}
+    {visibleCards.map(card => <MailCard key={card.mailRefId} card={card} compact showBatchDelivery={false} />)}
     {nativeMessage && <details className="assistant-mail-native"><summary>关联原生消息</summary>
       <code>{nativeMessage.id}</code><pre>{nativeMessage.text}</pre>
     </details>}

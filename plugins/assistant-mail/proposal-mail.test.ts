@@ -197,7 +197,7 @@ it("keeps credentials separate and rejects mail reviewed against a changed chann
   expect([...vault]).toEqual([[accountKey, "imap-fixture-value"]]);
 });
 
-it("keeps legacy SMTP separate until conversion, then requires a new revision and uses the shared credential", async () => {
+it("requires new approval after shared authorization conversion or same-host channel edits", async () => {
   const { credential, user: _user, ...shared } = channel;
   await mail.setSmtp(accountKey, { ...channel, user: account.user });
   const before = mail.smtpAccount(accountKey)!.smtp;
@@ -220,11 +220,18 @@ it("keeps legacy SMTP separate until conversion, then requires a new revision an
   await expect(executor.commit({ ...ref, confirmMail: true }, "phone")).rejects.toMatchObject({ code: "CONFLICT" });
   expect(db.prepare("SELECT * FROM send_attempts").all()).toEqual([]);
   await expect(mail.setSmtp(accountKey, channel)).rejects.toMatchObject({ code: "UNSUPPORTED" });
+  const sharedDraft = await executor.revise(ref, action);
+  await mail.updateSharedSmtp(accountKey, { ...shared, port: 587, security: "starttls" });
+  await expect(executor.commit({ ...sharedDraft, confirmMail: true }, "phone")).rejects.toMatchObject({ code: "CONFLICT" });
+  expect(db.prepare("SELECT * FROM send_attempts").all()).toEqual([]);
+  expect(send).not.toHaveBeenCalled();
+
   send.mockResolvedValueOnce({ state: "applied", accepted: [...draft.to, ...draft.cc], rejected: [] });
-  const revised = await executor.revise(ref, action);
+  const revised = await executor.revise(sharedDraft, action);
   await executor.commit({ ...revised, confirmMail: true }, "phone");
   await executor.close();
-  expect(send).toHaveBeenCalledExactlyOnceWith(channelNow, "shared-fixture-value", revised.action, expect.any(String));
+  expect(send).toHaveBeenCalledExactlyOnceWith({ ...channelNow, port: 587, security: "starttls", version: expect.any(String) },
+    "shared-fixture-value", revised.action, expect.any(String));
 });
 
 it("rolls back a newly saved SMTP credential if account settings cannot be persisted", async () => {

@@ -14,7 +14,9 @@ const RECEIVER_ERRORS = new Map([
   ["mail_idle_unsupported", { label: "不支持持续收件", state: "unsupported" }],
 ]);
 
-export function MailAccounts({ accounts, configUnavailable, credentialsSupported, online, supportsPolling, supportsSmtp, supportsSharedAuth, supportsKeepCredential, request }: {
+type SmtpCredentialReuse = "same-host" | "same-connection";
+
+export function MailAccounts({ accounts, configUnavailable, credentialsSupported, online, supportsPolling, supportsSmtp, supportsSharedAuth, smtpCredentialReuse, request }: {
   accounts: BridgeMailAccount[];
   configUnavailable: boolean;
   credentialsSupported: boolean;
@@ -22,7 +24,7 @@ export function MailAccounts({ accounts, configUnavailable, credentialsSupported
   supportsPolling: boolean;
   supportsSmtp: boolean;
   supportsSharedAuth: boolean;
-  supportsKeepCredential: boolean;
+  smtpCredentialReuse: SmtpCredentialReuse | undefined;
   request: AssistantRequest;
 }) {
   const headingId = useId();
@@ -96,7 +98,7 @@ export function MailAccounts({ accounts, configUnavailable, credentialsSupported
         </div>
       </>}
       {showSharedSmtp
-        ? <SmtpFields account={editedAccount} shared allowKeepCredential={supportsKeepCredential && editedAccount?.smtpSharedAuth === true} />
+        ? <SmtpFields account={editedAccount} shared smtpCredentialReuse={smtpCredentialReuse} />
         : <label>密码<input name="credential" type="password" autoComplete="new-password" required /></label>}
       {inlineError && errorAlert}
       <div className="assistant-actions">
@@ -196,11 +198,15 @@ export function MailAccounts({ accounts, configUnavailable, credentialsSupported
   </section>;
 }
 
-function SmtpFields({ account, shared, allowKeepCredential }: { account: BridgeMailAccount | undefined; shared: boolean; allowKeepCredential?: boolean }) {
-  const [host, setHost] = useState(account?.smtp?.host ?? "");
-  const [port, setPort] = useState(String(account?.smtp?.port ?? 465));
-  const [security, setSecurity] = useState<string>(account?.smtp?.security ?? "tls");
-  const disabled = shared && !host.trim();
+function SmtpFields({ account, shared, smtpCredentialReuse }: { account: BridgeMailAccount | undefined; shared: boolean;
+  smtpCredentialReuse?: SmtpCredentialReuse | undefined }) {
+  const passwordHintId = useId();
+  const smtp = account?.smtp;
+  const [host, setHost] = useState(smtp?.host ?? "");
+  const [port, setPort] = useState(String(smtp?.port ?? 465));
+  const [security, setSecurity] = useState<string>(smtp?.security ?? "tls");
+  const normalizedHost = host.trim().toLowerCase();
+  const disabled = shared && !normalizedHost;
   const fields = <>
     <div className="assistant-account-server">
       <label>SMTP 服务器<input name="smtpHost" required={!shared || !!account?.smtp} value={host} onChange={event => setHost(event.target.value)} autoCapitalize="none" spellCheck={false} /></label>
@@ -219,11 +225,15 @@ function SmtpFields({ account, shared, allowKeepCredential }: { account: BridgeM
       placeholder={shared ? "默认使用邮箱地址" : undefined} /></label>
   </>;
   if (!shared) return fields;
-  const smtp = account?.smtp;
-  const keepCredential = allowKeepCredential && smtp && smtp.host === host.trim().toLowerCase() && smtp.port === Number(port) && smtp.security === security;
+  const hostChanged = account?.smtpSharedAuth === true && smtp && !disabled && smtp.host !== normalizedHost;
+  const keepCredential = account?.smtpSharedAuth === true && smtp?.host === normalizedHost &&
+    (smtpCredentialReuse === "same-host" || (smtpCredentialReuse === "same-connection" && smtp.port === Number(port) && smtp.security === security));
   return <>
-    <label>密码<input name="credential" type="password" autoComplete="new-password" required={!keepCredential}
-      placeholder={keepCredential ? "留空不修改" : undefined} /></label>
+    <div className="assistant-account-credential">
+      <label>密码<input name="credential" type="password" autoComplete="new-password" required={!keepCredential}
+        placeholder={keepCredential ? "留空不修改" : undefined} aria-describedby={hostChanged ? passwordHintId : undefined} /></label>
+      {hostChanged && <small id={passwordHintId}>更换 SMTP 服务器需重新输入密码。</small>}
+    </div>
     <fieldset className="assistant-smtp-fields">
       <legend>{smtp ? "发信" : "发信（选填）"}</legend>
       {fields}

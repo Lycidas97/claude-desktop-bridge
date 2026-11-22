@@ -1001,6 +1001,23 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await firstBatchCard.locator(".assistant-mail-row > summary").click();
   await firstBatchCard.locator(".assistant-mail-row-content").waitFor({ state: "detached" });
   host.mailPageFailure = false;
+  const batchDesktop = await page.context().newPage();
+  try {
+    await openDesktopAssistant(batchDesktop, host, baseUrl, []);
+    const desktopBatch = batchDesktop.locator(".desktop-conversation-stream").getByRole("region", { name: "助理唤醒" });
+    await desktopBatch.getByText("原生已观测", { exact: true }).waitFor();
+    for (const mailId of batchMailIds) await verifyCollapsedConversationMail(desktopBatch.locator(`[data-mail-id="${mailId}"]`));
+    const desktopBatchMail = desktopBatch.locator(`[data-mail-id="${batchMailIds[0]}"]`);
+    await expandInboxMail(desktopBatchMail);
+    await desktopBatchMail.getByText("原文", { exact: true }).waitFor();
+    await desktopBatchMail.getByRole("button", { name: "讨论此邮件", exact: true }).waitFor();
+    await desktopBatchMail.locator(".assistant-mail-row > summary").click();
+    await desktopBatchMail.locator(".assistant-mail-row-content").waitFor({ state: "detached" });
+    await assistantViewCapture(batchDesktop, directory, viewports)("desktop-assistant-trigger-batch");
+    steps.push("Desktop wake batch renders the same two compact mail rows and preserves the original and discuss actions after expansion");
+  } finally {
+    await batchDesktop.close();
+  }
   host.partialMailPage = true;
   await page.getByRole("button", { name: "收件", exact: true }).click();
   await page.getByRole("button", { name: "刷新邮件列表", exact: true }).click();
@@ -1220,8 +1237,14 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   assert.equal(await page.locator(".assistant-conversation .desktop-session-sidebar").count(), 0);
   assert.equal(await page.locator(".assistant-conversation .desktop-session-layout, .assistant-conversation .is-fixed-session").count(), 0, "Desktop AssistantPage mounts DesktopSessionConversation directly without DesktopSessions layout");
   const desktopMail = page.locator(".assistant-conversation .desktop-conversation-stream > [data-mail-id]").first();
-  await desktopMail.waitFor();
-  assert.ok(await desktopMail.locator(".assistant-mail-preview").isVisible(), "Desktop conversation still shows full mail cards without expansion");
+  await verifyCollapsedConversationMail(desktopMail);
+  await expandInboxMail(desktopMail);
+  await desktopMail.locator(".assistant-mail-preview").waitFor();
+  await desktopMail.getByText("原文", { exact: true }).waitFor();
+  await desktopMail.getByRole("button", { name: "讨论此邮件", exact: true }).waitFor();
+  await desktopMail.locator(".assistant-mail-row > summary").click();
+  await desktopMail.locator(".assistant-mail-row-content").waitFor({ state: "detached" });
+  steps.push("Desktop standalone conversation mail is compact and exposes its preview, original and discuss action when expanded");
   const historicalReference = page.locator(`.assistant-conversation .desktop-conversation-stream [data-stream-key="${messageId}"]`)
     .getByRole("button", { name: "打开邮件：邮件引用", exact: true });
   await historicalReference.click();

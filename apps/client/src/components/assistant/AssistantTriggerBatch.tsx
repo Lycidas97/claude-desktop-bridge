@@ -11,11 +11,10 @@ const DELIVERY_LABELS: Record<BridgeMailCard["nativeDelivery"]["state"] | "runni
   observed: "原生已观测", running: "运行中", completed: "已完成", uncertain: "不确定", failed: "失败", cancelled: "已撤回",
 };
 
-export function AssistantTriggerBatch({ sessionId, batchId, cards, compact, nativeMessage, onCancel }: {
+export function AssistantTriggerBatch({ sessionId, batchId, cards, nativeMessage, onCancel }: {
   sessionId: string;
   batchId: string;
   cards: BridgeMailCard[];
-  compact: boolean;
   nativeMessage?: BridgeHistoryItem | undefined;
   onCancel?: ((sessionId: string, commandId: string) => Promise<void>) | undefined;
 }) {
@@ -74,7 +73,7 @@ export function AssistantTriggerBatch({ sessionId, batchId, cards, compact, nati
     </header>
     {readError && <p role="alert">{readError}</p>}
     {cancelError && <p role="alert">{cancelError}</p>}
-    {visibleCards.map(card => <MailCard key={card.mailRefId} card={card} compact={compact} showBatchDelivery={false} />)}
+    {visibleCards.map(card => <MailCard key={card.mailRefId} card={card} compact showBatchDelivery={false} />)}
     {nativeMessage && <details className="assistant-mail-native"><summary>关联原生消息</summary>
       <code>{nativeMessage.id}</code><pre>{nativeMessage.text}</pre>
     </details>}

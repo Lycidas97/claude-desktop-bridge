@@ -893,14 +893,14 @@ export function ConversationView({
             <MailCard
               key={`mail:${node.card.mailRefId}`}
               card={node.card}
-              compact={isMobile}
+              compact
               {...(node.nativeMessage ? { nativeMessage: node.nativeMessage } : {})}
             />
           );
         }
         if (node.kind === "assistant-trigger-batch") {
           return <AssistantTriggerBatch key={`${hostId}:${session.sessionId}:${node.batchId}`} sessionId={session.sessionId}
-            batchId={node.batchId} cards={node.cards} compact={isMobile} nativeMessage={node.nativeMessage} onCancel={onCancelQueuedTurn} />;
+            batchId={node.batchId} cards={node.cards} nativeMessage={node.nativeMessage} onCancel={onCancelQueuedTurn} />;
         }
         if (node.kind === "evidence") {
           return (

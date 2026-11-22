@@ -1,3 +1,47 @@
+## 1.3.9
+
+- Let the managed Assistant search the web. Search queries go to the search
+  service. Under Readable directories (可读目录) in Assistant settings, choose
+  folders outside the Assistant workspace that the Assistant may read. Nothing
+  is shared by default. Access can be revoked from the computer or phone, even
+  while Desktop is disconnected. The Assistant can list one folder level and
+  read UTF-8 or PDF text up to 1 MiB. Bridge's data folder, `.mcp.json`, and
+  linked files stay unreadable. WebFetch and shell tools remain blocked, writes
+  stay in `outputs/`, and sending mail or applying proposals still needs
+  confirmation. Reopen an existing Assistant session if the new tools are
+  missing.
+  [PR 552](https://github.com/Lycidas97/claude-desktop-bridge/pull/552)
+- Mail updates no longer reload Assistant conversation batches or expanded
+  mail categories while they are hidden. They catch up when shown again, and
+  mail cannot be filed from a category card until it has caught up. CalDAV
+  syncs that change no events or to-dos update the sync status without
+  reloading open agenda lists. An open-ended repeating to-do can still refresh
+  the undated to-do list so new occurrences appear.
+  [PR 562](https://github.com/Lycidas97/claude-desktop-bridge/pull/562),
+  [PR 563](https://github.com/Lycidas97/claude-desktop-bridge/pull/563)
+- Move mail account validation, mail attachment preview routing, and the
+  session check for proposal replanning into their owning modules without
+  changing behavior. Run the readable-directories browser check as its own
+  scenario.
+  [PR 553](https://github.com/Lycidas97/claude-desktop-bridge/pull/553),
+  [PR 559](https://github.com/Lycidas97/claude-desktop-bridge/pull/559),
+  [PR 560](https://github.com/Lycidas97/claude-desktop-bridge/pull/560),
+  [PR 561](https://github.com/Lycidas97/claude-desktop-bridge/pull/561)
+
+**Upgrade compatibility.** Protocol V3 and Pairing V4 remain unchanged.
+Readable directories appear only when the computer runs 1.3.9 and the device
+used to manage them also runs 1.3.9. Browser fixture tests verified that a
+1.3.9 client still refreshes open agenda lists from a computer that does not
+send the new list markers.
+[PR 563](https://github.com/Lycidas97/claude-desktop-bridge/pull/563)
+
+Candidate `e00b214` passed two full distributed CI runs, each with 70/70 Mac
+browser scenarios, Windows packaged QA, and Android 16 emulator checks. The
+maintainer waived dogfood installation and live phone use for this release.
+These checks did not cover a live upgrade from 1.3.8, live mixed-version
+connections, live Desktop tool catalogs or web search, production mail or
+CalDAV providers, or physical devices.
+
 ## 1.3.8
 
 - Set up a managed Assistant and connect multiple read-only IMAP inboxes on

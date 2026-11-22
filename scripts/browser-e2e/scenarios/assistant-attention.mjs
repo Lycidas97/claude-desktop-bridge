@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import { sessionId } from "../config.mjs";
 import { desktopFixtureRequest, eventually, openMobileDrawer, openMobileSession } from "../helpers.mjs";
-import { expandInboxMail, fileMailInCategory, openDesktopAssistant } from "./assistant-mail.mjs";
+import { expandInboxMail, fileMailInCategory, openDesktopAssistant } from "../assistant-helpers.mjs";
 
 export async function verifyAssistantAttention(page, host, steps, directory, viewports, baseUrl) {
   const native = host.nativeApproval;

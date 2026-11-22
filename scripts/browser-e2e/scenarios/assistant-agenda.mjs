@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import { eventually } from "../helpers.mjs";
-import { openDesktopAssistant } from "./assistant-mail.mjs";
+import { openDesktopAssistant } from "../assistant-helpers.mjs";
 
 export async function verifyAssistantAgenda(page, host, steps, directory, viewports, baseUrl) {
   async function capture(name) {

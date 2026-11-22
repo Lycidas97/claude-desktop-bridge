@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { eventually } from "../helpers.mjs";
-import { assistantViewCapture, openMobileAssistant } from "./assistant-mail.mjs";
+import { assistantViewCapture, openMobileAssistant } from "../assistant-helpers.mjs";
 
 export async function verifyAssistantReadDirectories(page, host, steps, directory, viewports) {
   await openMobileAssistant(page);

@@ -7,7 +7,6 @@ import type {
   AssistantAttentionAcknowledgment,
   BridgeAssistantMailSnapshot,
   BridgeEvent,
-  BridgeMailAttachmentRef,
   BridgeMailCard,
   BridgeMailDetail,
   BridgeMailPage,
@@ -105,18 +104,6 @@ function assistantMailPage(mail: AssistantMailService, options: z.infer<typeof M
     ...(folderCounts ? { folderCounts } : {}),
     ...(timelineCards.length ? receivedOrder ? { timelineCards } : { filedTimelineCards: timelineCards } : {}),
   };
-}
-
-export function parseMailAttachmentRef(reference: unknown): BridgeMailAttachmentRef {
-  if (!reference || typeof reference !== "object" || Array.isArray(reference)) {
-    throw new BridgeRequestError("INVALID_PARAMS", "需要独立的邮件附件引用。");
-  }
-  const { mailRefId, attachmentId } = reference as Partial<BridgeMailAttachmentRef>;
-  if (typeof mailRefId !== "string" || !/^[a-f0-9-]{36}$/u.test(mailRefId) || typeof attachmentId !== "string" ||
-    attachmentId.length > 128 || !/^\d+(?:\.\d+)*$/u.test(attachmentId)) {
-    throw new BridgeRequestError("INVALID_PARAMS", "邮件附件引用无效。");
-  }
-  return { mailRefId, attachmentId };
 }
 
 /** Owns controller-level assistant mail rules: projection, change tokens, binding guards, and RPC routing. */

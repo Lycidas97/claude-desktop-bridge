@@ -10,6 +10,7 @@ import type { Readable } from "node:stream";
 import { ImapFlow, type ImapFlowOptions } from "imapflow";
 import { KeychainMailCredentials, type MailCredentials } from "./credentials.js";
 import { MailReceiver, type MailState } from "./receiver.js";
+import { fileSentCopy, type SentCopyResult } from "./sent-copy.js";
 import { AssistantMailStore, type AssistantBinding, type MailAnalysis, type MailProcessingStatus } from "./store.js";
 import { DEFAULT_MAIL_POLL_INTERVAL, isMailPollInterval, type AssistantAttentionAcknowledgment, type BridgeMailAttachmentRef, type MailPollInterval } from "../../packages/protocol/src/assistant-mail.js";
 import { attachmentText, MAIL_TEXT_MAX_BYTES, supportsAttachmentText } from "./attachment-text.js";
@@ -291,6 +292,20 @@ export class AssistantMailService extends EventEmitter {
         throw error;
       });
     });
+  }
+
+  async fileSentCopy(accountKey: string, messageId: string, source: Buffer): Promise<SentCopyResult> {
+    const config = this.accounts.get(accountKey)?.config;
+    if (!config?.enabled) return "unconfirmed";
+    const password = await this.credentials.get(accountKey).catch((error: unknown) => {
+      if (error instanceof Error && error.message === "mail_credentials_unavailable") return undefined;
+      throw error;
+    });
+    if (!password) return "unconfirmed";
+    return fileSentCopy(this.createClient({ host: config.host, port: config.port, secure: true,
+      auth: { user: config.user, pass: password }, tls: { rejectUnauthorized: true }, logger: false, disableAutoIdle: true,
+      connectionTimeout: 15_000, greetingTimeout: 15_000, socketTimeout: 30_000,
+    }), messageId, source);
   }
 
   replySource(accountKey: string, mailRefId: string): { subject: string; source: Readable } {

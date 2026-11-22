@@ -5,6 +5,7 @@ import { AssistantError } from "./assistant-error.js";
 import type { CalDavWrite } from "./caldav.js";
 import { ASSISTANT_PROFILE_TEMPLATE_HASH, type ProfileIntent } from "./assistant-memory.js";
 import type { SmtpResult } from "./smtp.js";
+import type { SentCopyResult } from "./sent-copy.js";
 
 type Intent = { backend: "local"; baseRevision?: number } |
   { backend: "caldav"; collection: string; write: CalDavWrite } |
@@ -98,6 +99,11 @@ export class ProposalStore {
       return { ...this.finish(proposal, result.state), ...(result.state === "delivery_partial" ? { rejectedRecipients: result.rejected } : {}),
         ...("failure" in result ? { mailSendFailure: result.failure } : {}) };
     });
+  }
+
+  recordSentCopy(proposal: StoredProposal, result: SentCopyResult): void {
+    this.db.prepare("UPDATE send_attempts SET result = json_set(result, '$.sentCopy', ?) WHERE id = ? AND revision = ?")
+      .run(result, proposal.proposalId, proposal.revision);
   }
 
   finish(proposal: StoredProposal, state: ResultState): BridgeActionProposal {

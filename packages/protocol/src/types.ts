@@ -243,6 +243,7 @@ export type BridgeCapability =
   | "plugin.assistant-mail.attachments.v1"
   | "plugin.assistant-mail.history.v1"
   | "plugin.assistant-mail.received-order.v1"
+  | "plugin.assistant-mail.original.v1"
   | "plugin.assistant-mail.junk.v1"
   | "plugin.assistant-mail.filing.v1"
   | "plugin.assistant-mail.categories.v1"

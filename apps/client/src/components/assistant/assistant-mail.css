@@ -193,6 +193,16 @@ body:has(.assistant-mail-category-options) .diagnostic-floating-entry { display:
 .assistant-mail-links a { display: flex; align-items: baseline; gap: 8px; color: var(--accent-ink); }
 .assistant-mail-links a > :first-child { max-width: 60%; }
 .assistant-mail-link-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.m-sheet.assistant-mail-original { width: min(900px, 100%); height: 86dvh; }
+.assistant-mail-original .m-sheet-body { padding-inline: max(20px, env(safe-area-inset-left)) max(20px, env(safe-area-inset-right)); }
+.assistant-mail-original-body { margin: 0; padding-block: 8px; font: inherit; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
+.assistant-mail-original .m-sheet-footer { justify-content: flex-end; }
+.assistant-mail-original .m-sheet-footer > .message-copy-button { flex: 0 1 auto; padding-inline: 14px; }
+.assistant-mail-original .assistant-mail-links { margin: 0; padding-inline-start: 20px; }
+.assistant-mail-original .assistant-mail-links a > :first-child { overflow-wrap: anywhere; }
+body:has(.mobile-app-shell) .m-sheet-backdrop:has(> .assistant-mail-original) { padding: 0; }
+body:has(.mobile-app-shell) .m-sheet.assistant-mail-original { width: 100%; height: 100%; max-height: none; border: 0; border-radius: 0; }
+body:has(.mobile-app-shell) .assistant-mail-original .m-sheet-header { padding-top: max(12px, env(safe-area-inset-top)); }
 .assistant-trigger-batch { min-width: 0; margin: 16px 0; border-block: 1px solid var(--line); }
 .assistant-trigger-batch > header { display: flex; justify-content: space-between; gap: 12px; padding: 10px 0; font-size: calc(13px * var(--font-scale)); }
 .assistant-trigger-batch > header span { color: var(--muted); }

@@ -15,6 +15,7 @@ export function Sheet({
   manageFocus = false,
   focusPaused = false,
   fullScreen = false,
+  className,
   closeLabel = "关闭",
   onClose,
   children,
@@ -26,6 +27,7 @@ export function Sheet({
   manageFocus?: boolean;
   focusPaused?: boolean;
   fullScreen?: boolean;
+  className?: string;
   closeLabel?: string;
   onClose(): void;
   children: ReactNode;
@@ -57,7 +59,7 @@ export function Sheet({
         if (event.target === event.currentTarget && !busy && !focusPaused) onClose();
       }}
     >
-      <section ref={sheetRef} className={fullScreen ? "m-sheet is-fullscreen" : "m-sheet"} role="dialog" aria-modal="true" aria-labelledby={titleId}
+      <section ref={sheetRef} className={`m-sheet${fullScreen ? " is-fullscreen" : ""}${className ? ` ${className}` : ""}`} role="dialog" aria-modal="true" aria-labelledby={titleId}
         tabIndex={manageFocus ? -1 : undefined}
         onKeyDown={(event) => {
           if (!manageFocus || focusPaused) return;

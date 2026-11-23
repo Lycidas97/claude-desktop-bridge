@@ -65,7 +65,7 @@ describe("MailCard plain text rendering", () => {
     expect(html).toContain('&lt;img src=&quot;https://mail.example.invalid/pixel&quot;&gt; sender&lt;address&gt;@example.invalid');
     expect(html).toContain('&lt;iframe src=&quot;https://mail.example.invalid/frame&quot;&gt;&lt;/iframe&gt; **bold** [remote](https://mail.example.invalid)');
     expect(html).not.toMatch(/<(?:script|img|iframe|a|strong)\b/u);
-    expect(html).toContain("连接电脑后可查看原文");
+    expect(html).toContain('aria-haspopup="dialog">原文</button>');
   });
 
   it("escapes analysis summary, suggestions, and questions as plain text", () => {
@@ -94,7 +94,7 @@ describe("MailCard plain text rendering", () => {
     expect(collapsed).not.toMatch(/已处理|未自动发给助理/u);
     expect(status?.split("</details>")[0]).toContain("已处理");
     expect(status?.split("</details>")[0]).toContain("未自动发给助理");
-    expect(html.split("<summary>原文</summary>")[1]).not.toMatch(/已处理|未自动发给助理/u);
+    expect(status?.split("</details>")[1]).not.toMatch(/已处理|未自动发给助理/u);
     expect(html).not.toMatch(/已记录|原生投递|业务处理|未提交/u);
   });
 

@@ -10,7 +10,7 @@ import { AgendaStore } from "./agenda-store.js";
 import { ASSISTANT_PROFILE_TEMPLATE, AssistantMemory } from "./assistant-memory.js";
 import { requestCalDavMember } from "./caldav.js";
 import { proposalAction } from "./proposal-contract.js";
-import { ProposalExecutor } from "./proposal-executor.js";
+import { ASSISTANT_SESSION_SEND_KEY_PREFIX, ProposalExecutor, type SessionProposalBackend } from "./proposal-executor.js";
 import { ProposalStore } from "./proposal-store.js";
 
 vi.mock("node:fs", async importOriginal => {
@@ -33,12 +33,12 @@ let directory: string;
 let file: string;
 const notifyAgenda = vi.fn();
 const fetchDav = vi.fn<typeof fetch>();
-function open() {
+function open(sessions?: SessionProposalBackend) {
   db = new DatabaseSync(file);
   agenda = new AgendaStore(db, "UTC");
   ledger = new ProposalStore(db);
   service = new ProposalExecutor(ledger, agenda, credentials, notifyAgenda, options => requestCalDavMember(options, fetchDav),
-    undefined, undefined, { memory: new AssistantMemory(directory, hash => ledger.isApprovedProfile(hash)), policy: sessionId => sessionId === "bound-session" ? policy : undefined });
+    undefined, undefined, { memory: new AssistantMemory(directory, hash => ledger.isApprovedProfile(hash)), policy: sessionId => sessionId === "bound-session" ? policy : undefined }, sessions);
 }
 let policy: AssistantWorkspacePolicy;
 function seedRemote(body = sourceBody) {
@@ -182,6 +182,79 @@ it.each(["before-rename", "after-rename", "external-edit"] as const)("reconciles
   expect(readFileSync(profile, "utf8")).toBe(current);
   expect(ledger.isApprovedProfile(persisted.intent.resultProfileSha256)).toBe(interruption === "after-rename");
   await expect(service.commit(ref, "desktop")).rejects.toMatchObject({ code: "CONFLICT" });
+});
+
+it("requires the exact pending session revision, distinguishes opening from sending, and never retries an approved send", async () => {
+  db.close();
+  const exact = "  Review @fixture-notes.\n\nKeep leading and trailing spaces.  ";
+  const nativeSend = vi.fn<SessionProposalBackend["send"]>();
+  const delivery = vi.fn<SessionProposalBackend["delivery"]>();
+  const targets = new Map([
+    ["first-target", { title: "First verified title", cwd: "/fixture/first", turnRunning: false }],
+    ["final-target", { title: "Second verified title", cwd: "/fixture/second", turnRunning: true }],
+  ]);
+  let owner = "bound-session";
+  open({ ownsDraft: id => id === owner, target: async action => targets.get(action.targetSessionId), send: nativeSend, delivery });
+  const openAction = { kind: "session.open", targetSessionId: "first-target" } as const;
+  const openRef = await service.create("bound-session", openAction);
+  const original = await service.create("bound-session", { kind: "session.send", targetSessionId: "first-target", text: "Old text" });
+  const changedAction = { kind: "session.send", targetSessionId: "final-target", text: exact } as const;
+  const final = await service.reviseFromTool("bound-session", original, changedAction, () => {});
+  expect(service.snapshot()).toMatchObject({ pendingCount: 0, pendingSessionCount: 2 });
+  expect(service.page({ limit: 10 })).toEqual({ proposals: [] });
+  expect(service.page({ limit: 10, includeSession: true }, "bound-session")).toEqual({ proposals: [] });
+  expect(service.resolve("bound-session", [final])).toEqual([]);
+  expect(service.resolve("bound-session", [final], true, false, false, true)[0]).toMatchObject({ action: changedAction, sessionTarget: { title: "Second verified title", cwd: "/fixture/second" } });
+  await expect(service.commit(final, "old-phone")).rejects.toMatchObject({ code: "INVALID_PARAMS" });
+  await expect(service.commit({ ...original, confirmSession: true }, "phone")).rejects.toMatchObject({ code: "CONFLICT" });
+  await expect(service.revise(final, openAction)).rejects.toMatchObject({ code: "INVALID_PARAMS" });
+  expect(nativeSend).not.toHaveBeenCalled();
+  await expect(service.commit({ ...openRef, confirmSession: true }, "desktop")).resolves.toMatchObject({ state: "applied", action: openAction });
+  expect(nativeSend).not.toHaveBeenCalled();
+  const rejected = await service.create("bound-session", changedAction);
+  expect(service.dismiss({ ...rejected, includeSession: true }, "desktop").state).toBe("dismissed");
+  await expect(service.commit({ ...rejected, confirmSession: true }, "desktop")).rejects.toMatchObject({ code: "CONFLICT" });
+  const target = targets.get("final-target")!;
+  targets.delete("final-target");
+  await expect(service.commit({ ...final, confirmSession: true }, "phone")).rejects.toMatchObject({ code: "CONFLICT" });
+  targets.set("final-target", { ...target, title: "Replaced title" });
+  await expect(service.commit({ ...final, confirmSession: true }, "phone")).rejects.toMatchObject({ code: "CONFLICT" });
+  targets.set("final-target", target);
+  owner = "replacement-session";
+  await expect(service.commit({ ...final, confirmSession: true }, "phone")).rejects.toMatchObject({ code: "CONFLICT" });
+  owner = "bound-session";
+  expect(nativeSend).not.toHaveBeenCalled();
+  let release!: () => void;
+  nativeSend.mockReturnValueOnce(new Promise<void>(resolve => { release = resolve; }));
+  try {
+    await expect(service.commit({ ...final, confirmSession: true }, "phone")).resolves.toMatchObject({ state: "executing" });
+    await expect(service.commit({ ...final, confirmSession: true }, "desktop")).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(nativeSend).toHaveBeenCalledExactlyOnceWith(changedAction, `${ASSISTANT_SESSION_SEND_KEY_PREFIX}${final.proposalId}:2`, true);
+  } finally {
+    delivery.mockReturnValue("uncertain");
+    release();
+  }
+  await service.close();
+  expect(service.resolve("bound-session", [final], true, false, false, true)[0]).toMatchObject({ state: "delivery_uncertain", sessionDelivery: "uncertain" });
+  delivery.mockReturnValue("session-received");
+  expect(service.resolve("bound-session", [final], true, false, false, true)[0]?.sessionDelivery).toBe("session-received");
+});
+
+it.each([undefined, "queued", "dispatching"] as const)("recovers a claimed session send with receipt %s without dispatching", async observed => {
+  db.close();
+  const nativeSend = vi.fn();
+  const backend: SessionProposalBackend = { ownsDraft: () => true, target: async () => ({ title: "Owned", cwd: "/fixture", turnRunning: false }),
+    delivery: () => observed, send: nativeSend };
+  open(backend);
+  const ref = await service.create("bound-session", { kind: "session.send", targetSessionId: "owned", text: "Fixture message" });
+  ledger.transaction(() => ledger.claim(ledger.requirePending(ref), "phone", "executing"));
+  db.close();
+  open(backend);
+  service.start();
+  await service.close();
+  expect(service.resolve("bound-session", [ref], true, false, false, true)[0]?.state).toBe(observed === "queued" ? "applied" : observed ? "delivery_uncertain" : "failed");
+  expect(nativeSend).not.toHaveBeenCalled();
+  await expect(service.commit({ ...ref, confirmSession: true }, "desktop")).rejects.toMatchObject({ code: "CONFLICT" });
 });
 
 it("stores immutable snapshots, rejects stale, wrong hash and repeat approvals, and attributes the one successful write", async () => {

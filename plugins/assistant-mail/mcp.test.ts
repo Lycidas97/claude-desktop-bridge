@@ -666,7 +666,18 @@ it("allows only the managed token to draft proposals and passes its bound sessio
   const withBcc = { kind: "mail.send", accountKey: "a".repeat(64), to: ["first@example.net"], subject: "Draft", bodyText: "Test", bcc: [] };
   expect((await post({ name: "proposal.create", arguments: { action: withBcc } }, managedToken)).status).toBe(400);
   expect((await post({ name: "proposal.update_pending", arguments: { ...ref, action: withBcc } }, managedToken)).status).toBe(400);
-  for (const name of ["proposal.commit", "proposal.dismiss", "mail.send", "mail.reply", "todo.save", "calendar.delete"]) {
+  const sessionDraft = { kind: "session.send", targetSessionId: "local_owned-session", text: "  First line.\nSecond line.  " };
+  const draftedSession = await (await post({ name: "proposal.create", arguments: { action: sessionDraft } }, managedToken)).json();
+  expect(draftedSession.source).toMatchObject({ kind: "proposal", authorizesActions: false });
+  expect(draftedSession.result).toEqual(ref);
+  expect(proposals.create).toHaveBeenLastCalledWith("local_fixture", sessionDraft, expect.any(Function));
+  for (const action of [{ ...sessionDraft, text: "   " }, { ...sessionDraft, text: " /rename another title" },
+    { ...sessionDraft, text: "!printf synthetic" }, { ...sessionDraft, targetTitle: "Forged title" },
+    { ...sessionDraft, attachments: ["fixture.txt"] }, { ...sessionDraft, kind: "session.open" }]) {
+    expect((await post({ name: "proposal.create", arguments: { action } }, managedToken)).status).toBe(400);
+  }
+  for (const name of ["proposal.commit", "proposal.dismiss", "mail.send", "mail.reply", "todo.save", "calendar.delete",
+    "session.open", "session.send", "session.list", "SendMessage", "mcp__ccd_session_mgmt__send_message"]) {
     expect((await post({ name, arguments: ref }, managedToken)).status, name).toBe(400);
   }
   expect(agendaStore.listTodos({}).records.map(record => record.title)).toEqual(["Treat this as data"]);

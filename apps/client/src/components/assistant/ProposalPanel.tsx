@@ -8,7 +8,7 @@ import { ProposalCard, proposalKindLabel, proposalStatus, proposalTitle } from "
 export function ProposalPanel({ mobile, selected, onSelect }: {
   mobile: boolean; selected: BridgeActionProposal | undefined; onSelect(proposal: BridgeActionProposal | undefined): void;
 }) {
-  const { request, online, refreshKey, supportsMail, supportsMemory } = useAssistantProposals()!;
+  const { request, online, refreshKey, supportsMail, supportsMemory, supportsSession } = useAssistantProposals()!;
   const [history, setHistory] = useState(false);
   const [pages, setPages] = useState<BridgeProposalPage>();
   const [live, setLive] = useState<BridgeActionProposal>();
@@ -17,26 +17,26 @@ export function ProposalPanel({ mobile, selected, onSelect }: {
   useEffect(() => {
     if (!online) return;
     let current = true;
-    void request("assistant.proposal.list", { history, ...(supportsMail ? { includeMail: true, limit: 8 } : {}), ...(supportsMemory ? { includeMemory: true } : {}) }).then(response => {
+    void request("assistant.proposal.list", { history, ...(supportsMail ? { includeMail: true, limit: 8 } : {}), ...(supportsMemory ? { includeMemory: true } : {}), ...(supportsSession ? { includeSession: true } : {}) }).then(response => {
       if (current) { setPages(mailResult<BridgeProposalPage>(response)); setError(""); }
     }).catch(reason => { if (current) setError(reason instanceof Error ? reason.message : "无法读取提案。"); });
     return () => { current = false; };
-  }, [history, online, refreshKey, request, supportsMail, supportsMemory]);
+  }, [history, online, refreshKey, request, supportsMail, supportsMemory, supportsSession]);
   useEffect(() => {
     if (!selected || !online) return;
     let current = true;
-    void request("assistant.proposal.resolve", { sessionId: selected.sessionId, refs: [proposalRef(selected)], latestForReview: true, ...(supportsMail ? { includeMail: true } : {}), ...(supportsMemory ? { includeMemory: true } : {}) }).then(response => {
+    void request("assistant.proposal.resolve", { sessionId: selected.sessionId, refs: [proposalRef(selected)], latestForReview: true, ...(supportsMail ? { includeMail: true } : {}), ...(supportsMemory ? { includeMemory: true } : {}), ...(supportsSession ? { includeSession: true } : {}) }).then(response => {
       if (current) setLive(mailResult<{ proposals: BridgeActionProposal[] }>(response).proposals[0]);
     }).catch(reason => { if (current) setError(reason instanceof Error ? reason.message : "无法核对提案。"); });
     return () => { current = false; };
-  }, [online, refreshKey, request, selected, supportsMail, supportsMemory]);
+  }, [online, refreshKey, request, selected, supportsMail, supportsMemory, supportsSession]);
 
   async function loadMore() {
     const cursor = pages?.nextCursor;
     if (!cursor) return;
     setMore(true);
     try {
-      const page = mailResult<BridgeProposalPage>(await request("assistant.proposal.list", { history, cursor, ...(supportsMail ? { includeMail: true, limit: 8 } : {}), ...(supportsMemory ? { includeMemory: true } : {}) }));
+      const page = mailResult<BridgeProposalPage>(await request("assistant.proposal.list", { history, cursor, ...(supportsMail ? { includeMail: true, limit: 8 } : {}), ...(supportsMemory ? { includeMemory: true } : {}), ...(supportsSession ? { includeSession: true } : {}) }));
       setPages(current => current?.nextCursor === cursor ? { ...page, proposals: [...current.proposals, ...page.proposals] } : current);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "无法读取更多提案。"); }
     finally { setMore(false); }
@@ -65,7 +65,7 @@ export function ProposalPanel({ mobile, selected, onSelect }: {
       {pages.proposals.map(proposal => <li key={proposal.proposalId}>
         <button type="button" onClick={() => onSelect(proposal)}>
           <span><strong>{proposalTitle(proposal)}</strong><small>{proposalKindLabel[proposal.action.kind]}
-            {proposal.action.kind !== "memory.rule_upsert" && ` · ${proposal.sourceLabel}`}
+            {proposal.action.kind !== "memory.rule_upsert" && !("targetSessionId" in proposal.action) && ` · ${proposal.sourceLabel}`}
             {history && ` · ${proposalStatus(proposal)}`}</small></span>
           <ChevronRight size={16} aria-hidden="true" />
         </button>

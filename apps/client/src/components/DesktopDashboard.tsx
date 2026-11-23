@@ -109,7 +109,12 @@ export function DesktopDashboard({ themeControl }: { themeControl: ThemeControl 
           <MagpieQuotaProvider loader={loadMagpieQuota} enabled={snapshot.host.capabilities.includes("plugin.magpie-quota.v1")} sourceKey={quotaSourceKey}>
             <AssistantMailProvider key={snapshot.host.hostId} hostId={snapshot.host.hostId} snapshot={snapshot} online request={requestByMethod} onDiscuss={() => setTab("assistant")}>
               <AssistantAgendaProvider snapshot={snapshot} online request={requestByMethod}>
-              <AssistantProposalProvider snapshot={snapshot} online request={requestByMethod}>
+              <AssistantProposalProvider snapshot={snapshot} online request={requestByMethod} openSession={sessionId => {
+                if (activeHostIdRef.current !== snapshot.host.hostId || !visibleSnapshot?.sessions.some(session => session.sessionId === sessionId)) {
+                  throw new Error("当前电脑的会话列表中没有此目标。会话未打开。");
+                }
+                openDesktopSession(sessionId);
+              }}>
               <main className="desktop-shell-v2">
                 <section className="desktop-content-v2">
                   {snapshot.claudeInspector?.state === "error" && (

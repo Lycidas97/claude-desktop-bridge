@@ -229,6 +229,7 @@ export type BridgeCapability =
   | "plugin.assistant-agenda.day.v1"
   | "assistant.proposal.v1"
   | "assistant.proposal.memory.v1"
+  | "assistant.proposal.session.v1"
   | "plugin.assistant-mail.v1"
   | "plugin.assistant-mail.manual-reference.v1"
   | "plugin.assistant-mail.workspace.v1"

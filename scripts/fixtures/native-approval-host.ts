@@ -10,6 +10,7 @@ import type {
 import { ClaudeDesktopBridge } from "../../apps/desktop/src/claude/claude-desktop-bridge.js";
 import { InspectorDisconnectedError } from "../../apps/desktop/src/claude/claude-desktop-inspector.js";
 import { ConversationStateStore } from "../../apps/desktop/src/controller/conversation-state-store.js";
+import { assistantSessionProposalBackend } from "../../apps/desktop/src/controller/assistant-session-proposals.js";
 import { createControllerFixture } from "../../apps/desktop/src/controller/controller-fixture.js";
 import { SessionEventLog } from "../../apps/desktop/src/controller/session-event-log.js";
 import { EvidenceManager } from "../../apps/desktop/src/evidence/evidence-manager.js";
@@ -253,12 +254,12 @@ export async function startNativeApprovalHost(options: {
           messages.push({ type: "user", uuid: args[7], timestamp: Date.now(), message: { content: args[1] } });
           return reportQueued ? { delivered: true, queued: true } : { delivered: true };
         }
+        if (target.turnRunning) {
+          assert.equal(args[5], "later");
+          queued.add(String(args[7]));
+          return { delivered: true, queued: true };
+        }
         if (textArg.startsWith("助理事件批次 ")) {
-          if (target.turnRunning) {
-            assert.equal(args[5], "later");
-            queued.add(String(args[7]));
-            return { delivered: true, queued: true };
-          }
           inspector.emit("event", { type: "message", sessionId: target.sessionId,
             message: { type: "user", uuid: args[7], timestamp: Date.now(), message: { content: args[1] } } });
         }
@@ -402,7 +403,10 @@ export async function startNativeApprovalHost(options: {
     options.onProposalsChanged ? {
       memory: workspace!.memory,
       policy: (sessionId: string): AssistantWorkspacePolicy | undefined => workspace!.ruleProposalPolicy(assistantMail?.service.binding(), sessionId),
-    } : undefined) : undefined;
+    } : undefined, options.onProposalsChanged ? assistantSessionProposalBackend(broker, state, sessionId => {
+      const binding = assistantMail?.service.binding();
+      return binding?.nativeSessionId === sessionId && Boolean(binding.managed);
+    }, cwd => workspace!.matches(cwd)) : undefined) : undefined;
   assistantMail?.agenda.on("changed", snapshot => options.onAgendaChanged?.(snapshot));
   const proposals = options.onProposalsChanged ? assistantMail!.proposals : undefined;
   proposals?.on("changed", options.onProposalsChanged!);
@@ -439,6 +443,7 @@ export async function startNativeApprovalHost(options: {
       options.onTriggerMessage?.(event);
     }
     assistantMailCoordinator?.observeDelivery(event);
+    if (event.data.source === "assistant-proposal") proposals?.sessionDeliveryChanged();
   });
   const mailSnapshot = () => assistantMailCoordinator?.snapshot();
   const controller = createControllerFixture({

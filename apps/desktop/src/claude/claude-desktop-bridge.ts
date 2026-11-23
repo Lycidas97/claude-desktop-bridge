@@ -150,7 +150,7 @@ interface NativeInput {
   attachments?: BridgeAttachment[];
   origin: BridgeOrigin;
   sourceDeviceId?: string;
-  source?: "assistant-trigger";
+  source?: NativeDesktopReceipt["source"];
   nativeTurnRunning?: boolean;
 }
 
@@ -649,7 +649,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
     if (!this.inspector.ready || !this.inspector.supports("getSession")) return undefined;
     const native = record(await this.inspector.call("getSession", [sessionId]));
     if (native.sessionId !== sessionId || typeof native.cwd !== "string") return undefined;
-    return { cwd: native.cwd, archived: native.isArchived === true, turnRunning: native.turnRunning === true,
+    return { cwd: native.cwd, title: typeof native.title === "string" && native.title || "Claude 会话", archived: native.isArchived === true, turnRunning: native.turnRunning === true,
       permissionMode: typeof native.permissionMode === "string" ? native.permissionMode : undefined,
       cliSessionId: typeof native.cliSessionId === "string" ? native.cliSessionId : undefined,
     };
@@ -1082,22 +1082,22 @@ export class ClaudeDesktopBridge extends EventEmitter {
         const receipt = item.role === "user" ? this.historyReceipt(sessionId, item.id) : undefined;
         if (receipt) {
           item.text = receipt.displayText ?? item.text;
-          if (receipt.source === "assistant-trigger" && receipt.messageId === item.id &&
-            (receipt.state === "submitted" || receipt.state === "queued")) {
+          if ((receipt.source === "assistant-trigger" || receipt.source === "assistant-proposal") && receipt.messageId === item.id &&
+            (receipt.state === "submitted" || receipt.state === "queued" || (receipt.source === "assistant-proposal" && receipt.state === "uncertain"))) {
             receipt.state = "session-received";
+            delete receipt.error;
             this.trackReceivedInput(receipt);
             this.options.conversationState.saveNativeDesktopReceipt(receipt);
             await this.record({ sessionId, itemId: item.id, turnId: item.id, origin: "claude-desktop", type: "message.delivery",
-              data: { commandId: receipt.commandId, requestId: receipt.requestId, messageId: receipt.messageId, delivery: receipt.state } });
+              data: { commandId: receipt.commandId, requestId: receipt.requestId, messageId: receipt.messageId, delivery: receipt.state,
+                ...(receipt.source === "assistant-proposal" ? { source: receipt.source } : {}) } });
             observed = true;
           }
           item.delivery = receipt.state === "dispatching" ? "host-received" : receipt.state;
           item.commandId = receipt.commandId;
           item.requestId = receipt.requestId;
-          if (receipt.source) {
-            item.source = receipt.source;
-            item.turnId = receipt.messageId;
-          }
+          if (receipt.source === "assistant-trigger") item.source = receipt.source;
+          if (receipt.source) item.turnId = receipt.messageId;
           if (receipt.queueSettled) item.queueSettled = true;
         }
       }
@@ -1437,6 +1437,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
     if (
       !this.closed
       && !isControlSlashCommand
+      && input.source !== "assistant-proposal"
       && !this.deletingSessions.has(id)
       && this.inspector.supports("updateSession")
       && !nativeTarget?.title?.trim()
@@ -1879,7 +1880,8 @@ export class ClaudeDesktopBridge extends EventEmitter {
       delete receipt.error;
       this.options.conversationState.saveNativeDesktopReceipt(receipt);
       const type = state === "queued" ? "turn.queued" : state === "started" ? "turn.started" : state === "failed" ? "turn.failed" : state === "interrupted" || state === "cancelled" ? "turn.interrupted" : "turn.completed";
-      await this.record({ sessionId, itemId: uuid, turnId: uuid, origin: "claude-desktop", type, data: { commandId: receipt.commandId, requestId: receipt.requestId, messageId: uuid, delivery: receipt.state, ...(state === "failed" ? { error: message.result ?? message.error ?? message.errors } : {}) } });
+      await this.record({ sessionId, itemId: uuid, turnId: uuid, origin: "claude-desktop", type, data: { commandId: receipt.commandId, requestId: receipt.requestId, messageId: uuid, delivery: receipt.state,
+        ...(receipt.source === "assistant-proposal" ? { source: receipt.source } : {}), ...(state === "failed" ? { error: message.result ?? message.error ?? message.errors } : {}) } });
     }
     if (event.message) {
       const body = record(message.message);

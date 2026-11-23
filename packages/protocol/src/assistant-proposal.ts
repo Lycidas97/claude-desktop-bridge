@@ -1,7 +1,9 @@
 import type { AgendaEventInput, AgendaTodoInput } from "./assistant-agenda.js";
+import type { BridgeDeliveryState } from "./types.js";
 
 export const ASSISTANT_PROPOSAL_CAPABILITY = "assistant.proposal.v1";
 export const ASSISTANT_MEMORY_PROPOSAL_CAPABILITY = "assistant.proposal.memory.v1";
+export const ASSISTANT_SESSION_PROPOSAL_CAPABILITY = "assistant.proposal.session.v1";
 
 export type AgendaProposalAction =
   | { kind: "todo.create"; sourceId: string; value: AgendaTodoInput }
@@ -40,7 +42,11 @@ export type MailProposalAction = {
       foreignReplyTo: boolean; inReplyTo?: string; references?: string[] }
 );
 
-export type ProposalDraftAction = AgendaProposalAction | MailProposalDraft | MemoryRuleProposalAction;
+export type SessionProposalAction =
+  | { kind: "session.open"; targetSessionId: string }
+  | { kind: "session.send"; targetSessionId: string; text: string };
+
+export type ProposalDraftAction = AgendaProposalAction | MailProposalDraft | MemoryRuleProposalAction | SessionProposalAction;
 
 export interface ProposalRevisionRef {
   proposalId: string;
@@ -57,7 +63,9 @@ export interface MailSendFailure {
 
 export interface BridgeActionProposal extends ProposalRevisionRef {
   sessionId: string;
-  action: AgendaProposalAction | MailProposalAction | MemoryRuleProposalAction;
+  action: AgendaProposalAction | MailProposalAction | MemoryRuleProposalAction | SessionProposalAction;
+  sessionTarget?: { title: string; cwd: string };
+  sessionDelivery?: Extract<BridgeDeliveryState, "submitted" | "session-received" | "queued" | "running" | "completed" | "failed" | "cancelled" | "uncertain">;
   sourceId: string;
   sourceLabel: string;
   before?: AgendaTodoInput | AgendaEventInput;
@@ -72,6 +80,7 @@ export interface BridgeProposalSnapshot {
   pendingCount: number;
   pendingMailCount?: number;
   pendingMemoryCount?: number;
+  pendingSessionCount?: number;
   sources: { id: string; label: string; kinds: ("todo" | "calendar")[] }[];
 }
 

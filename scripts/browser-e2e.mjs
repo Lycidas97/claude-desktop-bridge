@@ -28,6 +28,7 @@ import { verifyAssistantMailCategories } from "./browser-e2e/scenarios/assistant
 import { verifyAssistantReadDirectories } from "./browser-e2e/scenarios/assistant-read-directories.mjs";
 import { verifyAssistantReplies } from "./browser-e2e/scenarios/assistant-replies.mjs";
 import { memoryProposalFixture, seedAssistantProposals, seedMailProposal, verifyAssistantProposals } from "./browser-e2e/scenarios/assistant-proposals.mjs";
+import { seedAssistantSessionProposals, verifyAssistantSessionProposals } from "./browser-e2e/scenarios/assistant-session-proposals.mjs";
 import { scanDesktopPairingQr } from "./browser-e2e/scenarios/pairing-qr.mjs";
 import { createPreviousPairedHost, verifyPairedHostStatus } from "./browser-e2e/scenarios/paired-host-status.mjs";
 import { incomingFileFixture, installIncomingFileFixture, verifyIncomingFile } from "./browser-e2e/scenarios/incoming-file.mjs";
@@ -53,7 +54,7 @@ let vite;
 let browser;
 let baseUrl;
 const nativeHosts = [];
-const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "round4-boundaries", "round5-ux", "desktop-diagnostics", "desktop-quota", "desktop-conversation", "mobile-safe-area", "assistant-mail", "assistant-mail-accounts", "assistant-read-directories", "assistant-mail-reference", "assistant-mail-categories", "assistant-mail-history", "assistant-mail-unread", "assistant-mail-refresh", "assistant-agenda", "assistant-attention", "assistant-replies", "assistant-proposals", "incoming-file", "paired-host-status", "pairing-qr"];
+const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "round4-boundaries", "round5-ux", "desktop-diagnostics", "desktop-quota", "desktop-conversation", "mobile-safe-area", "assistant-mail", "assistant-mail-accounts", "assistant-read-directories", "assistant-mail-reference", "assistant-mail-categories", "assistant-mail-history", "assistant-mail-unread", "assistant-mail-refresh", "assistant-agenda", "assistant-attention", "assistant-replies", "assistant-proposals", "assistant-session-proposals", "incoming-file", "paired-host-status", "pairing-qr"];
 const scenarios = process.env.BRIDGE_E2E_SCENARIOS ? process.env.BRIDGE_E2E_SCENARIOS.split(",") : allScenarios;
 assert.ok(scenarios.every(scenario => allScenarios.includes(scenario)), "BRIDGE_E2E_SCENARIOS must name existing scenarios");
 const themes = process.env.BRIDGE_QA_THEME ? [process.env.BRIDGE_QA_THEME] : ["light", "dark"];
@@ -74,14 +75,14 @@ async function runScenario(theme, scenario, mockHostRuntime) {
   const serverRoutes = [];
   const agendaScenario = scenario === "assistant-agenda";
   const accountsScenario = scenario === "assistant-mail-accounts";
-  const assistantMail = agendaScenario || accountsScenario || ["assistant-mail", "assistant-read-directories", "assistant-mail-reference", "assistant-mail-categories", "assistant-mail-history", "assistant-mail-unread", "assistant-mail-refresh", "assistant-attention", "assistant-replies", "assistant-proposals", "round5-ux"].includes(scenario);
+  const assistantMail = agendaScenario || accountsScenario || ["assistant-mail", "assistant-read-directories", "assistant-mail-reference", "assistant-mail-categories", "assistant-mail-history", "assistant-mail-unread", "assistant-mail-refresh", "assistant-attention", "assistant-replies", "assistant-proposals", "assistant-session-proposals", "round5-ux"].includes(scenario);
   let context;
   let page;
   let host;
   let firstHost;
   let failure;
   try {
-    host = await createMockHost(mockHostRuntime, !assistantMail && !["delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "round4-boundaries", "desktop-conversation", "incoming-file"].includes(scenario), scenario !== "delivery-approval-reconnect", errors, assistantMail || ["native-approvals", "native-prompts-pr", "native-messages", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "round4-boundaries", "desktop-conversation", "incoming-file"].includes(scenario), ["native-queue-actions", "desktop-conversation"].includes(scenario), ["section-manage", "round4-boundaries", "round5-ux"].includes(scenario), assistantMail, scenario === "assistant-attention" ? { initialMailCount: 0, proposals: true } : scenario === "round5-ux" ? { desktopName: "LycidasdeMac-mini", initialMailCount: 0, legacyAttention: true } : scenario === "assistant-proposals" ? { initialMailCount: 0, proposals: true, legacyAttention: true } : ["assistant-agenda", "assistant-mail-unread", "assistant-read-directories", "assistant-replies"].includes(scenario) ? { initialMailCount: 0, legacyAttention: true } : scenario === "assistant-mail-history" ? { initialMailCount: 0, initialMailHistory: 25 } : scenario === "assistant-mail-categories" ? { initialMailCount: 2 } : scenario === "assistant-mail-reference" ? { initialMailCount: 52 } : accountsScenario ? { initialMailCount: 1, legacyAttention: true } : { legacyAttention: true });
+    host = await createMockHost(mockHostRuntime, !assistantMail && !["delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "round4-boundaries", "desktop-conversation", "incoming-file"].includes(scenario), scenario !== "delivery-approval-reconnect", errors, assistantMail || ["native-approvals", "native-prompts-pr", "native-messages", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "round4-boundaries", "desktop-conversation", "incoming-file"].includes(scenario), ["native-queue-actions", "desktop-conversation"].includes(scenario), ["section-manage", "round4-boundaries", "round5-ux"].includes(scenario), assistantMail, scenario === "assistant-attention" ? { initialMailCount: 0, proposals: true } : scenario === "round5-ux" ? { desktopName: "LycidasdeMac-mini", initialMailCount: 0, legacyAttention: true } : ["assistant-proposals", "assistant-session-proposals"].includes(scenario) ? { initialMailCount: 0, proposals: true, legacyAttention: true } : ["assistant-agenda", "assistant-mail-unread", "assistant-read-directories", "assistant-replies"].includes(scenario) ? { initialMailCount: 0, legacyAttention: true } : scenario === "assistant-mail-history" ? { initialMailCount: 0, initialMailHistory: 25 } : scenario === "assistant-mail-categories" ? { initialMailCount: 2 } : scenario === "assistant-mail-reference" ? { initialMailCount: 52 } : accountsScenario ? { initialMailCount: 1, legacyAttention: true } : { legacyAttention: true });
     const assistantId = {
       "assistant-agenda": "agenda-fixture",
       "assistant-mail-reference": "mail-reference-fixture",
@@ -189,6 +190,7 @@ async function runScenario(theme, scenario, mockHostRuntime) {
     else if (scenario === "assistant-attention") await verifyAssistantAttention(page, host, steps, directory, viewports, baseUrl);
     else if (scenario === "assistant-replies") await verifyAssistantReplies(page, host, steps, directory, serverRoutes);
     else if (scenario === "assistant-proposals") await verifyAssistantProposals(page, host, steps, directory, viewports, baseUrl);
+    else if (scenario === "assistant-session-proposals") await verifyAssistantSessionProposals(page, host, steps, directory, viewports, baseUrl);
     else if (scenario === "incoming-file") await verifyIncomingFile(page, host, firstHost, steps, directory);
     else if (scenario === "paired-host-status") await verifyPairedHostStatus(page, firstHost, host, steps, directory, serverRoutes, relayStore);
     else if (scenario === "mobile-safe-area") await verifyMobileSafeArea(page, steps, directory, viewports);
@@ -464,8 +466,9 @@ try {
       process.once("SIGTERM", finish);
     });
     const proposalPreview = assistantMailPreview && process.env.BRIDGE_E2E_SCENARIOS === "assistant-proposals";
+    const sessionProposalPreview = assistantMailPreview && process.env.BRIDGE_E2E_SCENARIOS === "assistant-session-proposals";
     const host = await createMockHost(mockHostRuntime, !nativePreview && !remotePreview, false, infrastructureErrors, nativePreview, nativePreview,
-      undefined, assistantMailPreview, proposalPreview ? { initialMailCount: 0, proposals: true }
+      undefined, assistantMailPreview, proposalPreview || sessionProposalPreview ? { initialMailCount: 0, proposals: true }
         : assistantMailPreview && process.env.BRIDGE_E2E_SCENARIOS === "assistant-mail-history"
         ? { initialMailCount: 0, initialMailHistory: 25 } : {});
     if (assistantMailPreview && process.env.BRIDGE_E2E_SCENARIOS === "assistant-mail") {
@@ -481,6 +484,7 @@ try {
       await host.nativeApproval.draftProposal(memoryProposalFixture);
       await seedMailProposal(host);
     }
+    if (sessionProposalPreview) await seedAssistantSessionProposals(host);
     if (projectGroupingPreview) {
       Object.assign(host.snapshot, await host.nativeApproval.projectCatalog());
       if (process.argv.includes("--recent-sessions-preview")) addOlderCatalogSessions(host.snapshot);

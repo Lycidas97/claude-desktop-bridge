@@ -1,5 +1,5 @@
 import type { AgendaEventInput, AgendaPage, AgendaProposalAction, AgendaTodoInput, BridgeActionProposal, BridgeAgendaEvent, MailSendFailure, ProposalState } from "@bridge/protocol";
-import { CalendarDays, FilePenLine, ListTodo, Mail } from "lucide-react";
+import { CalendarDays, FilePenLine, ListTodo, Mail, MessageSquare } from "lucide-react";
 import { useEffect, useId, useState, type FormEvent } from "react";
 import { agendaInputTime, agendaInstant, agendaTimedRange } from "../../lib/assistant-agenda.js";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
@@ -16,11 +16,18 @@ export const proposalKindLabel: Record<BridgeActionProposal["action"]["kind"], s
   "calendar.create": "新建日程", "calendar.reschedule": "调整日程", "calendar.delete": "删除日程",
   "mail.reply": "回复邮件", "mail.send": "外发邮件",
   "memory.rule_upsert": "助理规则",
+  "session.open": "打开会话", "session.send": "发送会话消息",
 };
 const proposalStateLabel: Record<ProposalState, string> = {
   pending: "待确认", executing: "正在写入…", applied: "已写入", dismissed: "已忽略",
   conflict: "记录已更新", failed: "写入失败", uncertain: "结果不确定",
   delivery_uncertain: "投递不确定", delivery_partial: "部分地址被拒绝",
+};
+
+const sessionDeliveryLabel: Record<NonNullable<BridgeActionProposal["sessionDelivery"]>, string> = {
+  submitted: "已提交给 Claude Desktop，尚未确认接收", "session-received": "目标会话已接收", queued: "已在目标会话排队",
+  running: "目标会话正在处理", completed: "目标会话已完成此轮", failed: "原生投递或回合失败", cancelled: "原生回合或排队已取消",
+  uncertain: "投递不确定，不会自动重发",
 };
 
 const proposalStateDetail: Partial<Record<ProposalState, string>> = {
@@ -44,6 +51,13 @@ function mailFailureSummary(failure: MailSendFailure | undefined) {
 }
 
 export function proposalStatus(proposal: BridgeActionProposal): string {
+  if (proposal.action.kind === "session.open" && proposal.state === "applied") return "已批准打开";
+  if (proposal.action.kind === "session.send") {
+    if (proposal.sessionDelivery) return sessionDeliveryLabel[proposal.sessionDelivery];
+    if (proposal.state === "executing") return "正在提交给 Claude Desktop…";
+    if (proposal.state === "applied" || proposal.state === "delivery_uncertain") return "投递未确认，不会自动重发";
+    if (proposal.state === "failed") return "未能提交，不会自动重发";
+  }
   if ("accountKey" in proposal.action) {
     if (proposal.state === "applied") return "发送服务器已接受";
     if (proposal.state === "executing") return "正在发送…";
@@ -60,6 +74,7 @@ export function proposalTitle(proposal: BridgeActionProposal): string {
   const { action } = proposal;
   if (action.kind === "memory.rule_upsert") return `${action.category} / ${action.ruleId}`;
   if ("accountKey" in action) return action.subject || "（无主题）";
+  if ("targetSessionId" in action) return proposal.sessionTarget?.title ?? action.targetSessionId;
   return "value" in action ? action.value.title : proposal.before?.title ?? proposalKindLabel[action.kind];
 }
 
@@ -96,6 +111,7 @@ export function ProposalCard({ proposal, mobile, review = false, replaced = fals
   const [outcome, setOutcome] = useState<BridgeActionProposal>();
   const [editing, setEditing] = useState<BridgeActionProposal>();
   const [mailSheet, setMailSheet] = useState<{ proposal: BridgeActionProposal; mode: "send" | "edit" | "view" }>();
+  const [sessionReview, setSessionReview] = useState<BridgeActionProposal>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const current = outcome?.proposalId === proposal.proposalId && (outcome.revision > proposal.revision ||
@@ -105,19 +121,23 @@ export function ProposalCard({ proposal, mobile, review = false, replaced = fals
   const memory = action.kind === "memory.rule_upsert";
   const mail = "accountKey" in action;
   const failure = mail ? mailFailureSummary(current.mailSendFailure) : undefined;
-  const Icon = mail ? Mail : memory ? FilePenLine : calendar ? CalendarDays : ListTodo;
+  const session = "targetSessionId" in action;
+  const Icon = session ? MessageSquare : mail ? Mail : memory ? FilePenLine : calendar ? CalendarDays : ListTodo;
   const disabled = !controller?.online || busy || replaced;
   const desired = "value" in action ? action.value : action.kind === "todo.complete" && current.before && "status" in current.before
     ? { ...current.before, status: "completed" as const } : current.before;
 
-  async function decide(method: "assistant.proposal.commit" | "assistant.proposal.dismiss") {
+  async function decide(method: "assistant.proposal.commit" | "assistant.proposal.dismiss", pinned = current) {
     setBusy(true);
     setError("");
     try {
-      const review = memory ? method === "assistant.proposal.commit" ? { confirmMemory: true } : { includeMemory: true } : {};
-      const { proposal: result } = mailResult<{ proposal: BridgeActionProposal }>(await controller!.request(method, { ...proposalRef(current), ...review }));
+      const review = session ? method === "assistant.proposal.commit" ? { confirmSession: true } : { includeSession: true }
+        : memory ? method === "assistant.proposal.commit" ? { confirmMemory: true } : { includeMemory: true } : {};
+      const { proposal: result } = mailResult<{ proposal: BridgeActionProposal }>(await controller!.request(method, { ...proposalRef(pinned), ...review }));
       setOutcome(result);
       onResult?.(result);
+      if (session) setSessionReview(undefined);
+      if (result.action.kind === "session.open" && result.state === "applied") controller!.openSession(result.action.targetSessionId);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "无法处理提案。"); }
     finally { setBusy(false); controller!.refresh(); }
   }
@@ -133,7 +153,7 @@ export function ProposalCard({ proposal, mobile, review = false, replaced = fals
       <dt>变更前</dt><dd>{current.profile?.before ?? "无"}</dd>
       <dt>变更后</dt><dd>{action.text ?? "删除此规则"}</dd>
       <dt>理由</dt><dd>{action.reason}</dd>
-    </dl> : <>
+    </dl> : !session && <>
       <p className="proposal-card-source">{mail ? "发件账号" : calendar ? "日历" : "待办来源"}：{current.sourceLabel}</p>
       {current.before && action.kind !== "calendar.delete" && <details className="proposal-before">
         <summary>原记录</summary>
@@ -145,14 +165,17 @@ export function ProposalCard({ proposal, mobile, review = false, replaced = fals
     {state === "pending" && calendar && current.before && "attendees" in current.before && Array.isArray(current.before.attendees) && current.before.attendees.length > 0 &&
       <p className="proposal-status">参与者：{current.before.attendees.join("、")}。日历服务可能发送变更通知。</p>}
     {replaced && <p role="status">提案已更新，请返回待确认列表核对。</p>}
-    {state !== "pending" && <p className="proposal-status" data-state={state} role="status">{mail && state === "failed" ? (failure
+    {state !== "pending" && <p className="proposal-status" data-state={current.sessionDelivery ?? state} role="status">{session ? proposalStatus(current) : mail && state === "failed" ? (failure
       ? `发送失败：${failure.label}。邮件未发出。${failure.guidance ?? ""}` : "发送失败，未自动重试。")
       : state === "delivery_uncertain" ? `投递不确定${failure ? `：${failure.label}` : ""}。请核查「已发送」；找不到副本不代表未发送。Bridge 不会自动重发。`
       : state === "delivery_partial" ? `发送服务器拒绝了以下地址：${current.rejectedRecipients?.join("、")}。其余地址已接受，不会自动重发。`
       : proposalStateDetail[state] ?? proposalStatus(current)}</p>}
-    {error && <p role="alert">{error}</p>}
+    {error && !sessionReview && <p role="alert">{error}</p>}
     {state === "pending" && !editing && <div className="proposal-actions">
-      {mail ? <>
+      {session ? <button type="button" className="primary-button" disabled={disabled || !current.sessionTarget} onClick={() => {
+        setError("");
+        setSessionReview(current);
+      }}>{action.kind === "session.send" ? "核对会话消息…" : "核对目标会话…"}</button> : mail ? <>
         <button type="button" className="primary-button" disabled={disabled} onClick={() => setMailSheet({ proposal: current, mode: "send" })}>核对并发送…</button>
         <button type="button" className="secondary-button" disabled={disabled} onClick={() => setMailSheet({ proposal: current, mode: "edit" })}>编辑</button>
       </> : <button type="button" className="primary-button" disabled={disabled} onClick={() => void decide("assistant.proposal.commit")}>
@@ -161,6 +184,10 @@ export function ProposalCard({ proposal, mobile, review = false, replaced = fals
       {"value" in action && <button type="button" className="secondary-button" disabled={disabled} onClick={() => setEditing(current)}>调整</button>}
       <button type="button" className="assistant-session-link" disabled={disabled} onClick={() => void decide("assistant.proposal.dismiss")}>忽略</button>
     </div>}
+    {sessionReview && <SessionProposalReview proposal={sessionReview} hostName={controller!.hostName} mobile={mobile} busy={busy} error={error}
+      stale={replaced || current.payloadHash !== sessionReview.payloadHash || state !== "pending"}
+      offline={!controller?.online} onClose={() => { setSessionReview(undefined); setError(""); }}
+      onConfirm={() => void decide("assistant.proposal.commit", sessionReview)} />}
     {mail && state !== "pending" && <div className="proposal-actions">
       <button type="button" className="secondary-button" onClick={() => setMailSheet({ proposal: current, mode: "view" })}>查看邮件版本</button>
     </div>}
@@ -171,6 +198,42 @@ export function ProposalCard({ proposal, mobile, review = false, replaced = fals
     {editing && <ProposalEditor proposal={editing} mobile={mobile} stale={replaced || current.revision !== editing.revision || state !== "pending"}
       onClose={() => setEditing(undefined)} onRevised={result => { setOutcome(result); onResult?.(result); }} />}
   </section>;
+}
+
+function SessionProposalReview({ proposal, hostName, mobile, busy, error, stale, offline, onClose, onConfirm }: {
+  proposal: BridgeActionProposal; hostName: string; mobile: boolean; busy: boolean; error: string; stale: boolean; offline: boolean;
+  onClose(): void; onConfirm(): void;
+}) {
+  useEffect(() => {
+    if (mobile) return registerMobileBackHandler(() => { if (!busy) onClose(); return true; }, 150);
+  }, [mobile, busy, onClose]);
+  const { action, sessionTarget } = proposal;
+  if (!("targetSessionId" in action) || !sessionTarget) return null;
+  const send = action.kind === "session.send";
+  return <Sheet title={send ? "核对会话消息" : "核对目标会话"} fullScreen={mobile} manageFocus busy={busy} onClose={onClose}
+    footer={<div className="proposal-actions">
+      <button type="button" className="secondary-button" disabled={busy} onClick={onClose}>取消</button>
+      <button type="button" className="primary-button" disabled={busy || stale || offline} onClick={onConfirm}>
+        {busy ? "处理中…" : send ? "确认发送消息" : "确认打开会话"}
+      </button>
+    </div>}>
+    <div className="session-proposal-review">
+      <dl className="proposal-fields">
+        <dt>电脑</dt><dd>{hostName}</dd>
+        <dt>目标会话</dt><dd>{sessionTarget.title}</dd>
+        <dt>工作目录</dt><dd>{sessionTarget.cwd}</dd>
+        <dt>会话 ID</dt><dd><bdi>{action.targetSessionId}</bdi></dd>
+        <dt>版本</dt><dd>{proposal.revision}</dd>
+      </dl>
+      {send ? <>
+        <pre aria-label="完整消息正文">{action.text}</pre>
+        <p>发送可能启动一轮对话，仍使用目标会话的权限。</p>
+      </> : <p>仅在此客户端打开会话，不发送消息。</p>}
+      {stale && <p role="status">提案已更新或处理。关闭后重新核对。</p>}
+      {offline && <p role="status">连接电脑后可确认。</p>}
+      {error && <p role="alert">{error}</p>}
+    </div>
+  </Sheet>;
 }
 
 function ProposalEditor({ proposal, mobile, stale, onClose, onRevised }: {

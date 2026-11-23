@@ -62,6 +62,8 @@ The standard managed main session can use native `WebSearch` and the assistant M
 
 The managed main session can draft a `memory.rule_upsert` for a lasting preference. Open **待确认提案** in Bridge, review the before/after text, and select **确认保存规则** to update `PROFILE.md`. Bridge adds the project import when preparing or restoring the workspace. An already running Native session loads the project rules on its next cold start. This does not enable Stage 3 notes, lookup, or specialist agents.
 
+To open or send a message to another existing session on this computer, choose **复制会话 ID** in the target session's Bridge menu. Paste the ID into **助理 → 对话** with the requested action and, for a send, the message. Open **待确认提案** to verify the computer, title, working directory, ID and full text. **确认打开会话** navigates in this Bridge client only. **确认发送消息** can start a Native turn or queue the message while the target is busy. No new session is created and the target keeps its current permissions. A revised target or message must be approved again. Pending, rejected, and uncertain sends are never automatically retried.
+
 For an existing manual binding, use Node >=22.13 and build the adapter from this checkout:
 
 ```bash

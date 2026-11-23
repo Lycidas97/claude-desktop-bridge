@@ -15,6 +15,7 @@ const mailDraft = {
   bodyText: z.string().min(1).max(8000).regex(/^[^\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]*$/u),
 };
 const recipients = z.array(mailbox).min(1).max(20);
+const targetSessionId = z.string().min(1).max(512).regex(/^[a-zA-Z0-9_-]+$/u);
 
 export const MEMORY_RULE_TEXT_REQUIREMENT = "For memory.rule_upsert, omit text for delete; provide text for add and update.";
 const memoryRule = z.strictObject({
@@ -37,17 +38,22 @@ export const proposalAction = z.discriminatedUnion("kind", [
   ]),
   z.strictObject({ kind: z.literal("mail.reply"), ...mailDraft, mailRefId: z.uuid(), to: recipients.optional(), subject: subject.optional() }),
   z.strictObject({ kind: z.literal("mail.send"), ...mailDraft, to: recipients, subject }),
+  z.strictObject({ kind: z.literal("session.open"), targetSessionId }),
+  z.strictObject({ kind: z.literal("session.send"), targetSessionId,
+    text: z.string().max(8000).regex(/^[^\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]*$/u)
+      .refine(text => /^(?![\/!])\S/u.test(text.trimStart()), "Use a non-empty plain message, not a slash or shell command.") }),
 ]);
 export const proposalRef = z.strictObject({
   proposalId: z.uuid(), revision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER), payloadHash: z.string().regex(/^[a-f0-9]{64}$/u),
 });
 export const reviseProposal = z.strictObject({ ...proposalRef.shape, action: proposalAction });
 export const listProposals = z.strictObject({ cursor, limit });
+const includeSession = z.literal(true).optional();
 export const proposalRequests = {
-  "assistant.proposal.list": listProposals.extend({ history: z.boolean().default(false), includeMail: z.literal(true).optional(), includeMemory: z.literal(true).optional() }),
-  "assistant.proposal.resolve": z.strictObject({ sessionId: z.string().min(1).max(512), refs: z.array(proposalRef).max(100), latestForReview: z.boolean().optional(), includeMail: z.literal(true).optional(), includeMemory: z.literal(true).optional() }),
+  "assistant.proposal.list": listProposals.extend({ history: z.boolean().default(false), includeMail: z.literal(true).optional(), includeMemory: z.literal(true).optional(), includeSession }),
+  "assistant.proposal.resolve": z.strictObject({ sessionId: z.string().min(1).max(512), refs: z.array(proposalRef).max(100), latestForReview: z.boolean().optional(), includeMail: z.literal(true).optional(), includeMemory: z.literal(true).optional(), includeSession }),
   "assistant.proposal.revise": reviseProposal,
-  "assistant.proposal.commit": proposalRef.extend({ confirmMail: z.literal(true).optional(), confirmMemory: z.literal(true).optional() }),
-  "assistant.proposal.dismiss": proposalRef.extend({ includeMemory: z.literal(true).optional() }),
+  "assistant.proposal.commit": proposalRef.extend({ confirmMail: z.literal(true).optional(), confirmMemory: z.literal(true).optional(), confirmSession: z.literal(true).optional() }),
+  "assistant.proposal.dismiss": proposalRef.extend({ includeMemory: z.literal(true).optional(), includeSession }),
   "assistant.proposal.replan": z.strictObject({ ...proposalRef.shape, feedback: z.string().trim().min(1).max(4000) }),
 };

@@ -1,7 +1,7 @@
 import { Check, Copy } from "lucide-react";
 import { useEffect, useState } from "react";
 
-export function MessageCopyButton({ text, label }: { text: string; label: string }) {
+export function MessageCopyButton({ text, label, buttonText = "复制" }: { text: string; label: string; buttonText?: string }) {
   const [status, setStatus] = useState<"idle" | "copied" | "error">("idle");
   useEffect(() => setStatus("idle"), [text]);
 
@@ -39,7 +39,7 @@ export function MessageCopyButton({ text, label }: { text: string; label: string
       onClick={(event) => void copy(event.currentTarget)}
     >
       {status === "copied" ? <Check size={15} aria-hidden="true" /> : <Copy size={15} aria-hidden="true" />}
-      <span aria-live="polite">{status === "copied" ? "已复制" : status === "error" ? "复制失败，点击重试" : "复制"}</span>
+      <span aria-live="polite">{status === "copied" ? "已复制" : status === "error" ? "复制失败，点击重试" : buttonText}</span>
     </button>
   );
 }

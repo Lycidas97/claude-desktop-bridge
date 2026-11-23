@@ -31,7 +31,7 @@
 
 现有 `plugin.assistant-mail.bind` 继续支持用户选择原生会话和手动引用邮件。托管初始化使用单独入口，展示将被信任的 `<userData>/private/assistant/workspace/`。用户确认后，宿主先写入受控的 `.mcp.json`、`.claude/settings.json` 和引导文件，再由现有原生建会话接口申请信任并创建会话。设置并核对原生权限模式后提交绑定。托管资格记录与 `nativeSessionId`、工作区物理路径和策略版本关联。归档或删除成功后保留历史引用并提示换绑。断连和暂时缺席分别展示 `unavailable` 和 `missing`，保留绑定记录。[现有绑定入口](../apps/desktop/src/controller/assistant-mail.ts#L160) · [原生会话创建](../apps/desktop/src/claude/claude-desktop-bridge.ts#L745)
 
-Stage 1–2 的唯一托管档位为 `stage1-fenced-workspace`。内建 `Read / Glob / Grep` 只读工作区，`Write / Edit / MultiEdit` 只写 `outputs/`。主助理可通过助理 MCP 的 `files.read` 列出用户在 **助理设置 → 可读目录** 明确授权的目录并读取有界文本。授权默认关闭，且只适用于当前托管主会话。Native 项目保持工作区外读取限制。文件类型、路径排除和撤销规则见[目录权限边界](SECURITY.md#托管助理的搜索与只读目录)。主助理可用原生 `WebSearch`，搜索词会传给搜索服务。`WebFetch`、Shell、跨会话操作及继承的非助理 MCP 仍禁用。发信和提案执行仍需用户确认。`dontAsk` 控制权限问询，工具范围由原生配置、守卫和助理网关共同约束。Stage 3 若开放记忆写入，须按新档位重新过门禁。[阶段 0 实测](SECURITY.md#外部邮件自动投递门禁)
+Stage 1–2 的唯一托管档位为 `stage1-fenced-workspace`。内建 `Read / Glob / Grep` 只读工作区，`Write / Edit / MultiEdit` 只写 `outputs/`。主助理可通过助理 MCP 的 `files.read` 列出用户在 **助理设置 → 可读目录** 明确授权的目录并读取有界文本。授权默认关闭，且只适用于当前托管主会话。Native 项目保持工作区外读取限制。文件类型、路径排除和撤销规则见[目录权限边界](SECURITY.md#托管助理的搜索与只读目录)。主助理可用原生 `WebSearch`，搜索词会传给搜索服务。`WebFetch`、Shell、原生跨会话工具及继承的非助理 MCP 仍禁用。托管主助理只能按用户提供的会话 ID 草拟打开或发送提案；执行仍需用户在 Bridge 确认。`dontAsk` 控制权限问询，工具范围由原生配置、守卫和助理网关共同约束。Stage 3 若开放记忆写入，须按新档位重新过门禁。[阶段 0 实测](SECURITY.md#外部邮件自动投递门禁)
 
 ### 打包与工具网关
 
@@ -42,7 +42,7 @@ Stage 1–2 的唯一托管档位为 `stage1-fenced-workspace`。内建 `Read / 
 ### 启用条件
 
 - `#213` 交付装配、邮箱配置和 UI，`automaticDelivery` 保持 `false`。围栏尚未通过实机验证时，托管会话只用于受控验收。收件、双端列表和旧绑定的手动入口可独立交付。
-- `#222` 按 **`stage1-fenced-workspace`** 验收。目标版本、模型和最终合并配置以实际安装环境为准。验证工作区内读取与 `outputs/` 写入、工作区外和受控目录的拒绝、递归搜索范围、继承 MCP 与跨会话拒绝、子代理的实际权限，以及守卫缺失、异常和超时时的闭锁行为。守卫校验物理路径，新文件从最近的现存祖先解析，`Glob/Grep` 缺省路径按调用的 cwd 解析。验收覆盖递归结果集和原生 `@` 文件引用，因为文件引用可能在工具调用前展开。配置 `onFailure: "block"` 后实测失败行为。工具目录用于检测变化及告警，实测提供执行证据。
+- `#222` 按 **`stage1-fenced-workspace`** 验收。目标版本、模型和最终合并配置以实际安装环境为准。验证工作区内读取与 `outputs/` 写入、工作区外和受控目录的拒绝、递归搜索范围、继承 MCP 与原生跨会话工具拒绝、子代理的实际权限，以及守卫缺失、异常和超时时的闭锁行为。守卫校验物理路径，新文件从最近的现存祖先解析，`Glob/Grep` 缺省路径按调用的 cwd 解析。验收覆盖递归结果集和原生 `@` 文件引用，因为文件引用可能在工具调用前展开。配置 `onFailure: "block"` 后实测失败行为。工具目录用于检测变化及告警，实测提供执行证据。
 - `#214` 只在用户开启主动模式且绑定仍满足已验证的会话、档位和运行环境时提交。换绑、策略变化或能力失配后停止新的提交，保留业务数据与手动处理。已进入原生队列的消息沿用 Desktop 队列控制，界面显示其当前状态。
 
 实机验收覆盖 Bridge 两种关窗路径后的新增投递、真实锁屏时间戳、原 UUID 断线对账。配对手机、安装包、目标模型和最终策略的实测记录入库。[装配 #213](https://github.com/Lycidas97/claude-desktop-bridge/issues/213) · [实机 #222](https://github.com/Lycidas97/claude-desktop-bridge/issues/222) · [Hook 失败语义](https://code.claude.com/docs/en/hooks#block-the-action-when-a-hook-fails)
@@ -89,7 +89,7 @@ Stage 1–2 的唯一托管档位为 `stage1-fenced-workspace`。内建 `Read / 
 
 ## 提案与执行
 
-模型把发信、改日程和改待办提交为提案。`proposal.create` 与 `proposal.update_pending` 只写提案，每次修订形成不可变的 `(proposalId, revision, payloadHash)`，并固定目标账号、后端、对象、基准版本和规范化载荷。待批页按提案记录显示。对话内联卡要求宿主能核对提案所属的会话和回合。关联未确认时在待批页展示。用户可让助理修改或手动编辑，两种编辑方式都生成新版本。
+模型可以提交发信、日程、待办、记忆规则和指定会话动作的提案。`proposal.create` 与 `proposal.update_pending` 只写提案，每次修订形成不可变的 `(proposalId, revision, payloadHash)`，并固定目标账号、后端、对象、基准版本和规范化载荷。待批页按提案记录显示。对话内联卡要求宿主能核对提案所属的会话和回合。关联未确认时在待批页展示。用户可让助理修改或手动编辑，两种编辑方式都生成新版本。
 
 确认界面通过受 capability 门控的 `assistant.proposal.commit` 提交提案 ID、版本与载荷哈希。宿主使用已认证连接的身份，在同一事务内核对版本和哈希并将 `pending` 改为 `executing`。过期版本、重复提交或已撤销提案不会发起外部调用。聊天文本、模型工具或邮件内容只能形成建议。每张提案独立执行，有关联的回信和日历变更各自记录结果。
 
@@ -97,6 +97,7 @@ Stage 1–2 的唯一托管档位为 `stage1-fenced-workspace`。内建 `Read / 
 | --- | --- |
 | SMTP | 二次确认抽屉固定并展示最终 `From`、全部信封收件地址、主题、正文和版本。展示 `To/Cc`，如产品支持 `Bcc` 也必须展示，否则拒绝这类载荷。异域 `Reply-To` 变化明确标出。执行从已批准载荷生成信封，先记录尝试再发送 |
 | CalDAV / VTODO | 更新和删除使用原 `If-Match`。创建对选定资源地址用 `If-None-Match: *`。条件失败显示 `conflict` |
+| 同电脑的现有 Native 会话 | 草稿固定会话 ID、宿主核验的标题和工作目录、动作及完整正文。批准打开只让当前 Bridge 客户端导航，不创建会话，不启动回合。批准发送后宿主按同一版本的保留幂等键调用 Native `turn.start`，忙碌时由 Native 排队。Bridge 不改权限、不重发，按原回执区分已提交、排队、接收、处理、取消、失败与投递不确定。 |
 | SQLite 本地项 | 条件写校验记录版本。适合同库提交的业务变更和执行结果放在同一事务 |
 | EventKit | 保存或删除前核对原生标识、修改时间和规范字段。该校验可拦截已发生的改动，系统无跨进程原子条件写保证 |
 

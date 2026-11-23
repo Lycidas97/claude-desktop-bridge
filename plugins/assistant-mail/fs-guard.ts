@@ -156,7 +156,7 @@ export async function allowAssistantTool(workspace: string, input: unknown, poli
   }
   if (proposalDraftTools.includes(name)) {
     const kind = (params.action as { kind?: unknown } | undefined)?.kind;
-    if (!memory && agentId !== undefined && kind === "memory.rule_upsert") return false;
+    if (agentId !== undefined && (kind === "session.open" || kind === "session.send" || (!memory && kind === "memory.rule_upsert"))) return false;
     if (specialist && (typeof kind !== "string" || !(agentType === "mail-triager" ? kind.startsWith("mail.")
       : agentType === "schedule-planner" ? /^(todo|calendar)\./.test(kind) : kind === "memory.rule_upsert"))) return false;
   }

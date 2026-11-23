@@ -236,6 +236,12 @@ function MobileApp({ themeControl }: { themeControl: ThemeControl }) {
   const snapshot = useMemo(() => mobile.state.snapshot
     ? claudeSnapshot(mobile.state.snapshot)
     : undefined, [mobile.state.snapshot]);
+  const activeAssistantSnapshot = useRef(snapshot);
+  activeAssistantSnapshot.current = snapshot;
+  function openAssistantSession(sessionId: string) {
+    setFocusRequest({ sessionId, key: Date.now() });
+    setTab("sessions");
+  }
   const [pairingOpen, setPairingOpen] = useState(false);
   const [tab, setTab] = useState<MobileTab>("sessions");
   const [computerDetailsHostId, setComputerDetailsHostId] = useState<string>();
@@ -410,7 +416,13 @@ function MobileApp({ themeControl }: { themeControl: ThemeControl }) {
       ) : (
     <AssistantMailProvider key={mobile.state.activeHostId ?? ""} hostId={mobile.state.activeHostId} snapshot={snapshot} online={mobile.state.connection === "connected" && mobile.state.desktopOnline} request={assistantRequest} loadCache={mobile.loadMailCache} saveCache={mobile.saveMailCache} onDiscuss={() => setTab("assistant")}>
     <AssistantAgendaProvider snapshot={snapshot} online={mobile.state.connection === "connected" && mobile.state.desktopOnline} request={assistantRequest}>
-    <AssistantProposalProvider snapshot={snapshot} online={mobile.state.connection === "connected" && mobile.state.desktopOnline} request={assistantRequest}>
+    <AssistantProposalProvider snapshot={snapshot} online={mobile.state.connection === "connected" && mobile.state.desktopOnline} request={assistantRequest} openSession={sessionId => {
+      const current = activeAssistantSnapshot.current;
+      if (current?.host.hostId !== snapshot?.host.hostId || !current?.sessions.some(session => session.sessionId === sessionId)) {
+        throw new Error("当前电脑的会话列表中没有此目标。会话未打开。");
+      }
+      openAssistantSession(sessionId);
+    }}>
     <MobileAppShell
       tab={tab}
       onTabChange={(next) => {
@@ -529,10 +541,7 @@ function MobileApp({ themeControl }: { themeControl: ThemeControl }) {
               snapshot={snapshot}
               mobile
               active={tab === "assistant"}
-              onOpenSession={(sessionId) => {
-                setFocusRequest({ sessionId, key: Date.now() });
-                setTab("sessions");
-              }}
+              onOpenSession={openAssistantSession}
               renderConversation={(sessionId, stage) => {
                 const boundSession = snapshot?.sessions.find((candidate) => candidate.sessionId === sessionId);
                 return boundSession ? (

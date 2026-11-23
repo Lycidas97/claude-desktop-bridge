@@ -176,6 +176,15 @@ it("permits native web search without granting fetch, shell or proposal executio
   }
 });
 
+it.each(["session.open", "session.send"])("permits only the managed main session to draft %s", async kind => {
+  const action = { kind, targetSessionId: "local_fixture", ...(kind === "session.send" ? { text: "Owned fixture text" } : {}) };
+  for (const suffix of ["proposal_create", "proposal_update_pending"]) {
+    const input = { hook_event_name: "PreToolUse", cwd: workspace, tool_name: `mcp__assistant-mail__${suffix}`, tool_input: { action } };
+    await expect(allowAssistantTool(workspace, input)).resolves.toBe(true);
+    await expect(allowAssistantTool(workspace, { ...input, agent_id: "helper-fixture", agent_type: "assistant-helper" })).resolves.toBe(false);
+  }
+});
+
 it.each(["proposal_create", "proposal_update_pending"])("limits Stage 1 %s rule drafts to the main session", async tool => {
   const tool_name = `mcp__assistant-mail__${tool}`;
   const draft = { action: { kind: "memory.rule_upsert" } };

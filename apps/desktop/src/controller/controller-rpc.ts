@@ -34,6 +34,7 @@ import type { ConversationStateStore } from "./conversation-state-store.js";
 import type { SessionEventLog } from "./session-event-log.js";
 import type { DesktopUpdater } from "../updater/desktop-updater.js";
 import type { AssistantAgendaService } from "../../../../plugins/assistant-mail/agenda.js";
+import { ASSISTANT_SESSION_SEND_KEY_PREFIX } from "../../../../plugins/assistant-mail/proposal-executor.js";
 import { ASSISTANT_TRIGGER_KEY_PREFIX } from "../../../../plugins/assistant-mail/trigger-store.js";
 import { handleAssistantAgenda } from "./assistant-agenda.js";
 import { handleAssistantProposal } from "./assistant-proposal.js";
@@ -191,7 +192,7 @@ async function dispatchControllerRequestInner(
   sourceDeviceId?: string,
 ): Promise<unknown> {
   const params = request.params;
-  if (request.idempotencyKey.startsWith(ASSISTANT_TRIGGER_KEY_PREFIX)) {
+  if ([ASSISTANT_TRIGGER_KEY_PREFIX, ASSISTANT_SESSION_SEND_KEY_PREFIX].some(prefix => request.idempotencyKey.startsWith(prefix))) {
     throw new BridgeRequestError("INVALID_PARAMS", "该请求标识由助理保留。");
   }
   if (request.method.startsWith("assistant.proposal.")) {

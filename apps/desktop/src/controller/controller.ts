@@ -30,7 +30,7 @@ import {
 import type { App } from "electron";
 import { diag, diagnostics } from "../app/diag.js";
 import type { MemoryRecorder } from "../app/memory-recorder.js";
-import { ASSISTANT_AGENDA_CAPABILITY, ASSISTANT_AGENDA_DAY_CAPABILITY, ASSISTANT_MEMORY_PROPOSAL_CAPABILITY, ASSISTANT_PROPOSAL_CAPABILITY, type BridgeAgendaSnapshot, type BridgeProposalSnapshot } from "@bridge/protocol";
+import { ASSISTANT_AGENDA_CAPABILITY, ASSISTANT_AGENDA_DAY_CAPABILITY, ASSISTANT_MEMORY_PROPOSAL_CAPABILITY, ASSISTANT_SESSION_PROPOSAL_CAPABILITY, ASSISTANT_PROPOSAL_CAPABILITY, type BridgeAgendaSnapshot, type BridgeProposalSnapshot } from "@bridge/protocol";
 import type { AssistantAgendaService } from "../../../../plugins/assistant-mail/agenda.js";
 import type { ProposalExecutor } from "../../../../plugins/assistant-mail/proposal-executor.js";
 import type { AssistantMailService } from "../../../../plugins/assistant-mail/desktop.js";
@@ -186,6 +186,7 @@ export class DesktopController extends EventEmitter {
       const event = summarizeEvidenceEvent(record);
       this.emit("event", event);
       this.assistantMailCoordinator?.observeDelivery(event);
+      if (event.data.source === "assistant-proposal") this.proposals?.sessionDeliveryChanged();
       if (
         event.type === "session.desktop-registration" ||
         (event.origin === "claude-desktop" && event.type === "evidence.updated")
@@ -287,6 +288,7 @@ export class DesktopController extends EventEmitter {
           "plugin.magpie-quota.v1",
           ...(this.assistantAgenda ? [ASSISTANT_AGENDA_CAPABILITY, ASSISTANT_AGENDA_DAY_CAPABILITY] as const : []),
           ...(this.proposals ? [ASSISTANT_PROPOSAL_CAPABILITY, ASSISTANT_MEMORY_PROPOSAL_CAPABILITY] as const : []),
+          ...(this.proposals?.supportsSessionActions ? [ASSISTANT_SESSION_PROPOSAL_CAPABILITY] as const : []),
           ...(this.assistantMailCoordinator?.capabilities() ?? []),
           ...(this.updater ? ["system.update.v1" as const] : []),
         ],

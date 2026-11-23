@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { ASSISTANT_ATTENTION_CAPABILITY, ASSISTANT_MAIL_CATEGORIES_CAPABILITY, ASSISTANT_MAIL_FILING_CAPABILITY, ASSISTANT_MAIL_KEEP_CREDENTIAL_CAPABILITY, ASSISTANT_MAIL_RECEIVED_ORDER_CAPABILITY, ASSISTANT_MAIL_SHARED_AUTH_CAPABILITY, ASSISTANT_MAIL_SMTP_SAME_HOST_REUSE_CAPABILITY, ASSISTANT_MEMORY_POLICY, ASSISTANT_READ_DIRECTORIES_CAPABILITY, ASSISTANT_SMTP_CAPABILITY, ASSISTANT_WORKSPACE_POLICY, isAssistantWorkspacePolicy, isMailPollInterval } from "@bridge/protocol";
+import { ASSISTANT_ATTENTION_CAPABILITY, ASSISTANT_MAIL_CATEGORIES_CAPABILITY, ASSISTANT_MAIL_FILING_CAPABILITY, ASSISTANT_MAIL_KEEP_CREDENTIAL_CAPABILITY, ASSISTANT_MAIL_ORIGINAL_CAPABILITY, ASSISTANT_MAIL_RECEIVED_ORDER_CAPABILITY, ASSISTANT_MAIL_SHARED_AUTH_CAPABILITY, ASSISTANT_MAIL_SMTP_SAME_HOST_REUSE_CAPABILITY, ASSISTANT_MEMORY_POLICY, ASSISTANT_READ_DIRECTORIES_CAPABILITY, ASSISTANT_SMTP_CAPABILITY, ASSISTANT_WORKSPACE_POLICY, isAssistantWorkspacePolicy, isMailPollInterval } from "@bridge/protocol";
 import { AssistantError } from "../../../../plugins/assistant-mail/assistant-error.js";
 import type { AssistantAgendaService } from "../../../../plugins/assistant-mail/agenda.js";
 import { configureSmtp, saveMailAccount } from "../../../../plugins/assistant-mail/account-contract.js";
@@ -36,6 +36,7 @@ export const ASSISTANT_MAIL_CAPABILITIES = [
   "plugin.assistant-mail.attachments.v1",
   "plugin.assistant-mail.history.v1",
   ASSISTANT_MAIL_RECEIVED_ORDER_CAPABILITY,
+  ASSISTANT_MAIL_ORIGINAL_CAPABILITY,
   "plugin.assistant-mail.junk.v1",
   ASSISTANT_MAIL_FILING_CAPABILITY,
   ASSISTANT_MAIL_CATEGORIES_CAPABILITY,
@@ -65,6 +66,9 @@ export function pauseAssistantBinding(mail: AssistantMailService | undefined, se
   mail!.setBinding({ assistantId: binding.assistantId, sectionId: binding.sectionId, nativeSessionId: null,
     previousSessionIds: [...new Set([...binding.previousSessionIds, sessionId])] });
 }
+
+// Leave room for base64, encryption and envelope overhead under WebRTC's 12 MiB limit.
+const MAIL_ORIGINAL_MAX_JSON_BYTES = 8 * 1024 * 1024;
 
 function sliceSurrogateSafeCodeUnits(text: string, maxUnits: number): string {
   if (text.length <= maxUnits) return text;
@@ -494,16 +498,20 @@ export class AssistantMailCoordinator {
     }
     if (method === "plugin.assistant-mail.read") {
       const mailRefId = stringParam(params, "mailRefId")!;
+      const { original } = params;
+      if (original !== undefined && typeof original !== "boolean") throw new BridgeRequestError("INVALID_PARAMS", "原文读取参数无效。");
       const detail = await this.mail.readEvent(mailRefId);
       if (!detail) throw new BridgeRequestError("NOT_FOUND", "邮件不存在。");
-      return {
-        mailDetail: {
-          mailRefId,
-          bodyText: sliceSurrogateSafeCodeUnits(detail.bodyText, 256_000),
-          truncated: detail.bodyText.length > 256_000,
-          ...(detail.attachmentCount ? { attachments: detail.attachments, attachmentCount: detail.attachmentCount } : {}),
-        } satisfies BridgeMailDetail,
+      const mailDetail: BridgeMailDetail = {
+        mailRefId, bodyText: detail.bodyText, truncated: false,
+        ...(detail.attachmentCount ? { attachments: detail.attachments, attachmentCount: detail.attachmentCount } : {}),
       };
+      if (!original || detail.bodyText.length > MAIL_ORIGINAL_MAX_JSON_BYTES ||
+        Buffer.byteLength(JSON.stringify(mailDetail)) > MAIL_ORIGINAL_MAX_JSON_BYTES) {
+        mailDetail.bodyText = sliceSurrogateSafeCodeUnits(detail.bodyText, 256_000);
+        mailDetail.truncated = mailDetail.bodyText.length < detail.bodyText.length;
+      }
+      return { mailDetail };
     }
     if (method === "plugin.assistant-mail.filing.set") {
       const { client: _client, ...input } = params;

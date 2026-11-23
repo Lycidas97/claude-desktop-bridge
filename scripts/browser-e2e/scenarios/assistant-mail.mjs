@@ -59,13 +59,19 @@ export async function verifyAssistantMailUnread(page, host, steps, directory, vi
   await page.getByText("暂无已记录邮件", { exact: true }).waitFor();
   await back.click();
   await eventually(unreadLabel, "助理", "An empty inbox has no badge");
-  const first = await host.nativeApproval.assistantMail.deliver(1);
+  const longBody = `第一行\n\n${"这是一行合成邮件正文。\n".repeat(24_000)}完整原文末尾标记`;
+  const first = await host.nativeApproval.assistantMail.deliver(1, Buffer.from([
+    "Subject: Long fixture letter", "Content-Type: text/plain; charset=utf-8", "Content-Transfer-Encoding: base64", "",
+    Buffer.from(longBody).toString("base64").match(/.{1,76}/gu).join("\r\n"),
+  ].join("\r\n")));
   await eventually(unreadLabel, "助理，1 条未读", "One newly arrived pending mail shows one unread");
   await page.screenshot({ path: resolve(directory, "unread-mail.png") });
   viewports.push({ page: "unread-mail", ...page.viewportSize() });
   await badge.click();
   const firstCard = await expandInboxMail(cardFor(first));
-  const original = firstCard.getByText("原文", { exact: true });
+  const original = firstCard.getByRole("button", { name: "原文", exact: true });
+  const reader = page.getByRole("dialog", { name: first.subject, exact: true });
+  const close = reader.getByRole("button", { name: "关闭", exact: true });
   await original.waitFor();
   assert.doesNotMatch(await firstCard.innerText(), /已记录|未提交|待处理|未自动发给助理|助理任务失败/u);
   await firstCard.getByText("状态", { exact: true }).click();
@@ -82,8 +88,8 @@ export async function verifyAssistantMailUnread(page, host, steps, directory, vi
   await offline.waitFor();
   await expandInboxMail(firstCard);
   await original.click();
-  await firstCard.getByText("连接电脑后可查看原文", { exact: true }).waitFor();
-  await original.click();
+  await reader.getByText("连接电脑后可查看原文", { exact: true }).waitFor();
+  await close.click();
   await back.click();
   assert.equal(await unreadLabel(), "助理，1 条未读", "Opening an offline placeholder keeps the badge");
   assert.equal(host.requests.some(request => request.method === "plugin.assistant-mail.read"), false);
@@ -95,8 +101,8 @@ export async function verifyAssistantMailUnread(page, host, steps, directory, vi
   host.mailReadFailure = true;
   await expandInboxMail(firstCard);
   await original.click();
-  await firstCard.getByRole("alert").getByText("隔离邮件原文读取失败", { exact: true }).waitFor();
-  await original.click();
+  await reader.getByRole("alert").getByText("隔离邮件原文读取失败", { exact: true }).waitFor();
+  await close.click();
   await back.click();
   assert.equal(await unreadLabel(), "助理，1 条未读", "A rejected read keeps the badge");
 
@@ -104,7 +110,23 @@ export async function verifyAssistantMailUnread(page, host, steps, directory, vi
   await badge.click();
   await expandInboxMail(firstCard);
   await original.click();
-  await firstCard.locator("details[open] pre").waitFor();
+  const originalBody = reader.locator(".assistant-mail-original-body");
+  await originalBody.waitFor();
+  assert.ok(await originalBody.textContent() === longBody, "The original shows the entire decoded body, including newlines and the final marker");
+  await eventually(() => reader.evaluate(element => {
+    const { x, y, width, height } = element.getBoundingClientRect();
+    return x === 0 && y === 0 && width === innerWidth && height === innerHeight;
+  }), true, "The mobile reader fills the viewport");
+  assert.ok(await originalBody.evaluate(element => element.clientHeight > 480 && getComputedStyle(element).overflowY === "visible"),
+    "The body belongs to the reader's scroll area without an inner 480px box");
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  await reader.getByRole("button", { name: "复制全文", exact: true }).click();
+  await reader.getByRole("button", { name: "已复制", exact: true }).waitFor();
+  assert.ok(await page.evaluate(() => navigator.clipboard.readText()) === longBody, "The clipboard preserves all decoded text and line breaks");
+  await assistantViewCapture(page, directory, viewports)("mobile-long-mail-original");
+  await page.keyboard.press("Escape");
+  await reader.waitFor({ state: "hidden" });
+  assert.ok(await original.evaluate(element => element === document.activeElement), "Closing the reader restores focus to 原文");
   await back.click();
   await eventually(unreadLabel, "助理", "Opening one mail clears its badge without marking it processed");
   await page.screenshot({ path: resolve(directory, "viewed-mail.png") });
@@ -132,11 +154,22 @@ export async function verifyAssistantMailUnread(page, host, steps, directory, vi
   assert.equal((await host.nativeApproval.assistantMail.service.read(second.mailRefId)).event.processingStatus, "pending");
   assert.equal(host.requests.some(request => request.method === "turn.start"), false);
 
-  await openDesktopAssistant(page, host, baseUrl, []);
+  const capabilities = host.snapshot.host.capabilities;
+  host.snapshot.host.capabilities = capabilities.filter(value => value !== "plugin.assistant-mail.original.v1");
+  const desktopRequests = [];
+  await openDesktopAssistant(page, host, baseUrl, desktopRequests);
+  host.snapshot.host.capabilities = capabilities;
   const desktopBadge = page.locator(".sidebar-assistant-row .desktop-nav-badge");
   await inbox.click();
   await cardFor(second).waitFor();
   assert.equal(await desktopBadge.count(), 0, "A fresh desktop view does not badge its existing mail history");
+  await (await expandInboxMail(firstCard)).getByRole("button", { name: "原文", exact: true }).click();
+  await reader.getByText("仅显示部分原文。", { exact: true }).waitFor();
+  assert.ok(await originalBody.textContent() === longBody.slice(0, 256_000), "An older host still opens its available prefix");
+  assert.equal(await reader.getByRole("button", { name: "复制全文", exact: true }).count(), 0);
+  await reader.getByRole("button", { name: "复制已显示内容", exact: true }).waitFor();
+  assert.deepEqual(desktopRequests.find(({ method }) => method === "plugin.assistant-mail.read").params, { mailRefId: first.mailRefId });
+  await close.click();
   const latest = await host.nativeApproval.assistantMail.deliver(2);
   host.nativeApproval.assistantMail.service.setProcessingStatus(latest.mailRefId, "processing");
   await page.evaluate(assistantMail => window.assistantDesktopSnapshot({ assistantMail }), host.snapshot.assistantMail);
@@ -163,9 +196,13 @@ export async function verifyAssistantMailUnread(page, host, steps, directory, vi
   assert.equal(await desktopBadge.textContent(), "2", "Desktop status expansion leaves both arrivals unread");
   await desktopStatus.click();
   await latestCard.getByText("原文", { exact: true }).click();
-  await latestCard.locator("details[open] pre").waitFor();
+  const desktopReader = page.getByRole("dialog", { name: latest.subject, exact: true });
+  await desktopReader.locator(".assistant-mail-original-body").waitFor();
+  const desktopReaderBounds = await desktopReader.boundingBox();
+  assert.ok(desktopReaderBounds.width > 720 && desktopReaderBounds.height > 600, "Desktop opens a roomy reading view");
   await eventually(() => desktopBadge.textContent(), "1", "Desktop opening the newer mail leaves the older one unread");
   await page.screenshot({ path: resolve(directory, "desktop-mail-unread.png") });
+  await desktopReader.getByRole("button", { name: "关闭", exact: true }).click();
   viewports.push({ page: "desktop-mail-unread", ...page.viewportSize() });
   steps.push("Unopened arrivals badge the assistant; opening and discussing clear only the viewed mail while processing stays pending, on mobile and desktop; viewed state survives mobile reload");
 }
@@ -217,9 +254,11 @@ export async function verifyAssistantMailHistory(page, host, steps, directory, v
     "A newly imported older UID belongs at its received time, even above the previous page boundary");
   await expandInboxMail(cards.last());
   await cards.last().getByText("原文", { exact: true }).click();
-  await cards.last().locator("details[open] pre").waitFor();
+  const historyReader = page.getByRole("dialog", { name: await cards.last().locator(".assistant-mail-row-subject").textContent(), exact: true });
+  await historyReader.locator(".assistant-mail-original-body").waitFor();
   await page.screenshot({ path: resolve(directory, "assistant-mail-history.png"), fullPage: true });
   viewports.push({ page: "assistant-mail-history", ...page.viewportSize() });
+  await historyReader.getByRole("button", { name: "关闭", exact: true }).click();
   await back.click();
   assert.equal(await assistant.getAttribute("aria-label"), "助理", "Backfill does not raise attention");
   await host.nativeApproval.assistantMail.deliver(1);
@@ -539,14 +578,15 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   async function verifyAttachments(card, captureName) {
     const attachmentCard = card.getByRole("region", { name: "邮件附件" });
     await attachmentCard.getByText("6 个附件", { exact: true }).waitFor();
-    await card.getByText("原文", { exact: true }).click();
-    await card.locator("details[open] pre").filter({ hasText: /^Fixture mail with attachments\.$/u }).waitFor();
-    assert.equal(await card.locator(".assistant-mail-disclosures details[open] .assistant-attachments").count(), 0);
+    await card.getByRole("button", { name: "原文", exact: true }).click();
+    const mailReader = page.getByRole("dialog").filter({ has: page.locator(".assistant-mail-original-body") });
+    await mailReader.getByText("Fixture mail with attachments.", { exact: true }).waitFor();
+    assert.equal(await mailReader.getByRole("region", { name: "邮件附件" }).count(), 0);
     assert.ok(await card.evaluate(element => {
       const style = getComputedStyle(element);
       return style.borderBottomStyle === "solid" && parseFloat(style.borderBottomWidth) > 0 && parseFloat(style.borderTopWidth) === 0;
     }), "A hairline separates the expanded mail from the next one, without a card frame");
-    await card.getByText("原文", { exact: true }).click();
+    await mailReader.getByRole("button", { name: "关闭", exact: true }).click();
     await attachmentCard.getByRole("button", { name: "预览 notes.txt", exact: true }).click();
     await page.getByRole("heading", { name: "下载大文件预览？", exact: true }).waitFor();
     await page.getByRole("button", { name: "取消", exact: true }).click();
@@ -629,17 +669,19 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   const oldest = host.nativeApproval.assistantMail.service.page({ cursor: "2" }).events[0];
   const original = page.locator(`.assistant-mail-list [data-mail-id="${oldest.mailRefId}"]`);
   await expandInboxMail(original);
-  await original.getByText("原文", { exact: true }).click();
-  await original.getByRole("link", { name: /actual\.example\.test.*\/path/u }).waitFor();
-  await original.getByRole("link", { name: /actual\.example\.test.*\/unsubscribe/u }).waitFor();
+  await original.getByRole("button", { name: "原文", exact: true }).click();
+  const originalReader = page.getByRole("dialog", { name: oldest.subject, exact: true });
+  await originalReader.getByRole("link", { name: /actual\.example\.test.*\/path/u }).waitFor();
+  await originalReader.getByRole("link", { name: /actual\.example\.test.*\/unsubscribe/u }).waitFor();
   assert.equal(await original.locator("time").getAttribute("datetime"), oldest.receivedAt);
   assert.equal(await original.locator("time").innerText(), await page.evaluate(receivedAt => new Date(receivedAt).toLocaleString("zh-CN", {
     month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit",
   }), oldest.receivedAt));
-  assert.match(await original.locator("pre").innerText(), /<script>window.mailInjected=1<\/script>/u);
-  assert.equal(await original.locator("img, iframe, script").count(), 0);
+  assert.match(await originalReader.locator("pre").innerText(), /<script>window.mailInjected=1<\/script>/u);
+  assert.equal(await originalReader.locator("img, iframe, script").count(), 0);
   assert.equal(await page.evaluate(() => window.mailInjected), undefined);
-  assert.match(await original.getByRole("link", { name: /actual\.example\.test.*\/path/u }).getAttribute("href"), /trusted.example@actual.example.test/u);
+  assert.match(await originalReader.getByRole("link", { name: /actual\.example\.test.*\/path/u }).getAttribute("href"), /trusted.example@actual.example.test/u);
+  await originalReader.getByRole("button", { name: "关闭", exact: true }).click();
   const [attachmentMail] = host.nativeApproval.assistantMail.service.page({ limit: 1 }).events;
   const withAttachments = await expandInboxMail(cards().and(page.locator(`[data-mail-id="${attachmentMail.mailRefId}"]`)));
   await verifyAttachments(withAttachments, "mobile-mail-attachment");
@@ -720,8 +762,10 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   const oversizedCard = page.locator(`[data-mail-id="${oversizedMail.mailRefId}"]`).first();
   await expandInboxMail(oversizedCard);
   await oversizedCard.getByText("原文无法解析，预览不可用。", { exact: true }).waitFor();
-  await oversizedCard.getByText("原文", { exact: true }).click();
-  await oversizedCard.getByRole("alert").waitFor();
+  await oversizedCard.getByRole("button", { name: "原文", exact: true }).click();
+  const oversizedReader = page.getByRole("dialog", { name: oversizedMail.subject || "无主题", exact: true });
+  await oversizedReader.getByRole("alert").waitFor();
+  await oversizedReader.getByRole("button", { name: "关闭", exact: true }).click();
   steps.push("oversized HTML preserves its persisted card and healthy cards, with the original read error confined to that card");
 
   host.mailOffline = true;

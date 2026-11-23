@@ -72,7 +72,9 @@ async function verifyMailMarkRead(phone, host, baseUrl, capture) {
   await phone.getByRole("button", { name: "收件", exact: true }).click();
   const viewedCard = await expandInboxMail(card(phone, viewed));
   await viewedCard.getByText("原文", { exact: true }).click();
-  await viewedCard.locator("details[open] pre").waitFor();
+  const reader = phone.getByRole("dialog", { name: viewed.subject, exact: true });
+  await reader.locator(".assistant-mail-original-body").waitFor();
+  await reader.getByRole("button", { name: "关闭", exact: true }).click();
   await openMobileDrawer(phone);
   await eventually(mobileLabel, "助理，2 条未读", "Opening an original marks it only on this phone");
   assert.equal(await desktopCount(), "3");

@@ -307,7 +307,8 @@ export async function deliverTransportMessage(
   const artifactResponse = requestMethod.startsWith("artifact.");
   const previewResponse = artifactResponse || requestMethod === "session.tool.detail";
   const cacheable = requestMethod !== "plugin.assistant-mail.batch" && requestMethod !== "artifact.preview" && requestMethod !== "artifact.transfer.read" &&
-    requestMethod !== "session.tool.detail" && !(requestMethod === "artifact.transfer.open" && message.payload.params.mailAttachment !== undefined);
+    requestMethod !== "session.tool.detail" && !(requestMethod === "artifact.transfer.open" && message.payload.params.mailAttachment !== undefined) &&
+    !(requestMethod === "plugin.assistant-mail.read" && message.payload.params.original === true);
   const delivered = diagnostics.begin(`rpc.${method}`);
   try {
     const deviceId = message.header.fromDeviceId;

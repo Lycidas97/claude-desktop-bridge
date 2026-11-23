@@ -189,10 +189,12 @@ export async function verifyAssistantMailUnread(page, host, steps, directory, vi
   const processing = latestCard.getByText("处理中", { exact: true }).filter({ visible: true });
   await processing.waitFor();
   assert.doesNotMatch(await latestCard.innerText(), /已记录|未提交|未自动发给助理|助理任务失败/u);
-  const desktopStatus = latestCard.getByText("状态", { exact: true });
+  const desktopStatus = latestCard.getByRole("button", { name: "状态", exact: true });
+  const closedActions = await verifyMailActionRow(latestCard);
   await desktopStatus.click();
   await latestCard.getByText("未自动发给助理", { exact: true }).waitFor();
   await processing.waitFor();
+  assert.deepEqual(await verifyMailActionRow(latestCard), closedActions, "Replacing the processing hint with status detail leaves the desktop controls in place");
   assert.equal(await desktopBadge.textContent(), "2", "Desktop status expansion leaves both arrivals unread");
   await desktopStatus.click();
   await latestCard.getByText("原文", { exact: true }).click();
@@ -278,7 +280,11 @@ export async function verifyAssistantMailHistory(page, host, steps, directory, v
   try {
     await emulation.send("Emulation.setSafeAreaInsetsOverride", { insets: { top: 0, right: 0, bottom: 48, left: 0 } });
     await expandInboxMail(latest);
-    await latest.getByRole("button", { name: "标为垃圾邮件", exact: true }).click();
+    const markJunk = latest.getByRole("button", { name: "标为垃圾邮件", exact: true });
+    await markJunk.waitFor();
+    const { width, height } = await markJunk.boundingBox();
+    assert.ok(width >= 44 && height >= 44, "The legacy junk action retains its mobile touch target");
+    await markJunk.click();
     const feedback = page.locator(".assistant-mail-junk-feedback");
     await feedback.waitFor();
     assert.ok(await feedback.evaluate(element => element.getBoundingClientRect().bottom <= innerHeight - 48),
@@ -307,8 +313,18 @@ export async function verifyAssistantMailHistory(page, host, steps, directory, v
   });
   await expandInboxMail(filedCard);
   assert.equal(await filedCard.locator("select").count(), 0, "Mail filing does not open a native select");
-  await filing.waitFor();
-  assert.ok((await filing.boundingBox()).height >= 44);
+  const viewport = page.viewportSize();
+  await page.setViewportSize({ ...viewport, width: 320 });
+  const fontSize = await page.locator("html").getAttribute("data-font-size");
+  await page.evaluate(() => { document.documentElement.dataset.fontSize = "larger"; });
+  await verifyMailActionRow(filedCard, 44, "收入分类");
+  await filedCard.scrollIntoViewIfNeeded();
+  await assistantViewCapture(page, directory, viewports)("mobile-inbox-wrapped-actions");
+  await page.evaluate(size => {
+    if (size === null) document.documentElement.removeAttribute("data-font-size");
+    else document.documentElement.dataset.fontSize = size;
+  }, fontSize);
+  await page.setViewportSize(viewport);
   const beforeCancel = host.requests.filter(request => request.method === "plugin.assistant-mail.filing.set").length;
   await filing.click();
   await account.waitFor();
@@ -548,6 +564,33 @@ async function verifyCollapsedConversationMail(card) {
   const { height } = await card.boundingBox();
   assert.ok(height >= 44 && height <= 64, "A collapsed conversation mail fits the inbox row's height budget");
   return summary;
+}
+
+async function verifyMailActionRow(card, minSize = 0, wrappedAction) {
+  const labels = ["状态", "原文", "讨论此邮件"];
+  if (wrappedAction) labels.push(wrappedAction);
+  const actions = await Promise.all(labels.map(label =>
+    card.getByText(label, { exact: true }).evaluate(element => {
+      const { x, y, width, height } = element.getBoundingClientRect();
+      const cardBounds = element.closest("[data-mail-id]").getBoundingClientRect();
+      const { fontSize, fontWeight } = getComputedStyle(element);
+      const text = document.createRange();
+      text.selectNodeContents(element);
+      return { x: x - cardBounds.x, y: y - cardBounds.y, width, height, fontSize, fontWeight, textY: text.getBoundingClientRect().y - cardBounds.y };
+    })));
+  const [status, original, discuss, extra] = actions;
+  assert.ok([original, discuss].every(action => Math.abs(action.y - status.y) <= 1 && Math.abs(action.textY - status.textY) <= 1)
+    && actions.every(action => action.fontSize === status.fontSize && action.fontWeight === status.fontWeight),
+  `Status, Original and Discuss share one aligned row and typography: ${JSON.stringify(actions)}`);
+  const firstGap = original.x - (status.x + status.width);
+  const secondGap = discuss.x - (original.x + original.width);
+  assert.ok(firstGap >= 0 && secondGap >= 0 && Math.abs(firstGap - secondGap) <= 1, "Actions appear in order with even spacing");
+  assert.ok(actions.every(({ width, height }) => width >= minSize && height >= minSize), `Action hit areas are at least ${minSize}px`);
+  if (extra) {
+    assert.ok(extra.y >= status.y + status.height && Math.abs(extra.x - status.x) <= 1,
+      `${wrappedAction} starts a new row at narrow width: ${JSON.stringify(actions)}`);
+  }
+  return actions;
 }
 
 export async function verifyAssistantMail(page, host, steps, directory, viewports, baseUrl, liveMailFirst) {
@@ -792,14 +835,16 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   const timelineSummary = await verifyCollapsedConversationMail(timelineMail);
   await eventually(() => page.locator(".conversation-loading").count(), 0, "Native history finishes loading");
   assert.equal(await page.getByText("这是一个空会话", { exact: true }).count(), 0);
+  const mobileViewport = page.viewportSize();
+  await page.setViewportSize({ ...mobileViewport, width: 360 });
   await timelineSummary.press("Enter");
   const timelinePreview = timelineMail.locator(".assistant-mail-preview");
   await timelinePreview.waitFor();
   assert.equal(await timelinePreview.evaluate(element => getComputedStyle(element).webkitLineClamp), "3");
-  await timelineMail.getByText("原文", { exact: true }).waitFor();
-  await timelineMail.getByRole("button", { name: "讨论此邮件", exact: true }).waitFor();
+  await verifyMailActionRow(timelineMail, 44);
   await timelineMail.locator(".assistant-mail-row > summary").press("Space");
   await timelinePreview.waitFor({ state: "detached" });
+  await page.setViewportSize(mobileViewport);
   steps.push("Standalone conversation mail starts collapsed, keeps the received time and sender, and reveals the preview and actions by keyboard");
   assert.equal(await page.getByRole("button", { name: "返回", exact: true }).filter({ visible: true }).count(), 1, "Embedded native view keeps one root back navigation control");
   assert.equal(await page.locator(".assistant-page .m-header").count(), 1, "Mobile assistant has one header");
@@ -1046,8 +1091,27 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   const batchMailIds = await batchCards.evaluateAll(cards => cards.map(card => card.dataset.mailId));
   for (const card of await batchCards.all()) await verifyCollapsedConversationMail(card);
   const firstBatchCard = batchCards.first();
+  await page.setViewportSize({ ...mobileViewport, width: 360 });
   await expandInboxMail(firstBatchCard);
-  await firstBatchCard.getByRole("button", { name: "讨论此邮件", exact: true }).click();
+  const statusButton = firstBatchCard.getByRole("button", { name: "状态", exact: true });
+  const originalButton = firstBatchCard.getByRole("button", { name: "原文", exact: true });
+  const discussButton = firstBatchCard.getByRole("button", { name: "讨论此邮件", exact: true });
+  const closedPositions = await verifyMailActionRow(firstBatchCard, 44);
+  assert.equal(await statusButton.getAttribute("aria-expanded"), "false");
+  await statusButton.press("Enter");
+  assert.equal(await statusButton.getAttribute("aria-expanded"), "true");
+  await firstBatchCard.getByText("待处理", { exact: true }).waitFor();
+  assert.deepEqual(await verifyMailActionRow(firstBatchCard, 44), closedPositions, "Opening status preserves each control's position within the card");
+  await page.keyboard.press("Tab");
+  assert.ok(await originalButton.evaluate(button => button === document.activeElement), "Tab moves from Status to Original");
+  await page.keyboard.press("Tab");
+  assert.ok(await discussButton.evaluate(button => button === document.activeElement), "Tab moves from Original to Discuss");
+  await firstBatchCard.scrollIntoViewIfNeeded();
+  await capture("mobile-wake-mail-actions");
+  await statusButton.press("Space");
+  await firstBatchCard.getByText("待处理", { exact: true }).waitFor({ state: "hidden" });
+  await page.setViewportSize(mobileViewport);
+  await discussButton.click();
   await page.locator(".assistant-mail-reference").waitFor();
   await page.getByRole("button", { name: "清除邮件引用" }).click();
   await firstBatchCard.locator(".assistant-mail-row > summary").click();
@@ -1061,8 +1125,9 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
     for (const mailId of batchMailIds) await verifyCollapsedConversationMail(desktopBatch.locator(`[data-mail-id="${mailId}"]`));
     const desktopBatchMail = desktopBatch.locator(`[data-mail-id="${batchMailIds[0]}"]`);
     await expandInboxMail(desktopBatchMail);
-    await desktopBatchMail.getByText("原文", { exact: true }).waitFor();
-    await desktopBatchMail.getByRole("button", { name: "讨论此邮件", exact: true }).waitFor();
+    await verifyMailActionRow(desktopBatchMail);
+    await desktopBatchMail.scrollIntoViewIfNeeded();
+    await assistantViewCapture(batchDesktop, directory, viewports)("desktop-wake-mail-actions");
     await desktopBatchMail.locator(".assistant-mail-row > summary").click();
     await desktopBatchMail.locator(".assistant-mail-row-content").waitFor({ state: "detached" });
     await assistantViewCapture(batchDesktop, directory, viewports)("desktop-assistant-trigger-batch");
@@ -1292,8 +1357,7 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await verifyCollapsedConversationMail(desktopMail);
   await expandInboxMail(desktopMail);
   await desktopMail.locator(".assistant-mail-preview").waitFor();
-  await desktopMail.getByText("原文", { exact: true }).waitFor();
-  await desktopMail.getByRole("button", { name: "讨论此邮件", exact: true }).waitFor();
+  await verifyMailActionRow(desktopMail);
   await desktopMail.locator(".assistant-mail-row > summary").click();
   await desktopMail.locator(".assistant-mail-row-content").waitFor({ state: "detached" });
   steps.push("Desktop standalone conversation mail is compact and exposes its preview, original and discuss action when expanded");

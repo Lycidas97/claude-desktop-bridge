@@ -3,6 +3,7 @@ import { CalendarDays, FilePenLine, ListTodo, Mail, MessageSquare } from "lucide
 import { useEffect, useId, useState, type FormEvent } from "react";
 import { agendaInputTime, agendaInstant, agendaTimedRange } from "../../lib/assistant-agenda.js";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
+import { MessageCopyButton } from "../common/MessageCopyButton.js";
 import { Sheet } from "../common/Sheet.js";
 import { mailResult } from "./AssistantMailProvider.js";
 import { proposalRef, useAssistantProposals } from "./AssistantProposalProvider.js";
@@ -111,7 +112,7 @@ export function ProposalCard({ proposal, mobile, review = false, replaced = fals
   const [outcome, setOutcome] = useState<BridgeActionProposal>();
   const [editing, setEditing] = useState<BridgeActionProposal>();
   const [mailSheet, setMailSheet] = useState<{ proposal: BridgeActionProposal; mode: "send" | "edit" | "view" }>();
-  const [sessionReview, setSessionReview] = useState<BridgeActionProposal>();
+  const [sessionSheet, setSessionSheet] = useState<BridgeActionProposal>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const current = outcome?.proposalId === proposal.proposalId && (outcome.revision > proposal.revision ||
@@ -136,7 +137,7 @@ export function ProposalCard({ proposal, mobile, review = false, replaced = fals
       const { proposal: result } = mailResult<{ proposal: BridgeActionProposal }>(await controller!.request(method, { ...proposalRef(pinned), ...review }));
       setOutcome(result);
       onResult?.(result);
-      if (session) setSessionReview(undefined);
+      if (session) setSessionSheet(undefined);
       if (result.action.kind === "session.open" && result.state === "applied") controller!.openSession(result.action.targetSessionId);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "无法处理提案。"); }
     finally { setBusy(false); controller!.refresh(); }
@@ -170,11 +171,11 @@ export function ProposalCard({ proposal, mobile, review = false, replaced = fals
       : state === "delivery_uncertain" ? `投递不确定${failure ? `：${failure.label}` : ""}。请核查「已发送」；找不到副本不代表未发送。Bridge 不会自动重发。`
       : state === "delivery_partial" ? `发送服务器拒绝了以下地址：${current.rejectedRecipients?.join("、")}。其余地址已接受，不会自动重发。`
       : proposalStateDetail[state] ?? proposalStatus(current)}</p>}
-    {error && !sessionReview && <p role="alert">{error}</p>}
+    {error && !sessionSheet && <p role="alert">{error}</p>}
     {state === "pending" && !editing && <div className="proposal-actions">
       {session ? <button type="button" className="primary-button" disabled={disabled || !current.sessionTarget} onClick={() => {
         setError("");
-        setSessionReview(current);
+        setSessionSheet(current);
       }}>{action.kind === "session.send" ? "核对会话消息…" : "核对目标会话…"}</button> : mail ? <>
         <button type="button" className="primary-button" disabled={disabled} onClick={() => setMailSheet({ proposal: current, mode: "send" })}>核对并发送…</button>
         <button type="button" className="secondary-button" disabled={disabled} onClick={() => setMailSheet({ proposal: current, mode: "edit" })}>编辑</button>
@@ -184,10 +185,15 @@ export function ProposalCard({ proposal, mobile, review = false, replaced = fals
       {"value" in action && <button type="button" className="secondary-button" disabled={disabled} onClick={() => setEditing(current)}>调整</button>}
       <button type="button" className="assistant-session-link" disabled={disabled} onClick={() => void decide("assistant.proposal.dismiss")}>忽略</button>
     </div>}
-    {sessionReview && <SessionProposalReview proposal={sessionReview} hostName={controller!.hostName} mobile={mobile} busy={busy} error={error}
-      stale={replaced || current.payloadHash !== sessionReview.payloadHash || state !== "pending"}
-      offline={!controller?.online} onClose={() => { setSessionReview(undefined); setError(""); }}
-      onConfirm={() => void decide("assistant.proposal.commit", sessionReview)} />}
+    {action.kind === "session.send" && state !== "pending" && <div className="proposal-actions">
+      <button type="button" className="secondary-button" onClick={() => setSessionSheet(current)}>查看消息原文</button>
+    </div>}
+    {sessionSheet && <SessionProposalSheet proposal={sessionSheet} hostName={controller!.hostName} mobile={mobile}
+      onClose={() => { setSessionSheet(undefined); setError(""); }}
+      confirmation={sessionSheet.state === "pending" ? {
+        busy, error, stale: replaced || current.payloadHash !== sessionSheet.payloadHash || state !== "pending", offline: !controller?.online,
+        confirm: () => void decide("assistant.proposal.commit", sessionSheet),
+      } : undefined} />}
     {mail && state !== "pending" && <div className="proposal-actions">
       <button type="button" className="secondary-button" onClick={() => setMailSheet({ proposal: current, mode: "view" })}>查看邮件版本</button>
     </div>}
@@ -200,23 +206,24 @@ export function ProposalCard({ proposal, mobile, review = false, replaced = fals
   </section>;
 }
 
-function SessionProposalReview({ proposal, hostName, mobile, busy, error, stale, offline, onClose, onConfirm }: {
-  proposal: BridgeActionProposal; hostName: string; mobile: boolean; busy: boolean; error: string; stale: boolean; offline: boolean;
-  onClose(): void; onConfirm(): void;
+function SessionProposalSheet({ proposal, hostName, mobile, onClose, confirmation }: {
+  proposal: BridgeActionProposal; hostName: string; mobile: boolean; onClose(): void;
+  confirmation: { busy: boolean; error: string; stale: boolean; offline: boolean; confirm(): void } | undefined;
 }) {
+  const busy = confirmation?.busy ?? false;
   useEffect(() => {
     if (mobile) return registerMobileBackHandler(() => { if (!busy) onClose(); return true; }, 150);
   }, [mobile, busy, onClose]);
   const { action, sessionTarget } = proposal;
   if (!("targetSessionId" in action) || !sessionTarget) return null;
   const send = action.kind === "session.send";
-  return <Sheet title={send ? "核对会话消息" : "核对目标会话"} fullScreen={mobile} manageFocus busy={busy} onClose={onClose}
-    footer={<div className="proposal-actions">
+  return <Sheet title={confirmation ? (send ? "核对会话消息" : "核对目标会话") : "会话消息原文"} fullScreen={mobile} manageFocus busy={busy} onClose={onClose}
+    footer={confirmation ? <div className="proposal-actions">
       <button type="button" className="secondary-button" disabled={busy} onClick={onClose}>取消</button>
-      <button type="button" className="primary-button" disabled={busy || stale || offline} onClick={onConfirm}>
+      <button type="button" className="primary-button" disabled={busy || confirmation.stale || confirmation.offline} onClick={confirmation.confirm}>
         {busy ? "处理中…" : send ? "确认发送消息" : "确认打开会话"}
       </button>
-    </div>}>
+    </div> : send && <div className="proposal-actions"><MessageCopyButton text={action.text} label="复制消息原文" buttonText="复制原文" /></div>}>
     <div className="session-proposal-review">
       <dl className="proposal-fields">
         <dt>电脑</dt><dd>{hostName}</dd>
@@ -225,13 +232,13 @@ function SessionProposalReview({ proposal, hostName, mobile, busy, error, stale,
         <dt>会话 ID</dt><dd><bdi>{action.targetSessionId}</bdi></dd>
         <dt>版本</dt><dd>{proposal.revision}</dd>
       </dl>
-      {send ? <>
-        <pre aria-label="完整消息正文">{action.text}</pre>
-        <p>发送可能启动一轮对话，仍使用目标会话的权限。</p>
-      </> : <p>仅在此客户端打开会话，不发送消息。</p>}
-      {stale && <p role="status">提案已更新或处理。关闭后重新核对。</p>}
-      {offline && <p role="status">连接电脑后可确认。</p>}
-      {error && <p role="alert">{error}</p>}
+      {send && <pre aria-label="完整消息正文">{action.text}</pre>}
+      {confirmation && <>
+        <p>{send ? "发送可能启动一轮对话，仍使用目标会话的权限。" : "仅在此客户端打开会话，不发送消息。"}</p>
+        {confirmation.stale && <p role="status">提案已更新或处理。关闭后重新核对。</p>}
+        {confirmation.offline && <p role="status">连接电脑后可确认。</p>}
+        {confirmation.error && <p role="alert">{confirmation.error}</p>}
+      </>}
     </div>
   </Sheet>;
 }

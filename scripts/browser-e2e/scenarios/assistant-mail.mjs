@@ -74,6 +74,13 @@ export async function verifyAssistantMailUnread(page, host, steps, directory, vi
   const close = reader.getByRole("button", { name: "关闭", exact: true });
   await original.waitFor();
   assert.doesNotMatch(await firstCard.innerText(), /已记录|未提交|待处理|未自动发给助理|助理任务失败/u);
+  const [statusStyle, originalStyle] = await firstCard.locator(".assistant-mail-disclosures :is(summary, button)").evaluateAll(controls => controls.map(control => {
+    const { fontSize, color } = getComputedStyle(control);
+    const text = document.createRange();
+    text.selectNodeContents(control);
+    return { fontSize, color, baseline: text.getBoundingClientRect().bottom };
+  }));
+  assert.deepEqual(originalStyle, statusStyle, "原文 and 状态 share a text baseline, size, and color");
   await firstCard.getByText("状态", { exact: true }).click();
   await firstCard.getByText("未自动发给助理", { exact: true }).waitFor();
   await firstCard.getByText("待处理", { exact: true }).waitFor();

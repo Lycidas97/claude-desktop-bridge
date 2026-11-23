@@ -169,7 +169,7 @@ function MailCardContent({ card, compact, subject, sender, delivery, receivedTim
           {delivery && <div><dt>自动发送</dt><dd>{delivery.detail}</dd></div>}
         </dl>
       </details>
-      <button type="button" className="assistant-session-link" aria-haspopup="dialog" onClick={event => {
+      <button type="button" className="assistant-mail-original-trigger" aria-haspopup="dialog" onClick={event => {
         const opener = event.currentTarget;
         opener.focus({ preventScroll: true });
         originalVisible.current = true;

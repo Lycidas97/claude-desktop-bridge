@@ -1083,8 +1083,9 @@ export class ClaudeDesktopBridge extends EventEmitter {
         if (receipt) {
           item.text = receipt.displayText ?? item.text;
           if ((receipt.source === "assistant-trigger" || receipt.source === "assistant-proposal") && receipt.messageId === item.id &&
-            (receipt.state === "submitted" || receipt.state === "queued")) {
+            (receipt.state === "submitted" || receipt.state === "queued" || (receipt.source === "assistant-proposal" && receipt.state === "uncertain"))) {
             receipt.state = "session-received";
+            delete receipt.error;
             this.trackReceivedInput(receipt);
             this.options.conversationState.saveNativeDesktopReceipt(receipt);
             await this.record({ sessionId, itemId: item.id, turnId: item.id, origin: "claude-desktop", type: "message.delivery",

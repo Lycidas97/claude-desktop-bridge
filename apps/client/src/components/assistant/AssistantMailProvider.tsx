@@ -1,4 +1,4 @@
-import { ASSISTANT_ATTENTION_CAPABILITY, ASSISTANT_MAIL_CATEGORIES_CAPABILITY, ASSISTANT_MAIL_FILING_CAPABILITY, ASSISTANT_MAIL_RECEIVED_ORDER_CAPABILITY, DEFAULT_MAIL_CATEGORIES, type AssistantAttentionAcknowledgment, type AssistantAttentionItem, type BridgeAssistantMailSnapshot, type BridgeHostSnapshot, type BridgeMailCache, type BridgeMailCard, type BridgeMailCategoryEntry, type BridgeMailDetail, type BridgeMailPage, type BridgeMethod, type BridgeResponse } from "@bridge/protocol";
+import { ASSISTANT_ATTENTION_CAPABILITY, ASSISTANT_MAIL_CATEGORIES_CAPABILITY, ASSISTANT_MAIL_FILING_CAPABILITY, ASSISTANT_MAIL_ORIGINAL_CAPABILITY, ASSISTANT_MAIL_RECEIVED_ORDER_CAPABILITY, DEFAULT_MAIL_CATEGORIES, type AssistantAttentionAcknowledgment, type AssistantAttentionItem, type BridgeAssistantMailSnapshot, type BridgeHostSnapshot, type BridgeMailCache, type BridgeMailCard, type BridgeMailCategoryEntry, type BridgeMailDetail, type BridgeMailPage, type BridgeMethod, type BridgeResponse } from "@bridge/protocol";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { mergeMailCards, refreshMailPages } from "../../lib/assistant-mail.js";
 
@@ -41,7 +41,7 @@ interface AssistantMailState {
   reload(): void;
   refresh(): void;
   refreshStatus: "refreshing" | "refreshed" | undefined;
-  read(mailRefId: string): Promise<BridgeMailDetail>;
+  read(mailRefId: string, options?: { original: true }): Promise<BridgeMailDetail>;
   request: AssistantRequest;
 }
 const AssistantMailContext = createContext<AssistantMailState | undefined>(undefined);
@@ -252,6 +252,8 @@ export function AssistantMailProvider({ hostId, snapshot, online, request, loadC
     clearReference: () => setSelection(undefined),
     loading: loading || historyLoading, hasOlderMail, error, online, request, loadOlder, reload, refreshStatus,
     refresh: () => { setRefreshStatus("refreshing"); reload(); },
-    read: async mailRefId => mailResult<{ mailDetail: BridgeMailDetail }>(await request("plugin.assistant-mail.read", { mailRefId })).mailDetail,
+    read: async (mailRefId, options) => mailResult<{ mailDetail: BridgeMailDetail }>(await request("plugin.assistant-mail.read", {
+      mailRefId, ...(options?.original && capabilities.includes(ASSISTANT_MAIL_ORIGINAL_CAPABILITY) ? { original: true } : {}),
+    })).mailDetail,
   } : undefined}>{children}</AssistantMailContext.Provider>;
 }

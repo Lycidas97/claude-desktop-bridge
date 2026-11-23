@@ -1,9 +1,10 @@
 import { ARTIFACT_MAX_BYTES, mailAttachmentPreviewKind, type BridgeMailCategoryEntry, type BridgeMailFolder, type BridgeHistoryItem, type BridgeMailAttachment, type BridgeMailCard, type BridgeMailDetail } from "@bridge/protocol";
 import { ChevronRight, Download, Folder, Mail, Paperclip } from "lucide-react";
-import { useEffect, useState, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { downloadMailAttachment } from "../../lib/artifact-download.js";
 import { formatBytes } from "../../lib/media-preview.js";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
+import { MessageCopyButton } from "../common/MessageCopyButton.js";
 import { Sheet, SheetAction } from "../common/Sheet.js";
 import { useMediaPreview, useMediaRequest } from "../evidence/MediaPreviewProvider.js";
 import { useAssistantMail } from "./AssistantMailProvider.js";
@@ -126,6 +127,15 @@ function MailCardContent({ card, compact, subject, sender, delivery, receivedTim
   const [detail, setDetail] = useState<BridgeMailDetail>();
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [originalOpen, setOriginalOpen] = useState(false);
+  const originalVisible = useRef(false);
+  function closeOriginal() {
+    originalVisible.current = false;
+    setOriginalOpen(false);
+  }
+  useEffect(() => {
+    if (originalOpen) return registerMobileBackHandler(() => { closeOriginal(); return true; }, 150);
+  }, [originalOpen]);
   const attachments = detail?.attachments ?? card.attachments;
   const attachmentCount = detail?.attachmentCount ?? card.attachmentCount ?? attachments?.length;
   const attachmentList = attachments?.length ? <section className="assistant-attachments" aria-label="邮件附件">
@@ -134,7 +144,8 @@ function MailCardContent({ card, compact, subject, sender, delivery, receivedTim
       mailRefId={card.mailRefId} enabled={Boolean(mail?.online && mail.supportsAttachments)} />)}</ul>
     {attachmentCount !== undefined && attachmentCount > attachments.length && <small>仅显示前 {attachments.length} 个附件</small>}
   </section> : null;
-  const links = detail ? [...new Set(detail.bodyText.match(/https?:\/\/[^\s<>"']+/gu) ?? [])].filter(href => URL.canParse(href)).map(href => new URL(href)) : [];
+  const links = originalOpen && detail ? [...new Set(detail.bodyText.match(/https?:\/\/[^\s<>"']+/gu) ?? [])].filter(href => URL.canParse(href)).map(href => new URL(href)) : [];
+  const copyLabel = detail?.truncated ? "复制已显示内容" : "复制全文";
   const hint = delivery?.hint === "failed" ? "failed" : card.processingStatus === "processing" ? "processing" : delivery?.hint;
   return <>
     <header><span><Mail size={15} aria-hidden="true" />{accountLabel}</span>{receivedTime}</header>
@@ -158,22 +169,29 @@ function MailCardContent({ card, compact, subject, sender, delivery, receivedTim
           {delivery && <div><dt>自动发送</dt><dd>{delivery.detail}</dd></div>}
         </dl>
       </details>
-      <details onToggle={event => {
-        const disclosure = event.currentTarget;
-        if (!disclosure.open || loading || !mail?.online) return;
+      <button type="button" className="assistant-session-link" aria-haspopup="dialog" onClick={event => {
+        const opener = event.currentTarget;
+        opener.focus({ preventScroll: true });
+        originalVisible.current = true;
+        setOriginalOpen(true);
+        if (!mail?.online || loading) return;
         if (detail) { mail.markViewed(card); return; }
         setLoading(true); setError("");
-        void mail.read(card.mailRefId).then(result => {
+        void mail.read(card.mailRefId, { original: true }).then(result => {
           setDetail(result);
-          if (disclosure.open && disclosure.isConnected) mail.markViewed(card);
+          if (originalVisible.current && opener.isConnected) mail.markViewed(card);
         })
           .catch(reason => setError(reason instanceof Error ? reason.message : "原文读取失败"))
           .finally(() => setLoading(false));
-      }}><summary>原文</summary>
-        {detail ? <><pre>{detail.bodyText}</pre>{detail.truncated && <p>原文过长，已截取前 256,000 个字符。</p>}
+      }}>原文</button>
+      {originalOpen && <Sheet title={subject} className="assistant-mail-original" manageFocus onClose={closeOriginal} footer={detail &&
+        <MessageCopyButton text={detail.bodyText} label={copyLabel} buttonText={copyLabel} />}>
+        {detail ? <>
+          {detail.truncated && <p role="status">仅显示部分原文。</p>}
+          <pre className="assistant-mail-original-body" tabIndex={0}>{detail.bodyText}</pre>
           {links.length > 0 && <ul className="assistant-mail-links" aria-label="邮件中的外部链接">{links.map((url, index) => <li key={index}><a href={url.href} target="_blank" rel="noopener noreferrer"><span>{url.host}</span><span className="assistant-mail-link-path">{url.pathname}{url.search}{url.hash}</span></a></li>)}</ul>}
-        </> : <p role={error ? "alert" : "status"}>{error || (loading ? "正在读取原文…" : mail?.online ? "展开以读取原文" : "连接电脑后可查看原文")}</p>}
-      </details>
+        </> : <p role={error ? "alert" : "status"}>{error || (loading ? "正在读取原文…" : "连接电脑后可查看原文")}</p>}
+      </Sheet>}
     </div>
     {nativeMessage && <details className="assistant-mail-native"><summary>关联原生消息</summary><code>{nativeMessage.id}</code><pre>{nativeMessage.text}</pre></details>}
     {mail && <div className="assistant-actions">

@@ -544,6 +544,19 @@ describe("assistant mail mobile RPC projections", () => {
     const event = await record(1, `Content-Type: text/plain; charset=utf-8\r\n\r\n${"x".repeat(length)}`);
     const { mailDetail } = await run.request<{ mailDetail: BridgeMailDetail }>("plugin.assistant-mail.read", { mailRefId: event.mailRefId });
     expect(mailDetail).toEqual({ mailRefId: event.mailRefId, bodyText: "x".repeat(256_000), truncated: length > 256_000 });
+    expect((await run.publish()).host.capabilities).toContain("plugin.assistant-mail.original.v1");
+    await expect(run.request("plugin.assistant-mail.read", { mailRefId: event.mailRefId, original: true })).resolves.toEqual({
+      mailDetail: { mailRefId: event.mailRefId, bodyText: "x".repeat(length), truncated: false },
+    });
+  });
+
+  it("bounds oversized originals by their JSON byte size", async () => {
+    const body = `${'"'.repeat(750)}\n`.repeat(5_600);
+    const { mailRefId } = await record(1, `Content-Type: text/plain; charset=utf-8\r\n\r\n${body}`);
+    await expect(run.request("plugin.assistant-mail.read", { mailRefId, original: true })).resolves.toMatchObject({
+      mailDetail: { mailRefId, bodyText: body.slice(0, 256_000), truncated: true },
+    });
+    await expect(run.request("plugin.assistant-mail.read", { mailRefId, original: "true" })).rejects.toMatchObject({ code: "INVALID_PARAMS" });
   });
 
   it("returns NOT_FOUND for a missing mail reference", async () => {

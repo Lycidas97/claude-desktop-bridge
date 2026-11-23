@@ -87,14 +87,16 @@ describe("MailCard plain text rendering", () => {
     expect(html).toContain("<h4>问题</h4><ul><li>&lt;video");
   });
 
-  it("shows complete status in its own disclosure, not in the preview or original", () => {
+  it("associates the Status button with its hidden processing and delivery details", () => {
     const html = renderToStaticMarkup(createElement(MailCard, { card: card({ processingStatus: "processed" }) }));
-    const [collapsed, status] = html.split("<summary>状态</summary>");
+    const statusId = html.match(/aria-expanded="false" aria-controls="([^"]+)">状态<\/button>/u)?.[1];
+    expect(statusId).toBeDefined();
+    const [content, status] = html.split(`<dl id="${statusId}" class="assistant-mail-detail-status" hidden="">`);
 
-    expect(collapsed).not.toMatch(/已处理|未自动发给助理/u);
-    expect(status?.split("</details>")[0]).toContain("已处理");
-    expect(status?.split("</details>")[0]).toContain("未自动发给助理");
-    expect(status?.split("</details>")[1]).not.toMatch(/已处理|未自动发给助理/u);
+    expect(content).not.toMatch(/已处理|未自动发给助理/u);
+    expect(status?.split("</dl>")[0]).toContain("已处理");
+    expect(status?.split("</dl>")[0]).toContain("未自动发给助理");
+    expect(status?.split("</dl>")[1]).not.toMatch(/已处理|未自动发给助理/u);
     expect(html).not.toMatch(/已记录|原生投递|业务处理|未提交/u);
   });
 
@@ -104,7 +106,7 @@ describe("MailCard plain text rendering", () => {
     ["observed", undefined], ["uncertain", undefined], ["failed", "助理任务失败"], ["cancelled", undefined],
   ])("shows only the relevant collapsed hint for delivery state %s", (state, hint) => {
     const html = renderToStaticMarkup(createElement(MailCard, { card: card({ nativeDelivery: { state } }) }));
-    const [collapsed] = html.split("<summary>状态</summary>");
+    const [collapsed] = html.split(/<dl[^>]*class="assistant-mail-detail-status"/u);
 
     expect(collapsed?.match(/等待助理|处理中|助理任务失败/gu) ?? []).toEqual(hint ? [hint] : []);
   });
@@ -122,7 +124,7 @@ describe("MailCard plain text rendering", () => {
     const html = renderToStaticMarkup(createElement(MailCard, { card: card({
       processingStatus: "processing", nativeDelivery: { state: "queued" },
     }) }));
-    const [collapsed] = html.split("<summary>状态</summary>");
+    const [collapsed] = html.split(/<dl[^>]*class="assistant-mail-detail-status"/u);
 
     expect(collapsed?.match(/等待助理|处理中|助理任务失败/gu)).toEqual(["处理中"]);
   });

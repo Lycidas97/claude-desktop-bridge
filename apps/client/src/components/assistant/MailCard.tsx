@@ -1,6 +1,6 @@
 import { ARTIFACT_MAX_BYTES, mailAttachmentPreviewKind, type BridgeMailCategoryEntry, type BridgeMailFolder, type BridgeHistoryItem, type BridgeMailAttachment, type BridgeMailCard, type BridgeMailDetail } from "@bridge/protocol";
 import { ChevronRight, Download, Folder, Mail, Paperclip } from "lucide-react";
-import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { downloadMailAttachment } from "../../lib/artifact-download.js";
 import { formatBytes } from "../../lib/media-preview.js";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
@@ -127,6 +127,8 @@ function MailCardContent({ card, compact, subject, sender, delivery, receivedTim
   const [detail, setDetail] = useState<BridgeMailDetail>();
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [statusOpen, setStatusOpen] = useState(false);
+  const statusId = useId();
   const [originalOpen, setOriginalOpen] = useState(false);
   const originalVisible = useRef(false);
   function closeOriginal() {
@@ -153,7 +155,6 @@ function MailCardContent({ card, compact, subject, sender, delivery, receivedTim
     {!compact && <><h3>{subject}</h3><p className="assistant-mail-from">{sender}</p></>}
     {card.preview && <p className="assistant-mail-preview">{card.preview}</p>}
     {card.previewError && <p className="assistant-mail-from" role="status">{card.previewError}</p>}
-    {hint && <p className="assistant-mail-hint" data-tone={hint === "failed" ? "failed" : undefined}>{MAIL_HINT_LABELS[hint]}</p>}
     {card.analysis && <details onToggle={event => {
       if (event.currentTarget.open && mail?.attention !== undefined && (card.analysis?.summary || card.analysis?.suggestions?.length || card.analysis?.questions?.length)) mail.markViewed(card);
     }}><summary>分析结果</summary>
@@ -162,13 +163,9 @@ function MailCardContent({ card, compact, subject, sender, delivery, receivedTim
       {card.analysis.questions?.length ? <><h4>问题</h4><ul>{card.analysis.questions.map((question, index) => <li key={index}>{question}</li>)}</ul></> : null}
     </details>}
     {attachmentList}
-    <div className="assistant-mail-disclosures">
-      <details className="assistant-mail-status"><summary>状态</summary>
-        <dl className="assistant-mail-detail-status">
-          <div><dt>助理处理</dt><dd>{PROCESSING_LABELS[card.processingStatus]}</dd></div>
-          {delivery && <div><dt>自动发送</dt><dd>{delivery.detail}</dd></div>}
-        </dl>
-      </details>
+    <div className="assistant-actions assistant-mail-actions" role="group" aria-label="邮件操作">
+      <button type="button" className="assistant-session-link" aria-expanded={statusOpen} aria-controls={statusId}
+        onClick={() => setStatusOpen(open => !open)}>状态</button>
       <button type="button" className="assistant-session-link" aria-haspopup="dialog" onClick={event => {
         const opener = event.currentTarget;
         opener.focus({ preventScroll: true });
@@ -184,24 +181,27 @@ function MailCardContent({ card, compact, subject, sender, delivery, receivedTim
           .catch(reason => setError(reason instanceof Error ? reason.message : "原文读取失败"))
           .finally(() => setLoading(false));
       }}>原文</button>
-      {originalOpen && <Sheet title={subject} className="assistant-mail-original" manageFocus onClose={closeOriginal} footer={detail &&
-        <MessageCopyButton text={detail.bodyText} label={copyLabel} buttonText={copyLabel} />}>
-        {detail ? <>
-          {detail.truncated && <p role="status">仅显示部分原文。</p>}
-          <pre className="assistant-mail-original-body" tabIndex={0}>{detail.bodyText}</pre>
-          {links.length > 0 && <ul className="assistant-mail-links" aria-label="邮件中的外部链接">{links.map((url, index) => <li key={index}><a href={url.href} target="_blank" rel="noopener noreferrer"><span>{url.host}</span><span className="assistant-mail-link-path">{url.pathname}{url.search}{url.hash}</span></a></li>)}</ul>}
-        </> : <p role={error ? "alert" : "status"}>{error || (loading ? "正在读取原文…" : "连接电脑后可查看原文")}</p>}
-      </Sheet>}
-    </div>
-    {nativeMessage && <details className="assistant-mail-native"><summary>关联原生消息</summary><code>{nativeMessage.id}</code><pre>{nativeMessage.text}</pre></details>}
-    {mail && <div className="assistant-actions">
-      <button type="button" className="assistant-session-link" disabled={!mail.canReference} onClick={() => { mail.selectMail(card); onDiscuss?.(); }}>讨论此邮件</button>
-      {filing && <>
-        {card.folder
+      {mail && <>
+        <button type="button" className="assistant-session-link" disabled={!mail.canReference} onClick={() => { mail.selectMail(card); onDiscuss?.(); }}>讨论此邮件</button>
+        {filing && (card.folder
           ? <button type="button" className="assistant-session-link" disabled={filing.disabled} onClick={event => filing.move("inbox", event.currentTarget)}>收回收件</button>
-          : <MailCategoryPicker categories={mail.categories} disabled={filing.disabled} move={filing.move} />}
+          : <MailCategoryPicker categories={mail.categories} disabled={filing.disabled} move={filing.move} />)}
+        {junkAction && <button type="button" className="assistant-session-link assistant-mail-junk-action" disabled={junkAction.disabled} onClick={junkAction.onMark}>标为垃圾邮件</button>}
       </>}
-      {junkAction && <button type="button" className="assistant-session-link assistant-mail-junk-action" disabled={junkAction.disabled} onClick={junkAction.onMark}>标为垃圾邮件</button>}
-    </div>}
+    </div>
+    {!statusOpen && hint && <p className="assistant-mail-hint" data-tone={hint === "failed" ? "failed" : undefined}>{MAIL_HINT_LABELS[hint]}</p>}
+    <dl id={statusId} className="assistant-mail-detail-status" hidden={!statusOpen}>
+      <div><dt>助理处理</dt><dd>{PROCESSING_LABELS[card.processingStatus]}</dd></div>
+      {delivery && <div><dt>自动发送</dt><dd>{delivery.detail}</dd></div>}
+    </dl>
+    {nativeMessage && <details className="assistant-mail-native"><summary>关联原生消息</summary><code>{nativeMessage.id}</code><pre>{nativeMessage.text}</pre></details>}
+    {originalOpen && <Sheet title={subject} className="assistant-mail-original" manageFocus onClose={closeOriginal} footer={detail &&
+      <MessageCopyButton text={detail.bodyText} label={copyLabel} buttonText={copyLabel} />}>
+      {detail ? <>
+        {detail.truncated && <p role="status">仅显示部分原文。</p>}
+        <pre className="assistant-mail-original-body" tabIndex={0}>{detail.bodyText}</pre>
+        {links.length > 0 && <ul className="assistant-mail-links" aria-label="邮件中的外部链接">{links.map((url, index) => <li key={index}><a href={url.href} target="_blank" rel="noopener noreferrer"><span>{url.host}</span><span className="assistant-mail-link-path">{url.pathname}{url.search}{url.hash}</span></a></li>)}</ul>}
+      </> : <p role={error ? "alert" : "status"}>{error || (loading ? "正在读取原文…" : "连接电脑后可查看原文")}</p>}
+    </Sheet>}
   </>;
 }

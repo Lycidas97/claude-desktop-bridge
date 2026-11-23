@@ -1082,13 +1082,14 @@ export class ClaudeDesktopBridge extends EventEmitter {
         const receipt = item.role === "user" ? this.historyReceipt(sessionId, item.id) : undefined;
         if (receipt) {
           item.text = receipt.displayText ?? item.text;
-          if (receipt.source === "assistant-trigger" && receipt.messageId === item.id &&
+          if ((receipt.source === "assistant-trigger" || receipt.source === "assistant-proposal") && receipt.messageId === item.id &&
             (receipt.state === "submitted" || receipt.state === "queued")) {
             receipt.state = "session-received";
             this.trackReceivedInput(receipt);
             this.options.conversationState.saveNativeDesktopReceipt(receipt);
             await this.record({ sessionId, itemId: item.id, turnId: item.id, origin: "claude-desktop", type: "message.delivery",
-              data: { commandId: receipt.commandId, requestId: receipt.requestId, messageId: receipt.messageId, delivery: receipt.state } });
+              data: { commandId: receipt.commandId, requestId: receipt.requestId, messageId: receipt.messageId, delivery: receipt.state,
+                ...(receipt.source === "assistant-proposal" ? { source: receipt.source } : {}) } });
             observed = true;
           }
           item.delivery = receipt.state === "dispatching" ? "host-received" : receipt.state;

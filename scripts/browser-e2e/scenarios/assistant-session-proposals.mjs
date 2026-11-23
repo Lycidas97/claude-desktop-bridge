@@ -98,9 +98,19 @@ export async function verifyAssistantSessionProposals(phone, host, steps, direct
   const receipt = native.receipts().find(receipt => receipt.sessionId === targetId);
   assert.equal(receipt.source, "assistant-proposal");
   await assert.rejects(request("turn.start", { sessionId: targetId, text: "Replay" }, receipt.idempotencyKey), { code: "INVALID_PARAMS" });
+  const resolveProposal = () => request("assistant.proposal.resolve", { sessionId: host.session.sessionId, refs: [revised], includeSession: true });
+  // Native persisted the input while Bridge missed its live events.
+  const beforeHistory = host.events.length;
+  native.appendHistory([{ type: "user", uuid: receipt.messageId, message: { content: message } }]);
+  const { history } = await request("session.open", { sessionId: targetId });
+  const accepted = history.items.find(item => item.id === receipt.messageId);
+  assert.equal(accepted?.text, message.trimEnd());
+  assert.equal(accepted.delivery, "session-received");
+  assert.equal((await resolveProposal()).proposals[0].sessionDelivery, "session-received");
+  assert.ok(host.events.slice(beforeHistory).some(event => event.type === "assistant.proposal.changed"));
+  assert.equal(targetSends().length, 1);
   await native.advanceAssistantTrigger(targetId, receipt.messageId, "completed");
-  const projected = await request("assistant.proposal.resolve", { sessionId: host.session.sessionId, refs: [revised], includeSession: true });
-  assert.equal(projected.proposals[0].sessionDelivery, "completed");
+  assert.equal((await resolveProposal()).proposals[0].sessionDelivery, "completed");
   assert.equal(targetSends().length, 1);
   const ignored = (await native.draftProposal({ ...send, text: "This message must not be sent." })).result;
   await openMobileAssistant(phone);

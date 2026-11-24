@@ -704,6 +704,8 @@ export function ConversationView({
   }, [draftKey, effectiveSessionView, composerHidden, text, visible]);
 
   const { streamRef, onScroll } = useConversationScroll({
+    assistant: isAssistant,
+    findingReply: Boolean(assistantReplyTarget),
     sessionId: session.sessionId,
     sessionView: isAssistant ? "conversation" : effectiveSessionView,
     streamVisible: visible && !transcriptHidden,
@@ -890,9 +892,9 @@ export function ConversationView({
       {displayNodes.length === 0
         && sessionQuestions.length === 0
         && orphanUncertainDeliveries.length === 0
-        && history?.status === "ready" && (
+        && history?.status === "ready" && (!isAssistant || !history.hasMore) && (
           <div className="conversation-empty">
-            <strong>这是一个空会话</strong>
+            <strong>{isAssistant ? "暂无对话" : "这是一个空会话"}</strong>
           </div>
         )}
       {displayNodes.map((node) => {

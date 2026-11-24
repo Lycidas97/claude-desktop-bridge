@@ -3,9 +3,11 @@ import type { SessionHistoryState } from "../../hooks/useMobileBridge.js";
 
 type StreamAnchor = { key: string; offset: number };
 
-export function useConversationScroll({ sessionId, sessionView, streamVisible, history, openedEvidenceIds, inlineProposalLayout, timelineStreamKeys, streamKeys, onLoadOlderHistory }: {
+export function useConversationScroll({ sessionId, sessionView, streamVisible, history, openedEvidenceIds, inlineProposalLayout, timelineStreamKeys, streamKeys, assistant, findingReply, onLoadOlderHistory }: {
   sessionId: string;
   sessionView: "conversation" | "evidence";
+  assistant: boolean;
+  findingReply: boolean;
   streamVisible: boolean;
   history: SessionHistoryState | undefined;
   openedEvidenceIds: ReadonlySet<string> | undefined;
@@ -121,22 +123,38 @@ export function useConversationScroll({ sessionId, sessionView, streamVisible, h
     rememberStreamPosition();
   }, [sessionView, streamVisible, firstHistoryKey, historyCount, openedEvidenceIds, inlineProposalLayout, sessionId, streamKeys, timelineStreamKeys]);
 
-  function loadOlderNearTop(): void {
+  const readSequence = history?.latestRead?.sequence;
+  const assistantBackfill = useRef({ sessionId, readSequence, cursors: new Set<string>() });
+  function loadOlderNearTop(automatic: boolean): void {
     const stream = streamRef.current;
-    if (!streamVisible || !stream || !history?.hasMore || !history.nextCursor || history.status !== "ready" || history.error) return;
+    const cursor = history?.nextCursor;
+    if (!streamVisible || !stream || !history?.hasMore || !cursor || history.status !== "ready" || history.error) return;
+    if (assistant) {
+      if (!automatic && !firstKey) return;
+      if (automatic) {
+        if (firstKey || findingReply) return;
+        // Filtered wake pages cannot move scrollTop away from zero. Bound the search for chat.
+        if (assistantBackfill.current.sessionId !== sessionId || assistantBackfill.current.readSequence !== readSequence) {
+          assistantBackfill.current = { sessionId, readSequence, cursors: new Set() };
+        }
+        const { cursors } = assistantBackfill.current;
+        if (cursors.size >= 2 || cursors.has(cursor)) return;
+        cursors.add(cursor);
+      }
+    }
     if (stream.scrollTop < 200) void onLoadOlderHistory(sessionId);
   }
 
   useEffect(() => {
-    if (sessionView === "conversation") loadOlderNearTop();
-  }, [sessionView, streamVisible, firstHistoryKey, history?.nextCursor, sessionId, firstKey]);
+    if (sessionView === "conversation") loadOlderNearTop(true);
+  }, [sessionView, streamVisible, firstHistoryKey, history?.nextCursor, sessionId, firstKey, assistant, findingReply, assistant ? readSequence : undefined]);
 
   return {
     streamRef,
     onScroll() {
       if (!streamVisible) return;
       rememberStreamPosition(true);
-      loadOlderNearTop();
+      loadOlderNearTop(false);
     },
   };
 }

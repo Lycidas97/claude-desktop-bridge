@@ -1235,6 +1235,39 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await chat.getByText(visibleReply, { exact: true }).waitFor();
   assert.equal(await chat.getByText(/给用户|已筛选，无需回复/u).count(), 0);
   steps.push("Consecutive wakes update one processing view; explicit user output appears only in chat without its marker");
+
+  const native = host.nativeApproval;
+  const appendRoutineOutput = (from, count) => native.appendHistory(Array.from({ length: count }, (_, index) => ({
+    type: "assistant", uuid: `routine-${from + index}`, timestamp: Date.now() + index,
+    message: { content: [{ type: "text", text: "例行筛选中。" }] },
+  })), managedSessionId);
+  const routineMail = await native.assistantMail.deliver(1);
+  await eventually(() => Boolean(native.assistantMail.service.triggers.batchForEvent("mail.received", routineMail.mailRefId)?.commandId),
+    true, "Native accepted the next routine wake before seeding its output");
+  appendRoutineOutput(0, 101);
+  for (const recovered of [true, false]) {
+    const fresh = await page.context().newPage();
+    const historyRequests = [];
+    try {
+      await openDesktopAssistant(fresh, host, baseUrl, historyRequests);
+      const stream = fresh.locator(".assistant-conversation .desktop-conversation-stream");
+      if (recovered) await stream.getByText(visibleReply, { exact: true }).waitFor({ timeout: 5000 }).catch(async error => {
+        throw new Error(`${error.message}\nChat: ${await stream.innerText()}\nReads: ${JSON.stringify(historyRequests.filter(({ method }) => method === "session.open" || method === "session.history"))}`);
+      });
+      else await stream.getByRole("button", { name: "加载更早消息", exact: true }).waitFor();
+      assert.equal(await stream.getByText("这是一个空会话", { exact: true }).count(), 0);
+      const latestOpen = historyRequests.findLastIndex(request => request.method === "session.open");
+      const olderRequests = historyRequests.slice(latestOpen + 1).filter(request => request.method === "session.history" && request.params.cursor);
+      assert.equal(olderRequests.length, 2, "An empty filtered chat automatically loads at most two older pages after the latest open");
+      if (!recovered) {
+        assert.equal(await stream.getByText(visibleReply, { exact: true }).count(), 0);
+        await stream.getByRole("button", { name: "加载更早消息", exact: true }).click();
+        await stream.getByText(visibleReply, { exact: true }).waitFor();
+      }
+    } finally { await fresh.close(); }
+    if (recovered) appendRoutineOutput(101, 60);
+  }
+  steps.push("A freshly opened Assistant chat recovers older user messages across routine wakes, with a two-page automatic limit");
   await page.locator(".assistant-view-tabs").getByRole("button", { name: "助理设置", exact: true }).click();
   await page.locator("label.toggle-row").filter({ has: proactive }).click();
   await eventually(() => host.snapshot.assistantMail.automaticDelivery, false, "Explicit opt-out stops new wakes");

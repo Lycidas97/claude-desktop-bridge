@@ -279,7 +279,9 @@ function useDesktopConversationController(input: DesktopConversationInput): Desk
         params: { sessionId, limit: HISTORY_PAGE_SIZE },
       }).then((response) => unwrap<{ history: BridgeHistoryPage }>(response)).then(({ history }) => {
         if (openSeqRef.current.get(key) !== seq) return false;
-        updateHistories((current) => ({ ...current, [key]: projectHistoryPage(history) }));
+        updateHistories((current) => ({ ...current, [key]: {
+          ...projectHistoryPage(history), latestRead: { sequence: seq, completedTurnId: undefined },
+        } }));
         return true;
       }, (failure) => {
         if (openSeqRef.current.get(key) !== seq) return false;
@@ -451,7 +453,10 @@ function useDesktopConversationController(input: DesktopConversationInput): Desk
       if (!loadingHistoryRef.current.has(key) || (openSeqRef.current.get(key) ?? 0) !== startSeq) return;
       updateHistories((value) => ({
         ...value,
-        [key]: projectHistoryPage(result.history, value[key] ?? current),
+        [key]: {
+          ...projectHistoryPage(result.history, value[key] ?? current),
+          ...(current.latestRead ? { latestRead: current.latestRead } : {}),
+        },
       }));
     } catch (failure) {
       if (!loadingHistoryRef.current.has(key) || (openSeqRef.current.get(key) ?? 0) !== startSeq) return;

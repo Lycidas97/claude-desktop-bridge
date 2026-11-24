@@ -607,7 +607,11 @@ export async function startNativeApprovalHost(options: {
     },
     files: (request: BridgeRequest) => controller.handleRequest(request, "mobile", options.deviceId),
     history: (limit?: number) => broker.history(options.sessionId, undefined, limit),
-    appendHistory(entries: Array<Record<string, unknown>>) { messages.push(...entries); },
+    appendHistory(entries: Array<Record<string, unknown>>, sessionId = options.sessionId) {
+      const history = sessionId === options.sessionId ? messages : assistantHistories.get(sessionId);
+      assert.ok(history);
+      history.push(...entries);
+    },
     session: () => structuredClone(broker.session(options.sessionId)!),
     receipts: () => state.listNativeDesktopReceipts(),
     queuedReply(enabled: boolean) { reportQueued = enabled; },

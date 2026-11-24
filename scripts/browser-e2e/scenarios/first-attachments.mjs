@@ -30,6 +30,7 @@ export async function verifyFirstAttachments(page, host, steps, directory, baseU
       await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
     }
     const canvas = page.locator(".new-chat-canvas");
+    const thumbnail = name => canvas.locator(".composer-attachments > span").filter({ hasText: name }).locator('img[alt=""]');
     const openNewChat = async () => {
       if (!desktop) await openMobileDrawer(page);
       await page.locator(desktop ? ".desktop-session-sidebar" : ".mobile-home-catalog")
@@ -69,7 +70,8 @@ export async function verifyFirstAttachments(page, host, steps, directory, baseU
       await chooser.setFiles(files);
     };
     await pick(/添加图片/u, ["first.png", "discard.png"].map(name => ({ name, mimeType: "image/png", buffer: photo })));
-    await canvas.getByRole("img", { name: "first.png", exact: true }).waitFor();
+    await thumbnail("first.png").waitFor();
+    await eventually(() => thumbnail("first.png").evaluate(image => image.naturalWidth), 32, "The thumbnail loads while its filename is announced once");
     await canvas.getByRole("button", { name: "移除 discard.png", exact: true }).click();
     await pick(/添加文件/u, ["first.txt", "second.txt", "discard.txt"].map(name => ({ name, mimeType: "text/plain", buffer: bytes })));
     await canvas.getByRole("button", { name: "移除 discard.txt", exact: true }).click();
@@ -79,23 +81,42 @@ export async function verifyFirstAttachments(page, host, steps, directory, baseU
 
     const text = `读取首条附件 ${surface}`;
     await canvas.locator("textarea").fill(text);
+    const permission = canvas.getByRole("combobox", { name: "权限模式", exact: true });
+    await selectCustomOption(page, permission, "plan");
+    host.rejectPermissionMode = "plan";
+    await canvas.getByRole("button", { name: "发送", exact: true }).click();
+    await canvas.getByRole("alert").filter({ hasText: "隔离权限模式未应用" }).waitFor();
+    assert.deepEqual([createCalls().length, uploadCalls().length, starts().length], [counts[0] + 1, counts[1], counts[2]], "A rejected configuration must not upload or send");
+    assert.ok(await permission.isEnabled(), "A rejected configuration must leave the mode editable on the pinned draft");
+    await selectCustomOption(page, permission, "acceptEdits");
+    host.rejectPermissionMode = undefined;
     let commits = 0;
     host.uploadCommitFailure = () => ++commits === 2 ? "隔离首发文件保存失败" : undefined;
+    const uploadGate = Promise.withResolvers();
+    host.uploadCommitGate = uploadGate.promise;
     await canvas.getByRole("button", { name: "发送", exact: true }).click();
+    try {
+      await canvas.getByRole("progressbar", { name: "first.txt 上传进度", exact: true }).waitFor();
+      await canvas.getByText(/正在保存/u).waitFor();
+    } finally {
+      uploadGate.resolve();
+    }
     await page.getByText("隔离首发文件保存失败", { exact: false }).first().waitFor();
     assert.equal(await page.locator("textarea:visible").inputValue(), text, "Upload failure keeps the original text");
-    await page.getByRole("img", { name: "first.png", exact: true }).waitFor();
+    await thumbnail("first.png").waitFor();
     await page.getByRole("button", { name: "移除 second.txt", exact: true }).waitFor();
     assert.deepEqual([createCalls().length, uploadCalls().length, starts().length, nativeSends().length], [counts[0] + 1, counts[1] + 2, counts[2], counts[3]], "Upload failure must not fall through to a partial Native send");
     const created = host.snapshot.sessions.find(session => session.title === title);
     assert.ok(created, "Native created the target session before any upload");
+    assert.deepEqual(host.requests.filter(request => request.method === "session.configure" && request.params.sessionId === created.sessionId)
+      .map(request => request.params.permissionMode), ["plan", "acceptEdits"], "Retry can correct the Native session configuration without creating another session");
 
     if (desktop) await canvas.getByRole("button", { name: "返回会话", exact: true }).click();
     else await openMobileDrawer(page);
     await openNewChat();
     assert.equal(await canvas.getByLabel("会话标题", { exact: true }).inputValue(), title, "The resumed canvas identifies its existing session");
     assert.equal(await canvas.locator("textarea").inputValue(), text);
-    await canvas.getByRole("img", { name: "first.png", exact: true }).waitFor();
+    await thumbnail("first.png").waitFor();
     await canvas.getByRole("button", { name: "移除 first.txt", exact: true }).waitFor();
     await canvas.getByRole("button", { name: "移除 second.txt", exact: true }).waitFor();
     await canvas.getByRole("button", { name: "发送", exact: true }).click();
@@ -120,7 +141,7 @@ export async function verifyFirstAttachments(page, host, steps, directory, baseU
     await enterNewChat(imageTitle);
     await canvas.locator('input[aria-label="选择要上传的文件"]').waitFor({ state: "detached" });
     await pick(/添加图片/u, { name: "only.png", mimeType: "image/png", buffer: photo });
-    await canvas.getByRole("img", { name: "only.png", exact: true }).waitFor();
+    await thumbnail("only.png").waitFor();
     await canvas.getByRole("button", { name: "发送", exact: true }).click();
     await eventually(() => nativeSends().length, counts[3] + 2, `${surface}: image-only first send reaches Native without an upload`);
     const imageSession = host.snapshot.sessions.find(session => session.title === imageTitle);

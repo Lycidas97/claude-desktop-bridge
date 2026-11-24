@@ -137,6 +137,7 @@ export function NewChatCanvas({
   const newChatDraft = drafts.session(effectiveHostId, NEW_CHAT_DRAFT_SESSION_ID);
   const { text: prompt, attachments, newChatFiles = [], firstTurnSession, imageError } = newChatDraft.draft;
   const hasAttachments = attachments.length > 0 || newChatFiles.length > 0;
+  const pendingConfiguration = firstTurnSession?.pendingConfiguration;
 
   const [createdGroups, setCreatedGroups] = useState<BridgeProjectInfo[]>([]);
   const syncedCreatedGroupIdsRef = useRef(new Set<string>());
@@ -233,11 +234,11 @@ export function NewChatCanvas({
 
   const [configuration, setConfiguration] = useState<BridgeSessionConfiguration>();
   const [configLoading, setConfigLoading] = useState(false);
-  const [effortDraft, setEffortDraft] = useState<BridgeEffort>();
+  const [effortDraft, setEffortDraft] = useState<BridgeEffort | undefined>(pendingConfiguration?.effort ?? undefined);
   const [permissionMode, setPermissionMode] = useState<BridgeSDKPermissionMode>(
-    () => referenceSession?.nativePermissionMode ?? "default",
+    () => pendingConfiguration?.permissionMode ?? referenceSession?.nativePermissionMode ?? "default",
   );
-  const [outputStyle, setOutputStyle] = useState("");
+  const [outputStyle, setOutputStyle] = useState(pendingConfiguration?.outputStyle ?? "");
   const [pendingBypassConfirm, setPendingBypassConfirm] = useState(false);
   const [pendingDiscardConfirm, setPendingDiscardConfirm] = useState(false);
   const [quotaRequested, setQuotaRequested] = useState(false);
@@ -245,7 +246,7 @@ export function NewChatCanvas({
   const userTouchedRef = useRef({
     cwd: false,
     section: initialProjectId !== undefined,
-    permission: false,
+    permission: Boolean(pendingConfiguration?.permissionMode),
   });
 
   const [busy, setBusy] = useState(false);
@@ -255,6 +256,7 @@ export function NewChatCanvas({
   const promptComposingRef = useRef(false);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const [readingImages, setReadingImages] = useState(false);
+  const [activeUpload, setActiveUpload] = useState<{ id: string; progress: number }>();
   const firstTurnController = useRef<AbortController | undefined>(undefined);
   useEffect(() => () => firstTurnController.current?.abort(), []);
 
@@ -371,7 +373,8 @@ export function NewChatCanvas({
     selectedProjectId && !manualGroups.some((project) => project.projectId === selectedProjectId),
   );
   const locked = busy || choosingDirectory || Boolean(sectionCreate?.busy);
-  const configurationLocked = locked || Boolean(firstTurnSession);
+  const destinationLocked = locked || Boolean(firstTurnSession);
+  const configurationLocked = locked || (Boolean(firstTurnSession) && !pendingConfiguration);
   const canSubmitBase = connected && !locked && (Boolean(firstTurnSession) || (runtimeAvailable && !groupUnavailable));
   const canSendFirstPrompt = canSubmitBase && !readingImages && Boolean(prompt.trim() || hasAttachments);
   const canCreateEmpty = canSubmitBase && !firstTurnSession && !readingImages && !hasAttachments;
@@ -404,6 +407,22 @@ export function NewChatCanvas({
     newChatDraft.setText(value);
   }
 
+  function editPendingConfiguration<Key extends keyof SessionConfigurationChange>(key: Key, value: SessionConfigurationChange[Key]): void {
+    if (!firstTurnSession || !pendingConfiguration) return;
+    const next = { ...pendingConfiguration };
+    if (value === undefined) delete next[key];
+    else next[key] = value;
+    newChatDraft.updateDraft((current) => ({
+      ...current, firstTurnSession: { ...firstTurnSession, pendingConfiguration: next },
+    }));
+  }
+
+  function applyPermissionMode(nextMode: BridgeSDKPermissionMode): void {
+    userTouchedRef.current.permission = true;
+    setPermissionMode(nextMode);
+    editPendingConfiguration("permissionMode", nextMode);
+  }
+
   function choosePermissionMode(nextMode: BridgeSDKPermissionMode): void {
     if (
       nextMode === "bypassPermissions"
@@ -413,8 +432,7 @@ export function NewChatCanvas({
       setPendingBypassConfirm(true);
       return;
     }
-    userTouchedRef.current.permission = true;
-    setPermissionMode(nextMode);
+    applyPermissionMode(nextMode);
   }
 
   async function submitCreateSection(): Promise<void> {
@@ -454,7 +472,7 @@ export function NewChatCanvas({
   }
 
   async function handleChooseDirectory(targetProjectId?: string): Promise<void> {
-    if (!connected || configurationLocked) return;
+    if (!connected || destinationLocked) return;
     const effectiveProjectId = targetProjectId ?? (selectedProjectId || undefined);
     if (onChooseDirectory) {
       setChoosingDirectory(true);
@@ -544,14 +562,15 @@ export function NewChatCanvas({
       setTrustState(undefined);
 
       const change = firstTurnSession
-        ? firstTurnSession.pendingConfiguration
+        ? pendingConfiguration
         : onConfigureSession && canConfigureRuntime ? buildPostCreateConfiguration(created) : undefined;
       controller?.signal.throwIfAborted();
       if (attachedSend && !firstTurnSession) {
         newChatDraft.updateDraft((current) => ({ ...current, firstTurnSession: { session: created, pendingConfiguration: change } }));
       }
       let configurationError: string | undefined;
-      if (change && onConfigureSession && canConfigureRuntime) {
+      const hasChanges = change && Object.keys(change).length > 0;
+      if (hasChanges && onConfigureSession && canConfigureRuntime) {
         try {
           const applied = await onConfigureSession(created.sessionId, change);
           if (
@@ -564,7 +583,7 @@ export function NewChatCanvas({
         } catch (configReason) {
           configurationError = (configReason instanceof Error && configReason.message) || "会话配置应用失败。";
         }
-      } else if (change) {
+      } else if (hasChanges) {
         configurationError = "会话配置暂不可用。";
       }
 
@@ -583,7 +602,8 @@ export function NewChatCanvas({
         const uploaded = [];
         if (uploadFile) {
           for (const { id, file, result } of newChatFiles) {
-            const receipt = result ?? await uploadFile(created.sessionId, file, () => {}, controller.signal);
+            if (!result) setActiveUpload({ id, progress: 0 });
+            const receipt = result ?? await uploadFile(created.sessionId, file, (progress) => setActiveUpload({ id, progress }), controller.signal);
             controller.signal.throwIfAborted();
             if (!result) newChatDraft.updateDraft((current) => ({
               ...current,
@@ -624,6 +644,7 @@ export function NewChatCanvas({
       }
     } finally {
       firstTurnController.current = undefined;
+      setActiveUpload(undefined);
       setBusy(false);
     }
   }
@@ -682,7 +703,7 @@ export function NewChatCanvas({
                 type="button"
                 className={`new-chat-dir-pill${selectedCwd ? " has-folder" : ""}`}
                 aria-label="选择文件夹"
-                disabled={!connected || configurationLocked}
+                disabled={!connected || destinationLocked}
                 onClick={() => void handleChooseDirectory()}
               >
                 {choosingDirectory ? (
@@ -702,7 +723,7 @@ export function NewChatCanvas({
                         type="button"
                         key={project.projectId}
                         className={`new-chat-chip${isSelected ? " active" : ""}`}
-                        disabled={!connected || configurationLocked}
+                        disabled={!connected || destinationLocked}
                         onClick={() => {
                           if (!project.cwd) return;
                           userTouchedRef.current.cwd = true;
@@ -725,7 +746,7 @@ export function NewChatCanvas({
                 <SelectMenu
                   ariaLabel="所属分组"
                   value={selectedProjectId}
-                  disabled={!connected || configurationLocked}
+                  disabled={!connected || destinationLocked}
                   options={[
                     { value: "", label: CLAUDE_UNSECTIONED_PROJECT_NAME },
                     ...(groupUnavailable ? [{ value: selectedProjectId, label: "分组已不可用", disabled: true }] : []),
@@ -762,7 +783,7 @@ export function NewChatCanvas({
                 placeholder="留空自动生成"
                 maxLength={200}
                 value={firstTurnSession?.session.title ?? sessionTitle}
-                disabled={!connected || configurationLocked}
+                disabled={!connected || destinationLocked}
                 onChange={(event) => {
                   setSessionTitle(event.target.value);
                   if (error) setError(undefined);
@@ -790,9 +811,12 @@ export function NewChatCanvas({
                     meta: quota?.snapshot ? (modelQuotaLabel(quota.snapshot, candidate) || undefined) : undefined,
                   })),
                 ]}
-                onChange={(value) => newChatDraft.updateDraft(current => ({
-                  ...current, newChatModel: modelOptions.find(candidate => candidate.value === value),
-                }))}
+                onChange={(value) => {
+                  newChatDraft.updateDraft(current => ({
+                    ...current, newChatModel: modelOptions.find(candidate => candidate.value === value),
+                  }));
+                  editPendingConfiguration("model", value || null);
+                }}
               />
             </div>
 
@@ -807,7 +831,10 @@ export function NewChatCanvas({
                       className={pickedEffort === level ? "active" : ""}
                       aria-pressed={pickedEffort === level}
                       disabled={!connected || configurationLocked || configLoading}
-                      onClick={() => setEffortDraft(level)}
+                      onClick={() => {
+                        setEffortDraft(level);
+                        editPendingConfiguration("effort", level ?? null);
+                      }}
                     >
                       {level ? effortLabel(level) : "默认"}
                     </button>
@@ -838,7 +865,10 @@ export function NewChatCanvas({
                     { value: "", label: "默认" },
                     ...outputStyles.filter((style) => style !== "default").map((style) => ({ value: style, label: style })),
                   ]}
-                  onChange={setOutputStyle}
+                  onChange={(style) => {
+                    setOutputStyle(style);
+                    editPendingConfiguration("outputStyle", style || undefined);
+                  }}
                 />
               </div>
             )}
@@ -893,7 +923,10 @@ export function NewChatCanvas({
       <footer className="mobile-composer">
         <FileAttachmentPicker disabled={locked} state={{
           entries: newChatFiles.map(({ id, file, result }) => ({
-            id, name: file.name, size: file.size, progress: result ? 1 : 0, staged: true, ...(result ? { result } : {}),
+            id, name: file.name, size: file.size,
+            progress: result ? 1 : activeUpload?.id === id ? activeUpload.progress : 0,
+            staged: activeUpload?.id !== id,
+            ...(result ? { result } : {}),
           })),
           remove: (id) => newChatDraft.updateDraft((current) => ({
             ...current, newChatFiles: (current.newChatFiles ?? []).filter((entry) => entry.id !== id),
@@ -903,7 +936,7 @@ export function NewChatCanvas({
           <div className="composer-attachments">
             {attachments.map((attachment) => (
               <span key={attachment.id}>
-                <img className="new-chat-attachment-thumb" src={`data:${attachment.mimeType};base64,${attachment.data}`} alt={attachment.name} />
+                <img className="new-chat-attachment-thumb" src={`data:${attachment.mimeType};base64,${attachment.data}`} alt="" />
                 <span title={attachment.name}>{attachment.name}</span>
                 <button
                   type="button"
@@ -1050,8 +1083,7 @@ export function NewChatCanvas({
         onCancel={() => setPendingBypassConfirm(false)}
         onConfirm={() => {
           setPendingBypassConfirm(false);
-          userTouchedRef.current.permission = true;
-          setPermissionMode("bypassPermissions");
+          applyPermissionMode("bypassPermissions");
         }}
       />
     </section>

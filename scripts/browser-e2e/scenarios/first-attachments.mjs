@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import { eventually, openMobileDrawer, selectCustomOption } from "../helpers.mjs";
 import { installDesktopConversationFixture } from "./desktop.mjs";
 
-export async function verifyFirstAttachments(page, host, steps, directory, baseUrl) {
+export async function verifyFirstAttachments(page, mobileHost, desktopHost, steps, directory, baseUrl) {
   const photo = Buffer.from(await page.evaluate(() => {
     const canvas = document.createElement("canvas");
     canvas.width = 32;
@@ -16,12 +16,12 @@ export async function verifyFirstAttachments(page, host, steps, directory, baseU
     return canvas.toDataURL("image/png").split(",")[1];
   }), "base64");
   const bytes = Buffer.from("synthetic first-turn attachment\n");
-  const createCalls = () => host.requests.filter(request => request.method === "session.create");
-  const uploadCalls = () => host.requests.filter(request => request.method === "file.upload.open");
-  const starts = () => host.requests.filter(request => request.method === "turn.start");
-  const nativeSends = () => host.nativeApproval.calls.filter(call => call.method === "sendMessage");
 
-  for (const surface of ["mobile", "desktop"]) {
+  for (const [surface, host] of [["mobile", mobileHost], ["desktop", desktopHost]]) {
+    const createCalls = () => host.requests.filter(request => request.method === "session.create");
+    const uploadCalls = () => host.requests.filter(request => request.method === "file.upload.open");
+    const starts = () => host.requests.filter(request => request.method === "turn.start");
+    const nativeSends = () => host.nativeApproval.calls.filter(call => call.method === "sendMessage");
     const desktop = surface === "desktop";
     if (desktop) {
       host.snapshot.sessions = []; // Exercise the canvas shown before Desktop has any sessions.

@@ -175,7 +175,7 @@ body:has(.assistant-mail-category-options) .diagnostic-floating-entry { display:
 .assistant-mail-list .assistant-mail-card > :is(h3, .assistant-mail-from) { -webkit-line-clamp: 2; }
 .assistant-mail-hint { margin: 8px 0 0; color: var(--muted); font-size: calc(12px * var(--font-scale)); line-height: 1.5; }
 .assistant-mail-hint[data-tone="failed"] { color: var(--danger-ink); }
-.assistant-mail-hint[data-tone="action"] { color: var(--accent-ink); font-weight: 600; }
+.assistant-mail-hint[data-tone="attention"] { color: var(--accent-ink); font-weight: 600; }
 .assistant-actions.assistant-mail-actions { gap: 4px; margin-top: 4px; }
 .assistant-mail-actions > .assistant-session-link { padding-inline: 8px; border-radius: var(--r-input); line-height: 1.4; }
 .assistant-mail-actions > button[aria-expanded="true"] { background: var(--surface-2); }
@@ -220,8 +220,11 @@ body:has(.mobile-app-shell) .assistant-mail-original .m-sheet-header { padding-t
 .assistant-trigger-batch > .assistant-mail-card { border-top: 1px solid var(--line); border-bottom: 0; }
 .assistant-trigger-batch > details { padding: 8px 0; font-size: calc(12px * var(--font-scale)); color: var(--muted); overflow-wrap: anywhere; }
 .assistant-trigger-batch > details pre { white-space: pre-wrap; }
-.assistant-page.has-conversation > .assistant-processing-entry-wrap { padding-block: 0; }
-.assistant-processing-entry { margin-bottom: 0; }
+.assistant-page.has-conversation > .assistant-processing-entry-wrap { display: flex; padding-block: 0; }
+.assistant-processing-entry-wrap > button { border-bottom: 1px solid var(--line); }
+.assistant-processing-entry { flex: 1; width: auto; min-width: 0; margin-bottom: 0; }
+.assistant-review-mail-entry { flex: none; padding-inline-start: 12px; white-space: nowrap; }
+.assistant-review-mail-entry:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: -2px; }
 .assistant-processing { flex: 1; min-height: 0; min-width: 0; overflow-y: auto; }
 .assistant-processing .assistant-trigger-batch { margin: 0; padding-block: 12px; border-block-start: 0; }
 .assistant-processing .assistant-trigger-batch > header { align-items: center; padding: 0; min-height: 28px; }

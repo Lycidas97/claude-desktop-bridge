@@ -15,7 +15,8 @@ export async function verifyAssistantAttention(page, host, steps, directory, vie
   const resolveMail = card => card.getByRole("button", { name: "标为已解决", exact: true });
   const original = card => card.getByRole("button", { name: "原文", exact: true });
   const processingEntry = page.getByRole("button", { name: /^处理记录/u });
-  const processingCount = count => processingEntry.getByText(new RegExp(`(?:^| · )${count} 封待你看$`, "u"));
+  const reviewEntry = page.getByRole("button", { name: /^收件，\d+ 封待你看$/u });
+  const reviewCount = count => page.getByRole("button", { name: `收件，${count} 封待你看`, exact: true });
   const acknowledged = (kind, id) => host.requests.some(request => request.method === "plugin.assistant-mail.attention.ack" && request.params.kind === kind && request.params.id === id);
   const back = () => page.locator(".assistant-page").getByRole("button", { name: "返回", exact: true }).click();
   const dismiss = () => page.getByRole("dialog").getByRole("button", { name: "关闭", exact: true }).click();
@@ -27,6 +28,10 @@ export async function verifyAssistantAttention(page, host, steps, directory, vie
   service.setAutomaticDelivery(true);
   const ads = await deliver(1);
   await eventually(label, lit, "Unclassified arrivals badge immediately even with proactive delivery on");
+  await entry.click();
+  await inbox(page).click();
+  await inboxCard(page, ads.mailRefId).getByText("尚未筛选", { exact: true }).waitFor();
+  await back();
   await analyze(ads, "ignore", "marketing");
   await eventually(label, "助理", "Filing marketing clears the last unread arrival");
   const worth = await deliver(1);
@@ -39,8 +44,15 @@ export async function verifyAssistantAttention(page, host, steps, directory, vie
   await entry.click();
   await page.getByRole("button", { name: "对话", exact: true }).waitFor();
   assert.equal(await page.getByText("待关注", { exact: true }).count(), 0, "The Assistant dialogue has no duplicate attention block");
-  await inbox(page).click();
-  const unreadCard = await expandInboxMail(inboxCard(page, worth.mailRefId));
+  assert.doesNotMatch(await processingEntry.innerText(), /待你看/u, "Inbox mail is not counted as processing history");
+  await reviewCount(1).waitFor();
+  const [processingBounds, inboxBounds] = await Promise.all([processingEntry.boundingBox(), reviewCount(1).boundingBox()]);
+  assert.equal(processingBounds.y, inboxBounds.y, "The two destinations share the same compact row");
+  assert.ok(inboxBounds.width >= 44 && inboxBounds.height >= 44, "The inbox shortcut meets the mobile touch target");
+  await reviewCount(1).press("Enter");
+  const unreadCard = inboxCard(page, worth.mailRefId);
+  await unreadCard.getByText("值得看", { exact: true }).waitFor();
+  await expandInboxMail(unreadCard);
   await unreadCard.getByText("状态", { exact: true }).click();
   await unreadCard.getByText("待处理", { exact: true }).waitFor();
   assert.equal(host.requests.some(request => request.method === "plugin.assistant-mail.read" && request.params.mailRefId === worth.mailRefId), false);
@@ -60,6 +72,10 @@ export async function verifyAssistantAttention(page, host, steps, directory, vie
   service.setAutomaticDelivery(false);
   const action = await deliver(1);
   await eventually(label, lit, "With proactive delivery off, new mail lights immediately");
+  await entry.click();
+  await inbox(page).click();
+  await inboxCard(page, action.mailRefId).getByText("新邮件", { exact: true }).waitFor();
+  await back();
   await analyze(action, "action", "account");
   const todoTitle = "核对并提交预算";
   agenda.saveTodo({ value: { title: todoTitle, remindAt: new Date(Date.now() - 1000).toISOString(), status: "pending" } });
@@ -89,7 +105,7 @@ export async function verifyAssistantAttention(page, host, steps, directory, vie
     assert.equal(await desktop.getByText("待关注", { exact: true }).count(), 0);
 
     await entry.click();
-    await processingCount(1).waitFor();
+    await reviewCount(1).waitFor();
     await page.screenshot({ path: resolve(directory, "mobile-assistant-dialogue.png") });
     viewports.push({ page: "mobile-assistant-dialogue", ...page.viewportSize() });
     const card = client => client.locator(`.assistant-mail-list [data-mail-id="${action.mailRefId}"]`);
@@ -223,7 +239,7 @@ export async function verifyAssistantAttention(page, host, steps, directory, vie
   assert.ok(acknowledged("mail-action", action.mailRefId));
   await actionCard.getByText("需要处理", { exact: true }).waitFor({ state: "hidden" });
   await page.getByRole("button", { name: "对话", exact: true }).click();
-  await processingCount(0).waitFor();
+  await reviewEntry.waitFor({ state: "detached" });
 
   await page.getByRole("button", { name: "议程", exact: true }).click();
   const seenEvent = page.getByRole("button", { name: `已看 ${eventTitle}`, exact: true });
@@ -294,7 +310,7 @@ export async function verifyAssistantAttention(page, host, steps, directory, vie
   await analyze(wake, "action", "account");
   service.setProcessingStatus(wake.mailRefId, "processed");
   await entry.click();
-  await processingCount(1).waitFor();
+  await reviewCount(1).waitFor();
   await processingEntry.click();
   const wakeCard = page.getByRole("region", { name: "处理记录", exact: true }).locator(`[data-mail-id="${wake.mailRefId}"]`);
   await wakeCard.getByText("需要处理", { exact: true }).waitFor();
@@ -305,6 +321,6 @@ export async function verifyAssistantAttention(page, host, steps, directory, vie
   await wakeCard.getByText("需要处理", { exact: true }).waitFor();
   assert.ok(acknowledged("mail-action", wake.mailRefId));
   await page.getByRole("button", { name: "返回", exact: true }).click();
-  await processingCount(0).waitFor();
+  await reviewEntry.waitFor({ state: "detached" });
   steps.push("Inbox and processing cards resolve action mail without removing its historical analysis. Paginated replies, calendar events, due tasks and pending proposals still update the navigation dot.");
 }

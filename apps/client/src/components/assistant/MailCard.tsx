@@ -24,6 +24,7 @@ const DELIVERY_STATUS: Record<BridgeMailCard["nativeDelivery"]["state"], Deliver
   cancelled: { detail: "任务已取消" },
 };
 const MAIL_HINT_LABELS = { waiting: "等待助理", processing: "处理中", failed: "助理任务失败" };
+const ATTENTION_LABELS = { new: "新邮件", unscreened: "尚未筛选", read: "值得看", action: "需要处理" };
 const PROCESSING_LABELS = { pending: "待处理", processing: "处理中", processed: "已处理" };
 const RECEIVED_TIME_FORMAT = new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
 
@@ -101,8 +102,9 @@ export function MailCard(props: MailCardProps) {
   const receivedDate = new Date(card.receivedAt);
   const receivedTime = <time dateTime={card.receivedAt}>{Number.isNaN(receivedDate.getTime()) ? "Invalid Date" : RECEIVED_TIME_FORMAT.format(receivedDate)}</time>;
   const delivery = showBatchDelivery || !card.nativeDelivery.batchId ? DELIVERY_STATUS[card.nativeDelivery.state] : undefined;
-  const needsAction = mail?.attention?.some(item => item.kind === "mail" && item.reason === "action" && item.id === card.mailRefId) ?? false;
-  const content = <MailCardContent {...props} subject={subject} sender={sender} delivery={delivery} receivedTime={compact ? null : receivedTime} needsAction={needsAction} />;
+  const pending = mail?.attention?.find(item => item.kind === "mail" && item.id === card.mailRefId);
+  const attention = pending?.kind === "mail" ? pending.reason : undefined;
+  const content = <MailCardContent {...props} subject={subject} sender={sender} delivery={delivery} receivedTime={compact ? null : receivedTime} needsAction={attention === "action"} />;
   return <article className="assistant-mail-card" data-mail-id={card.mailRefId} data-stream-key={`mail:${card.mailRefId}`} aria-label={`邮件：${subject}`}>
     {compact ? <details className="assistant-mail-row" open={open} onToggle={event => setOpen(event.currentTarget.open)}>
       <summary>
@@ -112,7 +114,7 @@ export function MailCard(props: MailCardProps) {
         </span>
         <span className="assistant-mail-row-meta">
           <span className="assistant-mail-row-from">{sender}</span>
-          {needsAction && !(processingRecord && card.analysis?.attention === "action") && <span className="assistant-mail-hint" data-tone="action">需要处理</span>}
+          {attention && !(processingRecord && card.analysis?.attention === attention) && <span className="assistant-mail-hint" data-tone="attention">{ATTENTION_LABELS[attention]}</span>}
           {!open && delivery?.hint === "failed" && <span className="assistant-mail-hint" data-tone="failed">{MAIL_HINT_LABELS.failed}</span>}
         </span>
         <ChevronRight size={16} aria-hidden="true" />

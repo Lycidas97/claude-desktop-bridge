@@ -314,8 +314,10 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
       {(displayedView === "conversation" || processing) && <div className="assistant-page-content">{notices}</div>}
       {displayedView === "conversation" && <div className="assistant-page-content assistant-processing-entry-wrap">
         <button type="button" className="assistant-mail-filed-entry assistant-processing-entry" onClick={() => setView("processing")}>
-          <span>处理记录</span><small>{recentlyProcessed !== undefined && `最近处理 ${recentlyProcessed} 封 · `}{mailToReview} 封待你看</small><ChevronRight size={16} aria-hidden="true" />
+          <span>处理记录</span>{recentlyProcessed !== undefined && <small>最近处理 {recentlyProcessed} 封</small>}<ChevronRight size={16} aria-hidden="true" />
         </button>
+        {mailToReview > 0 && <button type="button" className="assistant-session-link assistant-review-mail-entry" aria-label={`收件，${mailToReview} 封待你看`}
+          onClick={() => setView("mail")}>{mailToReview} 封待你看</button>}
       </div>}
       <div className="assistant-conversation">
         <AssistantProcessingContext.Provider value={{ visible: processing, onDiscuss: () => setView("conversation") }}>

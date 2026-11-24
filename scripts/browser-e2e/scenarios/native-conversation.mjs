@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, stat, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { sessionId, originalTitle } from "../config.mjs";
 import { eventually, openMobileDrawer, openMobileSession, selectCustomOption, customSelectValue } from "../helpers.mjs";
@@ -999,8 +999,11 @@ export async function verifyNativeSessionNotices(page, host, steps, directory) {
   assert.equal(host.requests.filter(request => ["turn.start", "turn.steer", "session.rewind", "permission.resolve"].includes(request.method)).length, 0);
   steps.push("Native report and idle notices stay compact in history, live updates and replay; original text remains readable, quoted examples keep user controls, and no Native mutation is sent");
 
+  host.snapshot.host.capabilities.push("directory.mkdir.v1");
+  await host.send({ kind: "snapshot", snapshot: host.snapshot });
   await openMobileDrawer(page);
-  const { untrustedDir, manualTrustDir } = host.nativeApproval;
+  const { untrustedDir: untrustedParent, manualTrustDir } = host.nativeApproval;
+  const untrustedDir = resolve(untrustedParent, "new-work-folder");
   const newChatCanvas = page.locator(".new-chat-canvas");
   const folderDialog = page.locator(".session-create-dialog");
   const chooseFolderByPath = async (targetDir) => {
@@ -1019,7 +1022,25 @@ export async function verifyNativeSessionNotices(page, host, steps, directory) {
 
   await page.locator('.mobile-home-catalog button[aria-label^="新建会话："]').first().click();
   await newChatCanvas.waitFor();
-  await chooseFolderByPath(untrustedDir);
+  await chooseFolderByPath(untrustedParent);
+  const newChatDraft = newChatCanvas.locator("textarea");
+  await newChatDraft.fill("保留新会话草稿");
+  await newChatCanvas.getByRole("button", { name: "选择文件夹", exact: true }).click();
+  assert.equal(await folderDialog.getByRole("button", { name: "最近使用", exact: true }).getAttribute("aria-pressed"), "true");
+  await folderDialog.getByRole("button", { name: "新建文件夹", exact: true }).click();
+  await folderDialog.getByText(untrustedParent, { exact: true }).waitFor();
+  await folderDialog.getByLabel("新文件夹名称").fill("new-work-folder");
+  await folderDialog.getByRole("button", { name: "创建并使用", exact: true }).click();
+  await folderDialog.waitFor({ state: "hidden" });
+  assert.deepEqual(host.requests.filter(request => request.method === "directory.mkdir").map(({ params: { parentPath, name } }) => ({ parentPath, name })), [
+    { parentPath: untrustedParent, name: "new-work-folder" },
+  ]);
+  assert.ok((await stat(untrustedDir)).isDirectory());
+  assert.equal(await newChatDraft.inputValue(), "保留新会话草稿");
+  assert.match(await newChatCanvas.locator(".new-chat-dir-path").innerText(), /[\\/]new-work-folder$/u);
+  assert.equal(host.requests.filter(request => request.method === "session.create").length, 0);
+  steps.push("a new mobile working folder is created from Recents, selected immediately, and keeps the draft without creating a session");
+  await newChatDraft.fill("");
   await newChatCanvas.getByRole("button", { name: "创建空会话", exact: true }).click();
 
   const trustAlert = newChatCanvas.getByRole("alert");

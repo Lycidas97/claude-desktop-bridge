@@ -239,6 +239,7 @@ export function NewChatCanvas({
   );
   const [outputStyle, setOutputStyle] = useState("");
   const [pendingBypassConfirm, setPendingBypassConfirm] = useState(false);
+  const [pendingDiscardConfirm, setPendingDiscardConfirm] = useState(false);
   const [quotaRequested, setQuotaRequested] = useState(false);
 
   const userTouchedRef = useRef({
@@ -341,15 +342,13 @@ export function NewChatCanvas({
   }, [sectionCreate]);
 
   useEffect(() => {
-    if (!pendingBypassConfirm) return;
+    if (!pendingBypassConfirm && !pendingDiscardConfirm) return;
     return registerMobileBackHandler(() => {
-      if (pendingBypassConfirm) {
-        setPendingBypassConfirm(false);
-        return true;
-      }
-      return false;
+      setPendingBypassConfirm(false);
+      setPendingDiscardConfirm(false);
+      return true;
     }, 155);
-  }, [pendingBypassConfirm]);
+  }, [pendingBypassConfirm, pendingDiscardConfirm]);
 
   const modelOptions = configuration?.availableModels ?? [];
   const draftModel = newChatDraft.draft.newChatModel;
@@ -996,10 +995,13 @@ export function NewChatCanvas({
               <button
                 type="button"
                 className="secondary-button new-chat-empty-create-btn"
-                disabled={!canCreateEmpty}
-                onClick={() => void executeCreate(false, false)}
+                disabled={firstTurnSession ? locked || readingImages : !canCreateEmpty}
+                onClick={() => {
+                  if (firstTurnSession) setPendingDiscardConfirm(true);
+                  else void executeCreate(false, false);
+                }}
               >
-                创建空会话
+                {firstTurnSession ? "放弃草稿" : "创建空会话"}
               </button>
               <button
                 type="submit"
@@ -1022,6 +1024,21 @@ export function NewChatCanvas({
         onSubmit={submitCreateSection}
         onClose={() => {
           if (!sectionCreate?.busy) setSectionCreate(undefined);
+        }}
+      />
+
+      <ConfirmationDialog
+        open={pendingDiscardConfirm}
+        title="放弃首发草稿？"
+        description="正文和待发附件将清除。已创建的会话和已上传文件会保留。"
+        confirmLabel="放弃草稿"
+        danger
+        onCancel={() => setPendingDiscardConfirm(false)}
+        onConfirm={() => {
+          drafts.resetSession(effectiveHostId, NEW_CHAT_DRAFT_SESSION_ID);
+          setPendingDiscardConfirm(false);
+          setSessionTitle("");
+          setError(undefined);
         }}
       />
 

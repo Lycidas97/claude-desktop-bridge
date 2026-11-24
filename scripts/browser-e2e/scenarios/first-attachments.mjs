@@ -35,17 +35,20 @@ export async function verifyFirstAttachments(page, host, steps, directory, baseU
       await page.locator(desktop ? ".desktop-session-sidebar" : ".mobile-home-catalog")
         .getByRole("button", { name: "新建会话", exact: true }).click();
     };
-    const enterNewChat = async (title, emptyDesktop = false) => {
-      if (!emptyDesktop) await openNewChat();
+    const chooseDirectory = async (cwd) => {
       await canvas.getByRole("button", { name: "选择文件夹", exact: true }).click();
       const picker = page.locator(".session-create-dialog");
       const browse = picker.getByRole("button", { name: "浏览电脑文件夹", exact: true });
       if (await browse.isVisible()) await browse.click();
       await picker.getByRole("button", { name: "输入路径", exact: true }).click();
-      await picker.getByLabel("当前路径", { exact: true }).fill(host.nativeApproval.cwd);
+      await picker.getByLabel("当前路径", { exact: true }).fill(cwd);
       await picker.getByLabel("当前路径", { exact: true }).press("Enter");
       await picker.getByRole("button", { name: "使用此文件夹", exact: true }).click();
       await picker.waitFor({ state: "hidden" });
+    };
+    const enterNewChat = async (title, emptyDesktop = false) => {
+      if (!emptyDesktop) await openNewChat();
+      await chooseDirectory(host.nativeApproval.cwd);
       await canvas.getByLabel("会话标题", { exact: true }).fill(title);
     };
     const title = `首发附件 ${surface}`;
@@ -126,17 +129,54 @@ export async function verifyFirstAttachments(page, host, steps, directory, baseU
       [{ filename: "only.png", mimeType: "image/png", base64: photo.toString("base64") }]]);
     await canvas.waitFor({ state: "hidden" });
 
+    assert.equal(uploadCalls().length, counts[1] + 3, "Image-only first send does not touch the file upload path");
+    host.snapshot.host.capabilities.push("workspace.upload.v1");
+    await host.send({ kind: "snapshot", snapshot: host.snapshot });
+
+    const abandonedTitle = `待放弃首发 ${surface}`;
+    await enterNewChat(abandonedTitle);
+    await pick(/添加图片/u, { name: "abandoned.png", mimeType: "image/png", buffer: photo });
+    await pick(/添加文件/u, ["kept-on-host.txt", "abandoned.txt"].map(name => ({ name, mimeType: "text/plain", buffer: bytes })));
+    await canvas.locator("textarea").fill("不要发送这条草稿");
+    commits = 0;
+    await canvas.getByRole("button", { name: "发送", exact: true }).click();
+    await canvas.getByRole("alert").filter({ hasText: "隔离首发文件保存失败" }).waitFor();
+    const abandoned = host.snapshot.sessions.find(session => session.title === abandonedTitle);
+    assert.ok(abandoned);
+    const keptUpload = host.requests.filter(request => request.method === "file.upload.commit").at(-2);
+    for (const name of ["kept-on-host.txt", "abandoned.txt", "abandoned.png"]) {
+      await canvas.getByRole("button", { name: `移除 ${name}`, exact: true }).click();
+    }
+    await canvas.locator("textarea").fill("");
+    if (desktop) await canvas.getByRole("button", { name: "返回会话", exact: true }).click();
+    else await openMobileDrawer(page);
+    await openNewChat();
+    assert.ok(await canvas.getByRole("button", { name: "放弃草稿", exact: true }).isVisible(), "A pinned first turn must have an explicit way to start over after clearing it");
+    const discard = canvas.getByRole("button", { name: "放弃草稿", exact: true });
+    const confirmation = page.getByRole("alertdialog", { name: "放弃首发草稿？" });
+    await discard.click();
+    await confirmation.getByRole("button", { name: "取消", exact: true }).click();
+    assert.equal(await canvas.getByLabel("会话标题", { exact: true }).inputValue(), abandonedTitle);
+    await discard.click();
+    await confirmation.waitFor();
+    await page.screenshot({ path: resolve(directory, `${surface}-discard-first-attachment-draft.png`) });
+    await confirmation.getByRole("button", { name: "放弃草稿", exact: true }).click();
+    assert.ok(await canvas.getByRole("button", { name: "创建空会话", exact: true }).isEnabled(), "Abandoning makes this a fresh canvas");
+
     const plainTitle = `纯文本首发 ${surface}`;
-    await enterNewChat(plainTitle);
+    await chooseDirectory(host.nativeApproval.harnessCwd);
+    await canvas.getByLabel("会话标题", { exact: true }).fill(plainTitle);
     await selectCustomOption(page, canvas.getByRole("combobox", { name: "模型", exact: true }), "synthetic-model");
     await canvas.locator("textarea").fill("纯文本首发内容");
     await canvas.getByRole("button", { name: "发送", exact: true }).click();
     await eventually(() => nativeSends().length, counts[3] + 3, `${surface}: plain text still sends through Native`);
     const plain = host.snapshot.sessions.find(session => session.title === plainTitle);
-    assert.ok(plain);
+    assert.equal(plain?.cwd, host.nativeApproval.harnessCwd);
+    assert.notEqual(plain.sessionId, abandoned.sessionId, "The next first message targets a different Native session");
+    assert.ok(host.snapshot.sessions.some(session => session.sessionId === abandoned.sessionId), "Abandoning the draft leaves its Native session intact");
+    assert.deepEqual(await readFile(resolve(abandoned.cwd, ".bridge-uploads", keptUpload.params.uploadId, "kept-on-host.txt")), bytes);
     assert.deepEqual(nativeSends().at(-1).args.slice(0, 3), [plain.sessionId, "纯文本首发内容", undefined]);
-    assert.equal(uploadCalls().length, counts[1] + 3, "Plain text does not touch the file upload path");
-    host.snapshot.host.capabilities.push("workspace.upload.v1");
-    steps.push(`${surface}: retained image and exact uploaded bytes reach the same newly created Native session after a deterministic failure; text-only still sends`);
+    assert.equal(uploadCalls().length, counts[1] + 5, "Plain text does not touch the file upload path");
+    steps.push(`${surface}: retained image and exact uploaded bytes reach the same newly created Native session after a deterministic failure; abandoning a later draft leaves its Native session and uploaded file, then text-only sends to a different directory`);
   }
 }

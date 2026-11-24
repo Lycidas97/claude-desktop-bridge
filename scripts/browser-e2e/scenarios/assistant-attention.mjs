@@ -9,8 +9,14 @@ export async function verifyAssistantAttention(page, host, steps, directory, vie
   const { service, deliver, agenda } = native.assistantMail;
   const entry = page.locator(".drawer-assistant-capsule");
   const label = () => entry.getAttribute("aria-label");
-  const attention = page.locator(".assistant-attention");
   const lit = "助理，有事项待关注";
+  const inbox = client => client.getByRole("button", { name: "收件", exact: true });
+  const inboxCard = (client, mailRefId) => client.getByLabel("邮件输入", { exact: true }).locator(`[data-mail-id="${mailRefId}"]`);
+  const resolveMail = card => card.getByRole("button", { name: "标为已解决", exact: true });
+  const original = card => card.getByRole("button", { name: "原文", exact: true });
+  const processingEntry = page.getByRole("button", { name: /^处理记录/u });
+  const processingCount = count => processingEntry.getByText(new RegExp(`(?:^| · )${count} 封待你看$`, "u"));
+  const acknowledged = (kind, id) => host.requests.some(request => request.method === "plugin.assistant-mail.attention.ack" && request.params.kind === kind && request.params.id === id);
   const back = () => page.locator(".assistant-page").getByRole("button", { name: "返回", exact: true }).click();
   const dismiss = () => page.getByRole("dialog").getByRole("button", { name: "关闭", exact: true }).click();
   const analyze = (event, level, category = "other") => native.callAssistantTool("mail.update_analysis", {
@@ -31,26 +37,22 @@ export async function verifyAssistantAttention(page, host, steps, directory, vie
   await eventually(label, lit, "Classified mail lights the entry; routine marketing does not");
   assert.equal(await entry.locator(".desktop-nav-badge").count(), 0, "The new entry is a dot, not an unread count");
   await entry.click();
-  await page.getByRole("button", { name: "收件", exact: true }).click();
-  const unreadCard = page.locator(`.assistant-mail-list [data-mail-id="${worth.mailRefId}"]`);
-  await expandInboxMail(unreadCard);
+  await page.getByRole("button", { name: "对话", exact: true }).waitFor();
+  assert.equal(await page.getByText("待关注", { exact: true }).count(), 0, "The Assistant dialogue has no duplicate attention block");
+  await inbox(page).click();
+  const unreadCard = await expandInboxMail(inboxCard(page, worth.mailRefId));
   await unreadCard.getByText("状态", { exact: true }).click();
   await unreadCard.getByText("待处理", { exact: true }).waitFor();
   assert.equal(host.requests.some(request => request.method === "plugin.assistant-mail.read" && request.params.mailRefId === worth.mailRefId), false);
   assert.equal(host.requests.some(request => request.method === "plugin.assistant-mail.attention.ack" && request.params.id === worth.mailRefId), false);
   assert.ok(host.snapshot.assistantMail.attention.some(item => item.id === worth.mailRefId), "Opening status leaves the host attention item intact");
-  await attention.locator("summary").click();
-  await attention.getByText("值得看", { exact: true }).waitFor();
-  assert.equal(await attention.locator("li").count(), 1, "Opening Assistant does not acknowledge a mail");
-  await page.screenshot({ path: resolve(directory, "mobile-assistant-attention.png") });
-  viewports.push({ page: "mobile-assistant-attention", ...page.viewportSize() });
+  assert.equal(await resolveMail(unreadCard).count(), 0, "Read-only attention never offers mail resolution");
   await page.evaluate(() => { Object.defineProperty(document, "hidden", { value: true, configurable: true }); });
-  await attention.getByRole("button", { name: /值得看/u }).click();
-  await page.locator(".assistant-attention-original").waitFor();
+  await original(unreadCard).click();
+  await page.locator(".assistant-mail-original-body").waitFor();
   assert.equal(host.requests.some(request => request.method === "plugin.assistant-mail.attention.ack" && request.params.id === worth.mailRefId), false,
     "A loaded original behind a background tab does not mark the mail seen");
   await page.evaluate(() => { delete document.hidden; document.dispatchEvent(new Event("visibilitychange")); });
-  await attention.waitFor({ state: "hidden" });
   await dismiss();
   await back();
   await eventually(label, "助理", "Reading the single message clears attention");
@@ -61,8 +63,9 @@ export async function verifyAssistantAttention(page, host, steps, directory, vie
   await analyze(action, "action", "account");
   const todoTitle = "核对并提交预算";
   agenda.saveTodo({ value: { title: todoTitle, remindAt: new Date(Date.now() - 1000).toISOString(), status: "pending" } });
-  agenda.saveEvent({ value: { title: "团队同步", startAt: new Date(Date.now() + 60_000).toISOString(),
-    endAt: new Date(Date.now() + 120_000).toISOString(), remindAt: new Date(Date.now() - 1000).toISOString(), allDay: false, timeZone: "UTC" } });
+  const eventTitle = "团队同步";
+  agenda.saveEvent({ value: { title: eventTitle, startAt: new Date(Date.now() - 60_000).toISOString(),
+    endAt: new Date(Date.now() + 3_600_000).toISOString(), remindAt: new Date(Date.now() - 1000).toISOString(), allDay: false, timeZone: "UTC" } });
   const draft = (await native.draftProposal({ kind: "todo.create", sourceId: "local", value: { title: "提案核对", status: "pending" } })).result;
   for (const message of [
     { type: "user", uuid: "attention-user-input", message: { content: "请给我一条最新回复" } },
@@ -79,21 +82,25 @@ export async function verifyAssistantAttention(page, host, steps, directory, vie
   try {
     await openDesktopAssistant(desktop, host, baseUrl, []);
     await desktop.locator(".sidebar-assistant-row .sidebar-unread-dot").waitFor();
-    await desktop.locator(".assistant-attention > summary").click();
-    await desktop.getByText("需要处理", { exact: true }).waitFor();
-    await desktop.screenshot({ path: resolve(directory, "desktop-assistant-attention.png") });
-    viewports.push({ page: "desktop-assistant-attention", ...desktop.viewportSize() });
+    assert.equal(await desktop.getByText("待关注", { exact: true }).count(), 0);
 
     await entry.click();
-    await page.getByRole("button", { name: /^处理记录.*1 封待你看$/u }).waitFor();
+    await processingCount(1).waitFor();
+    await page.screenshot({ path: resolve(directory, "mobile-assistant-dialogue.png") });
+    viewports.push({ page: "mobile-assistant-dialogue", ...page.viewportSize() });
     const card = client => client.locator(`.assistant-mail-list [data-mail-id="${action.mailRefId}"]`);
+    const inInbox = client => inboxCard(client, action.mailRefId);
     const mark = client => card(client).getByRole("button", { name: "收入分类", exact: true });
-    const inboxCard = client => client.getByLabel("邮件输入", { exact: true }).locator(`[data-mail-id="${action.mailRefId}"]`);
     for (const client of [page, desktop]) {
-      await client.getByRole("button", { name: "收件", exact: true }).click();
-      await expandInboxMail(inboxCard(client));
+      await inbox(client).click();
+      await inInbox(client).getByText("需要处理", { exact: true }).waitFor();
+      assert.equal(await resolveMail(inInbox(client)).count(), 0, "Collapsed inbox rows only show a hint");
+      await expandInboxMail(inInbox(client));
+      await resolveMail(inInbox(client)).waitFor();
       await mark(client).waitFor();
     }
+    await desktop.screenshot({ path: resolve(directory, "desktop-mail-resolution.png") });
+    viewports.push({ page: "desktop-mail-resolution", ...desktop.viewportSize() });
     const desktopPicker = desktop.getByRole("dialog", { name: "收入分类", exact: true });
     await mark(desktop).click();
     await desktopPicker.waitFor();
@@ -101,16 +108,22 @@ export async function verifyAssistantAttention(page, host, steps, directory, vie
       capabilities: host.snapshot.host.capabilities.filter(value => value !== "plugin.assistant-mail.filing.v1") });
     await mark(desktop).waitFor({ state: "detached" });
     await desktopPicker.waitFor({ state: "detached" });
-    await inboxCard(desktop).waitFor();
+    await inInbox(desktop).waitFor();
     assert.equal(await desktop.locator(".assistant-mail-group").count(), 0, "A legacy analysis label is not a filed location");
     await desktop.evaluate(host => window.assistantDesktopSnapshot({ host }), host.snapshot.host);
     await mark(desktop).waitFor();
 
+    await original(inInbox(page)).click();
+    await page.locator(".assistant-mail-original-body").waitFor();
+    await eventually(() => acknowledged("mail", action.mailRefId), true, "Looking at the original only marks it seen");
+    await dismiss();
+    assert.ok(host.snapshot.assistantMail.attention.some(item => item.id === action.mailRefId), "Reading does not resolve action mail");
+
     const publishDesktop = () => desktop.evaluate(assistantMail => window.assistantDesktopSnapshot({ assistantMail }), host.snapshot.assistantMail);
     await fileMailInCategory(page, card(page), "营销与垃圾邮件");
-    await inboxCard(page).waitFor({ state: "detached" });
+    await inInbox(page).waitFor({ state: "detached" });
     await publishDesktop();
-    await inboxCard(desktop).waitFor({ state: "detached" });
+    await inInbox(desktop).waitFor({ state: "detached" });
     assert.equal(host.snapshot.assistantMail.attention.some(item => item.id === action.mailRefId), false);
     assert.equal(host.snapshot.assistantMail.attention.some(item => item.kind === "todo"), true);
     await page.getByRole("button", { name: "已收纳 2 封", exact: true }).click();
@@ -124,9 +137,9 @@ export async function verifyAssistantAttention(page, host, steps, directory, vie
     await restore.click();
     await restore.waitFor({ state: "detached" });
     await page.getByRole("button", { name: "返回收件", exact: true }).click();
-    await inboxCard(page).waitFor();
+    await inInbox(page).waitFor();
     await publishDesktop();
-    await expandInboxMail(inboxCard(desktop));
+    await expandInboxMail(inInbox(desktop));
     await mark(desktop).waitFor();
     assert.equal(host.snapshot.assistantMail.attention.some(item => item.id === action.mailRefId), true);
     steps.push("Manual filing removes mail attention, leaves tasks alone, and restores the mail and attention on desktop and mobile");
@@ -141,11 +154,13 @@ export async function verifyAssistantAttention(page, host, steps, directory, vie
   await host.emit("evidence.ready", { evidence: { id: "attention-evidence", sessionId, turnId: "after-reply-109", source: "claude-desktop", confidence: "exact",
     state: "ready", startedAt: Date.now() + 1000, toolCount: 0, changeCount: 1, artifactCount: 0, tools: [], artifacts: [], warnings: [] } });
   await page.locator(".assistant-conversation .evidence-inline-summary").click();
-  await page.getByRole("button", { name: "返回对话", exact: true }).waitFor();
-  await attention.locator("summary").click();
-  await attention.getByRole("button", { name: /助理回复/u }).click();
+  await page.getByRole("button", { name: "返回对话", exact: true }).click();
+  const loadOlder = page.getByRole("button", { name: "加载更早消息", exact: true });
+  await loadOlder.click();
+  await loadOlder.click();
   await reply.getByText("预算已更新，可查看最新版本。", { exact: true }).waitFor();
-  assert.ok(host.requests.filter(request => request.method === "session.history").length >= 2, "Reply lookup loads older Native pages");
+  await reply.evaluate(element => element.scrollIntoView({ block: "center" }));
+  assert.ok(host.requests.some(request => request.method === "session.history" && request.params.cursor), "Dialogue pagination loads older Native pages");
   const visibility = await reply.evaluate(element => new Promise(resolve => {
     const observer = new IntersectionObserver(([entry]) => {
       observer.disconnect();
@@ -155,8 +170,6 @@ export async function verifyAssistantAttention(page, host, steps, directory, vie
   }));
   assert.ok(!visibility.hidden && !visibility.covered && visibility.intersection >= Math.min(36, visibility.height * 0.95), JSON.stringify(visibility));
   await eventually(() => host.snapshot.assistantMail.attention.some(item => item.kind === "reply"), false, "A visible reply is acknowledged individually");
-  await attention.getByRole("button", { name: /需要处理/u }).click();
-  await page.locator(".assistant-attention-original").waitFor();
   async function deliverReply(id, text) {
     const events = [];
     for (const message of [
@@ -168,29 +181,8 @@ export async function verifyAssistantAttention(page, host, steps, directory, vie
     host.session.lastCompletedTurnId = session.lastCompletedTurnId;
     await host.syncNativeQueue({ events, history: await native.history(200), session });
   }
-  const historyNotice = page.locator(".assistant-conversation .latest-history-notice");
-  const { promise, resolve: releaseHistory } = Promise.withResolvers();
-  host.historyGate = promise;
-  try {
-    await deliverReply("covered", "提交已完成。");
-    await historyNotice.waitFor();
-  } finally {
-    releaseHistory();
-    host.historyGate = undefined;
-  }
-  // The completed turn refreshes history and can restore the previous reading position.
-  await historyNotice.waitFor({ state: "hidden" });
-  const coveredReply = page.locator(".assistant-conversation [data-stream-key=covered-reply]");
-  await coveredReply.evaluate(element => element.scrollIntoView({ block: "center" }));
-  assert.equal(await coveredReply.evaluate(element => new Promise(resolve => {
-    const observer = new IntersectionObserver(([entry]) => { observer.disconnect(); resolve(entry.intersectionRect.height >= Math.min(36, entry.boundingClientRect.height * 0.95)); });
-    observer.observe(element);
-  })), true, "The reply intersects the conversation behind the modal sheet");
   const pendingReply = id => host.snapshot.assistantMail.attention.some(item => item.kind === "reply" && item.id === `${sessionId}:${id}-reply`);
-  assert.equal(pendingReply("covered"), true, "The open original-mail sheet prevents the covered reply from being acknowledged");
-  await dismiss();
-  await eventually(() => pendingReply("covered"), false, "Closing the sheet acknowledges the newly visible reply");
-  await page.getByRole("button", { name: "收件", exact: true }).click();
+  await inbox(page).click();
   const longText = Array.from({ length: 14 }, (_, index) => `${index + 1}、${"这是一段用于核对显示高度的文字。".repeat(6)}`).join("\n\n");
   await deliverReply("long", longText);
   await eventually(() => pendingReply("long"), true, "A long reply arriving in the inbox remains pending");
@@ -201,23 +193,35 @@ export async function verifyAssistantAttention(page, host, steps, directory, vie
   await longReply.evaluate(element => element.scrollIntoView({ block: "center" }));
   assert.ok(await longReply.evaluate(element => element.getBoundingClientRect().height > innerHeight), "The whole long reply cannot fit in the viewport");
   await eventually(() => pendingReply("long"), false, "Reading a viewport of the long reply acknowledges it after returning to the conversation");
-  await attention.getByText("需要处理", { exact: true }).waitFor();
+  await inbox(page).click();
+  const actionCard = await expandInboxMail(inboxCard(page, action.mailRefId));
   host.mailReadFailure = true;
-  await attention.getByRole("button", { name: /需要处理/u }).click();
+  await original(actionCard).click();
   await page.getByRole("dialog").getByRole("alert").getByText("隔离邮件原文读取失败").waitFor();
-  await page.getByRole("button", { name: "标为已解决", exact: true }).click();
+  await dismiss();
   host.mailReadFailure = false;
-  await attention.getByText("需要处理", { exact: true }).waitFor({ state: "hidden" });
-  await attention.getByRole("button", { name: /日程提醒/u }).click();
-  await page.getByRole("button", { name: "已看", exact: true }).click();
-  await attention.getByText("日程提醒", { exact: true }).waitFor({ state: "hidden" });
-  await attention.getByRole("button", { name: /到期待办/u }).click();
+  const resolveAction = resolveMail(actionCard);
+  assert.ok(await resolveAction.evaluate(element => element.getBoundingClientRect().height >= 44));
+  await page.screenshot({ path: resolve(directory, "mobile-mail-resolution.png") });
+  viewports.push({ page: "mobile-mail-resolution", ...page.viewportSize() });
+  await resolveAction.press("Enter");
+  await resolveAction.waitFor({ state: "detached" });
+  assert.ok(acknowledged("mail-action", action.mailRefId));
+  await actionCard.getByText("需要处理", { exact: true }).waitFor({ state: "hidden" });
+  await page.getByRole("button", { name: "对话", exact: true }).click();
+  await processingCount(0).waitFor();
+
+  await page.getByRole("button", { name: "议程", exact: true }).click();
+  const seenEvent = page.getByRole("button", { name: `已看 ${eventTitle}`, exact: true });
+  await seenEvent.click();
+  await seenEvent.waitFor({ state: "detached" });
+  assert.equal(host.snapshot.assistantMail.attention.some(item => item.kind === "event"), false);
+  await page.getByText("其他待办", { exact: true }).click();
   const complete = page.getByRole("checkbox", { name: `完成 ${todoTitle}` });
   await complete.waitFor();
   assert.equal(await complete.isChecked(), false, "Viewing the task never completes it");
   await complete.click();
   await eventually(() => complete.isChecked(), true, "The host commits completion before the checkbox updates");
-  await attention.waitFor({ state: "hidden" });
   await back();
   await eventually(label, lit, "A pending proposal alone keeps the entry lit");
   const { proposalId, revision, payloadHash } = draft;
@@ -258,5 +262,21 @@ export async function verifyAssistantAttention(page, host, steps, directory, vie
   assert.deepEqual(replyIds(), bothReplies, "Files-only rewind keeps both replies");
   await rewind("conversation");
   await eventually(replyIds, [`${sessionId}:rewind-keep-reply`], "Conversation rewind clears only the discarded reply");
-  steps.push("Mail, paginated Native replies, calendar events, due tasks and pending proposals update the attention dot. Replies behind sheets and discarded by rewind use their own visibility and removal rules.");
+  const wake = await deliver(1);
+  await analyze(wake, "action", "account");
+  service.setProcessingStatus(wake.mailRefId, "processed");
+  await entry.click();
+  await processingCount(1).waitFor();
+  await processingEntry.click();
+  const wakeCard = page.getByRole("region", { name: "处理记录", exact: true }).locator(`[data-mail-id="${wake.mailRefId}"]`);
+  await wakeCard.getByText("需要处理", { exact: true }).waitFor();
+  assert.equal(await wakeCard.getByText("需要处理", { exact: true }).count(), 1, "The processing record already has the analysis label");
+  await expandInboxMail(wakeCard);
+  await resolveMail(wakeCard).click();
+  await resolveMail(wakeCard).waitFor({ state: "detached" });
+  await wakeCard.getByText("需要处理", { exact: true }).waitFor();
+  assert.ok(acknowledged("mail-action", wake.mailRefId));
+  await page.getByRole("button", { name: "返回", exact: true }).click();
+  await processingCount(0).waitFor();
+  steps.push("Inbox and processing cards resolve action mail without removing its historical analysis. Paginated replies, calendar events, due tasks and pending proposals still update the navigation dot.");
 }

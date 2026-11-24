@@ -24,10 +24,12 @@ function displayTime(value: string, timeZone = deviceZone): string {
 
 export function AgendaView() {
   const agenda = useAssistantAgenda()!;
+  const mail = useAssistantMail();
   const { events, todos, allTodos, calendarOnly, date, today } = agenda;
   const dayId = useId();
   const [editing, setEditing] = useState<BridgeAgendaTodo | BridgeAgendaEvent>();
   const [completing, setCompleting] = useState<string>();
+  const [acknowledging, setAcknowledging] = useState(false);
   const [error, setError] = useState("");
   // The provider keeps opened pages while the Assistant stage is switched away.
   useEffect(() => { agenda.openToday(); }, []);
@@ -79,6 +81,8 @@ export function AgendaView() {
     const source = sources.get(record.sourceId);
     const isTodo = "status" in record;
     const priority = isTodo ? priorityGroup(record.priority) : "";
+    // All-day occurrences can have a different projected reminder time in the day list.
+    const reminder = !isTodo && mail?.attention?.find(item => item.kind === "event" && item.id.startsWith(`${record.id}:`));
     return <li className={`agenda-record${isTodo && (record.status === "completed" || record.status === "cancelled") ? " is-closed" : ""}`} key={`${isTodo ? "todo" : "event"}:${record.id}`}>
       {isTodo ? <label className="agenda-marker agenda-check">
         <input type="checkbox" aria-label={`完成 ${record.title}`} checked={record.status === "completed"} disabled={!agenda.online || !source?.enabled || !source.writable || Boolean(completing) || (groupedDay ? todos.loading : allTodos.loading)}
@@ -102,6 +106,13 @@ export function AgendaView() {
         {record.notes && <p className="agenda-notes">{record.notes}</p>}
         {record.origin === "untrusted_external" && <small>{source?.label ?? record.collection}（只读）</small>}
       </div>
+      {reminder && mail && <button type="button" className="assistant-session-link" aria-label={`已看 ${record.title}`}
+        disabled={!mail.online || acknowledging} onClick={() => {
+          setAcknowledging(true); setError("");
+          void mail.acknowledge("event", reminder.id)
+            .catch(reason => setError(reason instanceof Error ? reason.message : "无法记录已看"))
+            .finally(() => setAcknowledging(false));
+        }}>已看</button>}
       {source?.enabled && source.writable && <IconButton label={`编辑 ${record.title}`} disabled={!agenda.online}
         onClick={() => setEditing(record)}><Pencil size={16} /></IconButton>}
     </li>;

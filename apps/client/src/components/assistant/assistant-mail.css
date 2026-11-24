@@ -175,6 +175,7 @@ body:has(.assistant-mail-category-options) .diagnostic-floating-entry { display:
 .assistant-mail-list .assistant-mail-card > :is(h3, .assistant-mail-from) { -webkit-line-clamp: 2; }
 .assistant-mail-hint { margin: 8px 0 0; color: var(--muted); font-size: calc(12px * var(--font-scale)); line-height: 1.5; }
 .assistant-mail-hint[data-tone="failed"] { color: var(--danger-ink); }
+.assistant-mail-hint[data-tone="action"] { color: var(--accent-ink); font-weight: 600; }
 .assistant-actions.assistant-mail-actions { gap: 4px; margin-top: 4px; }
 .assistant-mail-actions > .assistant-session-link { padding-inline: 8px; border-radius: var(--r-input); line-height: 1.4; }
 .assistant-mail-actions > button[aria-expanded="true"] { background: var(--surface-2); }

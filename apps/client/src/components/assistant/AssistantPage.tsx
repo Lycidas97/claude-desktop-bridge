@@ -15,7 +15,6 @@ import { AgendaSources } from "./AgendaSources.js";
 import { AgendaView } from "./AgendaView.js";
 import { useAssistantAgenda } from "./AssistantAgendaProvider.js";
 import { pendingProposalCount, useAssistantProposals } from "./AssistantProposalProvider.js";
-import { AssistantAttention } from "./AssistantAttention.js";
 import { AssistantProcessingContext } from "./AssistantProcessing.js";
 import { AssistantReadDirectories } from "./AssistantReadDirectories.js";
 import { ProposalPanel } from "./ProposalPanel.js";
@@ -33,7 +32,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
   active?: boolean;
   headerLeading?: ReactNode | undefined;
   onOpenSession(sessionId: string): void;
-  renderConversation(sessionId: string, stage: Pick<ConversationViewProps, "alternateStage" | "hideComposer" | "assistantReplyTarget">): ReactNode;
+  renderConversation(sessionId: string, stage: Pick<ConversationViewProps, "alternateStage" | "hideComposer">): ReactNode;
 }) {
   const mail = useAssistantMail();
   const agenda = useAssistantAgenda();
@@ -45,8 +44,6 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
   const [proposalReturn, setProposalReturn] = useState<Exclude<AssistantView, "proposals">>("conversation");
   const [settingsReturn, setSettingsReturn] = useState<Exclude<AssistantView, "settings">>("conversation");
   const [selectedProposal, setSelectedProposal] = useState<BridgeActionProposal>();
-  const [replyTarget, setReplyTarget] = useState<ConversationViewProps["assistantReplyTarget"]>();
-  const [replyError, setReplyError] = useState("");
   const [configuring, setConfiguring] = useState(false);
   const [selectedId, setSelectedId] = useState("");
   const [creating, setCreating] = useState(false);
@@ -69,7 +66,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
     if (selectedProposal) setSelectedProposal(undefined);
     else setView(proposalReturn);
   }
-  useEffect(() => { if (active) { setView(undefined); setSelectedProposal(undefined); setReplyTarget(undefined); setReplyError(""); } }, [active]);
+  useEffect(() => { if (active) { setView(undefined); setSelectedProposal(undefined); } }, [active]);
   const supportsFiling = mail?.supportsFiling;
   const backToInbox = () => setView("mail");
   const backFromSettings = () => setView(settingsReturn);
@@ -313,14 +310,6 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
         <ChevronRight size={16} aria-hidden="true" />
       </button>
     </div>}
-    {displayedView === "conversation" && (replyTarget || replyError) && <div className="assistant-page-content assistant-mail-feedback">
-      {replyError ? <p role="alert">{replyError}</p> : <p role="status">正在查找回复…</p>}
-    </div>}
-    {!filed && !processing && displayedView !== "proposals" && <AssistantAttention onReply={itemId => {
-      setView("conversation"); setReplyError("");
-      setReplyTarget({ itemId, done(error) { setReplyTarget(undefined); setReplyError(error ?? ""); } });
-    }}
-      onTodo={() => { agenda?.setCalendarOnly(false); agenda?.setAllTodosOpen(true); setView("agenda"); }} />}
     {session ? <>
       {(displayedView === "conversation" || processing) && <div className="assistant-page-content">{notices}</div>}
       {displayedView === "conversation" && <div className="assistant-page-content assistant-processing-entry-wrap">
@@ -332,7 +321,6 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
         <AssistantProcessingContext.Provider value={{ visible: processing, onDiscuss: () => setView("conversation") }}>
           {renderConversation(session.sessionId, {
             alternateStage: displayedView === "conversation" || processing ? undefined : stage,
-            assistantReplyTarget: replyTarget,
             hideComposer: filed || processing || displayedView === "settings" || displayedView === "agenda" || displayedView === "proposals" || workspace?.repairFailed === true,
           })}
         </AssistantProcessingContext.Provider>

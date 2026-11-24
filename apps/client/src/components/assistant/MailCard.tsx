@@ -1,6 +1,6 @@
 import { ARTIFACT_MAX_BYTES, mailAttachmentPreviewKind, type BridgeMailCategoryEntry, type BridgeMailFolder, type BridgeHistoryItem, type BridgeMailAttachment, type BridgeMailCard, type BridgeMailDetail } from "@bridge/protocol";
 import { ChevronRight, Download, Folder, Mail, Paperclip } from "lucide-react";
-import { useEffect, useId, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useEffectEvent, useId, useState, type MouseEvent, type ReactNode } from "react";
 import { downloadMailAttachment } from "../../lib/artifact-download.js";
 import { formatBytes } from "../../lib/media-preview.js";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
@@ -101,7 +101,8 @@ export function MailCard(props: MailCardProps) {
   const receivedDate = new Date(card.receivedAt);
   const receivedTime = <time dateTime={card.receivedAt}>{Number.isNaN(receivedDate.getTime()) ? "Invalid Date" : RECEIVED_TIME_FORMAT.format(receivedDate)}</time>;
   const delivery = showBatchDelivery || !card.nativeDelivery.batchId ? DELIVERY_STATUS[card.nativeDelivery.state] : undefined;
-  const content = <MailCardContent {...props} subject={subject} sender={sender} delivery={delivery} receivedTime={compact ? null : receivedTime} />;
+  const needsAction = mail?.attention?.some(item => item.kind === "mail" && item.reason === "action" && item.id === card.mailRefId) ?? false;
+  const content = <MailCardContent {...props} subject={subject} sender={sender} delivery={delivery} receivedTime={compact ? null : receivedTime} needsAction={needsAction} />;
   return <article className="assistant-mail-card" data-mail-id={card.mailRefId} data-stream-key={`mail:${card.mailRefId}`} aria-label={`邮件：${subject}`}>
     {compact ? <details className="assistant-mail-row" open={open} onToggle={event => setOpen(event.currentTarget.open)}>
       <summary>
@@ -111,6 +112,7 @@ export function MailCard(props: MailCardProps) {
         </span>
         <span className="assistant-mail-row-meta">
           <span className="assistant-mail-row-from">{sender}</span>
+          {needsAction && !(processingRecord && card.analysis?.attention === "action") && <span className="assistant-mail-hint" data-tone="action">需要处理</span>}
           {!open && delivery?.hint === "failed" && <span className="assistant-mail-hint" data-tone="failed">{MAIL_HINT_LABELS.failed}</span>}
         </span>
         <ChevronRight size={16} aria-hidden="true" />
@@ -137,8 +139,8 @@ function MailAnalysis({ analysis }: { analysis: NonNullable<BridgeMailCard["anal
   </>;
 }
 
-function MailCardContent({ card, compact, subject, sender, delivery, receivedTime, nativeMessage, onDiscuss, junkAction, filing, processingRecord }: MailCardProps & {
-  subject: string; sender: string; delivery: DeliveryStatus | undefined; receivedTime: ReactNode;
+function MailCardContent({ card, compact, subject, sender, delivery, receivedTime, nativeMessage, onDiscuss, junkAction, filing, processingRecord, needsAction }: MailCardProps & {
+  subject: string; sender: string; delivery: DeliveryStatus | undefined; receivedTime: ReactNode; needsAction: boolean;
 }) {
   const mail = useAssistantMail();
   const accountLabel = mail?.accountLabel(card.accountKey) ?? "邮件插件";
@@ -149,14 +151,23 @@ function MailCardContent({ card, compact, subject, sender, delivery, receivedTim
   const [statusOpen, setStatusOpen] = useState(false);
   const statusId = useId();
   const [originalOpen, setOriginalOpen] = useState(false);
-  const originalVisible = useRef(false);
-  function closeOriginal() {
-    originalVisible.current = false;
-    setOriginalOpen(false);
-  }
+  const [resolving, setResolving] = useState(false);
+  const [resolveError, setResolveError] = useState("");
   useEffect(() => {
-    if (originalOpen) return registerMobileBackHandler(() => { closeOriginal(); return true; }, 150);
+    if (originalOpen) return registerMobileBackHandler(() => { setOriginalOpen(false); return true; }, 150);
   }, [originalOpen]);
+  const markOriginalViewed = useEffectEvent(() => mail?.markViewed(card));
+  useEffect(() => {
+    if (!originalOpen || !detail || !mail?.online) return;
+    function acknowledgeVisible() {
+      if (document.hidden) return;
+      document.removeEventListener("visibilitychange", acknowledgeVisible);
+      markOriginalViewed();
+    }
+    document.addEventListener("visibilitychange", acknowledgeVisible);
+    acknowledgeVisible();
+    return () => document.removeEventListener("visibilitychange", acknowledgeVisible);
+  }, [originalOpen, detail, mail?.online]);
   const attachments = detail?.attachments ?? card.attachments;
   const attachmentCount = detail?.attachmentCount ?? card.attachmentCount ?? attachments?.length;
   const attachmentList = attachments?.length ? <section className="assistant-attachments" aria-label="邮件附件">
@@ -184,17 +195,11 @@ function MailCardContent({ card, compact, subject, sender, delivery, receivedTim
       <button type="button" className="assistant-session-link" aria-expanded={statusOpen} aria-controls={statusId}
         onClick={() => setStatusOpen(open => !open)}>状态</button>
       <button type="button" className="assistant-session-link" aria-haspopup="dialog" onClick={event => {
-        const opener = event.currentTarget;
-        opener.focus({ preventScroll: true });
-        originalVisible.current = true;
+        event.currentTarget.focus({ preventScroll: true });
         setOriginalOpen(true);
-        if (!mail?.online || loading) return;
-        if (detail) { mail.markViewed(card); return; }
+        if (!mail?.online || loading || detail) return;
         setLoading(true); setError("");
-        void mail.read(card.mailRefId, { original: true }).then(result => {
-          setDetail(result);
-          if (originalVisible.current && opener.isConnected) mail.markViewed(card);
-        })
+        void mail.read(card.mailRefId, { original: true }).then(setDetail)
           .catch(reason => setError(reason instanceof Error ? reason.message : "原文读取失败"))
           .finally(() => setLoading(false));
       }}>原文</button>
@@ -204,15 +209,22 @@ function MailCardContent({ card, compact, subject, sender, delivery, receivedTim
           ? <button type="button" className="assistant-session-link" disabled={filing.disabled} onClick={event => filing.move("inbox", event.currentTarget)}>收回收件</button>
           : <MailCategoryPicker categories={mail.categories} disabled={filing.disabled} move={filing.move} />)}
         {junkAction && <button type="button" className="assistant-session-link assistant-mail-junk-action" disabled={junkAction.disabled} onClick={junkAction.onMark}>标为垃圾邮件</button>}
+        {needsAction && <button type="button" className="assistant-session-link" disabled={!mail.online || resolving} onClick={() => {
+          setResolving(true); setResolveError("");
+          void mail.acknowledge("mail-action", card.mailRefId)
+            .catch(reason => setResolveError(reason instanceof Error ? reason.message : "无法标为已解决"))
+            .finally(() => setResolving(false));
+        }}>标为已解决</button>}
       </>}
     </div>
+    {needsAction && resolveError && <p role="alert">{resolveError}</p>}
     {!statusOpen && hint && <p className="assistant-mail-hint" data-tone={hint === "failed" ? "failed" : undefined}>{MAIL_HINT_LABELS[hint]}</p>}
     <dl id={statusId} className="assistant-mail-detail-status" hidden={!statusOpen}>
       <div><dt>助理处理</dt><dd>{PROCESSING_LABELS[card.processingStatus]}</dd></div>
       {delivery && <div><dt>自动发送</dt><dd>{delivery.detail}</dd></div>}
     </dl>
     {nativeMessage && <details className="assistant-mail-native"><summary>关联原生消息</summary><code>{nativeMessage.id}</code><pre>{nativeMessage.text}</pre></details>}
-    {originalOpen && <Sheet title={subject} className="assistant-mail-original" manageFocus onClose={closeOriginal} footer={detail &&
+    {originalOpen && <Sheet title={subject} className="assistant-mail-original" manageFocus onClose={() => setOriginalOpen(false)} footer={detail &&
       <MessageCopyButton text={detail.bodyText} label={copyLabel} buttonText={copyLabel} />}>
       {detail ? <>
         {detail.truncated && <p role="status">仅显示部分原文。</p>}

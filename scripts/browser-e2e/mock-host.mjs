@@ -425,7 +425,7 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
     }
     if (frame.type === "error") errors.push(`mock relay: ${frame.code}: ${frame.message}`);
   });
-  host.handleRequest = async (rawRequest) => {
+  host.handleRequest = async (rawRequest, origin = "mobile") => {
     const request = { kind: "request", requestId: rawRequest.requestId ?? randomUUID(), ...rawRequest };
     requests.push(structuredClone(request));
     let result;
@@ -534,7 +534,14 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
         case "file.upload.write":
         case "file.upload.commit":
         case "file.upload.cancel":
-          result = await host.nativeApproval.controllerRequest(request);
+          if (request.method === "file.upload.commit" && host.uploadCommitFailure) {
+            const message = host.uploadCommitFailure();
+            if (message) {
+              error = { code: "UPLOAD_FAILED", message };
+              break;
+            }
+          }
+          result = await host.nativeApproval.controllerRequest(request, origin);
           if (request.method === "file.upload.commit" && host.uploadCommitGate) {
             const gate = host.uploadCommitGate;
             host.uploadCommitGate = undefined;
@@ -792,6 +799,10 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
         }
         case "turn.steer":
         case "turn.start":
+          if (host.nativeApproval && request.params.sessionId !== sessionId) {
+            result = await host.nativeApproval.controllerRequest(request, origin);
+            break;
+          }
           if (host.nativeQueue || assistantMail) {
             const update = await host.nativeApproval.request(request);
             result = update.result;
@@ -858,7 +869,7 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
         }
         await host.send({ kind: "snapshot", snapshot });
         if (!remote.nativeWorkActive) await host.completeRemoteCommand(remoteCommand);
-      } else if (request.method === "turn.start" && !remotePreview && !host.nativeQueue && !assistantMail) {
+      } else if (request.method === "turn.start" && request.params.sessionId === sessionId && !remotePreview && !host.nativeQueue && !assistantMail) {
         await host.emit("turn.queued", {
           commandId: "browser-e2e-command", requestId: request.requestId,
           delivery: "host-received", text: userText, pendingCount: 1,
@@ -875,7 +886,7 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
     return { response, afterAck };
   };
   host.desktopRequest = async (input) => {
-    const { response, afterAck } = await host.handleRequest(desktopFixtureRequest(input));
+    const { response, afterAck } = await host.handleRequest(desktopFixtureRequest(input), "desktop");
     await afterAck();
     return response;
   };

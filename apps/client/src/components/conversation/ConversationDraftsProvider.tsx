@@ -12,6 +12,7 @@ import { canSendSession, fileToAttachment } from "../../lib/conversation-timelin
 import { registerDiagnosticsStateProvider } from "../../lib/diagnostics.js";
 import { appendUploadedFilePaths, type UploadFileHandler } from "../../lib/file-upload.js";
 import type { useFileAttachments } from "../evidence/FileAttachmentPicker.js";
+import type { SessionConfigurationChange } from "../session/SessionConfigurationDialog.js";
 import type { QueuedTurnActionState } from "./ConversationMessageItem.js";
 
 export interface ConversationDraftState {
@@ -20,6 +21,9 @@ export interface ConversationDraftState {
   sending: boolean;
   imageError?: string | undefined;
   newChatModel?: BridgeModelInfo | undefined;
+  // Only the new-chat canvas reads the staged files and the Native session pinned for final delivery.
+  newChatFiles?: { id: string; file: File; result?: BridgeUploadedFile }[];
+  firstTurnSession?: { session: BridgeSessionInfo; pendingConfiguration?: SessionConfigurationChange | undefined };
 }
 
 export interface ConversationFileEntry {

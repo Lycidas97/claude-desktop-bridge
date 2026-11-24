@@ -177,6 +177,47 @@ export async function verifyDesktopQuota(page, host, steps, directory, viewports
   steps.push("First-read errors are visible; absent capability disables refresh and makes no request, including after returning to quota");
 }
 
+function toDesktopSnapshot(current) {
+  return {
+    ...structuredClone(current),
+    connection: "connected",
+    launchAtLogin: false,
+    diagnosticsEnabled: false,
+    managedDesktopEnabled: false,
+    claudeDesktop: { state: "running", detail: "隔离 Native 宿主", canLaunch: false, canQuit: true },
+  };
+}
+
+export async function installDesktopConversationFixture(page, host) {
+  await page.exposeFunction("desktopBridgeRequest", input => host.desktopRequest(input));
+  await page.exposeFunction("desktopBridgeGetSnapshot", () => toDesktopSnapshot(host.snapshot));
+  host.onDesktopPayload = async payload => {
+    if (payload.kind === "snapshot") {
+      await page.evaluate(next => window.__desktopReceiveSnapshot?.(next), toDesktopSnapshot(payload.snapshot)).catch(() => {});
+    } else if (payload.kind === "event") {
+      await page.evaluate(event => window.__desktopReceiveEvent?.(event), payload.event).catch(() => {});
+    }
+  };
+  await page.addInitScript(initialSnapshot => {
+    window.__desktopSnapshot = initialSnapshot;
+    window.bridgeDesktop = {
+      getSnapshot: () => window.desktopBridgeGetSnapshot(),
+      onSnapshot: receive => {
+        window.__desktopReceiveSnapshot = next => {
+          window.__desktopSnapshot = next;
+          receive(structuredClone(next));
+        };
+        return () => { delete window.__desktopReceiveSnapshot; };
+      },
+      onEvent: receive => {
+        window.__desktopReceiveEvent = event => receive(structuredClone(event));
+        return () => { delete window.__desktopReceiveEvent; };
+      },
+      request: input => window.desktopBridgeRequest(input),
+    };
+  }, toDesktopSnapshot(host.snapshot));
+}
+
 export async function verifyDesktopConversation(page, host, steps, directory, viewports, baseUrl) {
   await page.emulateMedia({ reducedMotion: "reduce" });
   const axeSource = await readFile(resolve(root, "node_modules/axe-core/axe.min.js"), "utf8");
@@ -257,41 +298,7 @@ export async function verifyDesktopConversation(page, host, steps, directory, vi
     return result;
   };
 
-  const toDesktopSnapshot = current => ({
-    ...structuredClone(current),
-    connection: "connected",
-    launchAtLogin: false,
-    diagnosticsEnabled: false,
-    managedDesktopEnabled: false,
-    claudeDesktop: { state: "running", detail: "隔离 Native 宿主", canLaunch: false, canQuit: true },
-  });
-  await page.exposeFunction("desktopBridgeRequest", input => host.desktopRequest(input));
-  await page.exposeFunction("desktopBridgeGetSnapshot", () => toDesktopSnapshot(host.snapshot));
-  host.onDesktopPayload = async payload => {
-    if (payload.kind === "snapshot") {
-      await page.evaluate(next => window.__desktopReceiveSnapshot?.(next), toDesktopSnapshot(payload.snapshot)).catch(() => {});
-    } else if (payload.kind === "event") {
-      await page.evaluate(event => window.__desktopReceiveEvent?.(event), payload.event).catch(() => {});
-    }
-  };
-  await page.addInitScript(initialSnapshot => {
-    window.__desktopSnapshot = initialSnapshot;
-    window.bridgeDesktop = {
-      getSnapshot: () => window.desktopBridgeGetSnapshot(),
-      onSnapshot: receive => {
-        window.__desktopReceiveSnapshot = next => {
-          window.__desktopSnapshot = next;
-          receive(structuredClone(next));
-        };
-        return () => { delete window.__desktopReceiveSnapshot; };
-      },
-      onEvent: receive => {
-        window.__desktopReceiveEvent = event => receive(structuredClone(event));
-        return () => { delete window.__desktopReceiveEvent; };
-      },
-      request: input => window.desktopBridgeRequest(input),
-    };
-  }, toDesktopSnapshot(host.snapshot));
+  await installDesktopConversationFixture(page, host);
 
   await page.setViewportSize({ width: 1280, height: 820 });
   await page.goto(baseUrl, { waitUntil: "domcontentloaded" });

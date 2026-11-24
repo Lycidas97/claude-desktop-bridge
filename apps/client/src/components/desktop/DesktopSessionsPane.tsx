@@ -860,7 +860,13 @@ export function DesktopSessions({
                 : {})}
               onLoadSessionConfiguration={controller.loadSessionConfiguration}
               onConfigureSession={controller.configureSession}
-              onCreateSession={createSession}
+              onCreateSession={(...args) => {
+                // Keep the empty-list canvas mounted when the first created session appears in the catalog.
+                setNewChatTarget((current) => current ?? { key: 0 });
+                return createSession(...args);
+              }}
+              onUploadFile={controller.uploadFile}
+              onSendFirstTurn={(session, text, attachments) => controller.sendTurn(session.sessionId, text, attachments)}
               onSessionCreated={handleNewChatCreated}
             />
           )}

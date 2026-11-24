@@ -82,6 +82,7 @@ async function runScenario(theme, scenario, mockHostRuntime) {
   let page;
   let host;
   let firstHost;
+  let desktopAttachmentHost;
   let failure;
   try {
     host = await createMockHost(mockHostRuntime, !assistantMail && !firstAttachments && !["delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "round4-boundaries", "desktop-conversation", "incoming-file"].includes(scenario), scenario !== "delivery-approval-reconnect", errors, assistantMail || firstAttachments || ["native-approvals", "native-prompts-pr", "native-messages", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "round4-boundaries", "desktop-conversation", "incoming-file"].includes(scenario), ["native-queue-actions", "desktop-conversation"].includes(scenario), ["section-manage", "round4-boundaries", "round5-ux"].includes(scenario), assistantMail, scenario === "assistant-attention" ? { initialMailCount: 0, proposals: true } : scenario === "round5-ux" ? { desktopName: "LycidasdeMac-mini", initialMailCount: 0, legacyAttention: true } : ["assistant-proposals", "assistant-session-proposals"].includes(scenario) ? { initialMailCount: 0, proposals: true, legacyAttention: true } : ["assistant-agenda", "assistant-mail-unread", "assistant-read-directories", "assistant-replies"].includes(scenario) ? { initialMailCount: 0, legacyAttention: true } : scenario === "assistant-mail-history" ? { initialMailCount: 0, initialMailHistory: 25 } : scenario === "assistant-mail-categories" ? { initialMailCount: 2 } : scenario === "assistant-mail-reference" ? { initialMailCount: 52 } : accountsScenario ? { initialMailCount: 1, legacyAttention: true } : { legacyAttention: true });
@@ -200,8 +201,11 @@ async function runScenario(theme, scenario, mockHostRuntime) {
     else if (scenario === "session-catalog") await verifySessionCatalog(page, host, steps, directory, viewports, baseUrl);
     else if (scenario === "desktop-diagnostics") await verifyDesktopDiagnostics(page, host, steps, baseUrl);
     else if (scenario === "desktop-quota") await verifyDesktopQuota(page, host, steps, directory, viewports, baseUrl);
-    else if (firstAttachments) await verifyFirstAttachments(page, host, steps, directory, baseUrl);
-    else if (scenario === "desktop-conversation") await verifyDesktopConversation(page, host, steps, directory, viewports, baseUrl);
+    else if (firstAttachments) {
+      desktopAttachmentHost = await createMockHost(mockHostRuntime, false, false, errors, true, false, false, false);
+      desktopAttachmentHost.snapshot.host.capabilities.push("workspace.upload.v1");
+      await verifyFirstAttachments(page, host, desktopAttachmentHost, steps, directory, baseUrl);
+    } else if (scenario === "desktop-conversation") await verifyDesktopConversation(page, host, steps, directory, viewports, baseUrl);
     else if (scenario === "native-approvals") await verifyNativeApprovals(page, host, steps, directory, baseUrl, serverRoutes);
     else if (scenario === "native-prompts-pr") await verifyNativePromptsPr(page, host, steps, directory, baseUrl);
     else if (scenario === "native-messages") await verifyNativeMessages(page, host, steps, directory);
@@ -216,7 +220,7 @@ async function runScenario(theme, scenario, mockHostRuntime) {
     else if (scenario === "round5-ux") await verifyRound5Ux(page, host, steps, directory, viewports, theme);
     else if (scenario === "delivery-approval-reconnect") await verifyDelivery(page, host, steps, relayPeers);
     else if (scenario !== "pairing-qr") await verifyRename(page, host, scenario === "rename-list" ? "list" : "chat", steps);
-    if (!assistantMail) assert.equal(host.requests.some(request => request.method.startsWith("plugin.assistant-mail.")), false, "Hosts without the capability receive no assistant mail RPC");
+    if (!assistantMail) assert.equal([host, desktopAttachmentHost].some(fixture => fixture?.requests.some(request => request.method.startsWith("plugin.assistant-mail."))), false, "Hosts without the capability receive no assistant mail RPC");
     assert.deepEqual(errors, [], "Browser runtime, console, network isolation, or host errors");
   } catch (error) {
     failure = error;
@@ -240,18 +244,21 @@ async function runScenario(theme, scenario, mockHostRuntime) {
     }
     host?.close();
     firstHost?.close();
+    desktopAttachmentHost?.close();
     await writeFile(resolve(directory, "browser-errors.json"), JSON.stringify({ errors, console: browserLog }, null, 2));
     // No pairing secrets, tokens, or encrypted envelopes are written to reports.
+    const reportRequests = fixture => fixture?.requests.map(({ method, requestId, idempotencyKey, params }) => ({
+      method, requestId, idempotencyKey,
+      params: params?.credential === undefined ? params : { ...params, credential: "[redacted]" },
+    }));
     await writeFile(resolve(directory, "host-rpc.json"), JSON.stringify({
-      requests: host?.requests.map(({ method, requestId, idempotencyKey, params }) => ({
-        method, requestId, idempotencyKey,
-        params: params?.credential === undefined ? params : { ...params, credential: "[redacted]" },
-      })),
+      requests: reportRequests(host),
+      desktopRequests: reportRequests(desktopAttachmentHost),
       resumeBatches: host?.resumeBatches,
       nativeTrace: host?.nativeTrace,
       ...(host?.nativeQueue ? { nativeCalls: host.nativeApproval.calls, receipts: host.nativeApproval.receipts(), queueEvents: host.events } : {}),
     }, null, 2));
-    for (const fixture of [host?.nativeApproval, firstHost?.nativeApproval]) {
+    for (const fixture of [host?.nativeApproval, firstHost?.nativeApproval, desktopAttachmentHost?.nativeApproval]) {
       if (!fixture) continue;
       const idx = nativeHosts.indexOf(fixture);
       if (idx !== -1) nativeHosts.splice(idx, 1);

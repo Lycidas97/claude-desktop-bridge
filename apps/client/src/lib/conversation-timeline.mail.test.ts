@@ -1,5 +1,6 @@
 import type { BridgeActionProposal, BridgeEvidenceBundle, BridgeMailCard } from "@bridge/protocol";
 import { describe, expect, it } from "vitest";
+import { projectHistoryPage } from "../hooks/bridge/bridge-reducers.js";
 import { assistantConversationTimeline, conversationItems, conversationTimeline, type ConversationItem } from "./conversation-timeline.js";
 
 function card(fields: Partial<BridgeMailCard> = {}): BridgeMailCard {
@@ -44,6 +45,35 @@ describe("manual mail references in native history", () => {
 });
 
 describe("assistant chat and processing", () => {
+  it("keeps a mixed-root reply in chat after loading its older page", () => {
+    const user = message({ id: "next-prompt", createdAt: 30 });
+    const reply = message({ id: "reply-id", role: "assistant", text: "用户请求的结果", assistantBatchIds: ["wake-batch"] });
+    const latest = projectHistoryPage({ sessionId: user.sessionId, items: [user], hasMore: true,
+      nextCursor: "wake-result", assistantReplyBatches: { [reply.id]: [] } });
+    const history = projectHistoryPage({ sessionId: user.sessionId, items: [reply], hasMore: false }, latest);
+    const items = conversationItems(user.sessionId, history, [], []);
+    expect(assistantConversationTimeline(conversationTimeline(items, [], []))).toEqual({
+      chat: [{ kind: "message", item: { ...reply, assistantBatchIds: [] } }, { kind: "message", item: user }],
+      batches: [],
+    });
+  });
+
+  it.each([
+    ["turn.failed", "Native 请求失败", "failed", "Native 请求失败"],
+    ["turn.interrupted", "", "interrupted", "任务已停止"],
+  ] as const)("shows %s without a turn ID after a manual prompt", (type, text, state, visibleText) => {
+    const user = message({ text: "帮我检查预算" });
+    const items = conversationItems(user.sessionId, { status: "ready", items: [user], hasMore: false }, [{
+      eventId: "native-error", seq: 1, type, origin: "claude-desktop", sessionId: user.sessionId,
+      timestamp: 21, data: { error: text },
+    }], []);
+    expect(assistantConversationTimeline(conversationTimeline(items, [], [])).chat).toEqual([
+      { kind: "message", item: user },
+      { kind: "message", item: { id: "native-error", sessionId: user.sessionId, role: "system", text: visibleText,
+        createdAt: 21, origin: "system", state } },
+    ]);
+  });
+
   it("keeps the original user-facing identities and recovers a batch whose root is outside the loaded page", () => {
     const root = message({ source: "assistant-trigger", requestId: "live-wake" });
     const oldConclusion = message({ id: "older-final", role: "assistant", text: "Older wake conclusion", createdAt: 10, assistantBatchIds: ["older-wake"] });

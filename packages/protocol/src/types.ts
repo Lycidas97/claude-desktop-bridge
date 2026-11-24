@@ -1024,6 +1024,8 @@ export interface BridgeHistoryPage {
   sessionFileReceipts?: Record<string, BridgeSentFile[]>;
   /** Successful proposal receipts on this page. The matching calls may be on older pages. */
   sessionProposalResults?: string[];
+  /** Native result attribution by reply item ID when the reply is on an older page. */
+  assistantReplyBatches?: Record<string, string[]>;
   nextCursor?: string;
   hasMore: boolean;
 }

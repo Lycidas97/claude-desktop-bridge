@@ -663,6 +663,7 @@ export function conversationItems(
         createdAt: event.timestamp,
         origin: "system",
         state: event.type === "turn.failed" ? "failed" : "interrupted",
+        ...(assistantBatchIds ? { assistantBatchIds } : {}),
       });
     }
     if ((event.type === "prompt.resolved" || event.type === "pr.autoFix.updated") && event.data.automatic !== true && typeof event.data.resolvedByName === "string") {
@@ -754,7 +755,12 @@ export function conversationItems(
       })) } : {}),
     });
   }
+  const resolvedReplyBatches = new Map(Object.entries(history?.assistantReplyBatches ?? {}));
   const sorted = [...items.values()].flatMap((item): ConversationItem[] => {
+    if (item.role === "assistant") {
+      const assistantBatchIds = resolvedReplyBatches.get(item.id);
+      return [assistantBatchIds ? { ...item, assistantBatchIds } : item];
+    }
     if (item.role === "tool" && item.origin === "claude-desktop" && item.toolUseId && !item.isError) {
       if (item.sessionProposal && confirmedSessionProposals.has(item.toolUseId)) return [{ ...item, state: "completed", sessionProposalConfirmed: true }];
       if (item.toolName === "SendUserFile") {
@@ -1021,7 +1027,8 @@ export function assistantConversationTimeline(timeline: ConversationTimelineEntr
       const text = item.text.replace(/^【给用户】\s*/u, "");
       if (text || interactive) chat.push({ kind: "message", item: { ...item, text } });
     } else if (interactive || (item.role === "user" && !item.sessionNotice)
-      || (item.role === "assistant" && !ids.length && !item.taskPlan)) {
+      || (!ids.length && ((item.role === "assistant" && !item.taskPlan)
+        || (item.role === "system" && (item.state === "failed" || item.state === "interrupted"))))) {
       chat.push(entry);
     }
   }

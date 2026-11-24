@@ -3,7 +3,7 @@ import { scanClaudeContextFromMessages } from "../transcript/transcript-context.
 import { isRecord } from "../transcript/transcript-dag.js";
 import { NativeCallError, type ClaudeDesktopInspector } from "./claude-desktop-inspector.js";
 import { projectContextMessages } from "./native-context-usage.js";
-import { nativePlanMessages, nativeReplyResultRoots, nativeReplyRoot } from "./native-history-projection.js";
+import { nativeFinalReply, nativePlanMessages, nativeReplyResultRoots, nativeReplyRoot } from "./native-history-projection.js";
 
 export async function readNativeTranscriptPage(inspector: Pick<ClaudeDesktopInspector, "call">, sessionId: string, cursor: string, limit: number) {
   const page = await inspector.call("getTranscriptPage", [sessionId, cursor, limit, { window: "accept" }]);
@@ -37,21 +37,34 @@ export async function readNativeHistoryPage(
     : !cursor && !plainLatestWithKnownPlan;
   const earlierPlanMessages: unknown[] = [];
   const olderContextPages: unknown[][] = [];
-  const isTurnBoundary = (raw: unknown): raw is Record<string, unknown> => isRecord(raw)
+  const isTurnBoundary = (raw: unknown) => isRecord(raw)
     && (nativeReplyRoot(raw) !== undefined || nativeReplyResultRoots(raw) !== undefined);
   const leadingTurnItem = hasAssistantWakes ? page.messages.find(raw => isTurnBoundary(raw)
     || (isRecord(raw) && raw.type === "assistant" && !raw.isSidechain && !raw.parent_tool_use_id)) : undefined;
-  let needsEarlierRoot = leadingTurnItem !== undefined && !isTurnBoundary(leadingTurnItem);
+  const leadingResult = isRecord(leadingTurnItem) ? nativeReplyResultRoots(leadingTurnItem) : undefined;
+  let needsEarlierTurn = leadingTurnItem !== undefined && (!isTurnBoundary(leadingTurnItem) || Boolean(leadingResult?.length));
   let earlierRoot: string | undefined;
+  let earlierReplyId: string | undefined;
   let before = page.nextCursor;
-  while ((needsEarlierPlan || needsEarlierRoot) && before) {
+  while ((needsEarlierPlan || needsEarlierTurn) && before) {
     if (needsEarlierPlan) diagnostics.count("history.planPage");
     const older = await readNativeTranscriptPage(inspector, sessionId, before, limit);
     if (!older) throw new NativeCallError("Desktop returned an invalid transcript page");
     if (!cursor) olderContextPages.unshift(projectContextMessages(older.messages));
-    if (needsEarlierRoot) {
-      const boundary = older.messages.filter(isTurnBoundary).at(-1);
-      if (boundary) { earlierRoot = nativeReplyRoot(boundary); needsEarlierRoot = false; }
+    if (needsEarlierTurn) {
+      for (const raw of older.messages.slice().reverse()) {
+        if (!isRecord(raw) || raw.isSidechain || raw.parent_tool_use_id) continue;
+        if (isTurnBoundary(raw)) {
+          earlierRoot = nativeReplyRoot(raw);
+          needsEarlierTurn = false;
+          break;
+        }
+        earlierReplyId ??= nativeFinalReply(raw, isRecord(raw.message) ? raw.message : {})?.id;
+        if (earlierReplyId && leadingResult) {
+          needsEarlierTurn = false;
+          break;
+        }
+      }
     }
     for (const message of needsEarlierPlan ? nativePlanMessages(older.messages).reverse() : []) {
       const block = message.message.content[0]!;
@@ -68,6 +81,7 @@ export async function readNativeHistoryPage(
     page,
     earlierPlanMessages,
     earlierRoot,
+    earlierReplyId,
     readContextMessages(apply: (messages: unknown[]) => void): void | Promise<void> {
       let combined = [...olderContextPages.flat(), ...page.messages];
       // Preserve estimated usage at session.open's 18-message default when plan recovery was skipped.

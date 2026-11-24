@@ -99,11 +99,13 @@ export function nativeFinalReply(message: Record<string, unknown>, body: Record<
 /** Shared by history pages and live events; task state is projected from native messages. */
 export function nativeHistoryItems(sessionId: string, messages: unknown[], projection: NativeMessageProjection = {}, proposalResults?: string[], assistantTurn?: {
   earlierRoot: string | undefined;
+  earlierReplyId: string | undefined;
+  olderReplyBatches: Map<string, string[]>;
   batchIds(roots: string[]): string[];
 }): BridgeHistoryItem[] {
   const items = new Map<string, BridgeHistoryItem>();
   let batchIds = assistantTurn?.earlierRoot ? assistantTurn.batchIds([assistantTurn.earlierRoot]) : undefined;
-  let finalReplyId: string | undefined;
+  let finalReplyId = assistantTurn?.earlierReplyId;
   for (const raw of messages) {
     const message = record(raw);
     if (message.isSidechain === true) continue;
@@ -115,8 +117,12 @@ export function nativeHistoryItems(sessionId: string, messages: unknown[], proje
         batchIds = assistantTurn.batchIds([root]);
         finalReplyId = undefined;
       } else if (resultRoots) {
-        const reply = finalReplyId ? items.get(finalReplyId) : undefined;
-        if (reply && resultRoots.length) reply.assistantBatchIds = assistantTurn.batchIds(resultRoots);
+        if (finalReplyId && resultRoots.length) {
+          const resolved = assistantTurn.batchIds(resultRoots);
+          const reply = items.get(finalReplyId);
+          if (reply) reply.assistantBatchIds = resolved;
+          else if (finalReplyId === assistantTurn.earlierReplyId) assistantTurn.olderReplyBatches.set(finalReplyId, resolved);
+        }
         batchIds = undefined;
         finalReplyId = undefined;
       } else {

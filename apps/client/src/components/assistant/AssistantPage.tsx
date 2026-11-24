@@ -136,9 +136,8 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
   const refreshed = mail?.refreshStatus === "refreshed";
   const processing = displayedView === "processing";
   const showMailFeedback = displayedView !== "agenda" && displayedView !== "proposals" && !processing;
-  const recentSince = Date.now() - 86_400_000;
-  const recentlyProcessed = mail?.timelineCards.filter(card => card.nativeDelivery.nativeSessionId === session?.sessionId
-    && card.nativeDelivery.batchId && card.recordedAt >= recentSince && card.processingStatus === "processed").length ?? 0;
+  const recentlyProcessed = mail?.assistant?.binding?.nativeSessionId === session?.sessionId
+    ? mail?.assistant?.recentlyProcessed : undefined;
   const mailToReview = mail?.attention?.filter(item => item.kind === "mail" && (item.reason === "read" || item.reason === "action")).length ?? 0;
   const viewTabs = (
     <nav className="assistant-view-tabs" aria-label="助理工作台">
@@ -326,7 +325,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
       {(displayedView === "conversation" || processing) && <div className="assistant-page-content">{notices}</div>}
       {displayedView === "conversation" && <div className="assistant-page-content assistant-processing-entry-wrap">
         <button type="button" className="assistant-mail-filed-entry assistant-processing-entry" onClick={() => setView("processing")}>
-          <span>处理记录</span><small>最近处理 {recentlyProcessed} 封 · {mailToReview} 封待你看</small><ChevronRight size={16} aria-hidden="true" />
+          <span>处理记录</span><small>{recentlyProcessed !== undefined && `最近处理 ${recentlyProcessed} 封 · `}{mailToReview} 封待你看</small><ChevronRight size={16} aria-hidden="true" />
         </button>
       </div>}
       <div className="assistant-conversation">

@@ -86,6 +86,8 @@ export function AssistantTriggerBatch({ sessionId, batchId, cards, nativeMessage
     </header>
     {readError && <p role="alert">{readError}</p>}
     {cancelError && <p role="alert">{cancelError}</p>}
+    {record?.outputs.filter(item => item.role === "system" && (item.state === "failed" || item.state === "interrupted"))
+      .map(item => <p key={item.id} role="alert">{item.text}</p>)}
     {visibleCards.map(card => <MailCard key={card.mailRefId} card={card} compact processingRecord={Boolean(record)} showBatchDelivery={false}
       {...(onDiscuss ? { onDiscuss } : {})} />)}
     {conclusion && <p className="assistant-processing-conclusion">{conclusion.text}</p>}

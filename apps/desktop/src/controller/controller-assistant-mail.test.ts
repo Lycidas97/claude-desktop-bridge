@@ -876,6 +876,24 @@ it("coalesces disconnected mail and analysis wakes and clears them only after th
 });
 
 describe("assistant mail snapshot publication", () => {
+  it("counts recent processed mail for the bound session beyond the first inbox page", async () => {
+    run.broker.capabilities.mockReturnValue([]);
+    const binding = { assistantId: "assistant", nativeSessionId: "native-first", sectionId: null, previousSessionIds: [],
+      managed: { path: "/synthetic/assistant", policy: "stage1-fenced-workspace" as const, token: "fixture", automaticDelivery: true } };
+    service.setBinding({ ...binding, nativeSessionId: "native-second" });
+    service.setProcessingStatus((await record(1)).mailRefId, "processed");
+    service.setBinding(binding);
+    const oldClock = vi.spyOn(Date, "now").mockReturnValue(Date.now() - 86_400_001);
+    const old = await record(2);
+    oldClock.mockRestore();
+    service.setProcessingStatus(old.mailRefId, "processed");
+    for (let uid = 3; uid <= 53; uid++) service.setProcessingStatus((await record(uid)).mailRefId, "processed");
+    await record(54);
+    const { mailPage } = await run.request<{ mailPage: BridgeMailPage }>("plugin.assistant-mail.list", { limit: 50 });
+    expect(mailPage.cards).toHaveLength(50);
+    expect(mailPage.nextCursor).toBeDefined();
+    expect((await run.publish()).assistantMail?.recentlyProcessed).toBe(51);
+  });
   it("publishes a mail analysis change marker to mobile while sessions, binding and receiver stay unchanged", async () => {
     const event = await record(1);
     const before = await run.publish();

@@ -1041,7 +1041,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
       if (!this.inspector.ready) throw new InspectorDisconnectedError("Claude Desktop history is unavailable while inspector is disconnected");
       const previousSession = !cursor ? JSON.stringify(this.session(sessionId)) : undefined;
       const hasAssistantWakes = [...this.receipts.values()].some(receipt => receipt.sessionId === sessionId && receipt.source === "assistant-trigger");
-      const { page, earlierPlanMessages, earlierRoot, readContextMessages } = await readNativeHistoryPage(
+      const { page, earlierPlanMessages, earlierRoot, earlierReplyId, readContextMessages } = await readNativeHistoryPage(
         this.inspector, id, cursor, limit, () => this.messageProjection.get(sessionId)?.planObserved, hasAssistantWakes,
       );
       const { hasMore, nextCursor } = page;
@@ -1049,8 +1049,9 @@ export class ClaudeDesktopBridge extends EventEmitter {
       const projection: NativeMessageProjection = { ...(liveProjection.questionAnswers ? { questionAnswers: liveProjection.questionAnswers } : {}) };
       nativeHistoryItems(sessionId, earlierPlanMessages, projection);
       const sessionProposalResults: string[] = [];
+      const olderReplyBatches = new Map<string, string[]>();
       const items = nativeHistoryItems(sessionId, page.messages, projection, sessionProposalResults, hasAssistantWakes ? {
-        earlierRoot, batchIds: roots => this.assistantBatchIds(sessionId, roots),
+        earlierRoot, earlierReplyId, olderReplyBatches, batchIds: roots => this.assistantBatchIds(sessionId, roots),
       } : undefined);
       const sessionFileReceipts = await this.nativeSentFileReceipts(sessionId, page.messages);
       const localSubagents = await this.enrichSubagentItems(sessionId, items);
@@ -1124,7 +1125,8 @@ export class ClaudeDesktopBridge extends EventEmitter {
       diag("history.messages", { messages: items.length });
       return { sessionId, items, hasMore, ...(nextCursor ? { nextCursor } : {}),
         ...(sessionFileReceipts ? { sessionFileReceipts } : {}),
-        ...(sessionProposalResults.length ? { sessionProposalResults } : {}) };
+        ...(sessionProposalResults.length ? { sessionProposalResults } : {}),
+        ...(olderReplyBatches.size ? { assistantReplyBatches: Object.fromEntries(olderReplyBatches) } : {}) };
     } finally { read(); }
   }
 
@@ -1818,6 +1820,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
     const sidechain = message.isSidechain === true || (message.parent_tool_use_id && (message.type === "assistant" || message.type === "user" || message.type === "system" || message.type === "stream_event"));
     let compacting: boolean | undefined;
     let replyAttribution: BridgeEventDraft | undefined;
+    const errorRoot = event.type === "error" ? this.replyTurns.get(sessionId)?.rootId : undefined;
     if (!sidechain) {
       replyAttribution = this.observeReply(sessionId, message, event.type === "error" || event.type === "close");
       if (message.type === "system" && message.subtype === "status") {
@@ -1986,7 +1989,12 @@ export class ClaudeDesktopBridge extends EventEmitter {
         if (!indexedResult) await this.record({ sessionId, ...(typeof message.uuid === "string" ? { itemId: message.uuid } : {}), origin: "claude-desktop", type: message.is_error === true ? "turn.failed" : "turn.completed", data: { ...(message.is_error === true ? { error: message.result ?? message.errors } : {}) } });
       }
     }
-    if (event.type === "error") await this.record({ sessionId, origin: "claude-desktop", type: "turn.failed", data: { error: event.error } });
+    if (event.type === "error") {
+      const batchIds = errorRoot ? this.assistantBatchIds(sessionId, [errorRoot]) : [];
+      await this.record({ sessionId, origin: "claude-desktop", type: "turn.failed", data: {
+        error: event.error, ...(batchIds.length ? { assistantBatchIds: batchIds } : {}),
+      } });
+    }
   }
 
   private async record(draft: BridgeEventDraft): Promise<void> {

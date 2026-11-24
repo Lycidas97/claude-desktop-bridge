@@ -120,6 +120,36 @@ describe("native runtime sync and event publication", () => {
       f.native.page = { messages: [reply, result], hasMore: true };
       f.native.pages.set("wake-reply", { messages: [root, tool], hasMore: false });
       expect((await f.bridge.history(input.sessionId, undefined, 2)).items[0]).toMatchObject({ id: "reply-id", assistantBatchIds: [] });
+
+      const nextUser = { type: "user", uuid: "next-user", message: { content: "另一条用户消息" } };
+      f.native.page = { messages: [result, nextUser], hasMore: true };
+      f.native.pages.set("wake-result", { messages: [tool, reply], hasMore: true });
+      f.native.pages.set("wake-tool", { messages: [root], hasMore: false });
+      const resultPage = await f.bridge.history(input.sessionId, undefined, 2);
+      expect(resultPage.nextCursor).toBe("wake-result");
+      expect(resultPage.items.map(item => item.id)).toEqual(["next-user"]);
+      expect(resultPage.assistantReplyBatches).toEqual({ "reply-id": [] });
+      const replyPage = await f.bridge.history(input.sessionId, resultPage.nextCursor, 2);
+      expect(replyPage.items.find(item => item.id === "reply-id")?.assistantBatchIds).toEqual(["wake-batch"]);
+    } finally { await f.close(); }
+  });
+
+  it("only assigns a raw Native error to a batch when its active root is a wake", async () => {
+    const f = await fixture();
+    try {
+      const wake = await f.bridge.startTurn({ ...input, requestId: "error-batch", origin: "system", source: "assistant-trigger" });
+      for (const [uuid, error, data] of [
+        ["manual-user", "Manual error", {}],
+        [wake.messageId, "Wake error", { assistantBatchIds: ["error-batch"] }],
+      ] as const) {
+        await f.message({ type: "user", uuid, message: { content: "检查" } });
+        f.native.emit("event", { type: "error", sessionId: input.sessionId, error });
+        await vi.waitFor(() => {
+          const failure = f.eventLog.replay(0).find(event => event.type === "turn.failed" && event.data.error === error);
+          expect(failure?.data).toEqual({ error, ...data });
+          expect(failure?.turnId).toBeUndefined();
+        });
+      }
     } finally { await f.close(); }
   });
 

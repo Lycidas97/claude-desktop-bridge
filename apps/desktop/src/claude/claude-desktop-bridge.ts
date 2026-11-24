@@ -1024,13 +1024,18 @@ export class ClaudeDesktopBridge extends EventEmitter {
     };
     return Object.fromEntries(await Promise.all(receipts.map(async ({ toolUseId, files }) => [toolUseId, await Promise.all(files.map(async ({ path, local }) => {
       const name = basename(path) || path;
-      if (!local || !cwd || !root || !projectRoot) return { name };
+      if (!local) return { name, blockedReason: "没有可供传输的本地文件" };
+      if (!cwd || !root || !projectRoot) return { name, blockedReason: "会话工作区不可用" };
       const candidate = resolve(cwd, path);
-      const source = inside(cwd, candidate) || inside(root, candidate) ? await realpath(candidate).catch(unavailable) : undefined;
+      if (!inside(cwd, candidate) && !inside(root, candidate)) return { name, blockedReason: "文件不在会话工作区内" };
+      const source = await realpath(candidate).catch(unavailable);
+      if (!source) return { name, blockedReason: "找不到文件或无法读取" };
+      if (!inside(root, source)) return { name, blockedReason: "文件不在会话工作区内" };
       // Do not send a path that the Markdown link transport would reinterpret.
-      const check = source && inside(root, source) && source === sessionFileLinkPath(source)
-        ? await workspaceTransferMetadata(projectRoot, source).catch(unavailable) : undefined;
-      return { name, ...(source && check && "metadata" in check ? { path: source } : {}) };
+      if (source !== sessionFileLinkPath(source)) return { name, blockedReason: "此文件路径不支持远程打开" };
+      const check = await workspaceTransferMetadata(projectRoot, source).catch(unavailable);
+      if (check && "metadata" in check) return { name, path: source };
+      return { name, blockedReason: check?.blockedReason ?? "找不到文件或无法读取" };
     }))] as const)));
   }
 

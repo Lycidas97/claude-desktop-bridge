@@ -1015,6 +1015,8 @@ export interface BridgeSentFile {
   name: string;
   /** Present only for a confirmed local file eligible for workspace transfer. */
   path?: string;
+  /** User-facing reason when workspace transfer is unavailable; omitted by older hosts. */
+  blockedReason?: string;
 }
 
 export interface BridgeHistoryPage {

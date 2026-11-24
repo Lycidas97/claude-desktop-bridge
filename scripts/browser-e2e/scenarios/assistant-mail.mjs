@@ -831,21 +831,11 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await page.getByRole("button", { name: "绑定会话", exact: true }).click();
   await page.locator('.assistant-view-tabs button[aria-pressed="true"]').getByText("对话", { exact: true }).waitFor();
   const assistantId = host.snapshot.assistantMail.binding.assistantId;
-  const timelineMail = page.locator(".assistant-conversation .conversation-stream > [data-mail-id]").first();
-  const timelineSummary = await verifyCollapsedConversationMail(timelineMail);
   await eventually(() => page.locator(".conversation-loading").count(), 0, "Native history finishes loading");
-  assert.equal(await page.getByText("这是一个空会话", { exact: true }).count(), 0);
+  assert.equal(await page.locator(".assistant-conversation .conversation-stream > [data-mail-id]").count(), 0,
+    "Inbox mail never takes up a row in the assistant conversation");
   const mobileViewport = page.viewportSize();
-  await page.setViewportSize({ ...mobileViewport, width: 360 });
-  await timelineSummary.press("Enter");
-  const timelinePreview = timelineMail.locator(".assistant-mail-preview");
-  await timelinePreview.waitFor();
-  assert.equal(await timelinePreview.evaluate(element => getComputedStyle(element).webkitLineClamp), "3");
-  await verifyMailActionRow(timelineMail, 44);
-  await timelineMail.locator(".assistant-mail-row > summary").press("Space");
-  await timelinePreview.waitFor({ state: "detached" });
-  await page.setViewportSize(mobileViewport);
-  steps.push("Standalone conversation mail starts collapsed, keeps the received time and sender, and reveals the preview and actions by keyboard");
+  steps.push("Inbox cards no longer take up rows in assistant chat");
   assert.equal(await page.getByRole("button", { name: "返回", exact: true }).filter({ visible: true }).count(), 1, "Embedded native view keeps one root back navigation control");
   assert.equal(await page.locator(".assistant-page .m-header").count(), 1, "Mobile assistant has one header");
   assert.equal(await page.locator(".assistant-page").getByRole("button", { name: /^成果/u }).count(), 0, "Assistant conversation has no evidence view toggle");
@@ -855,11 +845,8 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
       content: [{ type: "tool_use", id: "mail-following-tool-call", name: "Read", input: { file_path: "/fixture/mail.txt" } }],
     },
   } }));
-  const toolGroupAfterMail = page.locator(".assistant-conversation .conversation-stream > [data-mail-id] + .conversation-tool-group");
-  await toolGroupAfterMail.waitFor();
-  const mailToToolGap = await toolGroupAfterMail.evaluate(group =>
-    group.offsetTop - group.previousElementSibling.offsetTop - group.previousElementSibling.offsetHeight);
-  assert.equal(mailToToolGap, 16, "A tool group after consecutive mail rows gets the conversation spacing");
+  assert.equal(await page.locator(".assistant-conversation .conversation-stream .conversation-tool-group").count(), 0,
+    "Ordinary tool calls do not take up rows in assistant chat");
   assert.equal(host.requests.some(request => request.method === "turn.start"), false);
   await page.locator(".assistant-conversation textarea").fill("手机跨页共享草稿");
   const uploadName = "assistant-upload.txt";
@@ -1083,9 +1070,11 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await host.nativeApproval.assistantMail.deliver(2);
   await settingsHeader.getByRole("button", { name: "返回", exact: true }).click();
   await page.locator(".assistant-view-tabs").getByRole("button", { name: "对话", exact: true }).click();
-  const batch = page.getByRole("region", { name: "助理唤醒" });
-  await batch.getByText("原生已观测", { exact: true }).waitFor();
+  const processingEntry = page.getByRole("button", { name: /^处理记录/u });
+  const processing = page.getByRole("region", { name: "处理记录" });
+  const batch = processing.getByRole("region", { name: "助理唤醒" }).first();
   const batchCards = batch.locator("article[data-mail-id]");
+  await processingEntry.press("Enter");
   await batchCards.nth(1).waitFor();
   assert.equal(await batchCards.count(), 2, "Batch cards load while inbox list is still unavailable");
   const batchMailIds = await batchCards.evaluateAll(cards => cards.map(card => card.dataset.mailId));
@@ -1114,14 +1103,31 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await discussButton.click();
   await page.locator(".assistant-mail-reference").waitFor();
   await page.getByRole("button", { name: "清除邮件引用" }).click();
+  await processingEntry.click();
   await firstBatchCard.locator(".assistant-mail-row > summary").click();
   await firstBatchCard.locator(".assistant-mail-row-content").waitFor({ state: "detached" });
+  const wakeConclusion = "这批邮件已筛选，无需回复。";
+  await batch.getByText("关联原生消息", { exact: true }).waitFor({ state: "attached" });
+  await host.nativeApproval.finishAssistantWake(managedSessionId, wakeConclusion);
+  await batch.getByText(wakeConclusion, { exact: true }).waitFor();
+  assert.equal(await batch.getByText("已完成", { exact: true }).isVisible(), false, "Normal delivery state stays in the collapsed details");
+  const toolDetails = batch.getByText("执行详情 · 1 次工具调用", { exact: true });
+  const toolName = batch.getByText("mcp__assistant-mail__mail_update_analysis", { exact: true });
+  await toolDetails.waitFor();
+  assert.equal(await toolName.isVisible(), false, "The raw tool name does not compete with the conclusion");
+  await toolDetails.click();
+  await toolName.waitFor();
+  await toolDetails.click();
+  await page.getByRole("button", { name: "返回", exact: true }).click();
+  assert.equal(await processing.isVisible(), false);
+  assert.equal(await page.locator(".assistant-conversation .conversation-stream").getByText(wakeConclusion).count(), 0);
   host.mailPageFailure = false;
   const batchDesktop = await page.context().newPage();
   try {
     await openDesktopAssistant(batchDesktop, host, baseUrl, []);
-    const desktopBatch = batchDesktop.locator(".desktop-conversation-stream").getByRole("region", { name: "助理唤醒" });
-    await desktopBatch.getByText("原生已观测", { exact: true }).waitFor();
+    await batchDesktop.getByRole("button", { name: /^处理记录/u }).click();
+    const desktopBatch = batchDesktop.getByRole("region", { name: "处理记录" }).getByRole("region", { name: "助理唤醒" });
+    await desktopBatch.getByText(wakeConclusion, { exact: true }).waitFor();
     for (const mailId of batchMailIds) await verifyCollapsedConversationMail(desktopBatch.locator(`[data-mail-id="${mailId}"]`));
     const desktopBatchMail = desktopBatch.locator(`[data-mail-id="${batchMailIds[0]}"]`);
     await expandInboxMail(desktopBatchMail);
@@ -1142,6 +1148,7 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   await inbox.locator(`article[data-mail-id="${batchMailIds[1]}"]`).waitFor();
   assert.equal(await inbox.locator(`article[data-mail-id="${batchMailIds[0]}"]`).count(), 0, "Inbox has only half the batch");
   await page.locator(".assistant-view-tabs").getByRole("button", { name: "对话", exact: true }).click();
+  await processingEntry.click();
   await batchCards.nth(1).waitFor();
   assert.deepEqual(await batchCards.evaluateAll(cards => cards.map(card => card.dataset.mailId)), batchMailIds);
   for (const card of await batchCards.all()) {
@@ -1156,22 +1163,36 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
     await card.locator(".assistant-mail-row > summary").click();
     await card.locator(".assistant-mail-row-content").waitFor({ state: "detached" });
   }
-  steps.push("Wake batch mail uses the same compact rows, with per-mail status and the discuss action available after expansion");
+  steps.push("The record fetches both members independently of the inbox and keeps their original and discuss actions");
   host.partialMailPage = false;
+  await capture("mobile-assistant-trigger-batch");
+  await page.getByRole("button", { name: "返回", exact: true }).click();
   await page.getByRole("button", { name: "刷新邮件列表", exact: true }).click();
   assert.equal(await page.locator(".conversation-item.user").filter({ hasText: "助理事件批次" }).count(), 0);
   const sends = host.nativeApproval.calls.filter(call => call.method === "sendMessage" && call.args[0] === managedSessionId);
   assert.equal(sends.length, 1);
   assert.match(sends[0].args[1], /^助理事件批次 [a-f0-9-]+\nmail\.received [a-f0-9-]+\nmail\.received [a-f0-9-]+\n/u);
-  await capture("mobile-assistant-trigger-batch");
+  const recent = host.nativeApproval.assistantMail.service;
+  recent.updateAnalysis(batchMailIds[1], { summary: "预算需要核对。", suggestions: ["核对附件"], questions: ["使用哪版预算？"], category: "account", attention: "action" });
+  recent.setProcessingStatus(batchMailIds[1], "processed");
+  await processingEntry.getByText(/最近处理 1 封/u).waitFor();
   host.nativeApproval.setSessionBusy(managedSessionId, true);
   const queued = await host.nativeApproval.assistantMail.deliver(1);
-  await batch.getByRole("button", { name: "撤回助理唤醒" }).waitFor();
+  await processingEntry.click();
+  const queuedBatch = processing.getByRole("region", { name: "助理唤醒" }).filter({ has: page.locator(`[data-mail-id="${queued.mailRefId}"]`) });
+  await queuedBatch.getByRole("button", { name: "撤回助理唤醒" }).waitFor();
+  await processing.getByText("预算需要核对。", { exact: true }).waitFor();
+  await processing.getByText("核对附件", { exact: true }).waitFor();
+  await processing.getByText("使用哪版预算？", { exact: true }).waitFor();
+  await processing.getByText("需要处理", { exact: true }).waitFor();
+  await capture("mobile-assistant-processing");
+  await page.getByRole("button", { name: "返回", exact: true }).click();
   await page.getByRole("button", { name: "收件", exact: true }).click();
   const queuedCard = cards().and(page.locator(`[data-mail-id="${queued.mailRefId}"]`));
   await expandInboxMail(queuedCard);
   await queuedCard.getByText("等待助理", { exact: true }).waitFor();
   await page.getByRole("button", { name: "对话", exact: true }).click();
+  await processingEntry.click();
   const queuedReceipt = host.nativeApproval.receipts().find(receipt => receipt.source === "assistant-trigger" && receipt.sessionId === managedSessionId && receipt.state === "queued");
   const send = host.send;
   const withdrawalEvents = [];
@@ -1194,14 +1215,26 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
     }
     return send(payload);
   };
-  await batch.getByRole("button", { name: "撤回助理唤醒" }).click();
-  await batch.getByText("已撤回", { exact: true }).waitFor();
+  await queuedBatch.getByRole("button", { name: "撤回助理唤醒" }).click();
+  await queuedBatch.getByText("已撤回", { exact: true }).waitFor();
   const receipt = host.nativeApproval.receipts().find(receipt => receipt.commandId === queuedReceipt.commandId);
   assert.equal(receipt.state, "cancelled");
   assert.equal(host.requests.findLast(request => request.method === "turn.queue.cancel").params.commandId, receipt.commandId);
   assert.deepEqual(host.nativeApproval.calls.findLast(call => call.method === "cancelQueuedMessage").args, [managedSessionId, receipt.messageId]);
   steps.push(`Native withdrawal refreshes the batch after ${liveMailFirst ? "mail then delivery" : "delivery then mail"} live notices and ordered replay`);
   host.nativeApproval.setSessionBusy(managedSessionId, false);
+  const nextWake = await host.nativeApproval.assistantMail.deliver(1);
+  await processing.getByRole("region", { name: "助理唤醒" }).filter({ has: page.locator(`[data-mail-id="${nextWake.mailRefId}"]`) })
+    .getByText("关联原生消息", { exact: true }).waitFor({ state: "attached" });
+  const visibleReply = "请你确认下一封邮件。";
+  await host.nativeApproval.finishAssistantWake(managedSessionId, `【给用户】${visibleReply}`);
+  await processing.getByText(wakeConclusion, { exact: true }).waitFor();
+  assert.equal(await processing.getByText(visibleReply, { exact: true }).count(), 0);
+  await page.getByRole("button", { name: "返回", exact: true }).click();
+  const chat = page.locator(".assistant-conversation .conversation-stream");
+  await chat.getByText(visibleReply, { exact: true }).waitFor();
+  assert.equal(await chat.getByText(/给用户|已筛选，无需回复/u).count(), 0);
+  steps.push("Consecutive wakes update one processing view; explicit user output appears only in chat without its marker");
   await page.locator(".assistant-view-tabs").getByRole("button", { name: "助理设置", exact: true }).click();
   await page.locator("label.toggle-row").filter({ has: proactive }).click();
   await eventually(() => host.snapshot.assistantMail.automaticDelivery, false, "Explicit opt-out stops new wakes");
@@ -1353,16 +1386,11 @@ export async function verifyAssistantMail(page, host, steps, directory, viewport
   assert.equal(await page.locator(".assistant-page").getByRole("navigation", { name: "会话视图" }).count(), 0, "Assistant conversation has no separate evidence view");
   assert.equal(await page.locator(".assistant-conversation .desktop-session-sidebar").count(), 0);
   assert.equal(await page.locator(".assistant-conversation .desktop-session-layout, .assistant-conversation .is-fixed-session").count(), 0, "Desktop AssistantPage mounts DesktopSessionConversation directly without DesktopSessions layout");
-  const desktopMail = page.locator(".assistant-conversation .desktop-conversation-stream > [data-mail-id]").first();
-  await verifyCollapsedConversationMail(desktopMail);
-  await expandInboxMail(desktopMail);
-  await desktopMail.locator(".assistant-mail-preview").waitFor();
-  await verifyMailActionRow(desktopMail);
-  await desktopMail.locator(".assistant-mail-row > summary").click();
-  await desktopMail.locator(".assistant-mail-row-content").waitFor({ state: "detached" });
-  steps.push("Desktop standalone conversation mail is compact and exposes its preview, original and discuss action when expanded");
   const historicalReference = page.locator(`.assistant-conversation .desktop-conversation-stream [data-stream-key="${messageId}"]`)
     .getByRole("button", { name: "打开邮件：邮件引用", exact: true });
+  await historicalReference.waitFor();
+  assert.equal(await page.locator(".assistant-conversation .desktop-conversation-stream > [data-mail-id]").count(), 0,
+    "Desktop chat retains the manual reference but does not embed inbox cards");
   await historicalReference.click();
   const historicalMail = page.getByRole("dialog", { name: "邮件引用", exact: true });
   await historicalMail.locator("pre").getByText(/<script>window.mailInjected=1<\/script>/u).waitFor();

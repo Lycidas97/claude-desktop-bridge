@@ -87,12 +87,14 @@ function MailCategoryPicker({ categories, disabled, move }: {
 
 type MailCardProps = {
   card: BridgeMailCard; compact?: boolean; nativeMessage?: BridgeHistoryItem; onDiscuss?(): void; showBatchDelivery?: boolean;
+  processingRecord?: boolean;
   junkAction?: { disabled: boolean; onMark(event: MouseEvent<HTMLButtonElement>): void } | undefined;
   filing?: { disabled: boolean; showFolder: boolean; move(folder: BridgeMailFolder, control: HTMLElement): void } | undefined;
 };
 
 export function MailCard(props: MailCardProps) {
-  const { card, compact, showBatchDelivery = true } = props;
+  const { card, compact, processingRecord, showBatchDelivery = true } = props;
+  const mail = useAssistantMail();
   const [open, setOpen] = useState(false);
   const subject = card.subject || "无主题";
   const sender = card.from.map(({ name, address }) => [name, address].filter(Boolean).join(" ")).join("，") || "未知发件人";
@@ -115,10 +117,27 @@ export function MailCard(props: MailCardProps) {
       </summary>
       {open && <div className="assistant-mail-row-content">{content}</div>}
     </details> : content}
+    {processingRecord && card.analysis && <div className="assistant-processing-analysis">
+      {(card.analysis.category || card.analysis.attention) && <div className="assistant-processing-tags">
+        {card.analysis.category && <span>{mail?.categoryLabel(card.analysis.category) ?? card.analysis.category}</span>}
+        {card.analysis.attention && <span data-attention={card.analysis.attention}>
+          {{ ignore: "无需关注", read: "值得看", action: "需要处理" }[card.analysis.attention]}
+        </span>}
+      </div>}
+      <MailAnalysis analysis={card.analysis} />
+    </div>}
   </article>;
 }
 
-function MailCardContent({ card, compact, subject, sender, delivery, receivedTime, nativeMessage, onDiscuss, junkAction, filing }: MailCardProps & {
+function MailAnalysis({ analysis }: { analysis: NonNullable<BridgeMailCard["analysis"]> }) {
+  return <>
+    {analysis.summary && <pre>{analysis.summary}</pre>}
+    {analysis.suggestions?.length ? <><h4>建议</h4><ul>{analysis.suggestions.map((suggestion, index) => <li key={index}>{suggestion}</li>)}</ul></> : null}
+    {analysis.questions?.length ? <><h4>问题</h4><ul>{analysis.questions.map((question, index) => <li key={index}>{question}</li>)}</ul></> : null}
+  </>;
+}
+
+function MailCardContent({ card, compact, subject, sender, delivery, receivedTime, nativeMessage, onDiscuss, junkAction, filing, processingRecord }: MailCardProps & {
   subject: string; sender: string; delivery: DeliveryStatus | undefined; receivedTime: ReactNode;
 }) {
   const mail = useAssistantMail();
@@ -155,12 +174,10 @@ function MailCardContent({ card, compact, subject, sender, delivery, receivedTim
     {!compact && <><h3>{subject}</h3><p className="assistant-mail-from">{sender}</p></>}
     {card.preview && <p className="assistant-mail-preview">{card.preview}</p>}
     {card.previewError && <p className="assistant-mail-from" role="status">{card.previewError}</p>}
-    {card.analysis && <details onToggle={event => {
+    {!processingRecord && card.analysis && <details onToggle={event => {
       if (event.currentTarget.open && mail?.attention !== undefined && (card.analysis?.summary || card.analysis?.suggestions?.length || card.analysis?.questions?.length)) mail.markViewed(card);
     }}><summary>分析结果</summary>
-      {card.analysis.summary && <pre>{card.analysis.summary}</pre>}
-      {card.analysis.suggestions?.length ? <><h4>建议</h4><ul>{card.analysis.suggestions.map((suggestion, index) => <li key={index}>{suggestion}</li>)}</ul></> : null}
-      {card.analysis.questions?.length ? <><h4>问题</h4><ul>{card.analysis.questions.map((question, index) => <li key={index}>{question}</li>)}</ul></> : null}
+      <MailAnalysis analysis={card.analysis} />
     </details>}
     {attachmentList}
     <div className="assistant-actions assistant-mail-actions" role="group" aria-label="邮件操作">

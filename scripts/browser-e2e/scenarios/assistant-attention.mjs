@@ -85,6 +85,7 @@ export async function verifyAssistantAttention(page, host, steps, directory, vie
     viewports.push({ page: "desktop-assistant-attention", ...desktop.viewportSize() });
 
     await entry.click();
+    await page.getByRole("button", { name: /^处理记录.*1 封待你看$/u }).waitFor();
     const card = client => client.locator(`.assistant-mail-list [data-mail-id="${action.mailRefId}"]`);
     const mark = client => card(client).getByRole("button", { name: "收入分类", exact: true });
     const inboxCard = client => client.getByLabel("邮件输入", { exact: true }).locator(`[data-mail-id="${action.mailRefId}"]`);

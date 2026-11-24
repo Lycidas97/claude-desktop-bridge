@@ -519,6 +519,7 @@ export function conversationItems(
         });
       }
     }
+    const assistantBatchIds = Array.isArray(event.data.assistantBatchIds) ? event.data.assistantBatchIds as string[] : undefined;
     if (event.type === "assistant.delta"
       && !(event.turnId && finalizedAssistantTurns.has(event.turnId))
       && !(event.itemId && finalizedAssistantItems.has(event.itemId))) {
@@ -534,6 +535,7 @@ export function conversationItems(
         text,
         createdAt: existing?.createdAt ?? event.timestamp,
         origin: "claude-host",
+        ...(assistantBatchIds ? { assistantBatchIds } : {}),
         live: true,
       });
     }
@@ -560,8 +562,9 @@ export function conversationItems(
         ...(event.turnId ? { turnId: event.turnId } : {}),
         role: "assistant",
         text,
-        createdAt: mergedTaskPlan || mergedPrompt?.kind === "question" ? prev?.createdAt ?? event.timestamp : event.timestamp,
+        createdAt: mergedTaskPlan || mergedPrompt?.kind === "question" || assistantBatchIds ? prev?.createdAt ?? event.timestamp : event.timestamp,
         origin: "claude-host",
+        ...(assistantBatchIds || prev?.assistantBatchIds ? { assistantBatchIds: assistantBatchIds ?? prev!.assistantBatchIds! } : {}),
         ...(mergedPrompt ? { interactivePrompt: mergedPrompt } : {}),
         ...(mergedTaskPlan ? { taskPlan: mergedTaskPlan } : {}),
       });
@@ -627,6 +630,7 @@ export function conversationItems(
         ? (typeof event.itemId === "string" && event.itemId.trim() ? event.itemId.trim() : existing?.toolUseId)
         : undefined;
       const isError = event.type === "tool.completed" && event.data.isError === true ? true : existing?.isError;
+      const toolBatchIds = assistantBatchIds ?? existing?.assistantBatchIds;
       toolByItem.set(id, {
         id: `tool:${id}`,
         sessionId,
@@ -646,6 +650,7 @@ export function conversationItems(
         }),
         ...(fileChanges?.length ? { fileChanges } : {}),
         ...(subagent ? { subagent } : {}),
+        ...(toolBatchIds ? { assistantBatchIds: toolBatchIds } : {}),
       });
     }
     if (event.type === "turn.failed" || event.type === "turn.interrupted") {
@@ -977,6 +982,50 @@ export function conversationTimeline(
     timeline.splice(index < 0 ? timeline.length : index, 0, entry);
   }
   return timeline;
+}
+
+export type AssistantProcessingBatch = Omit<Extract<ConversationTimelineEntry, { kind: "assistant-trigger-batch" }>, "kind"> & {
+  occurredAt: number;
+  outputs: ConversationItem[];
+};
+
+/** Separate the assistant workbench without changing the ordinary session transcript. */
+export function assistantConversationTimeline(timeline: ConversationTimelineEntry[]) {
+  const chat: ConversationTimelineEntry[] = [];
+  const batches = new Map<string, AssistantProcessingBatch>();
+  const batchIdsByMessage = new Map<string, string>();
+  for (const entry of timeline) {
+    if (entry.kind !== "assistant-trigger-batch") continue;
+    const { batchId, cards, nativeMessage } = entry;
+    batches.set(batchId, { batchId, cards, ...(nativeMessage ? { nativeMessage } : {}), outputs: [],
+      occurredAt: nativeMessage?.createdAt ?? cards[0]!.nativeDelivery.readyAt ?? cards[0]!.recordedAt });
+    if (nativeMessage) batchIdsByMessage.set(nativeMessage.id, batchId);
+  }
+  for (const entry of timeline) {
+    if (entry.kind === "proposal" || (entry.kind === "evidence" && (!entry.evidence.turnId || !batchIdsByMessage.has(entry.evidence.turnId)))) {
+      chat.push(entry);
+      continue;
+    }
+    if (entry.kind !== "message") continue;
+    const { item } = entry;
+    const referencedBatch = item.turnId ? batchIdsByMessage.get(item.turnId) : undefined;
+    const ids = item.assistantBatchIds ?? (referencedBatch ? [referencedBatch] : []);
+    const explicit = item.role === "assistant" && /^【给用户】\s*/u.test(item.text);
+    const interactive = item.interactivePrompt || item.sessionProposalConfirmed || item.sentFiles?.length;
+    for (const [index, batchId] of ids.entries()) {
+      const batch = batches.get(batchId) ?? { batchId, cards: [], occurredAt: item.createdAt, outputs: [] };
+      if (index === 0 && !interactive) batch.outputs.push(item);
+      batches.set(batchId, batch);
+    }
+    if (explicit) {
+      const text = item.text.replace(/^【给用户】\s*/u, "");
+      if (text || interactive) chat.push({ kind: "message", item: { ...item, text } });
+    } else if (interactive || (item.role === "user" && !item.sessionNotice)
+      || (item.role === "assistant" && !ids.length && !item.taskPlan)) {
+      chat.push(entry);
+    }
+  }
+  return { chat, batches: [...batches.values()].sort((first, second) => second.occurredAt - first.occurredAt) };
 }
 
 export interface FileChangeAggregate {

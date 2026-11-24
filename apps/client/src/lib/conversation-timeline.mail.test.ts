@@ -1,6 +1,6 @@
 import type { BridgeActionProposal, BridgeEvidenceBundle, BridgeMailCard } from "@bridge/protocol";
 import { describe, expect, it } from "vitest";
-import { conversationItems, conversationTimeline, type ConversationItem } from "./conversation-timeline.js";
+import { assistantConversationTimeline, conversationItems, conversationTimeline, type ConversationItem } from "./conversation-timeline.js";
 
 function card(fields: Partial<BridgeMailCard> = {}): BridgeMailCard {
   return {
@@ -40,6 +40,28 @@ describe("manual mail references in native history", () => {
     ];
 
     expect(conversationItems(items[0]!.sessionId, { status: "ready", items, hasMore: false }, [], [])).toEqual(items);
+  });
+});
+
+describe("assistant chat and processing", () => {
+  it("keeps the original user-facing identities and recovers a batch whose root is outside the loaded page", () => {
+    const root = message({ source: "assistant-trigger", requestId: "live-wake" });
+    const oldConclusion = message({ id: "older-final", role: "assistant", text: "Older wake conclusion", createdAt: 10, assistantBatchIds: ["older-wake"] });
+    const tool = message({ id: "mail-tool", role: "tool", text: "Update analysis", createdAt: 21, assistantBatchIds: ["live-wake"] });
+    const question = message({ id: "question", role: "assistant", text: "", createdAt: 22,
+      assistantBatchIds: ["live-wake"], interactivePrompt: { kind: "question", ask: "Which date?" } });
+    const userReply = message({ id: "explicit", role: "assistant", text: "【给用户】  Please check this", createdAt: 23, assistantBatchIds: ["live-wake"] });
+    const user = message({ id: "manual", text: "What happened?", createdAt: 24, mailRefId: "referenced-mail" });
+    const normalReply = message({ id: "answer", role: "assistant", text: "Here is what changed", createdAt: 25, assistantBatchIds: [] });
+    const projected = conversationTimeline([oldConclusion, root, tool, question, userReply, user, normalReply], [], [card()]);
+
+    expect(assistantConversationTimeline(projected)).toEqual({
+      chat: [question, { ...userReply, text: "Please check this" }, user, normalReply].map(item => ({ kind: "message", item })),
+      batches: [
+        { batchId: "live-wake", cards: [], nativeMessage: root, occurredAt: 20, outputs: [tool, userReply] },
+        { batchId: "older-wake", cards: [], occurredAt: 10, outputs: [oldConclusion] },
+      ],
+    });
   });
 });
 

@@ -109,6 +109,7 @@ export async function startNativeApprovalHost(options: {
   ];
   const calls: Array<{ method: string; args: unknown[] }> = [];
   const messages: Record<string, unknown>[] = [];
+  const assistantHistories = new Map<string, Record<string, unknown>[]>();
   const pending = new Map<string, (reply: NativeApprovalResult) => void>();
   const replies = new Map<string, NativeApprovalResult>();
   const queued = new Set<string>();
@@ -261,8 +262,11 @@ export async function startNativeApprovalHost(options: {
           return { delivered: true, queued: true };
         }
         if (textArg.startsWith("助理事件批次 ")) {
-          inspector.emit("event", { type: "message", sessionId: target.sessionId,
-            message: { type: "user", uuid: args[7], timestamp: Date.now(), message: { content: args[1] } } });
+          const history = assistantHistories.get(target.sessionId) ?? [];
+          const message = { type: "user", uuid: args[7], timestamp: Date.now(), message: { content: args[1] } };
+          history.push(message);
+          assistantHistories.set(target.sessionId, history);
+          inspector.emit("event", { type: "message", sessionId: target.sessionId, message });
         }
         return { delivered: true };
       }
@@ -274,11 +278,12 @@ export async function startNativeApprovalHost(options: {
         return accepted;
       }
       if (method === "interrupt") throw new Error("Queue actions must never interrupt the synthetic native turn");
-      if (method === "getTranscript") return structuredClone(messages);
-      if (method === "getTranscriptPage") {
-        const end = args[1] ? messages.findIndex(message => message.uuid === args[1]) : messages.length;
+      if (method === "getTranscript" || method === "getTranscriptPage") {
+        const history = assistantHistories.get(String(args[0])) ?? messages;
+        if (method === "getTranscript") return structuredClone(history);
+        const end = args[1] ? history.findIndex(message => message.uuid === args[1]) : history.length;
         const start = Math.max(0, end - Number(args[2]));
-        return { messages: structuredClone(messages.slice(start, end)), hasMore: start > 0 };
+        return { messages: structuredClone(history.slice(start, end)), hasMore: start > 0 };
       }
       if (method === "getSupportedCommands") return {
         commands: [
@@ -441,7 +446,7 @@ export async function startNativeApprovalHost(options: {
   assistantMailCoordinator?.startTriggers();
   eventLog.on("event", event => {
     // The live host logs the native event before appending any derived mail change.
-    if ((event.type === "user.message.accepted" || event.type === "message.delivery") && event.data.source === "assistant-trigger") {
+    if (event.data.assistantBatchIds || ((event.type === "user.message.accepted" || event.type === "message.delivery") && event.data.source === "assistant-trigger")) {
       options.onTriggerMessage?.(event);
     }
     assistantMailCoordinator?.observeDelivery(event);
@@ -610,6 +615,27 @@ export async function startNativeApprovalHost(options: {
       const target = nativeSessions.find(session => session.sessionId === sessionId);
       assert.ok(target);
       target.turnRunning = busy;
+    },
+    async finishAssistantWake(sessionId: string, text: string) {
+      const history = assistantHistories.get(sessionId);
+      const user = history?.filter(message => message.type === "user").at(-1);
+      assert.ok(history && user);
+      const now = Date.now();
+      const toolUseId = randomUUID();
+      const tool = { type: "assistant", uuid: randomUUID(), timestamp: now, message: {
+        content: [{ type: "tool_use", id: toolUseId, name: "mcp__assistant-mail__mail_update_analysis", input: {} }],
+      } };
+      const toolResult = { type: "user", uuid: randomUUID(), timestamp: now + 1, message: {
+        content: [{ type: "tool_result", tool_use_id: toolUseId, content: "Recorded" }],
+      } };
+      const reply = { type: "assistant", uuid: randomUUID(), timestamp: now + 2, message: { content: [{ type: "text", text }] } };
+      const result = { type: "result", uuid: randomUUID(), user_message_uuid: user.uuid, is_error: false };
+      for (const message of [tool, toolResult, reply, result]) {
+        const changed = once(broker, "changed");
+        history.push(message);
+        inspector.emit("event", { type: "message", sessionId, message });
+        await changed;
+      }
     },
     async advanceAssistantTrigger(sessionId: string, messageId: string, state: "started" | "completed" | "failed") {
       assert.ok(queued.delete(messageId), "Advance a queued assistant trigger");

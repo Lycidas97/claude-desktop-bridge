@@ -93,6 +93,36 @@ describe("native runtime sync and event publication", () => {
     } finally { await f.close(); }
   });
 
+  it("attributes wake outputs after a page boundary and keeps mixed-root replies visible to the user", async () => {
+    const f = await fixture();
+    try {
+      const wake = await f.bridge.startTurn({ ...input, requestId: "wake-batch", origin: "system", source: "assistant-trigger" });
+      const root = { type: "user", uuid: wake.messageId, message: { content: "邮件处理唤醒" } };
+      const tool = { type: "assistant", uuid: "wake-tool", message: { content: [{ type: "tool_use", id: "mail-tool", name: "mcp__assistant-mail__mail_update_analysis" }] } };
+      const reply = { type: "assistant", uuid: "wake-reply", message: { id: "reply-id", content: [{ type: "text", text: "已完成筛选" }] } };
+      const result = { type: "result", uuid: "wake-result", user_message_uuids: [wake.messageId, "native-user-root"], is_error: false };
+      await f.message(root);
+      await f.message(tool);
+      await f.message(reply);
+      const batchFor = (itemId: string) => f.eventLog.replay(0).filter(event => event.itemId === itemId).at(-1)?.data.assistantBatchIds;
+      expect(batchFor("mail-tool")).toEqual(["wake-batch"]);
+      expect(batchFor("reply-id")).toEqual(["wake-batch"]);
+      await f.message(result);
+      expect(batchFor("reply-id")).toEqual([]);
+
+      f.native.page = { messages: [tool, reply], hasMore: true };
+      f.native.pages.set("wake-tool", { messages: [root], hasMore: false });
+      const page = await f.bridge.history(input.sessionId, undefined, 2);
+      expect(page.nextCursor).toBe("wake-tool");
+      expect(page.items.map(({ id, assistantBatchIds }) => [id, assistantBatchIds])).toEqual([
+        ["mail-tool", ["wake-batch"]], ["reply-id", ["wake-batch"]],
+      ]);
+      f.native.page = { messages: [reply, result], hasMore: true };
+      f.native.pages.set("wake-reply", { messages: [root, tool], hasMore: false });
+      expect((await f.bridge.history(input.sessionId, undefined, 2)).items[0]).toMatchObject({ id: "reply-id", assistantBatchIds: [] });
+    } finally { await f.close(); }
+  });
+
   it("does not mark failed, synthetic, or child results as completed", async () => {
     const f = await fixture();
     try {

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { eventually, openMobileDrawer, selectCustomOption } from "../helpers.mjs";
@@ -82,14 +82,24 @@ export async function verifyFirstAttachments(page, host, steps, directory, baseU
     const text = `读取首条附件 ${surface}`;
     await canvas.locator("textarea").fill(text);
     const permission = canvas.getByRole("combobox", { name: "权限模式", exact: true });
+    const outputStyle = canvas.getByRole("combobox", { name: "输出风格", exact: true });
     await selectCustomOption(page, permission, "plan");
-    host.rejectPermissionMode = "plan";
+    await selectCustomOption(page, outputStyle, "Explanatory");
+    host.nativeApproval.rejectPermissionMode("plan");
     await canvas.getByRole("button", { name: "发送", exact: true }).click();
     await canvas.getByRole("alert").filter({ hasText: "隔离权限模式未应用" }).waitFor();
     assert.deepEqual([createCalls().length, uploadCalls().length, starts().length], [counts[0] + 1, counts[1], counts[2]], "A rejected configuration must not upload or send");
+    const created = host.snapshot.sessions.find(session => session.title === title);
+    assert.ok(created, "Native created the target session before any upload");
+    const readNativeConfiguration = async () => (await host.nativeApproval.configuration({
+      kind: "request", requestId: randomUUID(), idempotencyKey: randomUUID(),
+      method: "session.configuration", params: { sessionId: created.sessionId },
+    })).configuration;
+    assert.equal((await readNativeConfiguration()).outputStyle, "Explanatory", "Native applied the first setting before rejecting the second");
     assert.ok(await permission.isEnabled(), "A rejected configuration must leave the mode editable on the pinned draft");
     await selectCustomOption(page, permission, "acceptEdits");
-    host.rejectPermissionMode = undefined;
+    await selectCustomOption(page, outputStyle, "");
+    host.nativeApproval.rejectPermissionMode();
     let commits = 0;
     host.uploadCommitFailure = () => ++commits === 2 ? "隔离首发文件保存失败" : undefined;
     const uploadGate = Promise.withResolvers();
@@ -98,6 +108,10 @@ export async function verifyFirstAttachments(page, host, steps, directory, baseU
     try {
       await canvas.getByRole("progressbar", { name: "first.txt 上传进度", exact: true }).waitFor();
       await canvas.getByText(/正在保存/u).waitFor();
+      const applied = await readNativeConfiguration();
+      assert.equal(applied.outputStyle, "default", "Resetting the style on a pinned retry restores the actual Native default before the first send");
+      assert.equal(applied.nativePermissionMode, "acceptEdits");
+      assert.equal(nativeSends().length, counts[3], "Native settings readback precedes the first send");
     } finally {
       uploadGate.resolve();
     }
@@ -106,8 +120,6 @@ export async function verifyFirstAttachments(page, host, steps, directory, baseU
     await thumbnail("first.png").waitFor();
     await page.getByRole("button", { name: "移除 second.txt", exact: true }).waitFor();
     assert.deepEqual([createCalls().length, uploadCalls().length, starts().length, nativeSends().length], [counts[0] + 1, counts[1] + 2, counts[2], counts[3]], "Upload failure must not fall through to a partial Native send");
-    const created = host.snapshot.sessions.find(session => session.title === title);
-    assert.ok(created, "Native created the target session before any upload");
     assert.deepEqual(host.requests.filter(request => request.method === "session.configure" && request.params.sessionId === created.sessionId)
       .map(request => request.params.permissionMode), ["plan", "acceptEdits"], "Retry can correct the Native session configuration without creating another session");
 

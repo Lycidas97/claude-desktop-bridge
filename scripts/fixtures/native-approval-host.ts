@@ -123,6 +123,7 @@ export async function startNativeApprovalHost(options: {
   let keepUntrustedAfterSave = false;
   let applyPrWrites = true;
   let choicesAvailable = true;
+  let rejectedPermissionMode: BridgeSDKPermissionMode | undefined;
   const preferences = { onlyOwnPrs: false };
   let nextPrBranch: string | undefined;
   const nativeEvents: Record<string, unknown>[] = [];
@@ -343,6 +344,7 @@ export async function startNativeApprovalHost(options: {
       if (method === "setPermissionMode") {
         const target = nativeSessions.find(candidate => candidate.sessionId === args[0]);
         assert.ok(target, "Native permission mode must target an existing session");
+        if (args[1] === rejectedPermissionMode) throw new Error("隔离权限模式未应用");
         target.permissionMode = args[1] as BridgeSDKPermissionMode;
         if (target === native) options.onModeChanged?.(target.permissionMode);
         return;
@@ -676,6 +678,7 @@ export async function startNativeApprovalHost(options: {
     },
     commands: (request: BridgeRequest) => controller.handleRequest(request, "mobile", options.deviceId),
     configuration: (request: BridgeRequest) => controller.handleRequest(request, "mobile", options.deviceId),
+    rejectPermissionMode(mode?: BridgeSDKPermissionMode) { rejectedPermissionMode = mode; },
     async rewind(request: BridgeRequest) {
       const after = eventLog.latestSeq();
       let result;

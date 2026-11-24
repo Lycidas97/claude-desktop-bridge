@@ -656,11 +656,12 @@ export async function createMockHost({ baseUrl, runDir, startNativeApprovalHost,
           break;
         }
         case "session.configure": {
-          if (host.rejectPermissionMode && request.params.permissionMode === host.rejectPermissionMode) {
-            error = { code: "CONFIGURE_FAILED", message: "隔离权限模式未应用" };
+          try {
+            result = await host.nativeApproval.configuration(request);
+          } catch (failure) {
+            error = { code: failure.code ?? "CONFIGURE_FAILED", message: failure.message };
             break;
           }
-          result = await host.nativeApproval.configuration(request);
           if (request.params.sessionId === sessionId) Object.assign(session, host.nativeApproval.profile());
           else if (result.session) {
             snapshot.sessions = snapshot.sessions.map(candidate => candidate.sessionId === result.session.sessionId ? result.session : candidate);

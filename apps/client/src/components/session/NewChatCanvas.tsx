@@ -238,7 +238,7 @@ export function NewChatCanvas({
   const [permissionMode, setPermissionMode] = useState<BridgeSDKPermissionMode>(
     () => pendingConfiguration?.permissionMode ?? referenceSession?.nativePermissionMode ?? "default",
   );
-  const [outputStyle, setOutputStyle] = useState(pendingConfiguration?.outputStyle ?? "");
+  const [outputStyle, setOutputStyle] = useState(pendingConfiguration?.outputStyle === "default" ? "" : pendingConfiguration?.outputStyle ?? "");
   const [pendingBypassConfirm, setPendingBypassConfirm] = useState(false);
   const [pendingDiscardConfirm, setPendingDiscardConfirm] = useState(false);
   const [quotaRequested, setQuotaRequested] = useState(false);
@@ -407,20 +407,17 @@ export function NewChatCanvas({
     newChatDraft.setText(value);
   }
 
-  function editPendingConfiguration<Key extends keyof SessionConfigurationChange>(key: Key, value: SessionConfigurationChange[Key]): void {
+  function editPendingConfiguration(change: SessionConfigurationChange): void {
     if (!firstTurnSession || !pendingConfiguration) return;
-    const next = { ...pendingConfiguration };
-    if (value === undefined) delete next[key];
-    else next[key] = value;
     newChatDraft.updateDraft((current) => ({
-      ...current, firstTurnSession: { ...firstTurnSession, pendingConfiguration: next },
+      ...current, firstTurnSession: { ...firstTurnSession, pendingConfiguration: { ...pendingConfiguration, ...change } },
     }));
   }
 
   function applyPermissionMode(nextMode: BridgeSDKPermissionMode): void {
     userTouchedRef.current.permission = true;
     setPermissionMode(nextMode);
-    editPendingConfiguration("permissionMode", nextMode);
+    editPendingConfiguration({ permissionMode: nextMode });
   }
 
   function choosePermissionMode(nextMode: BridgeSDKPermissionMode): void {
@@ -569,8 +566,7 @@ export function NewChatCanvas({
         newChatDraft.updateDraft((current) => ({ ...current, firstTurnSession: { session: created, pendingConfiguration: change } }));
       }
       let configurationError: string | undefined;
-      const hasChanges = change && Object.keys(change).length > 0;
-      if (hasChanges && onConfigureSession && canConfigureRuntime) {
+      if (change && onConfigureSession && canConfigureRuntime) {
         try {
           const applied = await onConfigureSession(created.sessionId, change);
           if (
@@ -578,19 +574,19 @@ export function NewChatCanvas({
             && applied?.nativePermissionMode !== undefined
             && applied.nativePermissionMode !== change.permissionMode
           ) {
-            configurationError = "所选权限模式未生效，请检查会话设置后再发送。";
+            configurationError = attachedSend ? "所选权限模式未生效。" : "所选权限模式未生效，请检查会话设置后再发送。";
           }
         } catch (configReason) {
           configurationError = (configReason instanceof Error && configReason.message) || "会话配置应用失败。";
         }
-      } else if (hasChanges) {
+      } else if (change) {
         configurationError = "会话配置暂不可用。";
       }
 
       if (controller && onSendFirstTurn) {
         controller.signal.throwIfAborted();
         if (configurationError) {
-          setError(`首条消息未发送。${configurationError}`);
+          setError(`首条消息未发送。${configurationError}请修改设置后重试。`);
           return;
         }
         if (change) {
@@ -815,7 +811,7 @@ export function NewChatCanvas({
                   newChatDraft.updateDraft(current => ({
                     ...current, newChatModel: modelOptions.find(candidate => candidate.value === value),
                   }));
-                  editPendingConfiguration("model", value || null);
+                  editPendingConfiguration({ model: value || null });
                 }}
               />
             </div>
@@ -833,7 +829,7 @@ export function NewChatCanvas({
                       disabled={!connected || configurationLocked || configLoading}
                       onClick={() => {
                         setEffortDraft(level);
-                        editPendingConfiguration("effort", level ?? null);
+                        editPendingConfiguration({ effort: level ?? null });
                       }}
                     >
                       {level ? effortLabel(level) : "默认"}
@@ -867,7 +863,7 @@ export function NewChatCanvas({
                   ]}
                   onChange={(style) => {
                     setOutputStyle(style);
-                    editPendingConfiguration("outputStyle", style || undefined);
+                    editPendingConfiguration({ outputStyle: style || "default" });
                   }}
                 />
               </div>

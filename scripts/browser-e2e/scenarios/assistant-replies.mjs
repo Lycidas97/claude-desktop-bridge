@@ -17,18 +17,21 @@ export async function verifyAssistantReplies(page, host, steps, directory, serve
   host.nativeApproval.assistantMail.service.setBinding({ assistantId: randomUUID(), nativeSessionId: sessionId, sectionId: null, previousSessionIds: [] });
   host.snapshot.assistantMail = host.nativeApproval.mailSnapshot();
   await host.send({ kind: "snapshot", snapshot: host.snapshot });
-  const initialUser = { id: "assistant-question", sessionId, role: "user", text: "继续追问", createdAt: Date.now(), origin: "claude-desktop" };
+  const initialUser = { id: "assistant-question", sessionId, role: "user", text: "继续追问", createdAt: +new Date(2025, 1, 3, 23, 55), origin: "claude-desktop" };
   for (let index = 0; index < 30; index++) {
     host.history.push({ ...initialUser, id: `older-${index}`, text: `助理历史记录 ${index + 1}`, createdAt: initialUser.createdAt - (30 - index) * 1_000 });
   }
-  host.history.push(initialUser);
+  const earlierReply = { ...initialUser, id: "assistant-earlier-reply", role: "assistant", text: "【给用户】昨天的独立回复。",
+    createdAt: +new Date(2025, 1, 3, 23, 58) };
+  host.history.push(initialUser, earlierReply);
   await openMobileDrawer(page);
   await page.locator(".drawer-assistant-capsule").click();
   const assistant = page.locator(".assistant-conversation");
   const stream = assistant.locator(".conversation-stream");
   await stream.getByText(initialUser.text, { exact: true }).waitFor();
 
-  const reply = { id: "assistant-answer", sessionId, role: "assistant", text: "这是已写入电脑历史的助理回复", createdAt: Date.now(), origin: "claude-desktop" };
+  const reply = { id: "assistant-answer", sessionId, role: "assistant", text: "这是已写入电脑历史的助理回复",
+    createdAt: +new Date(2025, 1, 4, 0, 2), origin: "claude-desktop" };
   host.history.push(reply);
   await host.emit("assistant.completed", { text: reply.text }, { itemId: reply.id });
   await stream.getByText(reply.text, { exact: true }).waitFor();
@@ -50,6 +53,17 @@ export async function verifyAssistantReplies(page, host, steps, directory, serve
   const latestReads = () => host.requests.filter(request => request.method === "session.history" && !request.params.cursor).length;
   assert.equal(latestReads(), 1, "Reconnect reads the latest page once");
   assert.equal(host.requests.filter(request => request.method === "session.open").length, 1, "Recovery does not reopen the session");
+  for (const [message, label] of [[earlierReply, /2\/3\b.*23:58/u], [reply, /2\/4\b.*00:02/u]]) {
+    const row = stream.locator(`[data-stream-key="${message.id}"]`);
+    const time = row.locator("time");
+    assert.equal(await time.count(), 1, "Each distinct reply has its own send time");
+    assert.equal(await time.getAttribute("datetime"), new Date(message.createdAt).toISOString(), "Native history wins over the receive timestamp");
+    assert.match(await time.innerText(), label);
+    assert.equal(await time.isVisible(), true);
+    assert.equal(await time.evaluate(node => getComputedStyle(node.parentElement, "::after").borderTopStyle), "solid");
+  }
+  assert.equal(await stream.getByText(earlierReply.text.replace("【给用户】", ""), { exact: true }).count(), 1);
+  steps.push("Adjacent assistant replies show separate rules and their own native send times across midnight");
   await page.screenshot({ path: resolve(directory, "assistant-reply-recovered.png") });
   const pendingStatus = assistant.getByRole("status").getByText("正在同步最新对话…");
   const retry = assistant.getByRole("button", { name: "重试同步", exact: true });
@@ -201,4 +215,13 @@ export async function verifyAssistantReplies(page, host, steps, directory, serve
   afterReturning.resolve();
   await stream.getByText(secondReply.text, { exact: true }).waitFor();
   steps.push("Returning during a pending catch-up keeps both replies when the reads finish in order");
+
+  const longReplyId = "assistant-long-reply";
+  const longReplyText = `关于本周计划的补充：\n\n${"保留原段落，不拆成多条消息。\n\n".repeat(31)}这是一条长回复的结尾。`;
+  await host.emit("assistant.completed", { text: longReplyText }, { itemId: longReplyId });
+  const longReply = stream.locator(`[data-stream-key="${longReplyId}"]`);
+  await longReply.getByRole("button", { name: "展开全文", exact: true }).click();
+  await longReply.getByText("这是一条长回复的结尾。", { exact: true }).waitFor();
+  assert.match(await longReply.locator("time").innerText(), /^\d{2}:\d{2}$/u, "Today's replies show only the local time");
+  steps.push("A long reply keeps the existing inline expansion and one timestamp for the whole message");
 }

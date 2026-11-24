@@ -62,6 +62,12 @@ export function formatTime(value: number): string {
   return new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" }).format(value);
 }
 
+const replyDateTime = new Intl.DateTimeFormat("zh-CN", { dateStyle: "short", timeStyle: "short" });
+
+export function formatReplyTime(value: Date): string {
+  return value.toDateString() === new Date().toDateString() ? formatTime(value.getTime()) : replyDateTime.format(value);
+}
+
 export function relativeTime(value: number): string {
   const elapsed = Math.max(0, Date.now() - value);
   if (elapsed < 60_000) return "刚刚";

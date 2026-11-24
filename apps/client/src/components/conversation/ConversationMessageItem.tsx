@@ -2,7 +2,7 @@ import type { BridgeSessionInfo } from "@bridge/protocol";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useAssistantMail } from "../assistant/AssistantMailProvider.js";
 import { SentMailReference } from "../assistant/SentMailReference.js";
-import { deliveryLabel, formatTime, isQueuedConversationMessage, type ConversationItem } from "../../lib/conversation-timeline.js";
+import { deliveryLabel, formatReplyTime, formatTime, isQueuedConversationMessage, type ConversationItem } from "../../lib/conversation-timeline.js";
 import { desktopRuntimeId } from "../../lib/runtime-labels.js";
 import { MarkdownText } from "../common/MarkdownText.js";
 import { MessageCopyButton } from "../common/MessageCopyButton.js";
@@ -18,6 +18,7 @@ export interface QueuedTurnActionState {
 export interface ConversationMessageItemProps {
   item: ConversationItem;
   session: BridgeSessionInfo;
+  replyTimestamp?: number | undefined;
   entering?: boolean | undefined;
   latestMessage?: boolean | undefined;
   revealActionsOnTap?: boolean | undefined;
@@ -39,6 +40,7 @@ export interface ConversationMessageItemProps {
 export function ConversationMessageItem({
   item,
   session,
+  replyTimestamp,
   entering = false,
   latestMessage = false,
   revealActionsOnTap = false,
@@ -96,6 +98,7 @@ export function ConversationMessageItem({
     && desktopRuntimeId(session) === "claude-desktop"
     && canSend,
   );
+  const replyTime = replyTimestamp ? new Date(replyTimestamp) : undefined;
   const copyable = (item.role === "assistant" || item.role === "user") && Boolean(item.text.trim());
   const canRewind = rewindAvailable && onRewind && item.role === "user" && !item.id.startsWith("local:");
   const hasUtilities = copyable || canRewind;
@@ -130,7 +133,7 @@ export function ConversationMessageItem({
   return (
     <article
       ref={article}
-      className={`conversation-item ${item.role} ${item.live ? "live" : ""}${entering ? " is-entering" : ""}${latestMessage || actionsRevealed ? " show-message-utilities" : ""}`}
+      className={`conversation-item ${item.role} ${item.live ? "live" : ""}${replyTimestamp !== undefined ? " assistant-reply" : ""}${entering ? " is-entering" : ""}${latestMessage || actionsRevealed ? " show-message-utilities" : ""}`}
       data-stream-key={item.id}
       tabIndex={hasUtilities && !latestMessage ? 0 : undefined}
       onClick={revealActionsOnTap && hasUtilities && !latestMessage ? (event) => {
@@ -144,6 +147,11 @@ export function ConversationMessageItem({
         <div className="conversation-item-meta">
           <strong>Bridge</strong>
           <time>{formatTime(item.createdAt)}</time>
+        </div>
+      )}
+      {replyTimestamp !== undefined && (
+        <div className="assistant-reply-header">
+          {replyTime && <time dateTime={replyTime.toISOString()}>{formatReplyTime(replyTime)}</time>}
         </div>
       )}
       {/* A sent message's bubble holds only what was sent; status and copy sit under it. */}

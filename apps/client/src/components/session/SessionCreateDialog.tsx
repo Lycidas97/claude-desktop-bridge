@@ -166,7 +166,8 @@ export function SessionCreateDialog({ snapshot, initialProjectId, initialCwd, co
     setMkdirError("");
     try {
       const createdPath = await onCreateDirectory(listing.path, trimmed);
-      openDirectory(createdPath);
+      if (isDirectoryPickerOnly) selectFolder(createdPath);
+      else openDirectory(createdPath);
     } catch (reason) {
       setMkdirError(reason instanceof Error ? reason.message : "新建文件夹失败");
     } finally {
@@ -254,6 +255,16 @@ export function SessionCreateDialog({ snapshot, initialProjectId, initialCwd, co
           <div className="session-create-body">
             {view === "recent" ? (
               <>
+                {isDirectoryPickerOnly && onBrowseDirectory && onCreateDirectory && (
+                  <button type="button" className="session-create-mkdir-trigger" disabled={!connected} onClick={() => {
+                    if (listing) setBrowseInput(listing.path);
+                    setPathEditing(false);
+                    setView("browse");
+                    setMkdirOpen(true);
+                  }}>
+                    <FolderPlus size={18} /><span>新建文件夹</span>
+                  </button>
+                )}
                 <ul className="session-create-directories" aria-label="最近使用的文件夹">
                   {recentPaths.map((path) => (
                     <li key={path}>
@@ -305,7 +316,7 @@ export function SessionCreateDialog({ snapshot, initialProjectId, initialCwd, co
                       <div className="session-create-mkdir-actions">
                         <button type="button" className="secondary-button" disabled={mkdirBusy} onClick={resetMkdir}>取消</button>
                         <button type="submit" className="secondary-button is-confirm" disabled={!connected || mkdirBusy || !mkdirName.trim()}>
-                          {mkdirBusy && <LoaderCircle className="is-spinning" size={15} />}创建并进入
+                          {mkdirBusy && <LoaderCircle className="is-spinning" size={15} />}{isDirectoryPickerOnly ? "创建并使用" : "创建并进入"}
                         </button>
                       </div>
                     </div>

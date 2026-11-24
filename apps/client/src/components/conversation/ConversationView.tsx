@@ -111,7 +111,6 @@ export interface ConversationViewProps {
   surface?: "project" | "assistant" | undefined;
   alternateStage?: ((openConfiguration?: () => void) => ReactNode) | undefined;
   hideComposer?: boolean | undefined;
-  assistantReplyTarget?: { itemId: string; done(error?: string): void } | undefined;
   hostId: string;
   session: BridgeSessionInfo;
   sessions: BridgeSessionInfo[];
@@ -200,7 +199,6 @@ export function ConversationView({
   variant = "mobile",
   surface = "project",
   alternateStage,
-  assistantReplyTarget,
   hideComposer = false,
   hostId,
   session,
@@ -705,7 +703,6 @@ export function ConversationView({
 
   const { streamRef, onScroll } = useConversationScroll({
     assistant: isAssistant,
-    findingReply: Boolean(assistantReplyTarget),
     sessionId: session.sessionId,
     sessionView: isAssistant ? "conversation" : effectiveSessionView,
     streamVisible: visible && !transcriptHidden,
@@ -719,25 +716,6 @@ export function ConversationView({
     streamKeys,
     onLoadOlderHistory,
   });
-
-  const replyPage = useRef<{ target: typeof assistantReplyTarget; cursor: string }>(undefined);
-  useLayoutEffect(() => {
-    if (!assistantReplyTarget || !visible || hasAlternateStage) return;
-    if (effectiveSessionView === "evidence") { setSessionView("conversation"); return; }
-    const { itemId, done } = assistantReplyTarget;
-    const element = streamRef.current?.querySelector(`article[data-stream-key="${CSS.escape(itemId)}"]`);
-    if (element) { element.scrollIntoView({ block: "center" }); done(); return; }
-    if (!isOnline) { done("连接电脑后可查找回复。"); return; }
-    if (!history || history.status === "loading") return;
-    const cursor = history.nextCursor;
-    if (!history.hasMore || !cursor) { done(history.error ?? "未找到这条回复。"); return; }
-    if (replyPage.current?.target === assistantReplyTarget && replyPage.current.cursor === cursor) {
-      done(history.error ?? "未能加载更早的对话。");
-      return;
-    }
-    replyPage.current = { target: assistantReplyTarget, cursor };
-    void onLoadOlderHistory(session.sessionId);
-  }, [assistantReplyTarget, effectiveSessionView, hasAlternateStage, history, isOnline, onLoadOlderHistory, session.sessionId, setSessionView, streamKeys, streamRef, visible]);
 
   async function sendMessage(): Promise<void> {
     await sessionDraft.submitMessage({

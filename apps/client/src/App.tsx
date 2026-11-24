@@ -52,9 +52,8 @@ function MobileAssistantConversation({
   mobile,
   onNavigateToSession,
   alternateStage,
-  assistantReplyTarget,
   hideComposer,
-}: Pick<ConversationViewProps, "alternateStage" | "hideComposer" | "assistantReplyTarget"> & {
+}: Pick<ConversationViewProps, "alternateStage" | "hideComposer"> & {
   activeHostId: string;
   session: BridgeSessionInfo;
   snapshot: BridgeHostSnapshot | undefined;
@@ -130,7 +129,6 @@ function MobileAssistantConversation({
       variant="mobile"
       surface="assistant"
       alternateStage={alternateStage}
-      assistantReplyTarget={assistantReplyTarget}
       hideComposer={hideComposer}
       hostId={activeHostId}
       session={session}

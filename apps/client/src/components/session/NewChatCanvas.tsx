@@ -558,8 +558,11 @@ export function NewChatCanvas({
       }
       setTrustState(undefined);
 
+      const retryConfiguration = pendingConfiguration?.effort && !effortLevels.includes(pendingConfiguration.effort)
+        ? { ...pendingConfiguration, effort: null }
+        : pendingConfiguration;
       const change = firstTurnSession
-        ? pendingConfiguration
+        ? retryConfiguration
         : onConfigureSession && canConfigureRuntime ? buildPostCreateConfiguration(created) : undefined;
       controller?.signal.throwIfAborted();
       if (attachedSend && !firstTurnSession) {

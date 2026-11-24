@@ -1,14 +1,12 @@
 import type { BridgeHistoryItem, BridgeSentFile } from "@bridge/protocol";
-import { Braces, File, ChevronRight } from "lucide-react";
+import { ChevronRight, File } from "lucide-react";
 import { useState } from "react";
-import { IconButton } from "../common/IconButton.js";
 import { ToolCallDetailSheet } from "./ToolCallDetailSheet.js";
 
-export function SessionSentFiles({ item, toolUseId, hostId, isMobile, onOpenFile, supportsToolDetail }: {
+export function SessionSentFiles({ item, toolUseId, hostId, onOpenFile, supportsToolDetail }: {
   item: BridgeHistoryItem & { sentFiles: BridgeSentFile[] };
   toolUseId: string;
   hostId: string;
-  isMobile: boolean;
   onOpenFile?: ((path: string) => void) | undefined;
   supportsToolDetail: boolean;
 }) {
@@ -16,7 +14,7 @@ export function SessionSentFiles({ item, toolUseId, hostId, isMobile, onOpenFile
   return (
     <section className="session-sent-files" aria-label="会话文件" data-stream-key={item.id}>
       <ul>
-        {item.sentFiles.map(({ name, path }, index) => (
+        {item.sentFiles.map(({ name, path, blockedReason }, index) => (
           <li key={index}>
             {path && onOpenFile ? (
               <button type="button" onClick={() => onOpenFile(path)}>
@@ -27,15 +25,15 @@ export function SessionSentFiles({ item, toolUseId, hostId, isMobile, onOpenFile
             ) : (
               <div>
                 <File size={16} aria-hidden="true" />
-                <span>{name}<small>{isMobile ? "请在电脑端打开" : "无法从会话打开"}</small></span>
+                <span>{name}<small>{blockedReason ?? "无法从会话打开"}</small></span>
               </div>
             )}
           </li>
         ))}
       </ul>
-      <IconButton className="session-sent-files-detail" label="查看工具详情" onClick={() => setDetailOpen(true)}>
-        <Braces size={16} aria-hidden="true" />
-      </IconButton>
+      <button type="button" className="session-sent-files-detail" onClick={() => setDetailOpen(true)}>
+        查看工具详情
+      </button>
       {detailOpen && <ToolCallDetailSheet hostId={hostId} sessionId={item.sessionId} toolUseId={toolUseId}
         toolName="SendUserFile" fallbackText={item.text} supportsToolDetail={supportsToolDetail} onClose={() => setDetailOpen(false)} />}
     </section>

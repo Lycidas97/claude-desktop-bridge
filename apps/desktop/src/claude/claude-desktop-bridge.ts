@@ -57,8 +57,11 @@ import { directModelDisplayName, mergeModelCatalog, modelOptionHash, resolveSess
 import {
   enrichNativeSubagentItems,
   extractNativeImageAttachment,
+  nativeFinalReply,
   nativeHistoryItems,
   nativeItemEventDraft,
+  nativeReplyResultRoots,
+  nativeReplyRoot,
   nativeSentFileReceipt,
   type NativeMessageProjection,
 } from "./native-history-projection.js";
@@ -993,6 +996,16 @@ export class ClaudeDesktopBridge extends EventEmitter {
       (receipt.messageId === itemId || receipt.previousMessageIds?.includes(itemId)));
   }
 
+  private assistantBatchIds(sessionId: string, roots: string[]): string[] {
+    const batches = new Set<string>();
+    for (const root of roots) {
+      const receipt = this.historyReceipt(sessionId, root);
+      if (receipt?.source !== "assistant-trigger") return [];
+      batches.add(receipt.requestId);
+    }
+    return [...batches];
+  }
+
   private async nativeSentFileReceipts(sessionId: string, messages: unknown[]): Promise<BridgeHistoryPage["sessionFileReceipts"]> {
     const receipts = messages.flatMap(message => nativeSentFileReceipt(message) ?? []);
     if (!receipts.length) return;
@@ -1027,15 +1040,19 @@ export class ClaudeDesktopBridge extends EventEmitter {
     try {
       if (!this.inspector.ready) throw new InspectorDisconnectedError("Claude Desktop history is unavailable while inspector is disconnected");
       const previousSession = !cursor ? JSON.stringify(this.session(sessionId)) : undefined;
-      const { page, earlierPlanMessages, readContextMessages } = await readNativeHistoryPage(
-        this.inspector, id, cursor, limit, () => this.messageProjection.get(sessionId)?.planObserved,
+      const hasAssistantWakes = [...this.receipts.values()].some(receipt => receipt.sessionId === sessionId && receipt.source === "assistant-trigger");
+      const { page, earlierPlanMessages, earlierRoot, earlierReplyId, readContextMessages } = await readNativeHistoryPage(
+        this.inspector, id, cursor, limit, () => this.messageProjection.get(sessionId)?.planObserved, hasAssistantWakes,
       );
       const { hasMore, nextCursor } = page;
       const liveProjection = this.messageProjection.get(sessionId) ?? {};
       const projection: NativeMessageProjection = { ...(liveProjection.questionAnswers ? { questionAnswers: liveProjection.questionAnswers } : {}) };
       nativeHistoryItems(sessionId, earlierPlanMessages, projection);
       const sessionProposalResults: string[] = [];
-      const items = nativeHistoryItems(sessionId, page.messages, projection, sessionProposalResults);
+      const olderReplyBatches = new Map<string, string[]>();
+      const items = nativeHistoryItems(sessionId, page.messages, projection, sessionProposalResults, hasAssistantWakes ? {
+        earlierRoot, earlierReplyId, olderReplyBatches, batchIds: roots => this.assistantBatchIds(sessionId, roots),
+      } : undefined);
       const sessionFileReceipts = await this.nativeSentFileReceipts(sessionId, page.messages);
       const localSubagents = await this.enrichSubagentItems(sessionId, items);
       if (projection.questions?.size || projection.questionAnswers?.size) {
@@ -1108,7 +1125,8 @@ export class ClaudeDesktopBridge extends EventEmitter {
       diag("history.messages", { messages: items.length });
       return { sessionId, items, hasMore, ...(nextCursor ? { nextCursor } : {}),
         ...(sessionFileReceipts ? { sessionFileReceipts } : {}),
-        ...(sessionProposalResults.length ? { sessionProposalResults } : {}) };
+        ...(sessionProposalResults.length ? { sessionProposalResults } : {}),
+        ...(olderReplyBatches.size ? { assistantReplyBatches: Object.fromEntries(olderReplyBatches) } : {}) };
     } finally { read(); }
   }
 
@@ -1753,28 +1771,33 @@ export class ClaudeDesktopBridge extends EventEmitter {
     });
   }
 
-  private observeReply(sessionId: string, message: Record<string, unknown>, error: boolean): void {
+  private observeReply(sessionId: string, message: Record<string, unknown>, error: boolean): BridgeEventDraft | undefined {
     if (error) { this.replyTurns.delete(sessionId); return; }
-    const visible = visibleMessage(message);
-    if (visible?.role === "user" && typeof message.uuid === "string") {
-      this.replyTurns.set(sessionId, { rootId: message.uuid });
-    } else if (visible?.role === "assistant" && message.isSynthetic !== true) {
-      const body = record(message.message);
-      if (body.model === "<synthetic>" || (Array.isArray(body.content) && body.content.some(block => record(block).type === "tool_use"))) return;
-      const id = typeof body.id === "string" ? body.id : message.uuid;
-      if (typeof id === "string") this.replyTurns.set(sessionId, { ...this.replyTurns.get(sessionId), reply: { id, text: visible.text! } });
-    } else if (message.type === "result" && !message.parent_tool_use_id && message.isSyntheticResult !== true) {
-      const turn = this.replyTurns.get(sessionId);
-      this.replyTurns.delete(sessionId);
-      if (message.is_error !== false || !turn?.reply) return;
-      const roots = [...(Array.isArray(message.user_message_uuids) ? message.user_message_uuids : []), message.user_message_uuid]
-        .filter((value): value is string => typeof value === "string");
-      if (!roots.length && turn.rootId) roots.push(turn.rootId);
-      const text = turn.reply.text.replace(/^【给用户】\s*/u, "");
-      if (text && (roots.some(id => this.historyReceipt(sessionId, id)?.source !== "assistant-trigger") ||
-        (roots.length > 0 && text !== turn.reply.text))) {
-        this.emit("assistant.user-reply", sessionId, turn.reply.id, text);
-      }
+    const rootId = nativeReplyRoot(message);
+    if (rootId) {
+      this.replyTurns.set(sessionId, { rootId });
+      return;
+    }
+    const reply = nativeFinalReply(message, record(message.message));
+    if (reply) {
+      this.replyTurns.set(sessionId, { ...this.replyTurns.get(sessionId), reply });
+      return;
+    }
+    const roots = nativeReplyResultRoots(message);
+    if (!roots) return;
+    const turn = this.replyTurns.get(sessionId);
+    this.replyTurns.delete(sessionId);
+    if (!turn?.reply) return;
+    const current = turn.rootId ? this.assistantBatchIds(sessionId, [turn.rootId]) : [];
+    if (!roots.length && turn.rootId) roots.push(turn.rootId);
+    const batchIds = this.assistantBatchIds(sessionId, roots);
+    const text = turn.reply.text.replace(/^【给用户】\s*/u, "");
+    if (message.is_error === false && text && roots.length && (!batchIds.length || text !== turn.reply.text)) {
+      this.emit("assistant.user-reply", sessionId, turn.reply.id, text);
+    }
+    if (batchIds.length !== current.length || batchIds.some(id => !current.includes(id))) {
+      return { sessionId, itemId: turn.reply.id, origin: "claude-desktop", type: "assistant.completed",
+        data: { text: turn.reply.text, assistantBatchIds: batchIds } };
     }
   }
 
@@ -1796,13 +1819,17 @@ export class ClaudeDesktopBridge extends EventEmitter {
     const message = record(event.message);
     const sidechain = message.isSidechain === true || (message.parent_tool_use_id && (message.type === "assistant" || message.type === "user" || message.type === "system" || message.type === "stream_event"));
     let compacting: boolean | undefined;
+    let replyAttribution: BridgeEventDraft | undefined;
+    const errorRoot = event.type === "error" ? this.replyTurns.get(sessionId)?.rootId : undefined;
     if (!sidechain) {
-      if (this.listenerCount("assistant.user-reply")) this.observeReply(sessionId, message, event.type === "error" || event.type === "close");
+      replyAttribution = this.observeReply(sessionId, message, event.type === "error" || event.type === "close");
       if (message.type === "system" && message.subtype === "status") {
         if (message.status === "compacting") compacting = true;
         else if (message.status === null) compacting = false;
       } else if ((message.type === "system" && message.subtype === "compact_boundary") || (message.type === "result" && !message.parent_tool_use_id && message.isSyntheticResult !== true) || event.type === "error") compacting = false;
     }
+    const replyRoot = !sidechain ? this.replyTurns.get(sessionId)?.rootId : undefined;
+    const assistantBatchIds = replyRoot ? this.assistantBatchIds(sessionId, [replyRoot]) : undefined;
     if (event.session || compacting !== undefined) {
       const session = event.session ? nativeSession(event.session) : undefined;
       await this.serialized(async () => {
@@ -1854,7 +1881,9 @@ export class ClaudeDesktopBridge extends EventEmitter {
         applyStreamDeltaContext(this.ensureContextState(sessionId), record(stream.usage));
       }
       const delta = record(stream.delta);
-      if (delta.type === "text_delta" && typeof delta.text === "string") this.options.eventLog.appendCoalescedDelta({ sessionId, origin: "claude-desktop", type: "assistant.delta", ...(this.streams.has(sessionId) ? { itemId: this.streams.get(sessionId)! } : {}) }, delta.text);
+      if (delta.type === "text_delta" && typeof delta.text === "string") this.options.eventLog.appendCoalescedDelta({ sessionId, origin: "claude-desktop", type: "assistant.delta",
+        ...(this.streams.has(sessionId) ? { itemId: this.streams.get(sessionId)! } : {}),
+        ...(assistantBatchIds?.length ? { data: { assistantBatchIds } } : {}) }, delta.text);
     }
     if (message.type === "user" && typeof message.uuid === "string" && visibleMessage(message)?.role === "user") {
       const receipt = [...this.receipts.values()].find(candidate => candidate.sessionId === sessionId && candidate.messageId === message.uuid);
@@ -1910,9 +1939,11 @@ export class ClaudeDesktopBridge extends EventEmitter {
       await this.enrichSubagentItems(sessionId, items);
       for (const item of items) {
         const receipt = item.role === "user" ? this.historyReceipt(sessionId, item.id) : undefined;
+        if (assistantBatchIds?.length && item.role !== "user") item.assistantBatchIds = assistantBatchIds;
         if (item.role === "assistant") await this.options.eventLog.flushDeltas(sessionId);
         await this.record(nativeItemEventDraft(sessionId, item, receipt));
       }
+      if (replyAttribution) await this.record(replyAttribution);
       const sessionFileReceipts = await this.nativeSentFileReceipts(sessionId, [event.message]);
       if (Array.isArray(body.content)) for (const rawBlock of body.content) {
         const block = record(rawBlock);
@@ -1958,7 +1989,12 @@ export class ClaudeDesktopBridge extends EventEmitter {
         if (!indexedResult) await this.record({ sessionId, ...(typeof message.uuid === "string" ? { itemId: message.uuid } : {}), origin: "claude-desktop", type: message.is_error === true ? "turn.failed" : "turn.completed", data: { ...(message.is_error === true ? { error: message.result ?? message.errors } : {}) } });
       }
     }
-    if (event.type === "error") await this.record({ sessionId, origin: "claude-desktop", type: "turn.failed", data: { error: event.error } });
+    if (event.type === "error") {
+      const batchIds = errorRoot ? this.assistantBatchIds(sessionId, [errorRoot]) : [];
+      await this.record({ sessionId, origin: "claude-desktop", type: "turn.failed", data: {
+        error: event.error, ...(batchIds.length ? { assistantBatchIds: batchIds } : {}),
+      } });
+    }
   }
 
   private async record(draft: BridgeEventDraft): Promise<void> {

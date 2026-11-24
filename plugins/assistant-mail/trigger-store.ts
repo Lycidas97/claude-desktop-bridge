@@ -93,6 +93,16 @@ export class AssistantTriggerStore {
       (command_id IS NOT ? OR message_id IS NOT ?)`).run(receipt.commandId, receipt.messageId, batchId, receipt.commandId, receipt.messageId);
   }
 
+  countProcessedMail(sessionId: string, since: number): number {
+    const row = this.db.prepare(`
+      SELECT count(*) AS count FROM mail_events m
+      JOIN trigger_deliveries d ON d.kind = 'mail.received' AND d.event_id = m.mail_ref_id
+      JOIN trigger_batches b USING (batch_id)
+      WHERE b.native_session_id = ? AND m.recorded_at >= ? AND m.processing_status = 'processed'
+    `).get(sessionId, since) as { count: number };
+    return row.count;
+  }
+
   unfinished(sessionId: string, cursor = Number.MAX_SAFE_INTEGER) {
     const rows = this.db.prepare(`
       SELECT d.seq, d.kind, d.event_id AS eventId, b.batch_id AS batchId FROM trigger_deliveries d

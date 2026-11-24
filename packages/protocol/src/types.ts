@@ -977,6 +977,8 @@ export interface BridgeHistoryItem {
   requestId?: string;
   /** Set by the host from its receipt, not inferred from transcript text. */
   source?: "assistant-trigger";
+  /** Native wake batches responsible for an output. An empty list identifies a user turn. */
+  assistantBatchIds?: string[];
   /** Last native delivery stage observed for this exact session and user UUID. */
   delivery?: BridgeDeliveryState;
   /** Desktop observed an idle, drained queue after acknowledging this input. */
@@ -1022,6 +1024,8 @@ export interface BridgeHistoryPage {
   sessionFileReceipts?: Record<string, BridgeSentFile[]>;
   /** Successful proposal receipts on this page. The matching calls may be on older pages. */
   sessionProposalResults?: string[];
+  /** Native result attribution by reply item ID when the reply is on an older page. */
+  assistantReplyBatches?: Record<string, string[]>;
   nextCursor?: string;
   hasMore: boolean;
 }

@@ -1,5 +1,5 @@
 import type { BridgeHostSnapshot, BridgeSessionInfo, BridgeSystemUpdateParams, BridgeUpdaterSnapshot } from "@bridge/protocol";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { claudeSnapshot } from "./lib/claude-snapshot.js";
 import { useClientUpdater } from "./lib/client-updater.js";
 import { useTheme, type ThemeControl } from "./hooks/useTheme.js";
@@ -37,6 +37,7 @@ import { AssistantMailProvider, useAssistantMail, viewedMailStorageKey, type Ass
 import { AssistantAgendaProvider } from "./components/assistant/AssistantAgendaProvider.js";
 import { AssistantProposalProvider } from "./components/assistant/AssistantProposalProvider.js";
 import { AssistantPage } from "./components/assistant/AssistantPage.js";
+import { AssistantProcessingContext } from "./components/assistant/AssistantProcessing.js";
 import { MailReference } from "./components/assistant/MailReference.js";
 import { ConversationDraftsProvider, type ConversationDraftsHandle } from "./components/conversation/ConversationDraftsProvider.js";
 import { EvidencePanel } from "./components/evidence/EvidencePanel.js";
@@ -69,14 +70,15 @@ function MobileAssistantConversation({
     )) ?? []
   ), [assistantMail?.timelineCards, session.sessionId, snapshot?.assistantMail?.binding?.nativeSessionId]);
   const [refreshing, setRefreshing] = useState(false);
-  const transcriptVisible = visible && alternateStage == null;
+  const processing = useContext(AssistantProcessingContext);
+  const transcriptVisible = visible && alternateStage == null && !processing?.visible;
   const { sessionId, lastCompletedTurnId } = session;
   const { refreshLatestHistory } = mobile;
   const history = mobile.state.histories[sessionId];
   const latestRead = history?.latestRead;
   const readCompletedTurnId = latestRead?.completedTurnId;
   const hasLoadedHistory = history?.status === "ready" || (history?.status === "error" && history.items.length > 0);
-  const transcriptOnline = transcriptVisible && mobile.state.connection === "connected" && mobile.state.desktopOnline;
+  const transcriptOnline = visible && alternateStage == null && mobile.state.connection === "connected" && mobile.state.desktopOnline;
   const foregroundRevision = mobile.state.foregroundRevision;
   const lastHistorySync = useRef<{ online: boolean; turnId: string | undefined; foregroundRevision: number | undefined } | undefined>(
     hasLoadedHistory ? { online: false, turnId: readCompletedTurnId, foregroundRevision } : undefined,

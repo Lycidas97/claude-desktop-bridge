@@ -316,6 +316,7 @@ export class AssistantMailCoordinator {
       changeToken: this.changeToken,
     };
     const now = Date.now();
+    if (binding?.nativeSessionId) snapshot.recentlyProcessed = this.mail.triggers.countProcessedMail(binding.nativeSessionId, now - 86_400_000);
     const items = this.mail.attention(snapshot.automaticDelivery, snapshot.binding?.nativeSessionId ?? undefined);
     if (this.agenda && (!this.agendaAttention || now >= this.agendaAttention.nextAt)) {
       this.agendaAttention = this.agenda.attention(now, this.mail.seenCalendarEvents());

@@ -94,6 +94,8 @@ export interface BridgeAssistantMailSnapshot {
   /** User opt-in. A missing session or invalid policy can still pause submissions. */
   automaticDelivery: boolean;
   automaticDeliveryAvailable?: boolean;
+  /** Processed mail recorded in the last 24 hours and linked to the current binding. */
+  recentlyProcessed?: number;
   attention?: AssistantAttentionItem[];
 }
 

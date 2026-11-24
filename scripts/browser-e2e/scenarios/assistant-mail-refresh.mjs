@@ -43,13 +43,17 @@ export async function verifyAssistantMailRefresh(page, host, steps) {
   await page.locator("label.toggle-row").filter({ has: page.getByRole("switch", { name: "主动助理" }) }).click();
   await eventually(() => host.snapshot.assistantMail.automaticDelivery, true, "Enable delivery for the synthetic managed session");
   await page.getByRole("button", { name: "返回", exact: true }).click();
-  const batches = page.locator(".assistant-trigger-batch");
+  const processingEntry = page.getByRole("button", { name: /^处理记录/u });
+  const closeProcessing = () => page.locator(".assistant-page .m-header").getByRole("button", { name: "返回", exact: true }).click();
+  await processingEntry.click();
+  const batches = page.locator(".assistant-processing .assistant-trigger-batch");
   const batchCard = mail => batches.locator(`[data-mail-id="${mail.mailRefId}"]`);
   const historical = [];
   for (let index = 0; index < 2; index++) {
     const mail = await deliver(1);
     historical.push(mail);
-    await batches.filter({ has: page.locator(`[data-mail-id="${mail.mailRefId}"]`) }).getByText("原生已观测", { exact: true }).waitFor();
+    await batches.filter({ has: page.locator(`[data-mail-id="${mail.mailRefId}"]`) })
+      .getByText("原生已观测", { exact: true }).waitFor({ state: "attached" });
   }
   const sessionId = host.snapshot.assistantMail.binding.nativeSessionId;
   native.setSessionBusy(sessionId, true);
@@ -65,7 +69,7 @@ export async function verifyAssistantMailRefresh(page, host, steps) {
       commandId: receipt.commandId, requestId: receipt.requestId, delivery: "queued", source: "assistant-trigger",
       text: `助理事件批次 ${receipt.requestId}\nmail.received ${mail.mailRefId}`,
     }, { sessionId, itemId: receipt.messageId, turnId: receipt.messageId });
-    await batch.getByText("关联原生消息", { exact: true }).waitFor();
+    await batch.getByText("关联原生消息", { exact: true }).waitFor({ state: "attached" });
     return { mail, batch, cancel, receipt };
   }
   const { mail: queued, batch: queuedBatch, cancel, receipt } = await queueLinkedBatch();
@@ -74,9 +78,10 @@ export async function verifyAssistantMailRefresh(page, host, steps) {
   assert.equal(await batches.count(), 3);
 
   const inboxTab = page.getByRole("button", { name: "收件", exact: true });
-  const conversationTab = page.getByRole("button", { name: "对话", exact: true });
+  const openProcessing = async () => { await page.getByRole("button", { name: "对话", exact: true }).click(); await processingEntry.click(); };
   const filedEntry = page.getByRole("button", { name: "已收纳 2 封", exact: true });
   const marketing = page.locator(".assistant-mail-group").filter({ hasText: "营销与垃圾邮件" });
+  await closeProcessing();
   await inboxTab.click();
   await inboxCard(ordinary).waitFor();
   await filedEntry.click();
@@ -88,7 +93,7 @@ export async function verifyAssistantMailRefresh(page, host, steps) {
   assert.equal(await batches.count(), 3, "The linked transcript stays mounted in the inbox");
   await batches.first().waitFor({ state: "hidden" });
   await marketing.waitFor({ state: "hidden" });
-  assert.equal(await batches.filter({ hasText: "原生已观测" }).count(), 2);
+  assert.equal(await batches.filter({ hasText: "原生已观测" }).count(), 2, "Normal delivery labels remain available inside the hidden details");
 
   const beforeReopen = host.requests.length;
   await filedEntry.click();
@@ -156,7 +161,7 @@ export async function verifyAssistantMailRefresh(page, host, steps) {
   try {
     await native.controllerRequest(desktopFixtureRequest({ method: "turn.queue.cancel", params: { sessionId, commandId: receipt.commandId } }), "desktop");
     await queuedInbox.getByText("任务已取消", { exact: true }).waitFor();
-    await conversationTab.click();
+    await openProcessing();
     await batchGate.wait();
     withdrawnBeforeBatchRead = await queuedBatch.getByText("已撤回", { exact: true }).isVisible() && await cancel.count() === 0;
   } finally { batchGate.release(); }
@@ -164,6 +169,7 @@ export async function verifyAssistantMailRefresh(page, host, steps) {
   await (await expandInboxMail(batchCard(historical[0]))).locator(".assistant-mail-hint").filter({ hasText: "处理中" }).waitFor();
   assert.equal(native.receipts().find(({ commandId }) => commandId === receipt.commandId).state, "cancelled");
 
+  await closeProcessing();
   await inboxTab.click();
   await filedEntry.click();
   await marketing.locator("summary").first().click();
@@ -182,7 +188,7 @@ export async function verifyAssistantMailRefresh(page, host, steps) {
   await filedEntry.click();
   await remainingCard.locator(".assistant-mail-hint").filter({ hasText: "处理中" }).waitFor();
   await returnToInbox.click();
-  await conversationTab.click();
+  await openProcessing();
   await (await expandInboxMail(batchCard(historical[1]))).locator(".assistant-mail-hint").filter({ hasText: "处理中" }).waitFor();
 
   assert.ok(withdrawnBeforeBatchRead, "Native withdrawal wins before the batch reply");
@@ -194,12 +200,14 @@ export async function verifyAssistantMailRefresh(page, host, steps) {
   const deliveryOnReopen = [];
   for (const state of ["started", "completed", "failed"]) {
     const { mail, batch, cancel, receipt } = await queueLinkedBatch();
-    const status = batch.locator(":scope > header > span");
+    const status = batch.getByText(/^(排队中|运行中|已完成|失败)$/u);
     const processing = (await expandInboxMail(batchCard(mail))).locator(".assistant-mail-hint").filter({ hasText: "处理中" });
     service.setProcessingStatus(mail.mailRefId, "processing");
     await processing.waitFor();
     assert.equal(await status.textContent(), "排队中");
+    assert.equal(await status.isVisible(), false);
     assert.equal(await cancel.isEnabled(), true);
+    await closeProcessing();
     await inboxTab.click();
     await batch.waitFor({ state: "hidden" });
     const gate = holdMailRead(host, "plugin.assistant-mail.batch", params => params.batchId === receipt.requestId);
@@ -207,7 +215,7 @@ export async function verifyAssistantMailRefresh(page, host, steps) {
     try {
       await native.advanceAssistantTrigger(sessionId, receipt.messageId, state);
       service.setProcessingStatus(mail.mailRefId, "pending");
-      await conversationTab.click();
+      await openProcessing();
       await gate.wait();
       await processing.waitFor();
       before = { label: await status.textContent(), canCancel: await cancel.count() > 0 };

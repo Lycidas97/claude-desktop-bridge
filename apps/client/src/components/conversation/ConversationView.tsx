@@ -465,6 +465,15 @@ export function ConversationView({
     [evidence?.items, items, mailCards, inlineProposals],
   );
   const assistantTimeline = useMemo(() => isAssistant ? assistantConversationTimeline(fullTimeline) : undefined, [isAssistant, fullTimeline]);
+  // A live completion is timestamped on receipt; the matching native history carries the send time.
+  const assistantReplyTimes = useMemo(() => {
+    if (!isAssistant) return;
+    const times = new Map<string, number>();
+    for (const item of history?.items ?? []) {
+      if (item.role === "assistant" && item.createdAt > 0) times.set(item.id, item.createdAt);
+    }
+    return times;
+  }, [isAssistant, history?.items]);
   const timeline = assistantTimeline?.chat ?? fullTimeline;
   const displayNodes = useMemo(() => groupTimelineTools(timeline), [timeline]);
   const latestMessage = displayNodes.filter((node) => node.kind === "message" && !node.item.sessionNotice
@@ -1005,6 +1014,8 @@ export function ConversationView({
             key={item.id}
             item={item}
             session={session}
+            replyTimestamp={isAssistant && item.role === "assistant" && item.text.trim()
+              ? assistantReplyTimes?.get(item.id) ?? item.createdAt : undefined}
             entering={streamEntering(item.id)}
             latestMessage={node === latestMessage}
             visible={visible && !transcriptHidden && effectiveSessionView === "conversation"}

@@ -85,6 +85,19 @@ describe("shared hookless conversation leaf components", () => {
     expect(forkWithCloseHtml).toContain("relay-chain-dismiss");
   });
 
+  it("keeps ordinary assistant output continuous but timestamps a reply on its existing Assistant chat row", () => {
+    const createdAt = +new Date(2025, 1, 3, 23, 58);
+    const item = { id: "reply", sessionId: baseSession.sessionId, role: "assistant", text: "完整的助理回复。",
+      createdAt, origin: "claude-desktop" } as const;
+    const ordinary = renderToStaticMarkup(createElement(ConversationMessageItem, { session: baseSession, item }));
+    expect(ordinary).not.toContain("<time");
+    expect(ordinary).not.toContain("assistant-reply");
+    const assistant = renderToStaticMarkup(createElement(ConversationMessageItem, { session: baseSession, item, replyTimestamp: createdAt }));
+    expect(assistant).toContain('data-stream-key="reply"');
+    expect(assistant).toContain(`<time dateTime="${new Date(createdAt).toISOString()}">2025/2/3 23:58</time>`);
+    expect(assistant).toContain(item.text);
+  });
+
   it("renders ConversationMessageItem user bubble, stream key, and uncertain delivery actions", () => {
     const html = renderToStaticMarkup(createElement(ConversationMessageItem, {
       session: baseSession,

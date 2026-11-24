@@ -33,6 +33,7 @@
 .agenda-source-row { grid-template-columns: minmax(0, 1fr) auto; }
 .agenda-source-row .assistant-account-actions { grid-column: 1 / -1; }
 .assistant-page-mobile .agenda-view :is(.icon-button, .agenda-marker) { width: 44px; height: 44px; }
+.assistant-page-mobile .agenda-record > .assistant-session-link { min-width: 44px; min-height: 44px; }
 .assistant-page-mobile .agenda-other-todos summary { min-height: 44px; }
 .agenda-record-copy .agenda-overdue-label { color: var(--danger-ink); }
 @media (max-width: 480px) {

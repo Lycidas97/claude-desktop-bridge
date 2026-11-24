@@ -3,11 +3,10 @@ import type { SessionHistoryState } from "../../hooks/useMobileBridge.js";
 
 type StreamAnchor = { key: string; offset: number };
 
-export function useConversationScroll({ sessionId, sessionView, streamVisible, history, openedEvidenceIds, inlineProposalLayout, timelineStreamKeys, streamKeys, assistant, findingReply, onLoadOlderHistory }: {
+export function useConversationScroll({ sessionId, sessionView, streamVisible, history, openedEvidenceIds, inlineProposalLayout, timelineStreamKeys, streamKeys, assistant, onLoadOlderHistory }: {
   sessionId: string;
   sessionView: "conversation" | "evidence";
   assistant: boolean;
-  findingReply: boolean;
   streamVisible: boolean;
   history: SessionHistoryState | undefined;
   openedEvidenceIds: ReadonlySet<string> | undefined;
@@ -132,7 +131,7 @@ export function useConversationScroll({ sessionId, sessionView, streamVisible, h
     if (assistant) {
       if (!automatic && !firstKey) return;
       if (automatic) {
-        if (firstKey || findingReply) return;
+        if (firstKey) return;
         // Filtered wake pages cannot move scrollTop away from zero. Bound the search for chat.
         if (assistantBackfill.current.sessionId !== sessionId || assistantBackfill.current.readSequence !== readSequence) {
           assistantBackfill.current = { sessionId, readSequence, cursors: new Set() };
@@ -147,7 +146,7 @@ export function useConversationScroll({ sessionId, sessionView, streamVisible, h
 
   useEffect(() => {
     if (sessionView === "conversation") loadOlderNearTop(true);
-  }, [sessionView, streamVisible, firstHistoryKey, history?.nextCursor, sessionId, firstKey, assistant, findingReply, assistant ? readSequence : undefined]);
+  }, [sessionView, streamVisible, firstHistoryKey, history?.nextCursor, sessionId, firstKey, assistant, assistant ? readSequence : undefined]);
 
   return {
     streamRef,

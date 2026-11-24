@@ -24,10 +24,12 @@ function displayTime(value: string, timeZone = deviceZone): string {
 
 export function AgendaView() {
   const agenda = useAssistantAgenda()!;
+  const mail = useAssistantMail();
   const { events, todos, allTodos, calendarOnly, date, today } = agenda;
   const dayId = useId();
   const [editing, setEditing] = useState<BridgeAgendaTodo | BridgeAgendaEvent>();
   const [completing, setCompleting] = useState<string>();
+  const [acknowledging, setAcknowledging] = useState(false);
   const [error, setError] = useState("");
   // The provider keeps opened pages while the Assistant stage is switched away.
   useEffect(() => { agenda.openToday(); }, []);
@@ -46,6 +48,11 @@ export function AgendaView() {
     if (!calendarOnly && !agenda.daySupported && record.allDay && (selectedDay < record.startAt || selectedDay >= record.endAt)) return [];
     return [{ record, at: agendaInputTime(record.startAt, deviceZone), epoch: record.allDay ? -Infinity : Date.parse(record.startAt) }];
   });
+  const reminders = mail?.attention?.filter(item => item.kind === "event") ?? [];
+  // Match by occurrence ID: all-day rows can project the reminder time differently.
+  const reminderByEventId = new Map(reminders.map(item => [item.id.slice(0, item.id.indexOf(":")), item]));
+  const listedEventIds = new Set(entries.map(({ record }) => record.id));
+  const unlistedReminders = [...reminderByEventId].filter(([id]) => !listedEventIds.has(id));
   const dayTodos = calendarOnly ? [] : todos.records.flatMap(record => {
     if (!record.dueAt) return [];
     const at = agendaInputTime(record.dueAt, deviceZone);
@@ -75,10 +82,21 @@ export function AgendaView() {
     }
   }
 
+  function reminderAction({ id, title }: (typeof reminders)[number]) {
+    return mail && <button type="button" className="assistant-session-link" aria-label={`已看 ${title}`}
+      disabled={!mail.online || acknowledging} onClick={() => {
+        setAcknowledging(true); setError("");
+        void mail.acknowledge("event", id)
+          .catch(reason => setError(reason instanceof Error ? reason.message : "无法记录已看"))
+          .finally(() => setAcknowledging(false));
+      }}>已看</button>;
+  }
+
   function row({ record, at, overdue }: { record: BridgeAgendaTodo | BridgeAgendaEvent; at: string; overdue?: boolean }, groupedDay?: string) {
     const source = sources.get(record.sourceId);
     const isTodo = "status" in record;
     const priority = isTodo ? priorityGroup(record.priority) : "";
+    const reminder = !isTodo && reminderByEventId.get(record.id);
     return <li className={`agenda-record${isTodo && (record.status === "completed" || record.status === "cancelled") ? " is-closed" : ""}`} key={`${isTodo ? "todo" : "event"}:${record.id}`}>
       {isTodo ? <label className="agenda-marker agenda-check">
         <input type="checkbox" aria-label={`完成 ${record.title}`} checked={record.status === "completed"} disabled={!agenda.online || !source?.enabled || !source.writable || Boolean(completing) || (groupedDay ? todos.loading : allTodos.loading)}
@@ -102,6 +120,7 @@ export function AgendaView() {
         {record.notes && <p className="agenda-notes">{record.notes}</p>}
         {record.origin === "untrusted_external" && <small>{source?.label ?? record.collection}（只读）</small>}
       </div>
+      {reminder && reminderAction(reminder)}
       {source?.enabled && source.writable && <IconButton label={`编辑 ${record.title}`} disabled={!agenda.online}
         onClick={() => setEditing(record)}><Pencil size={16} /></IconButton>}
     </li>;
@@ -123,6 +142,19 @@ export function AgendaView() {
 
     {!agenda.online && <p role="status">电脑离线，连接后可同步议程。</p>}
     {error && <p role="alert">{error}</p>}
+    {unlistedReminders.length > 0 && <div className="agenda-day">
+      <h3 id={`${dayId}-reminders`}>日程提醒</h3>
+      <ul className="agenda-records" aria-labelledby={`${dayId}-reminders`}>
+        {unlistedReminders.map(([, reminder]) => <li className="agenda-record" key={reminder.id}>
+          <span className="agenda-marker agenda-event-marker" aria-hidden="true"><CalendarDays size={17} /></span>
+          <div className="agenda-record-copy">
+            <strong>{reminder.title}</strong>
+            <small><time dateTime={reminder.startAt}>{reminder.startAt.length === 10 ? reminder.startAt : displayTime(reminder.startAt)}</time></small>
+          </div>
+          {reminderAction(reminder)}
+        </li>)}
+      </ul>
+    </div>}
     {pages.map(({ name, page }) => <div key={name}>
       {page.error && <div className="assistant-actions"><p role="alert">{name}：{page.error}</p><button type="button" className="secondary-button" disabled={!agenda.online || page.loading} onClick={page.retry}>重试{name}</button></div>}
       {page.incomplete && <p role="status">部分重复{name}超出展开上限，未显示。</p>}

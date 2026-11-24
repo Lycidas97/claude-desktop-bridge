@@ -66,6 +66,10 @@ export async function verifyAssistantAttention(page, host, steps, directory, vie
   const eventTitle = "团队同步";
   agenda.saveEvent({ value: { title: eventTitle, startAt: new Date(Date.now() - 60_000).toISOString(),
     endAt: new Date(Date.now() + 3_600_000).toISOString(), remindAt: new Date(Date.now() - 1000).toISOString(), allDay: false, timeZone: "UTC" } });
+  const laterEventTitle = "下个工作日审核";
+  const laterEventStart = new Date(Date.now() + 2 * 86_400_000).toISOString();
+  agenda.saveEvent({ value: { title: laterEventTitle, startAt: laterEventStart,
+    endAt: new Date(Date.parse(laterEventStart) + 3_600_000).toISOString(), remindAt: new Date(Date.now() - 1000).toISOString(), allDay: false, timeZone: "UTC" } });
   const draft = (await native.draftProposal({ kind: "todo.create", sourceId: "local", value: { title: "提案核对", status: "pending" } })).result;
   for (const message of [
     { type: "user", uuid: "attention-user-input", message: { content: "请给我一条最新回复" } },
@@ -189,7 +193,17 @@ export async function verifyAssistantAttention(page, host, steps, directory, vie
   const longReply = page.locator(".assistant-conversation [data-stream-key=long-reply]");
   await longReply.waitFor({ state: "attached" });
   assert.equal(await longReply.isVisible(), false, "The assistant transcript stays mounted but hidden");
-  await page.getByRole("button", { name: "对话", exact: true }).click();
+  const historySync = page.getByText("正在同步最新对话…", { exact: true });
+  const historyGate = Promise.withResolvers();
+  host.historyGate = historyGate.promise;
+  try {
+    await page.getByRole("button", { name: "对话", exact: true }).click();
+    await historySync.waitFor();
+  } finally {
+    host.historyGate = undefined;
+    historyGate.resolve();
+  }
+  await historySync.waitFor({ state: "hidden" });
   await longReply.evaluate(element => element.scrollIntoView({ block: "center" }));
   assert.ok(await longReply.evaluate(element => element.getBoundingClientRect().height > innerHeight), "The whole long reply cannot fit in the viewport");
   await eventually(() => pendingReply("long"), false, "Reading a viewport of the long reply acknowledges it after returning to the conversation");
@@ -215,6 +229,20 @@ export async function verifyAssistantAttention(page, host, steps, directory, vie
   const seenEvent = page.getByRole("button", { name: `已看 ${eventTitle}`, exact: true });
   await seenEvent.click();
   await seenEvent.waitFor({ state: "detached" });
+  const laterReminder = host.snapshot.assistantMail.attention.find(item => item.kind === "event" && item.title === laterEventTitle);
+  assert.ok(laterReminder, "Acknowledging today's event does not acknowledge an event on a later day");
+  assert.equal(await page.getByRole("list", { name: "当日议程" }).getByText(laterEventTitle, { exact: true }).count(), 0);
+  const reminders = page.getByRole("list", { name: "日程提醒", exact: true });
+  await reminders.getByText(laterEventTitle, { exact: true }).waitFor();
+  assert.equal(await reminders.locator("time").getAttribute("datetime"), laterEventStart);
+  const seeLater = reminders.getByRole("button", { name: `已看 ${laterEventTitle}`, exact: true });
+  const hitArea = await seeLater.boundingBox();
+  assert.ok(hitArea.width >= 44 && hitArea.height >= 44, "Calendar acknowledgement meets the mobile touch target");
+  await page.screenshot({ path: resolve(directory, "mobile-agenda-upcoming-reminder.png") });
+  viewports.push({ page: "mobile-agenda-upcoming-reminder", ...page.viewportSize() });
+  await seeLater.press("Enter");
+  await reminders.waitFor({ state: "detached" });
+  assert.ok(acknowledged("event", laterReminder.id));
   assert.equal(host.snapshot.assistantMail.attention.some(item => item.kind === "event"), false);
   await page.getByText("其他待办", { exact: true }).click();
   const complete = page.getByRole("checkbox", { name: `完成 ${todoTitle}` });

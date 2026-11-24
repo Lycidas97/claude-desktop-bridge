@@ -408,8 +408,14 @@ export function useMobileBridge() {
     text: string,
     attachments: BridgeAttachment[] = [],
     mailRefId?: string,
+    firstTurn?: { hostId: string | undefined; session: BridgeSessionInfo },
   ) => {
-    const session = stateRef.current.snapshot?.sessions.find(candidate => candidate.sessionId === sessionId);
+    if (firstTurn && (!firstTurn.hostId || cryptoRef.current?.identity.roomId !== firstTurn.hostId)) {
+      throw new Error("已切换电脑，首条消息未发送。");
+    }
+    // A Native creation response can arrive before React commits the updated catalog.
+    const session = stateRef.current.snapshot?.sessions.find(candidate => candidate.sessionId === sessionId)
+      ?? (firstTurn?.session.sessionId === sessionId ? firstTurn.session : undefined);
     if ((!session?.runtimeId || session.runtimeId === "claude-desktop") &&
         (!isClaudeNativeRelay(stateRef.current.snapshot) || session?.transport !== "claude-desktop-native" || session.allowedActions?.canSend !== true)) {
       throw new Error("请先连接支持原生中转的 Claude Desktop 会话。");

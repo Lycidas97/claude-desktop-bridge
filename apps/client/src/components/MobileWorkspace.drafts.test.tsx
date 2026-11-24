@@ -1327,6 +1327,46 @@ describe("mobile session creation", () => {
     expect(elements(tree).some(element => element.props.role === "alert" && element.props.children === "首条消息未发送。会话配置应用失败。")).toBe(true);
   });
 
+  it("clears the rejected first turn's unsupported effort after switching models", async () => {
+    const created = { ...props.snapshot!.sessions[0]!, sessionId: "created-retry-model" };
+    props = {
+      ...props,
+      onCreateSession: vi.fn().mockResolvedValue(created),
+      onLoadSessionConfiguration: vi.fn().mockResolvedValue({
+        sessionId: "__default__",
+        availableEffortLevels: ["low", "max"],
+        availableModels: [
+          { value: "large", displayName: "Large", supportedEffortLevels: ["max"] },
+          { value: "small", displayName: "Small", supportedEffortLevels: ["low"] },
+        ],
+      }),
+      onConfigureSession: vi.fn().mockRejectedValueOnce(new Error("Native 配置未应用")).mockResolvedValue({ sessionId: created.sessionId }),
+    };
+    draw();
+    startNewChatFromDrawer();
+    await settle();
+    const model = () => elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "模型")!;
+    const effort = (label: string) => elements(tree).find(element => element.type === "button" && element.props.children === label)!;
+    const imageInput = elements(tree).find(element => element.type === "input" && element.props.accept?.startsWith("image/"))!;
+    const select = imageInput.props.onChange({ currentTarget: { files: [{ name: "fixture.png", type: "image/png", size: 8 }], value: "" } });
+    hooks.readers.at(-1).finish();
+    await select;
+    model().props.onChange("large"); draw();
+    effort("最大").props.onClick(); draw();
+    form().props.onSubmit({ preventDefault() {} });
+    await settle();
+    expect(props.onConfigureSession).toHaveBeenLastCalledWith(created.sessionId, { model: "large", effort: "max" });
+    expect(props.onSendTurn).not.toHaveBeenCalled();
+
+    model().props.onChange("small"); draw();
+    expect(effort("默认").props["aria-pressed"]).toBe(true);
+    form().props.onSubmit({ preventDefault() {} });
+    await settle();
+    expect(props.onConfigureSession).toHaveBeenLastCalledWith(created.sessionId, { model: "small", effort: null });
+    expect(props.onCreateSession).toHaveBeenCalledOnce();
+    expect(props.onSendTurn).toHaveBeenCalledOnce();
+  });
+
   it("halts automatic prompt send when requested permissionMode is not applied, and requires explicit 信任并创建 for WorkspaceTrustError", async () => {
     const createdSession: BridgeSessionInfo = {
       ...props.snapshot!.sessions[0]!,

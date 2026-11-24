@@ -4,6 +4,7 @@ import {
   CLAUDE_UNSECTIONED_PROJECT_NAME,
   DEFAULT_CONFIGURATION_SESSION_ID,
   isBridgeEffort,
+  type BridgeAttachment,
   type BridgeDesktopRuntimeId,
   type BridgeEffort,
   type BridgeHostSnapshot,
@@ -12,11 +13,13 @@ import {
   type BridgeSessionConfiguration,
   type BridgeSessionInfo,
 } from "@bridge/protocol";
-import { ArrowUp, ChevronDown, Folder, LoaderCircle, Plus } from "lucide-react";
+import { ArrowUp, ChevronDown, Folder, LoaderCircle, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useOptionalMagpieQuota } from "../../../../../plugins/magpie-quota/client.js";
 import { modelQuotaLabel } from "../../../../../plugins/magpie-quota/presentation.js";
-import { sanitizeModelDisplayName } from "../../lib/conversation-timeline.js";
+import { isClaudeNativeRelay } from "../../hooks/bridge/bridge-reducers.js";
+import { canSendSession, sanitizeModelDisplayName } from "../../lib/conversation-timeline.js";
+import { appendUploadedFilePaths, MAX_FILE_UPLOAD_BYTES, type UploadFileHandler } from "../../lib/file-upload.js";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
 import { desktopRuntimeName } from "../../lib/runtime-labels.js";
 import { ConfirmationDialog } from "../common/ConfirmationDialog.js";
@@ -26,6 +29,7 @@ import {
   useConversationDrafts,
   type ConversationDraftsController,
 } from "../conversation/ConversationDraftsProvider.js";
+import { ComposerAttachmentMenu, FileAttachmentPicker } from "../evidence/FileAttachmentPicker.js";
 import {
   MobileInspectorCallout,
   resolveClaudeRemoteActivationStatus,
@@ -93,6 +97,8 @@ export interface NewChatCanvasProps {
     projectId?: string,
     trustWorkspace?: boolean,
   ): Promise<BridgeSessionInfo | undefined>;
+  onUploadFile?: UploadFileHandler | undefined;
+  onSendFirstTurn?(session: BridgeSessionInfo, text: string, attachments: BridgeAttachment[]): Promise<unknown>;
   onSessionCreated?(
     created: BridgeSessionInfo,
     options?: { initialPrompt?: string | undefined; configurationError?: string | undefined },
@@ -119,6 +125,8 @@ export function NewChatCanvas({
   onLoadSessionConfiguration,
   onConfigureSession,
   onCreateSession,
+  onUploadFile,
+  onSendFirstTurn,
   onSessionCreated,
   onActivateClaude,
 }: NewChatCanvasProps) {
@@ -127,7 +135,9 @@ export function NewChatCanvas({
   const fallbackDrafts = useConversationDrafts(effectiveHostId);
   const drafts = externalDrafts ?? fallbackDrafts;
   const newChatDraft = drafts.session(effectiveHostId, NEW_CHAT_DRAFT_SESSION_ID);
-  const prompt = typeof newChatDraft.draft.text === "string" ? newChatDraft.draft.text : "";
+  const { text: prompt, attachments, newChatFiles = [], firstTurnSession, imageError } = newChatDraft.draft;
+  const hasAttachments = attachments.length > 0 || newChatFiles.length > 0;
+  const pendingConfiguration = firstTurnSession?.pendingConfiguration;
 
   const [createdGroups, setCreatedGroups] = useState<BridgeProjectInfo[]>([]);
   const syncedCreatedGroupIdsRef = useRef(new Set<string>());
@@ -193,8 +203,10 @@ export function NewChatCanvas({
   const [rawSelectedCwd, setSelectedCwd] = useState<string>(resolvedDefaultCwd);
   const [rawSelectedProjectId, setSelectedProjectId] = useState<string>(resolvedDefaultProjectId);
   const [sessionTitle, setSessionTitle] = useState<string>("");
-  const selectedCwd = typeof rawSelectedCwd === "string" ? rawSelectedCwd : resolvedDefaultCwd;
-  const selectedProjectId = typeof rawSelectedProjectId === "string" ? rawSelectedProjectId : resolvedDefaultProjectId;
+  const selectedCwd = firstTurnSession?.session.cwd ?? rawSelectedCwd;
+  const selectedProjectId = firstTurnSession
+    ? manualGroups.find((group) => group.projectId === firstTurnSession.session.projectId)?.projectId ?? ""
+    : rawSelectedProjectId;
 
   useEffect(() => {
     if (initialProjectId !== undefined || initialCwd !== undefined) return;
@@ -222,18 +234,19 @@ export function NewChatCanvas({
 
   const [configuration, setConfiguration] = useState<BridgeSessionConfiguration>();
   const [configLoading, setConfigLoading] = useState(false);
-  const [effortDraft, setEffortDraft] = useState<BridgeEffort>();
+  const [effortDraft, setEffortDraft] = useState<BridgeEffort | undefined>(pendingConfiguration?.effort ?? undefined);
   const [permissionMode, setPermissionMode] = useState<BridgeSDKPermissionMode>(
-    () => referenceSession?.nativePermissionMode ?? "default",
+    () => pendingConfiguration?.permissionMode ?? referenceSession?.nativePermissionMode ?? "default",
   );
-  const [outputStyle, setOutputStyle] = useState("");
+  const [outputStyle, setOutputStyle] = useState(pendingConfiguration?.outputStyle === "default" ? "" : pendingConfiguration?.outputStyle ?? "");
   const [pendingBypassConfirm, setPendingBypassConfirm] = useState(false);
+  const [pendingDiscardConfirm, setPendingDiscardConfirm] = useState(false);
   const [quotaRequested, setQuotaRequested] = useState(false);
 
   const userTouchedRef = useRef({
     cwd: false,
     section: initialProjectId !== undefined,
-    permission: false,
+    permission: Boolean(pendingConfiguration?.permissionMode),
   });
 
   const [busy, setBusy] = useState(false);
@@ -241,6 +254,11 @@ export function NewChatCanvas({
   const [error, setError] = useState<string>();
   const [trustState, setTrustState] = useState<{ mode: "confirm" | "manual"; withPrompt: boolean }>();
   const promptComposingRef = useRef(false);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const [readingImages, setReadingImages] = useState(false);
+  const [activeUpload, setActiveUpload] = useState<{ id: string; progress: number }>();
+  const firstTurnController = useRef<AbortController | undefined>(undefined);
+  useEffect(() => () => firstTurnController.current?.abort(), []);
 
   const quota = useOptionalMagpieQuota(
     quotaRequested
@@ -249,6 +267,10 @@ export function NewChatCanvas({
   );
 
   const runtime = snapshot?.runtimes?.find((candidate) => candidate.id === runtimeId);
+  const canPrepareAttachments = onCreateSession && onSendFirstTurn && isClaudeNativeRelay(snapshot)
+    && (!snapshot?.runtimes || runtime?.capabilities.includes("turn.start"));
+  const canAttachImages = Boolean(canPrepareAttachments && (!snapshot?.runtimes || runtime?.capabilities.includes("attachment.image")));
+  const uploadFile = canPrepareAttachments && snapshot?.host.capabilities.includes("workspace.upload.v1") ? onUploadFile : undefined;
   const canTrustWorkspace = Boolean(
     snapshot?.host.capabilities.includes("workspace.trust.v1")
     && (snapshot.runtimes ? runtime?.capabilities.includes("workspace.trust") : true),
@@ -322,15 +344,13 @@ export function NewChatCanvas({
   }, [sectionCreate]);
 
   useEffect(() => {
-    if (!pendingBypassConfirm) return;
+    if (!pendingBypassConfirm && !pendingDiscardConfirm) return;
     return registerMobileBackHandler(() => {
-      if (pendingBypassConfirm) {
-        setPendingBypassConfirm(false);
-        return true;
-      }
-      return false;
+      setPendingBypassConfirm(false);
+      setPendingDiscardConfirm(false);
+      return true;
     }, 155);
-  }, [pendingBypassConfirm]);
+  }, [pendingBypassConfirm, pendingDiscardConfirm]);
 
   const modelOptions = configuration?.availableModels ?? [];
   const draftModel = newChatDraft.draft.newChatModel;
@@ -353,7 +373,11 @@ export function NewChatCanvas({
     selectedProjectId && !manualGroups.some((project) => project.projectId === selectedProjectId),
   );
   const locked = busy || choosingDirectory || Boolean(sectionCreate?.busy);
-  const canSubmitBase = connected && runtimeAvailable && !groupUnavailable && !locked;
+  const destinationLocked = locked || Boolean(firstTurnSession);
+  const configurationLocked = locked || (Boolean(firstTurnSession) && !pendingConfiguration);
+  const canSubmitBase = connected && !locked && (Boolean(firstTurnSession) || (runtimeAvailable && !groupUnavailable));
+  const canSendFirstPrompt = canSubmitBase && !readingImages && Boolean(prompt.trim() || hasAttachments);
+  const canCreateEmpty = canSubmitBase && !firstTurnSession && !readingImages && !hasAttachments;
 
   const quickDirectoryProjects = useMemo(() => {
     const seen = new Set<string>();
@@ -383,6 +407,19 @@ export function NewChatCanvas({
     newChatDraft.setText(value);
   }
 
+  function editPendingConfiguration(change: SessionConfigurationChange): void {
+    if (!firstTurnSession || !pendingConfiguration) return;
+    newChatDraft.updateDraft((current) => ({
+      ...current, firstTurnSession: { ...firstTurnSession, pendingConfiguration: { ...pendingConfiguration, ...change } },
+    }));
+  }
+
+  function applyPermissionMode(nextMode: BridgeSDKPermissionMode): void {
+    userTouchedRef.current.permission = true;
+    setPermissionMode(nextMode);
+    editPendingConfiguration({ permissionMode: nextMode });
+  }
+
   function choosePermissionMode(nextMode: BridgeSDKPermissionMode): void {
     if (
       nextMode === "bypassPermissions"
@@ -392,8 +429,7 @@ export function NewChatCanvas({
       setPendingBypassConfirm(true);
       return;
     }
-    userTouchedRef.current.permission = true;
-    setPermissionMode(nextMode);
+    applyPermissionMode(nextMode);
   }
 
   async function submitCreateSection(): Promise<void> {
@@ -433,7 +469,7 @@ export function NewChatCanvas({
   }
 
   async function handleChooseDirectory(targetProjectId?: string): Promise<void> {
-    if (!connected || locked) return;
+    if (!connected || destinationLocked) return;
     const effectiveProjectId = targetProjectId ?? (selectedProjectId || undefined);
     if (onChooseDirectory) {
       setChoosingDirectory(true);
@@ -481,13 +517,17 @@ export function NewChatCanvas({
   async function executeCreate(withPrompt: boolean, trustWorkspace = false): Promise<void> {
     const trimmedPrompt = prompt.trim();
     const trimmedTitle = sessionTitle.trim() || undefined;
-    if (!canSubmitBase) return;
-    if (withPrompt && !trimmedPrompt) return;
+    if (withPrompt ? !canSendFirstPrompt : !canCreateEmpty) return;
+    const attachedSend = withPrompt && (hasAttachments || firstTurnSession);
+    if (attachedSend && (!onSendFirstTurn || (attachments.length > 0 && !canAttachImages) || (newChatFiles.length > 0 && !uploadFile))) {
+      setError("当前电脑不支持发送已选附件。");
+      return;
+    }
     const trimmedCwd = selectedCwd.trim();
-    if (!trimmedCwd) {
+    if (!trimmedCwd && !firstTurnSession) {
       onOpenDirectoryPicker({
         initialProjectId: selectedProjectId || undefined,
-        ...(withPrompt && trimmedPrompt ? { pendingPrompt: trimmedPrompt } : {}),
+        ...(!attachedSend && withPrompt && trimmedPrompt ? { pendingPrompt: trimmedPrompt } : {}),
         onPickDirectory: (pickedCwd) => applyChosenDirectory(pickedCwd),
       });
       return;
@@ -504,11 +544,13 @@ export function NewChatCanvas({
 
     setBusy(true);
     setError(undefined);
+    const controller = attachedSend ? new AbortController() : undefined;
+    firstTurnController.current = controller;
     try {
       const selectedGroup = selectedProjectId || undefined;
-      const created = trustWorkspace
+      const created = firstTurnSession?.session ?? (trustWorkspace
         ? await onCreateSession(trimmedCwd, trimmedTitle, runtimeId, selectedGroup, true)
-        : await onCreateSession(trimmedCwd, trimmedTitle, runtimeId, selectedGroup);
+        : await onCreateSession(trimmedCwd, trimmedTitle, runtimeId, selectedGroup));
       if (!created) {
         setTrustState(undefined);
         setError("会话未创建，请重试。");
@@ -516,23 +558,63 @@ export function NewChatCanvas({
       }
       setTrustState(undefined);
 
+      const retryConfiguration = pendingConfiguration?.effort && !effortLevels.includes(pendingConfiguration.effort)
+        ? { ...pendingConfiguration, effort: null }
+        : pendingConfiguration;
+      const change = firstTurnSession
+        ? retryConfiguration
+        : onConfigureSession && canConfigureRuntime ? buildPostCreateConfiguration(created) : undefined;
+      controller?.signal.throwIfAborted();
+      if (attachedSend && !firstTurnSession) {
+        newChatDraft.updateDraft((current) => ({ ...current, firstTurnSession: { session: created, pendingConfiguration: change } }));
+      }
       let configurationError: string | undefined;
-      if (onConfigureSession && canConfigureRuntime) {
-        const change = buildPostCreateConfiguration(created);
+      if (change && onConfigureSession && canConfigureRuntime) {
+        try {
+          const applied = await onConfigureSession(created.sessionId, change);
+          if (
+            change.permissionMode
+            && applied?.nativePermissionMode !== undefined
+            && applied.nativePermissionMode !== change.permissionMode
+          ) {
+            configurationError = attachedSend ? "所选权限模式未生效。" : "所选权限模式未生效，请检查会话设置后再发送。";
+          }
+        } catch (configReason) {
+          configurationError = (configReason instanceof Error && configReason.message) || "会话配置应用失败。";
+        }
+      } else if (change) {
+        configurationError = "会话配置暂不可用。";
+      }
+
+      if (controller && onSendFirstTurn) {
+        controller.signal.throwIfAborted();
+        if (configurationError) {
+          setError(`首条消息未发送。${configurationError}请修改设置后重试。`);
+          return;
+        }
         if (change) {
-          try {
-            const applied = await onConfigureSession(created.sessionId, change);
-            if (
-              change.permissionMode
-              && applied?.nativePermissionMode !== undefined
-              && applied.nativePermissionMode !== change.permissionMode
-            ) {
-              configurationError = "所选权限模式未生效，请检查会话设置后再发送。";
-            }
-          } catch (configReason) {
-            configurationError = (configReason instanceof Error && configReason.message) || "会话配置应用失败。";
+          newChatDraft.updateDraft((current) => ({ ...current, firstTurnSession: { session: created } }));
+        }
+        if (!canSendSession(snapshot?.sessions.find((session) => session.sessionId === created.sessionId) ?? created, snapshot)) {
+          throw new Error("当前会话不允许发送消息。");
+        }
+        const uploaded = [];
+        if (uploadFile) {
+          for (const { id, file, result } of newChatFiles) {
+            if (!result) setActiveUpload({ id, progress: 0 });
+            const receipt = result ?? await uploadFile(created.sessionId, file, (progress) => setActiveUpload({ id, progress }), controller.signal);
+            controller.signal.throwIfAborted();
+            if (!result) newChatDraft.updateDraft((current) => ({
+              ...current,
+              newChatFiles: (current.newChatFiles ?? []).map((entry) => entry.id === id ? { ...entry, result: receipt } : entry),
+            }));
+            uploaded.push(receipt);
           }
         }
+        await onSendFirstTurn(created, appendUploadedFilePaths(trimmedPrompt, uploaded), attachments);
+        drafts.resetSession(effectiveHostId, NEW_CHAT_DRAFT_SESSION_ID);
+        await onSessionCreated?.(created);
+        return;
       }
 
       setSessionTitle("");
@@ -548,8 +630,9 @@ export function NewChatCanvas({
         } : {}),
       });
     } catch (reason) {
+      if (controller?.signal.aborted) return;
       const { isTrust, code } = isWorkspaceTrustError(reason);
-      if (isTrust) {
+      if (isTrust && !firstTurnSession) {
         setTrustState({
           mode: code === "WORKSPACE_TRUST_REQUIRED" && canTrustWorkspace ? "confirm" : "manual",
           withPrompt,
@@ -559,6 +642,8 @@ export function NewChatCanvas({
         setError(reason instanceof Error ? reason.message : "会话创建失败");
       }
     } finally {
+      firstTurnController.current = undefined;
+      setActiveUpload(undefined);
       setBusy(false);
     }
   }
@@ -617,7 +702,7 @@ export function NewChatCanvas({
                 type="button"
                 className={`new-chat-dir-pill${selectedCwd ? " has-folder" : ""}`}
                 aria-label="选择文件夹"
-                disabled={!connected || locked}
+                disabled={!connected || destinationLocked}
                 onClick={() => void handleChooseDirectory()}
               >
                 {choosingDirectory ? (
@@ -637,7 +722,7 @@ export function NewChatCanvas({
                         type="button"
                         key={project.projectId}
                         className={`new-chat-chip${isSelected ? " active" : ""}`}
-                        disabled={!connected || locked}
+                        disabled={!connected || destinationLocked}
                         onClick={() => {
                           if (!project.cwd) return;
                           userTouchedRef.current.cwd = true;
@@ -660,7 +745,7 @@ export function NewChatCanvas({
                 <SelectMenu
                   ariaLabel="所属分组"
                   value={selectedProjectId}
-                  disabled={!connected || locked}
+                  disabled={!connected || destinationLocked}
                   options={[
                     { value: "", label: CLAUDE_UNSECTIONED_PROJECT_NAME },
                     ...(groupUnavailable ? [{ value: selectedProjectId, label: "分组已不可用", disabled: true }] : []),
@@ -696,8 +781,8 @@ export function NewChatCanvas({
                 aria-label="会话标题"
                 placeholder="留空自动生成"
                 maxLength={200}
-                value={sessionTitle}
-                disabled={!connected || locked}
+                value={firstTurnSession?.session.title ?? sessionTitle}
+                disabled={!connected || destinationLocked}
                 onChange={(event) => {
                   setSessionTitle(event.target.value);
                   if (error) setError(undefined);
@@ -716,7 +801,7 @@ export function NewChatCanvas({
                 ariaLabel="模型"
                 value={draftModel?.value ?? ""}
                 placeholder={draftModel ? sanitizeModelDisplayName(draftModel.displayName, draftModel.resolvedModel ?? draftModel.value) : undefined}
-                disabled={!connected || locked || (!modelOptions.length && !draftModel)}
+                disabled={!connected || configurationLocked || (!modelOptions.length && !draftModel)}
                 options={[
                   { value: "", label: configLoading && !modelOptions.length && !draftModel ? "正在读取模型…" : "默认" },
                   ...modelOptions.map((candidate) => ({
@@ -725,9 +810,12 @@ export function NewChatCanvas({
                     meta: quota?.snapshot ? (modelQuotaLabel(quota.snapshot, candidate) || undefined) : undefined,
                   })),
                 ]}
-                onChange={(value) => newChatDraft.updateDraft(current => ({
-                  ...current, newChatModel: modelOptions.find(candidate => candidate.value === value),
-                }))}
+                onChange={(value) => {
+                  newChatDraft.updateDraft(current => ({
+                    ...current, newChatModel: modelOptions.find(candidate => candidate.value === value),
+                  }));
+                  editPendingConfiguration({ model: value || null });
+                }}
               />
             </div>
 
@@ -741,8 +829,11 @@ export function NewChatCanvas({
                       key={level ?? "default"}
                       className={pickedEffort === level ? "active" : ""}
                       aria-pressed={pickedEffort === level}
-                      disabled={!connected || locked || configLoading}
-                      onClick={() => setEffortDraft(level)}
+                      disabled={!connected || configurationLocked || configLoading}
+                      onClick={() => {
+                        setEffortDraft(level);
+                        editPendingConfiguration({ effort: level ?? null });
+                      }}
                     >
                       {level ? effortLabel(level) : "默认"}
                     </button>
@@ -756,7 +847,7 @@ export function NewChatCanvas({
               <SelectMenu<BridgeSDKPermissionMode>
                 ariaLabel="权限模式"
                 value={permissionMode}
-                disabled={!connected || locked}
+                disabled={!connected || configurationLocked}
                 options={PERMISSION_MODE_OPTIONS}
                 onChange={choosePermissionMode}
               />
@@ -768,12 +859,15 @@ export function NewChatCanvas({
                 <SelectMenu
                   ariaLabel="输出风格"
                   value={outputStyle}
-                  disabled={!connected || locked}
+                  disabled={!connected || configurationLocked}
                   options={[
                     { value: "", label: "默认" },
                     ...outputStyles.filter((style) => style !== "default").map((style) => ({ value: style, label: style })),
                   ]}
-                  onChange={setOutputStyle}
+                  onChange={(style) => {
+                    setOutputStyle(style);
+                    editPendingConfiguration({ outputStyle: style || "default" });
+                  }}
                 />
               </div>
             )}
@@ -826,7 +920,36 @@ export function NewChatCanvas({
       </div>
 
       <footer className="mobile-composer">
-        {error && <div className="composer-error" role="alert">{error}</div>}
+        <FileAttachmentPicker disabled={locked} state={{
+          entries: newChatFiles.map(({ id, file, result }) => ({
+            id, name: file.name, size: file.size,
+            progress: result ? 1 : activeUpload?.id === id ? activeUpload.progress : 0,
+            staged: activeUpload?.id !== id,
+            ...(result ? { result } : {}),
+          })),
+          remove: (id) => newChatDraft.updateDraft((current) => ({
+            ...current, newChatFiles: (current.newChatFiles ?? []).filter((entry) => entry.id !== id),
+          })),
+        }} />
+        {attachments.length > 0 && (
+          <div className="composer-attachments">
+            {attachments.map((attachment) => (
+              <span key={attachment.id}>
+                <img className="new-chat-attachment-thumb" src={`data:${attachment.mimeType};base64,${attachment.data}`} alt="" />
+                <span title={attachment.name}>{attachment.name}</span>
+                <button
+                  type="button"
+                  aria-label={`移除 ${attachment.name}`}
+                  disabled={locked}
+                  onClick={() => newChatDraft.updateDraft((current) => ({
+                    ...current, attachments: current.attachments.filter((item) => item.id !== attachment.id),
+                  }))}
+                ><X size={13} /></button>
+              </span>
+            ))}
+          </div>
+        )}
+        {(error || imageError) && <div className="composer-error" role="alert">{error || imageError}</div>}
         <form
           className="composer-form"
           onSubmit={(event) => {
@@ -834,6 +957,22 @@ export function NewChatCanvas({
             void executeCreate(true, false);
           }}
         >
+          {canAttachImages && <input
+            ref={imageInputRef}
+            type="file"
+            accept="image/jpeg,image/png,image/gif,image/webp"
+            multiple
+            hidden
+            disabled={!connected || locked || readingImages}
+            onChange={async ({ currentTarget }) => {
+              setReadingImages(true);
+              try {
+                await newChatDraft.addImages(currentTarget.files, currentTarget);
+              } finally {
+                setReadingImages(false);
+              }
+            }}
+          />}
           <textarea
             rows={mobile ? 2 : 1}
             aria-label={`给 ${runtimeName} 发指令`}
@@ -866,29 +1005,41 @@ export function NewChatCanvas({
           />
           <div className="composer-bar">
             <div className="composer-bar-left">
-              <IconButton
-                label="选择工作目录"
-                className="composer-attach-trigger"
-                disabled={!connected || locked}
-                onClick={() => void handleChooseDirectory()}
-              >
-                <Plus size={16} />
-              </IconButton>
+              <ComposerAttachmentMenu
+                canAttachImages={canAttachImages}
+                imageDisabled={!connected || locked || readingImages}
+                onPickImages={() => imageInputRef.current?.click()}
+                fileDisabled={!connected || locked}
+                {...(uploadFile ? { fileUploads: {
+                  uploading: false,
+                  async add(files: ArrayLike<File> | null) {
+                    if (!files?.length) return;
+                    const selected = Array.from(files);
+                    const accepted = selected.filter((file) => file.size <= MAX_FILE_UPLOAD_BYTES);
+                    setError(accepted.length === selected.length ? undefined : "单个文件不能超过 20 MiB");
+                    const entries = accepted.map((file) => ({ id: crypto.randomUUID(), file }));
+                    newChatDraft.updateDraft((current) => ({ ...current, newChatFiles: [...(current.newChatFiles ?? []), ...entries] }));
+                  },
+                } } : {})}
+              />
             </div>
             <div className="composer-bar-right">
               <button
                 type="button"
                 className="secondary-button new-chat-empty-create-btn"
-                disabled={!canSubmitBase}
-                onClick={() => void executeCreate(false, false)}
+                disabled={firstTurnSession ? locked || readingImages : !canCreateEmpty}
+                onClick={() => {
+                  if (firstTurnSession) setPendingDiscardConfirm(true);
+                  else void executeCreate(false, false);
+                }}
               >
-                创建空会话
+                {firstTurnSession ? "放弃草稿" : "创建空会话"}
               </button>
               <button
                 type="submit"
                 className="primary-button send-button"
                 aria-label="发送"
-                disabled={!canSubmitBase || !prompt.trim()}
+                disabled={!canSendFirstPrompt}
               >
                 {busy ? <LoaderCircle className="is-spinning" size={15} /> : <ArrowUp size={16} strokeWidth={2.4} />}
               </button>
@@ -909,6 +1060,21 @@ export function NewChatCanvas({
       />
 
       <ConfirmationDialog
+        open={pendingDiscardConfirm}
+        title="放弃首发草稿？"
+        description="正文和待发附件将清除。已创建的会话和已上传文件会保留。"
+        confirmLabel="放弃草稿"
+        danger
+        onCancel={() => setPendingDiscardConfirm(false)}
+        onConfirm={() => {
+          drafts.resetSession(effectiveHostId, NEW_CHAT_DRAFT_SESSION_ID);
+          setPendingDiscardConfirm(false);
+          setSessionTitle("");
+          setError(undefined);
+        }}
+      />
+
+      <ConfirmationDialog
         open={pendingBypassConfirm}
         title="启用完全授权"
         description="新创建的 Claude Desktop 会话将跳过工具授权确认。此设置由 Desktop 管理。"
@@ -916,8 +1082,7 @@ export function NewChatCanvas({
         onCancel={() => setPendingBypassConfirm(false)}
         onConfirm={() => {
           setPendingBypassConfirm(false);
-          userTouchedRef.current.permission = true;
-          setPermissionMode("bypassPermissions");
+          applyPermissionMode("bypassPermissions");
         }}
       />
     </section>

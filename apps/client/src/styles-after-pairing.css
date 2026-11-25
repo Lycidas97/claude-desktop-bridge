@@ -903,6 +903,17 @@
 }
 .session-proposal-background[open] > summary > svg { transform: rotate(180deg); }
 
+.session-proposal-actions {
+  grid-column: 2 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  column-gap: 8px;
+  color: var(--muted);
+  font-size: calc(12px * var(--font-scale));
+}
+
 .session-proposal-detail {
   display: grid;
   place-items: center;

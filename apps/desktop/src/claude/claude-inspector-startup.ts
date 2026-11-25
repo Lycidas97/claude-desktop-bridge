@@ -110,6 +110,7 @@ end run`, String(pid), press ? "press" : "probe"], { timeout: 5_000, maxBuffer: 
 export class ClaudeInspectorStartup {
   private records: Record<string, BridgeInspectorStartupStatus> | undefined;
   private recordsCorrupted = false;
+  private readonly observedOpen = new Set<string>();
   private queue: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly options: {
@@ -210,36 +211,57 @@ export class ClaudeInspectorStartup {
     this.records = Object.fromEntries(processes.filter(process => Object.hasOwn(loaded, process.identity)).map(process => [process.identity, loaded[process.identity]!]));
     for (const process of processes) {
       if (!Object.hasOwn(this.records, process.identity)) {
-        const recordedAt = Date.now();
         if (listening) {
-          this.records[process.identity] = { state: "already-open", recordedAt, detail: "首次发现时调试端口已开放，未执行自动开启。" };
+          this.records[process.identity] = { state: "already-open", recordedAt: Date.now(), detail: "首次发现时调试端口已开放，未执行自动开启。" };
           await this.persistRecordsBestEffort();
           continue;
         }
-        const accessibility = this.options.accessibility?.();
-        if (accessibility && !accessibility.trusted) return {
-          state: "accessibility-required",
-          detail: `请在系统设置 › 隐私与安全性 › 辅助功能中添加并开启 ${accessibility.applicationPath}。授权后 Bridge 会自动继续。`,
-        };
-        try {
-          const result = await (this.options.menu ?? claudeInspectorMenu)(process.pid, false);
-          if (result === "waiting") return { state: "waiting", detail: "等待 Claude Desktop 的原生调试菜单就绪；请检查开发者模式与工作区策略。" };
-          // Persist before the checkbox action so a Bridge restart cannot toggle it twice.
-          this.records[process.identity] = { state: result === "enabled" ? "enabled" : "attempted", recordedAt,
-            detail: result === "enabled" ? "原生调试菜单已勾选，未重复操作。" : "已通过原生菜单请求开启主进程调试。" };
-          await this.persistRecords();
-          if (result === "ready" && await (this.options.menu ?? claudeInspectorMenu)(process.pid, true) === "enabled") {
-            this.records[process.identity] = { state: "enabled", recordedAt, detail: "原生调试菜单已勾选，未重复操作。" };
-            await this.persistRecordsBestEffort();
-          }
-        } catch (error) {
-          this.records[process.identity] = { state: "failed", recordedAt, detail: `自动开启失败：${error instanceof Error ? error.message : String(error)}` };
-          await this.persistRecordsBestEffort();
-        }
+        const surfaced = await this.openViaMenu(process, this.records);
+        if (surfaced) return surfaced;
+      } else if (!listening && this.observedOpen.has(process.identity)
+        && (this.records[process.identity]!.state === "attempted" || this.records[process.identity]!.state === "enabled")) {
+        // Claude Desktop closes the debugger on its own ("…, Turns off after 15 minutes"), so reopen a port
+        // Bridge opened once it disappears; openViaMenu stops retrying after a click that did not bring it back.
+        const surfaced = await this.openViaMenu(process, this.records);
+        if (surfaced) return surfaced;
       }
       if (!listening) return this.records[process.identity];
     }
+    if (listening) for (const process of processes) this.observedOpen.add(process.identity);
     return processes.length ? this.records[processes[0]!.identity] : undefined;
+  }
+
+  /** Runs the native menu sequence for one process and records the outcome. Returns a status to surface instead of the record. */
+  private async openViaMenu(
+    process: InspectorDesktopProcess,
+    records: Record<string, BridgeInspectorStartupStatus>,
+  ): Promise<BridgeInspectorStartupStatus | undefined> {
+    const accessibility = this.options.accessibility?.();
+    if (accessibility && !accessibility.trusted) return {
+      state: "accessibility-required",
+      detail: `请在系统设置 › 隐私与安全性 › 辅助功能中添加并开启 ${accessibility.applicationPath}。授权后 Bridge 会自动继续。`,
+    };
+    const recordedAt = Date.now();
+    try {
+      const result = await (this.options.menu ?? claudeInspectorMenu)(process.pid, false);
+      if (result === "waiting") return { state: "waiting", detail: "等待 Claude Desktop 的原生调试菜单就绪；请检查开发者模式与工作区策略。" };
+      // Persist before the checkbox action so a Bridge restart cannot toggle it twice.
+      records[process.identity] = { state: result === "enabled" ? "enabled" : "attempted", recordedAt,
+        detail: result === "enabled" ? "原生调试菜单已勾选，未重复操作。" : "已通过原生菜单请求开启主进程调试。" };
+      await this.persistRecords();
+      if (result === "ready") {
+        // One click per observed open; a click that does not open the port must not repeat every poll.
+        this.observedOpen.delete(process.identity);
+        if (await (this.options.menu ?? claudeInspectorMenu)(process.pid, true) === "enabled") {
+          records[process.identity] = { state: "enabled", recordedAt, detail: "原生调试菜单已勾选，未重复操作。" };
+          await this.persistRecordsBestEffort();
+        }
+      }
+    } catch (error) {
+      records[process.identity] = { state: "failed", recordedAt, detail: `自动开启失败：${error instanceof Error ? error.message : String(error)}` };
+      await this.persistRecordsBestEffort();
+    }
+    return undefined;
   }
 
   enableExplicit(isListening: () => Promise<boolean>): Promise<BridgeInspectorStartupStatus> {

@@ -154,26 +154,66 @@ export async function verifyAssistantSessionProposals(phone, host, steps, direct
   await assert.rejects(request("assistant.proposal.commit", { ...ignored, confirmSession: true }), { code: "CONFLICT" });
   assert.equal(targetSends().length, 1);
   steps.push("Copy Session ID works; ignored, old confirmation and replay are rejected; paired phone opens by session.open without sending, and desktop sends only the full revised message to the busy Native target");
-  await desktop.close();
 
   const { ref: untitled, action } = await seedAssistantSessionCreation(host);
   const { cwd, model, projectId } = action;
   await phone.locator(".assistant-page-mobile").getByRole("button", { name: "返回", exact: true }).click();
   await phoneRows.getByRole("button", { name: `${cwd} 新建会话`, exact: true }).waitFor();
   const { result: ref } = await native.callAssistantTool("proposal.update_pending", { ...untitled, action: { ...action, title: createdTitle } });
+  const { project: twin } = await request("section.create", { name: "另一评审分组" });
+  await request("section.rename", { sectionId: twin.projectId, name: sectionName });
+  await native.draftProposal({ ...action, projectId: twin.projectId, title: "同名分组的提案" });
+  await syncNativeSections(host);
+  await host.send({ kind: "snapshot", snapshot: host.snapshot });
+  await desktop.evaluate(({ projects, sessions, host: computer }) => window.assistantDesktopSnapshot({ projects, sessions, host: computer }), host.snapshot);
+  await phone.reload({ waitUntil: "domcontentloaded" });
+  for (const [surface, page, catalog] of [["mobile", phone, ".mobile-home-catalog"], ["desktop", desktop, ".desktop-session-sidebar"]]) {
+    const manage = { name: `管理分组：${sectionName}`, exact: true };
+    const groups = page.locator(`${catalog} .project-group-header`).filter({ has: page.getByRole("button", manage) });
+    await groups.nth(1).waitFor();
+    const ids = [];
+    for (const group of await groups.all()) {
+      if (surface === "desktop") await group.hover();
+      await group.getByRole("button", manage).click();
+      const menu = page.getByRole("dialog", { name: sectionName, exact: true });
+      await menu.waitFor();
+      const id = menu.locator("bdi:visible");
+      assert.equal(await id.count(), 1, `${surface} group menu exposes the ID shown on its proposal`);
+      ids.push(await id.innerText());
+      await capture(page, `${surface}-same-section-menu-${ids.length}`);
+      await menu.getByRole("button", { name: "关闭", exact: true }).click();
+    }
+    assert.deepEqual(ids.sort(), [projectId, twin.projectId].sort());
+  }
+  await desktop.close();
+  await openMobileAssistant(phone);
+  await phone.locator(".assistant-proposal-dock .permission-dock").getByText("2 项待你确认").click();
+  const createReview = phone.getByRole("dialog", { name: "核对新会话" });
+  const section = createReview.locator("dt").filter({ hasText: /^分组$/u }).locator("+ dd");
+  await phoneRows.getByRole("button", { name: "同名分组的提案 新建会话", exact: true }).click();
+  await phone.getByRole("button", { name: "核对新会话…" }).click();
+  const twinSection = await section.innerText();
+  await capture(phone, "mobile-session-create-twin-review");
+  await createReview.getByRole("button", { name: "取消", exact: true }).click();
+  await phone.getByRole("button", { name: "忽略", exact: true }).click();
+  await phone.getByRole("status").filter({ hasText: "已忽略" }).waitFor();
+  await phone.locator(".assistant-page-mobile").getByRole("button", { name: "返回", exact: true }).click();
   await phoneRows.getByRole("button", { name: /新建隔离评审会话.*新建会话/u }).click();
   await phone.getByRole("button", { name: "核对新会话…" }).click();
-  const createReview = phone.getByRole("dialog", { name: "核对新会话" });
-  for (const value of [host.snapshot.host.name, createdTitle, cwd, sectionName, modelName]) {
+  for (const value of [host.snapshot.host.name, createdTitle, cwd, modelName]) {
     await createReview.getByText(value, { exact: true }).waitFor();
   }
+  const selectedSection = await section.innerText();
+  assert.ok(selectedSection.includes(sectionName) && twinSection.includes(sectionName));
+  assert.notEqual(selectedSection, twinSection, "The confirmation distinguishes the two same-name Sections");
+  assert.ok(selectedSection.includes(projectId) && twinSection.includes(twin.projectId));
   assert.equal(await createReview.locator('pre[aria-label="完整首条消息"]').textContent(), firstText);
   assert.equal(native.calls.filter(call => call.method === "start").length, 0);
   assert.deepEqual((await request("assistant.proposal.list", { includeSession: true })).proposals, []);
   await assert.rejects(request("assistant.proposal.commit", { ...ref, confirmSession: true }), { code: "INVALID_PARAMS" });
   await capture(phone, "mobile-session-create-review");
   await createReview.getByRole("button", { name: "确认新建并发送" }).click();
-  const readCreated = async () => (await request("assistant.proposal.list", { history: true, includeSessionCreate: true })).proposals[0];
+  const readCreated = async () => (await request("assistant.proposal.list", { history: true, includeSessionCreate: true })).proposals.find(proposal => proposal.proposalId === ref.proposalId);
   await eventually(async () => (await readCreated())?.state, "applied", "Native created the approved session and submitted the first message");
   const { sessionCreation: { sessionId: createdId } } = await readCreated();
   await syncNativeSections(host);

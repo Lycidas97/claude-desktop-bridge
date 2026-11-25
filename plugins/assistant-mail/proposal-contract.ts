@@ -53,7 +53,10 @@ export const reviseProposal = z.strictObject({ ...proposalRef.shape, action: pro
 export const listProposals = z.strictObject({ cursor, limit });
 export const sessionCreateOptions = z.strictObject({
   field: z.enum(["cwd", "project", "model"]),
-  name: z.string().trim().min(1).max(255).regex(/^[^\p{Cc}]+$/u).optional(),
+  name: z.string().refine(name => {
+    const trimmed = name.trim();
+    return trimmed.length > 0 && trimmed.length <= 255 && !/\p{Cc}/u.test(trimmed);
+  }, "Use a non-blank folder name of at most 255 characters after trimming, without embedded control characters.").optional(),
 }).refine(({ field, name }) => field === "cwd" || name === undefined, { path: ["name"], message: "Only cwd accepts a folder name." });
 export type SessionCreateOptionsQuery = z.infer<typeof sessionCreateOptions>;
 const sessionVisibility = { includeSession: z.literal(true).optional(), includeSessionCreate: z.literal(true).optional() };

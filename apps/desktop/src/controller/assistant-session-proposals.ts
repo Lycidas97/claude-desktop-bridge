@@ -17,6 +17,14 @@ export function assistantSessionProposalBackend(
 ): SessionProposalBackend {
   const sections = () => broker.listProjects().filter(project => project.kind === "desktop-group" && !project.managedAssistant);
   const modelOptions = async () => (await broker.defaultConfiguration()).availableModels.map(({ value, displayName }) => ({ value, label: displayName }));
+  async function usableDirectory(cwd: string): Promise<boolean> {
+    try {
+      return (await stat(cwd)).isDirectory() && !(await insideAssistantWorkspace(cwd));
+    } catch (error) {
+      if (["ENOENT", "ENOTDIR", "EACCES", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? "")) return false;
+      throw error;
+    }
+  }
   return {
     ownsDraft,
     creation: {
@@ -27,9 +35,23 @@ export function assistantSessionProposalBackend(
           ...(broker.capabilities().includes("section.move") ? sections().map(({ projectId, name }) => ({ value: projectId, label: name })) : []),
         ];
         const name = query.name?.toLowerCase();
-        return [...new Set(broker.listSessions().filter(session => !session.archivedAt && !session.sidechat)
-          .map(session => session.cwd).filter(cwd => isAbsolute(cwd) && !isAssistantWorkspace(cwd)))].map(value => ({ value, label: basename(value) || value }))
-          .filter(option => name === undefined || option.label.toLowerCase() === name).slice(0, 12);
+        const normalized = name?.trim();
+        const exact = [];
+        const alternatives = [];
+        for (const value of new Set(broker.listSessions().filter(session => !session.archivedAt && !session.sidechat)
+          .map(session => session.cwd).filter(cwd => isAbsolute(cwd)))) {
+          const label = basename(value) || value;
+          const folded = label.toLowerCase();
+          if (name === undefined || folded === name) exact.push({ value, label });
+          else if (folded.trim() === normalized) alternatives.push({ value, label });
+        }
+        const options = [];
+        for (const option of [...exact, ...alternatives]) {
+          if (!(await usableDirectory(option.value))) continue;
+          options.push(option);
+          if (options.length === 12) break;
+        }
+        return options;
       },
       async prepare(action) {
         const capabilities = broker.capabilities();
@@ -38,10 +60,7 @@ export function assistantSessionProposalBackend(
           throw new AssistantError("UNSUPPORTED", "当前 Claude Desktop 无法完成这项新建会话操作。");
         }
         if (!isAbsolute(action.cwd)) throw new AssistantError("INVALID_PARAMS", "请提供绝对工作目录路径。");
-        const directory = await stat(action.cwd).catch((error: NodeJS.ErrnoException) => {
-          if (!["ENOENT", "ENOTDIR", "EACCES", "EPERM"].includes(error.code ?? "")) throw error;
-        });
-        if (!directory?.isDirectory() || await insideAssistantWorkspace(action.cwd)) {
+        if (!(await usableDirectory(action.cwd))) {
           throw new AssistantError("INVALID_PARAMS", "请选择可用的工作目录，不能使用助理托管工作区。");
         }
         const section = action.projectId === null ? undefined : sections().find(project => project.projectId === action.projectId);

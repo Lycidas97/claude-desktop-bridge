@@ -1027,8 +1027,10 @@ it("finds known working directories by name before the recent list limit and pre
   await run.request("plugin.assistant-mail.workspace.initialize", { workspacePath: run.workspace.path });
   const recent = join(root, "recent", "Northstar");
   const older = join(root, "older", "northstar");
+  const otherDirectories = Array.from({ length: 11 }, (_, index) => join(root, `known-${index}`));
+  await Promise.all([recent, older, ...otherDirectories].map(cwd => mkdir(cwd, { recursive: true })));
   run.sessions.unshift(nativeSession("recent-northstar", { cwd: recent }),
-    ...Array.from({ length: 11 }, (_, index) => nativeSession(`known-${index}`, { cwd: join(root, `known-${index}`) })),
+    ...otherDirectories.map((cwd, index) => nativeSession(`known-${index}`, { cwd })),
     nativeSession("older-northstar", { cwd: older }));
   const defaults = await run.proposals.sessionCreateOptions("local-managed", { field: "cwd" });
   expect(defaults.options).toHaveLength(12);
@@ -1043,6 +1045,40 @@ it("finds known working directories by name before the recent list limit and pre
   ] });
 });
 
+it("finds the literal spaced basename together with its normalized matches", async () => {
+  await run.request("plugin.assistant-mail.workspace.initialize", { workspacePath: run.workspace.path });
+  const recent = Array.from({ length: 12 }, (_, index) => join(root, `recent-${index}`, "Northstar"));
+  const label = process.platform === "win32" ? " Northstar" : " Northstar ";
+  const spaced = join(root, "older", label);
+  await Promise.all([...recent, spaced].map(cwd => mkdir(cwd, { recursive: true })));
+  run.sessions.unshift(...recent.map((cwd, index) => nativeSession(`plain-${index}`, { cwd })), nativeSession("spaced", { cwd: spaced }));
+
+  const { options } = await run.proposals.sessionCreateOptions("local-managed", { field: "cwd", name: label });
+  expect(options).toEqual([{ value: spaced, label }, ...recent.slice(0, 11).map(value => ({ value, label: "Northstar" }))]);
+});
+
+it("skips a recent directory when the containment check cannot access it", async () => {
+  await run.request("plugin.assistant-mail.workspace.initialize", { workspacePath: run.workspace.path });
+  const forbidden = join(root, "forbidden");
+  await mkdir(forbidden);
+  run.sessions.unshift(nativeSession("forbidden", { cwd: forbidden }), nativeSession("available", { cwd: root }));
+  vi.spyOn(run.workspace, "contains").mockRejectedValueOnce(Object.assign(new Error("Permission denied"), { code: "EACCES" }));
+
+  const { options } = await run.proposals.sessionCreateOptions("local-managed", { field: "cwd" });
+  expect(options.map(option => option.value)).not.toContain(forbidden);
+  expect(options.map(option => option.value)).toContain(root);
+});
+
+it("does not offer a removed managed descendant from a stale session", async () => {
+  await run.request("plugin.assistant-mail.workspace.initialize", { workspacePath: run.workspace.path });
+  const removed = join(run.workspace.path, "outputs", "removed-cwd");
+  run.sessions.unshift(nativeSession("removed-output", { cwd: removed }), nativeSession("available", { cwd: root }));
+
+  const { options } = await run.proposals.sessionCreateOptions("local-managed", { field: "cwd" });
+  expect(options.map(option => option.value)).not.toContain(removed);
+  expect(options.map(option => option.value)).toContain(root);
+});
+
 it("rejects managed paths and unavailable choices, then creates an empty Native session without changing its permissions", async () => {
   const { workspace, broker, proposals } = run;
   await run.request("plugin.assistant-mail.workspace.initialize", { workspacePath: workspace.path });
@@ -1051,6 +1087,13 @@ it("rejects managed paths and unavailable choices, then creates an empty Native 
   broker.capabilities.mockReturnValue(["session.create", "session.configure"]);
   const managedChild = join(workspace.path, "outputs");
   await mkdir(managedChild, { recursive: true });
+  const staleParent = join(root, "replaced-directory");
+  await writeFile(staleParent, "This used to be a directory.");
+  run.sessions.unshift(nativeSession("stale-catalog-cwd", { cwd: join(staleParent, "previous-cwd") }),
+    nativeSession("ordinary-managed-child", { cwd: managedChild }), nativeSession("ordinary-directory", { cwd: root }));
+  const { options } = await proposals.sessionCreateOptions("local-managed", { field: "cwd" });
+  expect(options.map(option => option.value)).not.toContain(managedChild);
+  expect(options.map(option => option.value)).toContain(root);
   const action = { kind: "session.create", cwd: root, projectId: null, model: "fixture-model" } as const;
   for (const invalid of [{ ...action, cwd: managedChild }, { ...action, cwd: "relative" },
     { ...action, projectId: "directory-project" }, { ...action, model: "missing-model" }]) {

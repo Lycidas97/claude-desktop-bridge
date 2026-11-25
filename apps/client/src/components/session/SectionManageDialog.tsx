@@ -1,8 +1,9 @@
-import type {
-  BridgeHostSnapshot,
-  BridgeProjectInfo,
-  BridgeSessionInfo,
-  SocketState,
+import {
+  ASSISTANT_SESSION_CREATE_PROPOSAL_CAPABILITY,
+  type BridgeHostSnapshot,
+  type BridgeProjectInfo,
+  type BridgeSessionInfo,
+  type SocketState,
 } from "@bridge/protocol";
 import { Eye, EyeOff, LoaderCircle, Pencil, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
@@ -116,7 +117,9 @@ export function useSectionManage({
   }, [state, targetProject]);
 
   function canManage(project: BridgeProjectInfo | undefined): boolean {
-    return Boolean(project?.kind === "desktop-group" && (supportsRename || supportsDelete));
+    return Boolean(project?.kind === "desktop-group" && (supportsRename || supportsDelete || (!project.managedAssistant
+      && snapshot?.host.capabilities.includes(ASSISTANT_SESSION_CREATE_PROPOSAL_CAPABILITY)
+      && snapshot.host.capabilities.includes("section.move.v1"))));
   }
 
   function shouldHideEmpty(project: BridgeProjectInfo | undefined, visibleSessionCount: number, query: string): boolean {
@@ -410,7 +413,8 @@ export function SectionManageDialog({
 
   return (
     <Sheet manageFocus={manageFocus} eyebrow={desktopName} title={targetProject.name} onClose={controller.close}>
-      <div className="m-group">
+      <p className="m-sheet-note" style={{ overflowWrap: "anywhere" }}><span>分组 ID · <bdi>{targetProject.projectId}</bdi></span></p>
+      {(supportsRename || supportsDelete) && <div className="m-group">
         {supportsRename && (
           <SheetAction
             icon={<Pencil size={19} />}
@@ -428,10 +432,10 @@ export function SectionManageDialog({
             onClick={controller.startConfirmDelete}
           />
         )}
-      </div>
+      </div>}
       {state.busy && <p className="m-sheet-note" role="status"><LoaderCircle className="is-spinning" size={15} />正在处理…</p>}
       {state.error && <p className="m-sheet-note is-error" role="alert">{state.error}</p>}
-      {!online && <p className="m-sheet-note" role="status">电脑已离线，连接后可管理分组。</p>}
+      {!online && (supportsRename || supportsDelete) && <p className="m-sheet-note" role="status">电脑已离线，连接后可管理分组。</p>}
     </Sheet>
   );
 }

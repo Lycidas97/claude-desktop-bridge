@@ -76,6 +76,24 @@ it("writes the exact project policy and bundled MCP launch, preserving templates
   }
 });
 
+it("adds attachment guidance to restored legacy instructions and preserves user text", async () => {
+  const provisioner = new WorkspaceProvisioner(options);
+  const workspace = await provisioner.prepare("saved-token");
+  const claude = join(workspace, "CLAUDE.md");
+  const existing = ["# 助理工作区", "旧工作区规则。", "",
+    "<!-- Bridge: managed rules -->", "@PROFILE.md", "",
+    "仅在用户确实要求修改长期规则时创建 memory.rule_upsert 提案。用户通过 Bridge 确认后由宿主写入 PROFILE.md。", "",
+    "# 用户规则", "每周一整理本周的日程。", ""].join("\r\n");
+  await writeFile(claude, existing);
+  await provisioner.restore("saved-token", workspace);
+  const updated = await readFile(claude, "utf8");
+  expect(updated).toContain(existing);
+  expect(updated).toContain("mail.download_attachment");
+  expect(updated).toContain("[下载报告](outputs/report.csv)");
+  await provisioner.restore("saved-token", workspace);
+  expect(await readFile(claude, "utf8")).toBe(updated);
+});
+
 it("restores read-only grants for the same binding and does not carry them to a new token", async () => {
   const provisioner = new WorkspaceProvisioner({ ...options, userDataPath: join(root, "bridge-data") });
   const directory = join(root, "Readable [QA]");
@@ -237,7 +255,10 @@ it("removes its CRLF profile import without changing surrounding project rules",
   await writeFile(join(path, "PROFILE.md"), "# User profile\n");
 
   await workspace.restore("saved-token", path);
-  expect(await readFile(claude, "utf8")).toBe(`${original.slice(0, index)}${marker}${suffix}`);
+  const attachments = "\r\n\r\n<!-- Bridge: managed mail attachments -->";
+  const next = await readFile(claude, "utf8");
+  expect(next.slice(0, next.indexOf(attachments))).toBe(`${original.slice(0, index)}${marker}${suffix}`);
+  expect(next.split(attachments)).toHaveLength(2);
 });
 
 it("restores Stage 1 mail and the tool guard when the optional profile cannot be read", async () => {

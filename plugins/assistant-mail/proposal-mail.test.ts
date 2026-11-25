@@ -11,7 +11,8 @@ import { AssistantMailService } from "./desktop.js";
 import { serveAssistantMailTools } from "./local-channel.js";
 import { ProposalExecutor } from "./proposal-executor.js";
 import { ProposalStore } from "./proposal-store.js";
-import type { submitSmtp } from "./smtp.js";
+import { submitSmtp } from "./smtp.js";
+import { simpleParser } from "mailparser";
 import { AssistantMailStore } from "./store.js";
 
 const account = { host: "imap.example.com", user: "reader@example.com", port: 993, enabled: true };
@@ -19,6 +20,7 @@ const accountKey = createHash("sha256").update(JSON.stringify([account.host, acc
 const channel = { host: "smtp.example.com", port: 465, security: "tls", user: "login", from: "writer@example.com", credential: "for-test-only" } as const;
 const draft = { kind: "mail.send", accountKey, to: ["first@example.net", "second@example.net"], cc: ["copy@example.org"],
   subject: "Draft", bodyText: "Draft body\r\nSecond line" } as const;
+const csvBytes = Buffer.from([0x63, 0x61, 0x66, 0xe9, 0x2c, 0x80]);
 const send = vi.fn<typeof submitSmtp>();
 const createClient = vi.fn<(options: ImapFlowOptions) => ImapFlow>();
 const vault = new Map<string, string>();
@@ -53,7 +55,10 @@ beforeEach(async () => {
     const original = await store.record({ accountKey, mailbox: "INBOX", uidValidity: "1", uid: 1, subject: "Original", from: [{ address: "sender@example.net" }],
       receivedAt: new Date().toISOString(), source: Buffer.from([
         "From: Sender <sender@EXAMPLE.NET>", "Reply-To: another@example.net, other@foreign.example.org", "Subject: Original",
-        "Message-ID: <current@example.net>", "References: <parent@example.net>", "", "Original body",
+        "Message-ID: <current@example.net>", "References: <parent@example.net>", 'Content-Type: multipart/mixed; boundary="mail"', "",
+        "--mail", "Content-Type: text/plain", "", "Original body",
+        "--mail", "Content-Type: text/csv; charset=windows-1252", "Content-Disposition: attachment; filename=names.csv",
+        "Content-Transfer-Encoding: base64", "", csvBytes.toString("base64"), "--mail--", "",
       ].join("\r\n")) });
     originalId = original!.mailRefId;
     await writeFile(join(store.directory, "accounts.json"), JSON.stringify([account]));
@@ -149,6 +154,47 @@ it("sends only the reviewed output bytes and refuses legacy confirmation or chan
   await expect(executor.commit({ ...ref, confirmMail: true, confirmMailAttachments: true }, "phone")).resolves.toMatchObject({ state: "executing" });
   await executor.close();
   expect(send.mock.calls[0]?.[2]).toMatchObject({ attachmentContents: [{ filename: "report.csv", content }] });
+});
+
+it("stores an SMTP binding that an older host refuses before claiming an attachment draft", async () => {
+  const action = { ...draft, to: [...draft.to], cc: [...draft.cc] };
+  const attachment = (await mail.readEvent(originalId))!.attachments[0]!;
+  const plain = await executor.create("bound", action);
+  const attached = await executor.create("bound", { ...action, attachments: [{ mailRefId: originalId, attachmentId: attachment.attachmentId }] });
+  const currentVersion = mail.smtpAccount(accountKey)!.smtp.version;
+  // The older executor compares the persisted channelVersion with the configured UUID before claiming.
+  expect(ledger.requirePending(plain).intent).toMatchObject({ backend: "smtp", channelVersion: currentVersion });
+  expect(ledger.requirePending(attached).intent).toMatchObject({ backend: "smtp", channelVersion: `mail-attachments.v1:${currentVersion}` });
+  const edited = await executor.revise(attached, { ...action, subject: "Revised" });
+  expect(ledger.requirePending(edited).intent).toMatchObject({ backend: "smtp", channelVersion: `mail-attachments.v1:${currentVersion}` });
+  expect(db.prepare("SELECT * FROM proposal_executions").all()).toEqual([]);
+});
+
+it("binds the declared charset to the review and preserves it with the original bytes in SMTP", async () => {
+  const attachment = (await mail.readEvent(originalId))!.attachments[0]!;
+  const ref = await executor.create("bound", { ...draft, to: [...draft.to], cc: [...draft.cc],
+    attachments: [{ mailRefId: originalId, attachmentId: attachment.attachmentId }] });
+  expect(executor.pending(ref).action).toMatchObject({ attachments: [{ filename: "names.csv", mimeType: "text/csv", charset: "windows-1252" }] });
+  const approval = { ...ref, confirmMail: true, confirmMailAttachments: true } as const;
+  vi.spyOn(mail, "attachment").mockReturnValueOnce({ ...attachment, charset: "utf-8" });
+  await expect(executor.commit(approval, "desktop")).rejects.toMatchObject({ code: "CONFLICT" });
+  expect(db.prepare("SELECT * FROM send_attempts").all()).toEqual([]);
+
+  const fileSentCopy = vi.spyOn(mail, "fileSentCopy").mockResolvedValueOnce("filed");
+  let sentSource: Buffer | undefined;
+  send.mockImplementationOnce((smtp, password, message, id) => submitSmtp(smtp, password, message, id,
+    () => ({ async sendMail({ raw }) {
+      sentSource = raw as Buffer;
+      const parsed = await simpleParser(sentSource);
+      expect(parsed.attachments).toHaveLength(1);
+      expect(parsed.attachments[0]!.headers.get("content-type")).toMatchObject({ value: "text/csv", params: { charset: "windows-1252" } });
+      expect(parsed.attachments[0]!.content).toEqual(csvBytes);
+      return { accepted: message.to, rejected: [] } as never;
+    }, close() {} })));
+  await expect(executor.commit(approval, "desktop")).resolves.toMatchObject({ state: "executing" });
+  await executor.close();
+  expect(db.prepare("SELECT state FROM proposal_executions").get()).toEqual({ state: "applied" });
+  expect(fileSentCopy).toHaveBeenCalledExactlyOnceWith(accountKey, expect.any(String), sentSource);
 });
 
 it.each([{ state: "applied", accepted: [...draft.to, ...draft.cc], rejected: [] },

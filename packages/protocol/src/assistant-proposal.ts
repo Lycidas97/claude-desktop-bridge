@@ -26,7 +26,7 @@ export type MemoryRuleProposalAction = {
 
 export const ASSISTANT_MAIL_PROPOSAL_ATTACHMENTS_CAPABILITY = "assistant.proposal.mail-attachments.v1";
 export type MailAttachmentSelection = BridgeMailAttachmentRef | { outputPath: string };
-export type MailProposalAttachment = { filename: string; mimeType: string; size: number; sha256: string };
+export type MailProposalAttachment = { filename: string; mimeType: string; charset?: string; size: number; sha256: string };
 
 type MailDraftFields = { accountKey: string; cc?: string[] | undefined; replyTo?: string | undefined; bodyText: string;
   attachments?: MailAttachmentSelection[] | undefined };

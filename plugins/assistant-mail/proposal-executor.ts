@@ -12,7 +12,7 @@ import { canonicalCalendarBody, proposalCalendarBody } from "./proposal-ical.js"
 import { ProposalStore, publicProposal, type ProposalPayload, type StoredProposal } from "./proposal-store.js";
 import type { AssistantMailService } from "./desktop.js";
 import type { SessionCreateOptionsQuery } from "./proposal-contract.js";
-import { freezeMailDraft, loadMailAttachments } from "./proposal-mail.js";
+import { freezeMailDraft, loadMailAttachments, smtpProposalChannelVersion } from "./proposal-mail.js";
 import { submitSmtp, type SmtpMessage, type SmtpResult } from "./smtp.js";
 
 export const ASSISTANT_SESSION_SEND_KEY_PREFIX = "assistant-session-proposal:";
@@ -88,6 +88,7 @@ export class ProposalExecutor extends EventEmitter {
       if (sessionId === undefined && current.intent.backend === "smtp" && current.intent.attachmentSources &&
         payload.intent.backend === "smtp" && "accountKey" in payload.action && "accountKey" in current.action) {
         payload.intent.attachmentSources = current.intent.attachmentSources;
+        payload.intent.channelVersion = smtpProposalChannelVersion(payload.intent.channelVersion, true);
         payload.action.attachments = current.action.attachments!;
       }
       return this.store.insert(current.sessionId, current.proposalId, current.revision + 1, { ...payload,
@@ -135,11 +136,12 @@ export class ProposalExecutor extends EventEmitter {
       if (!ref.confirmMail || !ref.confirmMailAttachments) throw new AssistantError("INVALID_PARAMS", "请在支持附件的 Bridge 中核对并发送。");
       const reviewed = pending.action.attachments!;
       const loaded = await loadMailAttachments(this.mailService(), pending.sessionId, pending.intent.attachmentSources);
-      if (loaded.some(({ filename, mimeType, size, sha256 }, index) => {
+      if (loaded.some(({ filename, mimeType, charset, size, sha256 }, index) => {
         const expected = reviewed[index]!;
-        return filename !== expected.filename || mimeType !== expected.mimeType || size !== expected.size || sha256 !== expected.sha256;
+        return filename !== expected.filename || mimeType !== expected.mimeType || charset !== expected.charset || size !== expected.size || sha256 !== expected.sha256;
       })) throw new AssistantError("CONFLICT", "附件已变化，请让助理修订提案后重新核对。");
-      attachmentContents = loaded.map(({ filename, mimeType, content }) => ({ filename, contentType: mimeType, content }));
+      attachmentContents = loaded.map(({ filename, mimeType, charset, content }) => ({ filename,
+        contentType: charset ? `${mimeType}; charset="${charset}"` : mimeType, content }));
     }
     if (pending.action.kind === "session.create") {
       if (!ref.confirmSessionCreate) throw new AssistantError("INVALID_PARAMS", "请在支持新建会话提案的 Bridge 中核对并确认。");
@@ -182,7 +184,7 @@ export class ProposalExecutor extends EventEmitter {
       if (proposal.intent.backend === "smtp" && "accountKey" in proposal.action) {
         if (!ref.confirmMail) throw new AssistantError("INVALID_PARAMS", "请在发信确认抽屉中核对并发送。");
         const account = this.mailService().smtpAccount(proposal.action.accountKey);
-        if (!account || account.smtp.version !== proposal.intent.channelVersion) {
+        if (!account || smtpProposalChannelVersion(account.smtp.version, Boolean(proposal.intent.attachmentSources)) !== proposal.intent.channelVersion) {
           throw new AssistantError("CONFLICT", "发信账号已更改或停用。请调整提案后重新核对。");
         }
         const messageId = `<${proposal.proposalId}.${proposal.revision}@${proposal.action.from.split("@")[1]}>`;

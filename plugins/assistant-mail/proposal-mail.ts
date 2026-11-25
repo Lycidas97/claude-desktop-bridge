@@ -7,7 +7,7 @@ import { isMissingPath, withinPath } from "./fs-guard.js";
 import { attachmentName, MailAttachmentError } from "./mime.js";
 import { domainToASCII } from "node:url";
 import { MailParser, type EmailAddress, type Headers, type HeaderValue } from "mailparser";
-import type { MailAttachmentSelection, MailProposalAction, MailProposalDraft } from "../../packages/protocol/src/assistant-proposal.js";
+import type { MailAttachmentSelection, MailProposalAction, MailProposalAttachment, MailProposalDraft } from "../../packages/protocol/src/assistant-proposal.js";
 import { AssistantError } from "./assistant-error.js";
 import type { AssistantMailService } from "./desktop.js";
 import { mailbox } from "./account-contract.js";
@@ -47,12 +47,18 @@ function readHeaders(source: Readable): Promise<Headers> {
 
 const validMessageId = /^<[^\s<>@]+@[^\s<>@]+>$/u;
 
+export function smtpProposalChannelVersion(version: string, hasAttachments: boolean): string {
+  // Older hosts compare this field to the account UUID before claiming a send.
+  return hasAttachments ? `mail-attachments.v1:${version}` : version;
+}
+
 export async function loadMailAttachments(mail: AssistantMailService, sessionId: string, sources: readonly MailAttachmentSelection[]) {
-  const attachments: { filename: string; mimeType: string; content: Buffer; size: number; sha256: string }[] = [];
+  const attachments: (MailProposalAttachment & { content: Buffer })[] = [];
   let remaining = ARTIFACT_MAX_BYTES;
   for (const source of sources) {
     let filename: string;
     let mimeType = "application/octet-stream";
+    let charset: string | undefined;
     let content: Buffer;
     try {
       if ("outputPath" in source) {
@@ -70,7 +76,7 @@ export async function loadMailAttachments(mail: AssistantMailService, sessionId:
         content = await readFile(path);
         filename = attachmentName(basename(source.outputPath), "output");
       } else {
-        ({ filename, mimeType } = mail.attachment(source));
+        ({ filename, mimeType, charset } = mail.attachment(source));
         content = await mail.attachmentBytes(source, remaining);
       }
     } catch (error) {
@@ -82,7 +88,7 @@ export async function loadMailAttachments(mail: AssistantMailService, sessionId:
     }
     remaining -= content.length;
     if (remaining < 0) throw new AssistantError("INVALID_PARAMS", "邮件附件合计不能超过 20 MiB。");
-    attachments.push({ filename, mimeType, content, size: content.length, sha256: createHash("sha256").update(content).digest("hex") });
+    attachments.push({ filename, mimeType, ...(charset ? { charset } : {}), content, size: content.length, sha256: createHash("sha256").update(content).digest("hex") });
   }
   return attachments;
 }
@@ -124,8 +130,9 @@ export async function freezeMailDraft(mail: AssistantMailService, draft: MailPro
 
   const attachmentSources = draft.attachments?.length ? draft.attachments : undefined;
   if (attachmentSources) {
-    action.attachments = (await loadMailAttachments(mail, sessionId, attachmentSources)).map(({ filename, mimeType, size, sha256 }) => ({ filename, mimeType, size, sha256 }));
+    action.attachments = (await loadMailAttachments(mail, sessionId, attachmentSources)).map(({ content: _content, ...metadata }) => metadata);
   }
   return { action, sourceId: draft.accountKey, sourceLabel: account.label,
-    intent: { backend: "smtp", channelVersion: account.smtp.version, ...(attachmentSources ? { attachmentSources } : {}) } };
+    intent: { backend: "smtp", channelVersion: smtpProposalChannelVersion(account.smtp.version, Boolean(attachmentSources)),
+      ...(attachmentSources ? { attachmentSources } : {}) } };
 }

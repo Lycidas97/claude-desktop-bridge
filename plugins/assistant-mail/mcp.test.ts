@@ -681,8 +681,8 @@ it("allows only the managed token to draft proposals and passes its bound sessio
   expect(await (await post(options, managedToken)).json()).toMatchObject({ source: { authorizesActions: false },
     result: { options: [{ value: "fixture-model", label: "Fixture model" }] } });
   expect(proposals.sessionCreateOptions).toHaveBeenCalledExactlyOnceWith("local_fixture", { field: "model" });
-  expect((await post({ ...options, arguments: { field: "cwd", name: "Northstar" } }, managedToken)).status).toBe(200);
-  expect(proposals.sessionCreateOptions).toHaveBeenLastCalledWith("local_fixture", { field: "cwd", name: "Northstar" });
+  expect((await post({ ...options, arguments: { field: "cwd", name: " Northstar " } }, managedToken)).status).toBe(200);
+  expect(proposals.sessionCreateOptions).toHaveBeenLastCalledWith("local_fixture", { field: "cwd", name: " Northstar " });
   expect((await post({ ...options, arguments: { field: "model", name: "Northstar" } }, managedToken)).status).toBe(400);
   expect((await post({ name: "proposal.create", arguments: { action: createAction } })).status).toBe(403);
   for (const action of [{ ...createAction, cwd: undefined }, { ...createAction, projectId: undefined },

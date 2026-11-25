@@ -257,7 +257,7 @@ function SessionProposalSheet({ proposal, hostName, mobile, onClose, confirmatio
         {create ? <>
           {action.title && <><dt>标题</dt><dd>{action.title}</dd></>}
           <dt>工作目录</dt><dd><bdi>{action.cwd}</bdi></dd>
-          <dt>分组</dt><dd>{sessionCreateTarget?.projectName}</dd>
+          <dt>分组</dt><dd>{sessionCreateTarget?.projectName}{action.projectId !== null && <> · <bdi>{action.projectId}</bdi></>}</dd>
           <dt>模型</dt><dd>{sessionCreateTarget?.modelName}</dd>
           {sessionCreation?.sessionId && <><dt>会话 ID</dt><dd><bdi>{sessionCreation.sessionId}</bdi></dd></>}
         </> : <>

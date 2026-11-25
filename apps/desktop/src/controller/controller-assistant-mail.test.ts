@@ -1043,6 +1043,16 @@ it("finds known working directories by name before the recent list limit and pre
   ] });
 });
 
+it("finds the literal spaced basename together with its normalized matches", async () => {
+  await run.request("plugin.assistant-mail.workspace.initialize", { workspacePath: run.workspace.path });
+  const recent = Array.from({ length: 12 }, (_, index) => join(root, `recent-${index}`, "Northstar"));
+  const spaced = join(root, "older", " Northstar ");
+  run.sessions.unshift(...recent.map((cwd, index) => nativeSession(`plain-${index}`, { cwd })), nativeSession("spaced", { cwd: spaced }));
+
+  const { options } = await run.proposals.sessionCreateOptions("local-managed", { field: "cwd", name: " Northstar " });
+  expect(options).toEqual([{ value: spaced, label: " Northstar " }, ...recent.slice(0, 11).map(value => ({ value, label: "Northstar" }))]);
+});
+
 it("rejects managed paths and unavailable choices, then creates an empty Native session without changing its permissions", async () => {
   const { workspace, broker, proposals } = run;
   await run.request("plugin.assistant-mail.workspace.initialize", { workspacePath: workspace.path });
@@ -1051,6 +1061,13 @@ it("rejects managed paths and unavailable choices, then creates an empty Native 
   broker.capabilities.mockReturnValue(["session.create", "session.configure"]);
   const managedChild = join(workspace.path, "outputs");
   await mkdir(managedChild, { recursive: true });
+  const staleParent = join(root, "replaced-directory");
+  await writeFile(staleParent, "This used to be a directory.");
+  run.sessions.unshift(nativeSession("stale-catalog-cwd", { cwd: join(staleParent, "previous-cwd") }),
+    nativeSession("ordinary-managed-child", { cwd: managedChild }), nativeSession("ordinary-directory", { cwd: root }));
+  const { options } = await proposals.sessionCreateOptions("local-managed", { field: "cwd" });
+  expect(options.map(option => option.value)).not.toContain(managedChild);
+  expect(options.map(option => option.value)).toContain(root);
   const action = { kind: "session.create", cwd: root, projectId: null, model: "fixture-model" } as const;
   for (const invalid of [{ ...action, cwd: managedChild }, { ...action, cwd: "relative" },
     { ...action, projectId: "directory-project" }, { ...action, model: "missing-model" }]) {

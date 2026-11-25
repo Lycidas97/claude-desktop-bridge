@@ -27,9 +27,28 @@ export function assistantSessionProposalBackend(
           ...(broker.capabilities().includes("section.move") ? sections().map(({ projectId, name }) => ({ value: projectId, label: name })) : []),
         ];
         const name = query.name?.toLowerCase();
-        return [...new Set(broker.listSessions().filter(session => !session.archivedAt && !session.sidechat)
-          .map(session => session.cwd).filter(cwd => isAbsolute(cwd) && !isAssistantWorkspace(cwd)))].map(value => ({ value, label: basename(value) || value }))
-          .filter(option => name === undefined || option.label.toLowerCase() === name).slice(0, 12);
+        const normalized = name?.trim();
+        const exact = [];
+        const alternatives = [];
+        for (const value of new Set(broker.listSessions().filter(session => !session.archivedAt && !session.sidechat)
+          .map(session => session.cwd).filter(cwd => isAbsolute(cwd) && !isAssistantWorkspace(cwd)))) {
+          const label = basename(value) || value;
+          const folded = label.toLowerCase();
+          if (name === undefined || folded === name) exact.push({ value, label });
+          else if (folded.trim() === normalized) alternatives.push({ value, label });
+        }
+        const options = [];
+        for (const option of [...exact, ...alternatives]) {
+          try {
+            if (await insideAssistantWorkspace(option.value)) continue;
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "ENOTDIR") continue;
+            throw error;
+          }
+          options.push(option);
+          if (options.length === 12) break;
+        }
+        return options;
       },
       async prepare(action) {
         const capabilities = broker.capabilities();

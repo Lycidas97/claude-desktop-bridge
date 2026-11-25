@@ -32,6 +32,10 @@ it.each([
   const messages: string[] = [];
   let stoppedAt: "MAIL FROM" | "DATA" | "STARTTLS" | undefined;
   const server = createServer(socket => {
+    // A peer reset already closes the socket and should not escape the fixture.
+    socket.on("error", (error: NodeJS.ErrnoException) => {
+      if (error.code !== "ECONNRESET") throw error;
+    });
     let buffered = "";
     let data: string[] | undefined;
     socket.setEncoding("utf8");

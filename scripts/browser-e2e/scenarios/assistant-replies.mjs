@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { eventually, openMobileDrawer } from "../helpers.mjs";
 
@@ -224,4 +225,43 @@ export async function verifyAssistantReplies(page, host, steps, directory, serve
   await longReply.getByText("这是一条长回复的结尾。", { exact: true }).waitFor();
   assert.match(await longReply.locator("time").innerText(), /^\d{2}:\d{2}$/u, "Today's replies show only the local time");
   steps.push("A long reply keeps the existing inline expansion and one timestamp for the whole message");
+
+  const files = [
+    ["summary.eml", "邮件", "Subject: Fixture\r\n\r\nAssistant output\r\n"],
+    ["schedule.ics", "日历", "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR\r\n"],
+    ["summary.txt", "摘要", "Assistant output\n"],
+  ];
+  await mkdir(resolve(host.nativeApproval.harnessCwd, "outputs"));
+  for (const [name, , text] of files) await writeFile(resolve(host.nativeApproval.harnessCwd, "outputs", name), text);
+  const outputReplyId = "assistant-output-reply";
+  await host.emit("assistant.completed", {
+    text: files.map(([name, label]) => `[下载${label}](outputs/${name})`).join(" · ") + " · [其他邮件](summary.eml)",
+  }, { itemId: outputReplyId });
+  const outputReply = stream.locator(`[data-stream-key="${outputReplyId}"]`);
+  await outputReply.waitFor();
+  for (const [name, label, text] of files) {
+    const button = outputReply.getByRole("button", { name: `下载${label}`, exact: true });
+    assert.equal(await button.count(), 1, `The assistant reply renders a download button for ${name}`);
+    assert.equal(await button.getAttribute("title"), `下载 outputs/${name}`);
+    assert.equal(await button.locator(".lucide-download").count(), 1);
+    const before = host.requests.length;
+    await button.click();
+    const prompt = page.getByRole("alertdialog", { name: "确认下载远程文件到手机？", exact: true });
+    await prompt.waitFor();
+    if (name === "summary.eml") await page.screenshot({ path: resolve(directory, "assistant-output-download.png"), animations: "disabled" });
+    assert.equal(host.requests.slice(before).some(request => request.method === "artifact.transfer.open"), false);
+    const downloadEvent = page.waitForEvent("download");
+    await prompt.getByRole("button", { name: "确认下载", exact: true }).click();
+    const download = await downloadEvent;
+    assert.equal(download.suggestedFilename(), name);
+    assert.deepEqual(await readFile(await download.path()), Buffer.from(text));
+    const opens = host.requests.slice(before).filter(request => request.method === "artifact.transfer.open");
+    assert.equal(opens.length, 1);
+    const { sessionId: transferSession, path, resolveRelativeLink, purpose } = opens[0].params;
+    assert.deepEqual({ transferSession, path, resolveRelativeLink, purpose }, {
+      transferSession: sessionId, path: `outputs/${name}`, resolveRelativeLink: true, purpose: undefined,
+    });
+  }
+  assert.equal(await outputReply.getByRole("button", { name: "其他邮件", exact: true }).count(), 0);
+  steps.push("Explicit assistant output links download original EML, ICS and text bytes after confirmation");
 }

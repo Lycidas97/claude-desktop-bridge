@@ -1,6 +1,6 @@
 import { AlertTriangle } from "lucide-react";
 import { useState } from "react";
-import { mediaKind } from "../../lib/media-preview.js";
+import { isAssistantOutputPath, mediaKind } from "../../lib/media-preview.js";
 import { ConfirmationDialog } from "../common/ConfirmationDialog.js";
 import { useMediaPreview } from "../evidence/MediaPreviewProvider.js";
 
@@ -25,12 +25,12 @@ export function useSessionFileDownload(
     if (!fileDownloadBusy) setPendingFileDownload(undefined);
   }
 
-  function isAssistantOutput(path: string): boolean {
-    return saveAssistantOutputs && /^(?:\.\/)?outputs\//u.test(path);
+  function shouldSave(path: string): boolean {
+    return saveAssistantOutputs && isAssistantOutputPath(path);
   }
 
   function openFile(filePath: string): void {
-    const kind = isAssistantOutput(filePath) ? undefined : mediaKind(filePath);
+    const kind = shouldSave(filePath) ? undefined : mediaKind(filePath);
     if (kind) {
       openMedia({
         name: filePath.split(/[\\/]/u).at(-1) || filePath,
@@ -72,7 +72,7 @@ export function useSessionFileDownload(
           if (!pendingFileDownload || !onDownloadSessionFile || fileDownloadBusy) return;
           setFileDownloadBusy(true);
           setFileDownloadError(undefined);
-          void onDownloadSessionFile(sessionId, pendingFileDownload.path, pendingFileDownload.resolveRelativeLink, isAssistantOutput(pendingFileDownload.path) ? true : undefined)
+          void onDownloadSessionFile(sessionId, pendingFileDownload.path, pendingFileDownload.resolveRelativeLink, shouldSave(pendingFileDownload.path) ? true : undefined)
             .then(() => {
               setPendingFileDownload(undefined);
             })

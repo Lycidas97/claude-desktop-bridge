@@ -1011,6 +1011,7 @@ export function ConversationView({
             onRewind={(messageId) => setRewindTarget({ sessionId: session.sessionId, messageId })}
             onResolveUncertain={onResolveUncertain}
             {...(onDownloadSessionFile ? { onFileClick: files.openFile } : {})}
+            assistantOutputLinks={isAssistant && item.role === "assistant" ? (isMobile ? "download" : "open") : undefined}
             interactivePrompt={interactivePrompt}
           />
         );

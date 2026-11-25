@@ -153,7 +153,7 @@ export interface ConversationViewProps {
   resolveMailRefId?: (() => string | undefined) | undefined;
   onOpenSession(sessionId: string): Promise<void>;
   onLoadOlderHistory(sessionId: string): Promise<void>;
-  onDownloadSessionFile?: ((sessionId: string, filePath: string, resolveRelativeLink?: true) => Promise<void>) | undefined;
+  onDownloadSessionFile?: ((sessionId: string, filePath: string, resolveRelativeLink?: true, save?: true) => Promise<void>) | undefined;
   onUploadFile?: UploadFileHandler | undefined;
   onSendTurn(
     sessionId: string,
@@ -274,7 +274,7 @@ export function ConversationView({
   const { text, attachments, sending, imageError } = draft;
   const files = useSessionFileDownload(
     session.sessionId, isMobile, onDownloadSessionFile,
-    snapshot?.host.capabilities.includes("artifact.transfer.relative-link.v1") ?? false,
+    snapshot?.host.capabilities.includes("artifact.transfer.relative-link.v1") ?? false, isAssistant && isMobile,
   );
 
   const [internalSessionView, setInternalSessionView] = useState<"conversation" | "evidence">("conversation");
@@ -1011,6 +1011,7 @@ export function ConversationView({
             onRewind={(messageId) => setRewindTarget({ sessionId: session.sessionId, messageId })}
             onResolveUncertain={onResolveUncertain}
             {...(onDownloadSessionFile ? { onFileClick: files.openFile } : {})}
+            assistantOutputLinks={isAssistant && item.role === "assistant" ? (isMobile ? "download" : "open") : undefined}
             interactivePrompt={interactivePrompt}
           />
         );

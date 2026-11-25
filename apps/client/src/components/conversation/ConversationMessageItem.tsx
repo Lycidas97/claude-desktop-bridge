@@ -4,7 +4,7 @@ import { useAssistantMail } from "../assistant/AssistantMailProvider.js";
 import { SentMailReference } from "../assistant/SentMailReference.js";
 import { deliveryLabel, formatReplyTime, formatTime, isQueuedConversationMessage, type ConversationItem } from "../../lib/conversation-timeline.js";
 import { desktopRuntimeId } from "../../lib/runtime-labels.js";
-import { MarkdownText } from "../common/MarkdownText.js";
+import { MarkdownText, type AssistantOutputLinkMode } from "../common/MarkdownText.js";
 import { MessageCopyButton } from "../common/MessageCopyButton.js";
 import { ImageAttachment } from "../evidence/ImageAttachment.js";
 import { TaskPlanCard } from "./TaskPlanCard.js";
@@ -34,6 +34,7 @@ export interface ConversationMessageItemProps {
   onRewind?: ((messageId: string) => void) | undefined;
   onResolveUncertain?: ((commandId: string, action: "confirm" | "retry") => void | Promise<void>) | undefined;
   onFileClick?: ((filePath: string) => void) | undefined;
+  assistantOutputLinks?: AssistantOutputLinkMode | undefined;
   interactivePrompt?: ReactNode;
 }
 
@@ -56,6 +57,7 @@ export function ConversationMessageItem({
   onRewind,
   onResolveUncertain,
   onFileClick,
+  assistantOutputLinks,
   interactivePrompt,
 }: ConversationMessageItemProps) {
   const [actionsRevealed, setActionsRevealed] = useState(false);
@@ -109,6 +111,7 @@ export function ConversationMessageItem({
           <MarkdownText
             text={item.text}
             collapsible={!item.live}
+            assistantOutputLinks={assistantOutputLinks}
             {...(onFileClick ? { onFileClick } : {})}
           />
         ) : (

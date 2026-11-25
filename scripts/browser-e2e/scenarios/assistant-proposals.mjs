@@ -33,15 +33,18 @@ const mailCc = ["team@example.test", "archive@example.test"];
 export async function seedMailProposal(host) {
   const native = host.nativeApproval;
   const original = await native.assistantMail.deliver(1, Buffer.from([
-    "From: sender@example.test", "Reply-To: ops@outside.example.org", "Message-ID: <origin@example.test>", "",
-    "请确认周一安排。",
+    "From: sender@example.test", "Reply-To: ops@outside.example.org", "Message-ID: <origin@example.test>",
+    'Content-Type: multipart/mixed; boundary="review"', "", "--review", "Content-Type: text/plain; charset=utf-8", "", "请确认周一安排。",
+    "--review", "Content-Type: text/csv", 'Content-Disposition: attachment; filename="review-notes.csv"',
+    "Content-Transfer-Encoding: base64", "", Buffer.from("Item,Status\nReview,Ready\n").toString("base64"), "--review--", "",
   ].join("\r\n")));
   await native.controllerRequest(desktopFixtureRequest({ method: "plugin.assistant-mail.account.set-smtp", params: {
     accountKey: original.accountKey, smtp: { host: "smtp.example.test", port: 465, security: "tls", user: "fixture",
       from: "writer@example.test", credential: "for-test-only" },
   } }), "desktop");
   return (await native.draftProposal({ kind: "mail.reply", accountKey: original.accountKey, mailRefId: original.mailRefId,
-    subject: mailSubject, to: mailTo, cc: mailCc, bodyText: "周一 14:00 开始评审。\n请带上最新议程。" })).result;
+    subject: mailSubject, to: mailTo, cc: mailCc, bodyText: "周一 14:00 开始评审。\n请带上最新议程。",
+    attachments: [{ mailRefId: original.mailRefId, attachmentId: "2" }] })).result;
 }
 
 async function verifyMailMarkRead(phone, host, baseUrl, capture) {
@@ -275,7 +278,8 @@ export async function verifyAssistantProposals(page, host, steps, directory, vie
   const { attempts } = smtp;
   const mailRequest = (method, params) => host.nativeApproval.controllerRequest(desktopFixtureRequest({ method, params }), "desktop");
   assert.deepEqual((await mailRequest("assistant.proposal.list", {})).proposals, []);
-  await assert.rejects(mailRequest("assistant.proposal.commit", mail), { code: "INVALID_PARAMS" });
+  assert.ok(!(await mailRequest("assistant.proposal.list", { includeMail: true })).proposals.some(item => item.proposalId === mail.proposalId));
+  await assert.rejects(mailRequest("assistant.proposal.commit", { ...mail, confirmMail: true }), { code: "INVALID_PARAMS" });
   await page.locator(".assistant-page-mobile").getByRole("button", { name: "返回", exact: true }).click();
   await rows.getByRole("button", { name: new RegExp(mailSubject, "u") }).click();
   const commitsBeforeReview = host.requests.filter(request => request.method === "assistant.proposal.commit").length;
@@ -289,6 +293,7 @@ export async function verifyAssistantProposals(page, host, steps, directory, vie
     assert.equal(fields[1], "writer@example.test");
     assert.deepEqual(fields[3].split("\n"), to);
     assert.deepEqual(fields[4].split("\n"), mailCc);
+    await drawer.getByText("review-notes.csv", { exact: true }).waitFor();
     await drawer.getByText("原信的 Reply-To 来自不同域名").waitFor();
     assert.equal(await drawer.locator("[data-foreign='true']").getByText("ops@outside.example.org").count(), 1);
   };
@@ -343,6 +348,8 @@ export async function verifyAssistantProposals(page, host, steps, directory, vie
   const mailCommit = host.requests.find(request => request.method === "assistant.proposal.commit" && request.params.proposalId === mail.proposalId);
   assert.equal(mailCommit.params.revision, 2);
   assert.equal(mailCommit.params.confirmMail, true);
+  assert.equal(mailCommit.params.confirmMailAttachments, true);
+  assert.deepEqual(attempts[0].attachmentContents, [{ filename: "review-notes.csv", contentType: "text/csv", content: Buffer.from("Item,Status\nReview,Ready\n") }]);
   assert.notEqual(mailCommit.params.payloadHash, mail.payloadHash);
   await assert.rejects(mailRequest("assistant.proposal.commit", mailCommit.params), { code: "CONFLICT" });
   assert.deepEqual(attempts.map(({ from, to, cc, subject, bodyText }) => ({ from, to, cc, subject, bodyText })),

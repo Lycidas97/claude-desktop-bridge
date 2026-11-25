@@ -750,6 +750,27 @@ it("tells the managed MCP caller how to correct a rule deletion draft", async ()
   expect(proposals.create).toHaveBeenCalledExactlyOnceWith("local_fixture", action, expect.any(Function));
 }, 20_000);
 
+it("saves exact attachment bytes only through the current managed binding", async () => {
+  await channel!.close();
+  const workspace = join(root, "private", "assistant", "workspace");
+  await mkdir(workspace, { recursive: true });
+  service.setBinding({ assistantId: "assistant", nativeSessionId: "local_fixture", sectionId: null, previousSessionIds: [],
+    managed: { path: workspace, policy: "stage1-fenced-workspace", token: "active-managed-token", automaticDelivery: false } });
+  channel = await serveAssistantMailTools({ userDataPath: root, service,
+    authorizeManagedToken: token => token === service.binding()?.managed?.token ? "local_fixture" : undefined });
+  connection = MailToolConnection.parse(JSON.parse(await readFile(join(root, "private", "assistant", "mail-tools.json"), "utf8")));
+  const request = { name: "mail.download_attachment", arguments: { mailRefId: reference, attachmentId: "4" } };
+  const download = await post(request, "active-managed-token");
+  expect(download.status).toBe(200);
+  const saved = await download.json();
+  expect(saved).toMatchObject({ source: MAIL_SOURCE, result: { attachment: { filename: "names.csv", size: 6 } } });
+  expect(saved.result.path).toMatch(/^mail-attachments\/[\w-]+\/attachment\.csv$/u);
+  expect(await readFile(join(workspace, saved.result.path))).toEqual(Buffer.from([0x63, 0x61, 0x66, 0xe9, 0x2c, 0x80]));
+  expect((await post(request)).status).toBe(403);
+  expect((await post(request, "no-longer-bound")).status).toBe(403);
+  expect((await post({ ...request, arguments: { ...request.arguments, path: "elsewhere.csv" } }, "active-managed-token")).status).toBe(400);
+});
+
 it("exposes attachment metadata and reserves pure-text extraction for the active managed token", async () => {
   await channel!.close();
   channel = await serveAssistantMailTools({ userDataPath: root, service,
@@ -769,6 +790,8 @@ it("exposes attachment metadata and reserves pure-text extraction for the active
   expect(await read.json()).toEqual({ source: MAIL_SOURCE, result: { attachment: detail.result.attachments[0], text: "External memo text" } });
   const csv = await post({ name: "mail.read_attachment", arguments: { ...arguments_, attachmentId: "4" } }, "active-managed-token");
   expect(await csv.json()).toEqual({ source: MAIL_SOURCE, result: { attachment: detail.result.attachments[2], text: "café,€" } });
+  const continuation = await post({ name: "mail.read_attachment", arguments: { ...arguments_, attachmentId: "4", offset: 4 } }, "active-managed-token");
+  expect(await continuation.json()).toEqual({ source: MAIL_SOURCE, result: { attachment: detail.result.attachments[2], text: ",€" } });
   const unsupported = await post({ name: "mail.read_attachment", arguments: { ...arguments_, attachmentId: "3" } }, "active-managed-token");
   expect(await unsupported.json()).toEqual({ error: "MAIL_ATTACHMENT_UNSUPPORTED" });
   const invalid = await post({ name: "mail.read_attachment", arguments: { ...arguments_, path: "fixture.txt" } }, "active-managed-token");

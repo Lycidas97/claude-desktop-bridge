@@ -8,7 +8,9 @@ const limit = z.number().int().min(1).max(50).default(30);
 const cursor = z.string().regex(/^[1-9]\d*$/u).refine(value => Number.isSafeInteger(Number(value))).optional();
 
 const subject = z.string().trim().max(500).regex(/^[^\p{Cc}]*$/u);
+export const mailAttachmentRef = z.strictObject({ mailRefId: z.uuid(), attachmentId: z.string().max(128).regex(/^\d+(?:\.\d+)*$/u) });
 const mailDraft = {
+  attachments: z.array(z.union([mailAttachmentRef, z.strictObject({ outputPath: z.string().min(1).max(4096).regex(/^outputs\/[^\\\p{Cc}]+$/u) })])).max(10).optional(),
   accountKey: mailAccountKey,
   cc: z.array(mailbox).max(20).optional(),
   replyTo: mailbox.optional(),
@@ -61,10 +63,10 @@ export const sessionCreateOptions = z.strictObject({
 export type SessionCreateOptionsQuery = z.infer<typeof sessionCreateOptions>;
 const sessionVisibility = { includeSession: z.literal(true).optional(), includeSessionCreate: z.literal(true).optional() };
 export const proposalRequests = {
-  "assistant.proposal.list": listProposals.extend({ history: z.boolean().default(false), includeMail: z.literal(true).optional(), includeMemory: z.literal(true).optional(), ...sessionVisibility }),
-  "assistant.proposal.resolve": z.strictObject({ sessionId: z.string().min(1).max(512), refs: z.array(proposalRef).max(100), latestForReview: z.boolean().optional(), includeMail: z.literal(true).optional(), includeMemory: z.literal(true).optional(), ...sessionVisibility }),
+  "assistant.proposal.list": listProposals.extend({ history: z.boolean().default(false), includeMail: z.literal(true).optional(), includeMailAttachments: z.literal(true).optional(), includeMemory: z.literal(true).optional(), ...sessionVisibility }),
+  "assistant.proposal.resolve": z.strictObject({ sessionId: z.string().min(1).max(512), refs: z.array(proposalRef).max(100), latestForReview: z.boolean().optional(), includeMail: z.literal(true).optional(), includeMailAttachments: z.literal(true).optional(), includeMemory: z.literal(true).optional(), ...sessionVisibility }),
   "assistant.proposal.revise": reviseProposal,
-  "assistant.proposal.commit": proposalRef.extend({ confirmMail: z.literal(true).optional(), confirmMemory: z.literal(true).optional(), confirmSession: z.literal(true).optional(), confirmSessionCreate: z.literal(true).optional() }),
+  "assistant.proposal.commit": proposalRef.extend({ confirmMail: z.literal(true).optional(), confirmMailAttachments: z.literal(true).optional(), confirmMemory: z.literal(true).optional(), confirmSession: z.literal(true).optional(), confirmSessionCreate: z.literal(true).optional() }),
   "assistant.proposal.dismiss": proposalRef.extend({ includeMemory: z.literal(true).optional(), ...sessionVisibility }),
   "assistant.proposal.replan": z.strictObject({ ...proposalRef.shape, feedback: z.string().trim().min(1).max(4000) }),
 };

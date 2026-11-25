@@ -1,7 +1,13 @@
+import { createHash } from "node:crypto";
+import { lstat, readFile, realpath } from "node:fs/promises";
+import { basename, join } from "node:path";
 import type { Readable } from "node:stream";
+import { ARTIFACT_MAX_BYTES } from "../../packages/protocol/src/types.js";
+import { isMissingPath, withinPath } from "./fs-guard.js";
+import { attachmentName, MailAttachmentError } from "./mime.js";
 import { domainToASCII } from "node:url";
 import { MailParser, type EmailAddress, type Headers, type HeaderValue } from "mailparser";
-import type { MailProposalAction, MailProposalDraft } from "../../packages/protocol/src/assistant-proposal.js";
+import type { MailAttachmentSelection, MailProposalAction, MailProposalAttachment, MailProposalDraft } from "../../packages/protocol/src/assistant-proposal.js";
 import { AssistantError } from "./assistant-error.js";
 import type { AssistantMailService } from "./desktop.js";
 import { mailbox } from "./account-contract.js";
@@ -41,7 +47,53 @@ function readHeaders(source: Readable): Promise<Headers> {
 
 const validMessageId = /^<[^\s<>@]+@[^\s<>@]+>$/u;
 
-export async function freezeMailDraft(mail: AssistantMailService, draft: MailProposalDraft): Promise<ProposalPayload> {
+export function smtpProposalChannelVersion(version: string, hasAttachments: boolean): string {
+  // Older hosts compare this field to the account UUID before claiming a send.
+  return hasAttachments ? `mail-attachments.v1:${version}` : version;
+}
+
+export async function loadMailAttachments(mail: AssistantMailService, sessionId: string, sources: readonly MailAttachmentSelection[]) {
+  const attachments: (MailProposalAttachment & { content: Buffer })[] = [];
+  let remaining = ARTIFACT_MAX_BYTES;
+  for (const source of sources) {
+    let filename: string;
+    let mimeType = "application/octet-stream";
+    let charset: string | undefined;
+    let content: Buffer;
+    try {
+      if ("outputPath" in source) {
+        const binding = mail.binding();
+        if (binding?.nativeSessionId !== sessionId || !binding.managed || source.outputPath.split("/").includes("..")) {
+          throw new AssistantError("CONFLICT", "产物不在当前助理的 outputs/ 中。");
+        }
+        const workspace = await realpath(binding.managed.path);
+        const root = join(workspace, "outputs");
+        const path = await realpath(join(workspace, source.outputPath));
+        if (!(await lstat(root)).isDirectory() || !withinPath(root, path)) throw new AssistantError("CONFLICT", "产物不在当前助理的 outputs/ 中。");
+        const info = await lstat(path);
+        if (!info.isFile() || info.nlink !== 1) throw new AssistantError("CONFLICT", "产物必须是工作区内的普通文件。");
+        if (info.size > remaining) throw new AssistantError("INVALID_PARAMS", "邮件附件合计不能超过 20 MiB。");
+        content = await readFile(path);
+        filename = attachmentName(basename(source.outputPath), "output");
+      } else {
+        ({ filename, mimeType, charset } = mail.attachment(source));
+        content = await mail.attachmentBytes(source, remaining);
+      }
+    } catch (error) {
+      if (error instanceof MailAttachmentError || isMissingPath(error)) {
+        throw new AssistantError(error instanceof MailAttachmentError && error.code === "MAIL_ATTACHMENT_TOO_LARGE" ? "INVALID_PARAMS" : "CONFLICT",
+          error instanceof MailAttachmentError ? error.message : "附件文件找不到了，请修订提案。");
+      }
+      throw error;
+    }
+    remaining -= content.length;
+    if (remaining < 0) throw new AssistantError("INVALID_PARAMS", "邮件附件合计不能超过 20 MiB。");
+    attachments.push({ filename, mimeType, ...(charset ? { charset } : {}), content, size: content.length, sha256: createHash("sha256").update(content).digest("hex") });
+  }
+  return attachments;
+}
+
+export async function freezeMailDraft(mail: AssistantMailService, draft: MailProposalDraft, sessionId: string): Promise<ProposalPayload> {
   const original = draft.kind === "mail.reply" ? mail.replySource(draft.accountKey, draft.mailRefId) : undefined;
   const headers = original && await readHeaders(original.source);
   const account = mail.smtpAccount(draft.accountKey);
@@ -76,5 +128,11 @@ export async function freezeMailDraft(mail: AssistantMailService, draft: MailPro
       ...(inReplyTo ? { inReplyTo } : {}), ...(references.length ? { references } : {}) };
   } else action = { ...message, kind: draft.kind };
 
-  return { action, sourceId: draft.accountKey, sourceLabel: account.label, intent: { backend: "smtp", channelVersion: account.smtp.version } };
+  const attachmentSources = draft.attachments?.length ? draft.attachments : undefined;
+  if (attachmentSources) {
+    action.attachments = (await loadMailAttachments(mail, sessionId, attachmentSources)).map(({ content: _content, ...metadata }) => metadata);
+  }
+  return { action, sourceId: draft.accountKey, sourceLabel: account.label,
+    intent: { backend: "smtp", channelVersion: smtpProposalChannelVersion(account.smtp.version, Boolean(attachmentSources)),
+      ...(attachmentSources ? { attachmentSources } : {}) } };
 }

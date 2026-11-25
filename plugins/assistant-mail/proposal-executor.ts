@@ -12,8 +12,8 @@ import { canonicalCalendarBody, proposalCalendarBody } from "./proposal-ical.js"
 import { ProposalStore, publicProposal, type ProposalPayload, type StoredProposal } from "./proposal-store.js";
 import type { AssistantMailService } from "./desktop.js";
 import type { SessionCreateOptionsQuery } from "./proposal-contract.js";
-import { freezeMailDraft } from "./proposal-mail.js";
-import { submitSmtp, type SmtpResult } from "./smtp.js";
+import { freezeMailDraft, loadMailAttachments, smtpProposalChannelVersion } from "./proposal-mail.js";
+import { submitSmtp, type SmtpMessage, type SmtpResult } from "./smtp.js";
 
 export const ASSISTANT_SESSION_SEND_KEY_PREFIX = "assistant-session-proposal:";
 const sessionSendKey = (ref: ProposalRevisionRef) => `${ASSISTANT_SESSION_SEND_KEY_PREFIX}${ref.proposalId}:${ref.revision}`;
@@ -66,7 +66,7 @@ export class ProposalExecutor extends EventEmitter {
   async create(sessionId: string, action: ProposalDraftAction, assertAuthorized?: () => void): Promise<ProposalRevisionRef> {
     const id = randomUUID();
     const payload = action.kind === "session.create" || "targetSessionId" in action ? await this.freezeSession(action, sessionId)
-      : "accountKey" in action ? await freezeMailDraft(this.mailService(), action) : this.freeze(action, id, sessionId);
+      : "accountKey" in action ? await freezeMailDraft(this.mailService(), action, sessionId) : this.freeze(action, id, sessionId);
     assertAuthorized?.();
     const proposal = this.store.insert(sessionId, id, 1, payload);
     this.changed(true);
@@ -75,7 +75,8 @@ export class ProposalExecutor extends EventEmitter {
 
   async revise(ref: ProposalRevisionRef, action: ProposalDraftAction, sessionId?: string, assertAuthorized?: () => void): Promise<BridgeActionProposal> {
     const externalPayload = action.kind === "session.create" || "targetSessionId" in action ? await this.freezeSession(action, this.store.requirePending(ref, sessionId).sessionId)
-      : "accountKey" in action ? await freezeMailDraft(this.mailService(), action) : undefined;
+      : "accountKey" in action ? await freezeMailDraft(this.mailService(), sessionId === undefined ? { ...action, attachments: undefined } : action,
+        this.store.requirePending(ref, sessionId).sessionId) : undefined;
     assertAuthorized?.();
     const proposal = this.store.transaction(() => {
       const current = this.store.requirePending(ref, sessionId);
@@ -84,6 +85,12 @@ export class ProposalExecutor extends EventEmitter {
       // A manual field edit keeps the baseline the user reviewed. A model revision can re-read it.
       const payload = externalPayload ?? this.freeze(action as AgendaProposalAction | MemoryRuleProposalAction, current.proposalId, current.sessionId,
         sessionId === undefined && (sameRecord || action.kind === "memory.rule_upsert") ? current : undefined);
+      if (sessionId === undefined && current.intent.backend === "smtp" && current.intent.attachmentSources &&
+        payload.intent.backend === "smtp" && "accountKey" in payload.action && "accountKey" in current.action) {
+        payload.intent.attachmentSources = current.intent.attachmentSources;
+        payload.intent.channelVersion = smtpProposalChannelVersion(payload.intent.channelVersion, true);
+        payload.action.attachments = current.action.attachments!;
+      }
       return this.store.insert(current.sessionId, current.proposalId, current.revision + 1, { ...payload,
         ...(sessionId === undefined ? { nativeRevision: current.nativeRevision ?? current.revision } : {}),
       });
@@ -122,8 +129,20 @@ export class ProposalExecutor extends EventEmitter {
     return proposal;
   }
 
-  async commit(ref: ProposalRevisionRef & { confirmMail?: true | undefined; confirmMemory?: true | undefined; confirmSession?: true | undefined; confirmSessionCreate?: true | undefined }, actor: string): Promise<BridgeActionProposal> {
+  async commit(ref: ProposalRevisionRef & { confirmMail?: true | undefined; confirmMailAttachments?: true | undefined; confirmMemory?: true | undefined; confirmSession?: true | undefined; confirmSessionCreate?: true | undefined }, actor: string): Promise<BridgeActionProposal> {
     const pending = this.store.requirePending(ref);
+    let attachmentContents: SmtpMessage["attachmentContents"];
+    if (pending.intent.backend === "smtp" && pending.intent.attachmentSources && "accountKey" in pending.action) {
+      if (!ref.confirmMail || !ref.confirmMailAttachments) throw new AssistantError("INVALID_PARAMS", "请在支持附件的 Bridge 中核对并发送。");
+      const reviewed = pending.action.attachments!;
+      const loaded = await loadMailAttachments(this.mailService(), pending.sessionId, pending.intent.attachmentSources);
+      if (loaded.some(({ filename, mimeType, charset, size, sha256 }, index) => {
+        const expected = reviewed[index]!;
+        return filename !== expected.filename || mimeType !== expected.mimeType || charset !== expected.charset || size !== expected.size || sha256 !== expected.sha256;
+      })) throw new AssistantError("CONFLICT", "附件已变化，请让助理修订提案后重新核对。");
+      attachmentContents = loaded.map(({ filename, mimeType, charset, content }) => ({ filename,
+        contentType: charset ? `${mimeType}; charset="${charset}"` : mimeType, content }));
+    }
     if (pending.action.kind === "session.create") {
       if (!ref.confirmSessionCreate) throw new AssistantError("INVALID_PARAMS", "请在支持新建会话提案的 Bridge 中核对并确认。");
       const { sessionCreateTarget } = await this.freezeSession(pending.action, pending.sessionId);
@@ -165,7 +184,7 @@ export class ProposalExecutor extends EventEmitter {
       if (proposal.intent.backend === "smtp" && "accountKey" in proposal.action) {
         if (!ref.confirmMail) throw new AssistantError("INVALID_PARAMS", "请在发信确认抽屉中核对并发送。");
         const account = this.mailService().smtpAccount(proposal.action.accountKey);
-        if (!account || account.smtp.version !== proposal.intent.channelVersion) {
+        if (!account || smtpProposalChannelVersion(account.smtp.version, Boolean(proposal.intent.attachmentSources)) !== proposal.intent.channelVersion) {
           throw new AssistantError("CONFLICT", "发信账号已更改或停用。请调整提案后重新核对。");
         }
         const messageId = `<${proposal.proposalId}.${proposal.revision}@${proposal.action.from.split("@")[1]}>`;
@@ -178,7 +197,7 @@ export class ProposalExecutor extends EventEmitter {
     this.changed();
     if (claimed.smtp) {
       // The approval acknowledgment must not wait for the SMTP server's final response.
-      void this.track(this.applySmtp(claimed.proposal, claimed.smtp, claimed.messageId)).catch(error => this.emit("error", error));
+      void this.track(this.applySmtp(claimed.proposal, claimed.smtp, claimed.messageId, attachmentContents)).catch(error => this.emit("error", error));
       return publicProposal({ ...claimed.proposal, state: "executing" });
     }
     if (claimed.localResult) {
@@ -215,13 +234,13 @@ export class ProposalExecutor extends EventEmitter {
     return this.mail;
   }
 
-  private async applySmtp(proposal: StoredProposal, channel: BridgeSmtpChannel & { version: string }, messageId: string) {
+  private async applySmtp(proposal: StoredProposal, channel: BridgeSmtpChannel & { version: string }, messageId: string, attachmentContents: SmtpMessage["attachmentContents"]) {
     if (!("accountKey" in proposal.action)) throw new Error("Expected an SMTP proposal");
     const mail = this.mailService();
     const { accountKey } = proposal.action;
     const password = await mail.smtpPassword(accountKey, channel.version);
     if (!password) return this.finishSmtp(proposal, { state: "failed", failure: { reason: "credential" } });
-    const { source, ...result } = await this.send(channel, password, proposal.action, messageId);
+    const { source, ...result } = await this.send(channel, password, attachmentContents ? { ...proposal.action, attachmentContents } : proposal.action, messageId);
     const finished = this.finishSmtp(proposal, result);
     if (source && "accepted" in result && result.accepted.length) {
       this.store.recordSentCopy(proposal, await mail.fileSentCopy(accountKey, messageId, source));

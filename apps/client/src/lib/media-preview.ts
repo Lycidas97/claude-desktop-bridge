@@ -45,6 +45,12 @@ export function formatBytes(value: number): string {
   return `${(value / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+export function isAssistantOutputPath(path: string): boolean {
+  const relative = path.replace(/^\.\//u, "");
+  return relative.startsWith("outputs/")
+    && relative.split("/").every(segment => segment && segment !== "." && segment !== ".." && !segment.includes("\\"));
+}
+
 export function mediaKind(path: string): MediaTarget["kind"] | undefined {
   const filePath = path.trim().replace(/:\d+(?::\d+)?$/u, "");
   if (/\.pdf$/iu.test(filePath)) return "pdf";

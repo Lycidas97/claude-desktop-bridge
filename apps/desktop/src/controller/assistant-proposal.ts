@@ -21,8 +21,8 @@ export async function handleAssistantProposal(
     switch (method) {
       case "assistant.proposal.list": return proposals.page(parse(proposalRequests[method]));
       case "assistant.proposal.resolve": {
-        const { sessionId, refs, latestForReview, includeMail, includeMemory, includeSession, includeSessionCreate } = parse(proposalRequests[method]);
-        return { proposals: proposals.resolve(sessionId, refs, latestForReview, includeMail, includeMemory, includeSession, includeSessionCreate) };
+        const { sessionId, refs, latestForReview, includeMail, includeMemory, includeSession, includeSessionCreate, includeMailAttachments } = parse(proposalRequests[method]);
+        return { proposals: proposals.resolve(sessionId, refs, latestForReview, includeMail, includeMemory, includeSession, includeSessionCreate, includeMailAttachments) };
       }
       case "assistant.proposal.commit": return { proposal: await proposals.commit(parse(proposalRequests[method]), actor) };
       case "assistant.proposal.dismiss": return { proposal: proposals.dismiss(parse(proposalRequests[method]), actor) };

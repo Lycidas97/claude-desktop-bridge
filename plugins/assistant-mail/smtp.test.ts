@@ -12,6 +12,19 @@ const message = {
 };
 const messageId = "<attempt@example.com>";
 
+it("composes the exact verified attachment bytes into the transmitted and archived MIME", async () => {
+  const content = Buffer.from([0, 255, 9, 10]);
+  const result = await submitSmtp({ host: "smtp.example.test", port: 465, security: "tls", user: "fixture", from: message.from },
+    "fixture-password", { ...message, attachmentContents: [{ filename: "report.bin", contentType: "application/octet-stream", content }] }, messageId,
+    () => ({ async sendMail({ raw }) {
+      const parsed = await simpleParser(raw as Buffer);
+      expect(parsed.attachments).toMatchObject([{ filename: "report.bin", contentType: "application/octet-stream", content }]);
+      return { accepted: message.to, rejected: [] } as never;
+    }, close() {} }));
+  expect(result.state).toBe("applied");
+  expect((await simpleParser(result.source!)).attachments[0]?.content).toEqual(content);
+});
+
 it.each([
   ["acceptance", "220 capture ESMTP", "250 accepted", false, "applied", undefined, undefined],
   ["partial acceptance", "220 capture ESMTP", "250 accepted", true, "delivery_partial", undefined, undefined],

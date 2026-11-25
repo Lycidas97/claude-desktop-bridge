@@ -71,6 +71,12 @@ it.skipIf(process.platform !== "darwin")("excludes the APFS data volume containi
 
 it("allows workspace reads and output writes, including files with missing ancestors", async () => {
   await expect(check("Read", { file_path: ".bridge-uploads/upload/attachment.txt" })).resolves.toBe(true);
+  await mkdir(join(workspace, "mail-attachments"));
+  const inbound = "mail-attachments/attachment.txt";
+  await writeFile(join(workspace, inbound), "received data");
+  await expect(check("Read", { file_path: inbound })).resolves.toBe(true);
+  await expect(check("Write", { file_path: inbound })).resolves.toBe(false);
+  await expect(check("mcp__assistant-mail__mail_download_attachment", {})).resolves.toBe(true);
   await expect(check("Write", { file_path: "outputs/folder/new.txt" })).resolves.toBe(true);
   await expect(check("Write", { file_path: "outputs/site/index.md" })).resolves.toBe(true);
   await expect(check("Edit", { file_path: join(outputs, "draft.txt") })).resolves.toBe(true);
@@ -156,8 +162,10 @@ it("uses the exact mail tool names and limits delegation to the foreground proje
   for (const name of ["Bash", "PowerShell", "NotebookEdit", "WebFetch", "SendMessage", "mcp__ccd__query", "mcp__assistant-mail__mail_read_event_extra"]) {
     await expect(check(name, {})).resolves.toBe(false);
   }
-  await expect(allowAssistantTool(workspace, { hook_event_name: "PreToolUse", cwd: workspace,
-    tool_name: "mcp__assistant-mail__mail_mark_read", tool_input: {}, agent_id: "helper-fixture", agent_type: "assistant-helper" })).resolves.toBe(false);
+  for (const tool_name of ["mcp__assistant-mail__mail_mark_read", "mcp__assistant-mail__mail_download_attachment"]) {
+    await expect(allowAssistantTool(workspace, { hook_event_name: "PreToolUse", cwd: workspace,
+      tool_name, tool_input: {}, agent_id: "helper-fixture", agent_type: "assistant-helper" })).resolves.toBe(false);
+  }
   const helper = { subagent_type: "assistant-helper", prompt: "Summarize the provided file", run_in_background: false };
   await expect(check("Agent", helper)).resolves.toBe(true);
   await expect(check("Agent", { ...helper, subagent_type: "general-purpose" })).resolves.toBe(false);

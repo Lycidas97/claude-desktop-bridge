@@ -180,6 +180,19 @@ describe("SectionManageDialog and useSectionManage", () => {
     expect(disabled.canManage(snapshot.projects[0])).toBe(false);
   });
 
+  it("shows the Section ID for proposal review even when the host only supports moving sessions", () => {
+    snapshot.host.capabilities = ["section.move.v1", "assistant.proposal.session-create.v1"];
+    const [project] = snapshot.projects;
+    const controller = renderController();
+    expect(controller.canManage(project)).toBe(true);
+    controller.openMenu(project!.projectId);
+
+    const markup = renderToStaticMarkup(<SectionManageDialog controller={renderController()} />);
+    expect(markup).toContain(`<bdi>${project!.projectId}</bdi>`);
+    expect(markup).not.toContain("重命名分组");
+    expect(markup).not.toContain("删除分组");
+  });
+
   it("confirms before deleting an empty section without mentioning moved sessions", async () => {
     let controller = renderController();
     controller.openMenu("section:empty");

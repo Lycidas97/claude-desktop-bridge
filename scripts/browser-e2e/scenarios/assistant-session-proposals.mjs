@@ -154,7 +154,6 @@ export async function verifyAssistantSessionProposals(phone, host, steps, direct
   await assert.rejects(request("assistant.proposal.commit", { ...ignored, confirmSession: true }), { code: "CONFLICT" });
   assert.equal(targetSends().length, 1);
   steps.push("Copy Session ID works; ignored, old confirmation and replay are rejected; paired phone opens by session.open without sending, and desktop sends only the full revised message to the busy Native target");
-  await desktop.close();
 
   const { ref: untitled, action } = await seedAssistantSessionCreation(host);
   const { cwd, model, projectId } = action;
@@ -164,6 +163,31 @@ export async function verifyAssistantSessionProposals(phone, host, steps, direct
   const { project: twin } = await request("section.create", { name: "另一评审分组" });
   await request("section.rename", { sectionId: twin.projectId, name: sectionName });
   await native.draftProposal({ ...action, projectId: twin.projectId, title: "同名分组的提案" });
+  await syncNativeSections(host);
+  await host.send({ kind: "snapshot", snapshot: host.snapshot });
+  await desktop.evaluate(({ projects, sessions, host: computer }) => window.assistantDesktopSnapshot({ projects, sessions, host: computer }), host.snapshot);
+  await phone.reload({ waitUntil: "domcontentloaded" });
+  for (const [surface, page, catalog] of [["mobile", phone, ".mobile-home-catalog"], ["desktop", desktop, ".desktop-session-sidebar"]]) {
+    const manage = { name: `管理分组：${sectionName}`, exact: true };
+    const groups = page.locator(`${catalog} .project-group-header`).filter({ has: page.getByRole("button", manage) });
+    await groups.nth(1).waitFor();
+    const ids = [];
+    for (const group of await groups.all()) {
+      if (surface === "desktop") await group.hover();
+      await group.getByRole("button", manage).click();
+      const menu = page.getByRole("dialog", { name: sectionName, exact: true });
+      await menu.waitFor();
+      const id = menu.locator("bdi:visible");
+      assert.equal(await id.count(), 1, `${surface} group menu exposes the ID shown on its proposal`);
+      ids.push(await id.innerText());
+      await capture(page, `${surface}-same-section-menu-${ids.length}`);
+      await menu.getByRole("button", { name: "关闭", exact: true }).click();
+    }
+    assert.deepEqual(ids.sort(), [projectId, twin.projectId].sort());
+  }
+  await desktop.close();
+  await openMobileAssistant(phone);
+  await phone.locator(".assistant-proposal-dock .permission-dock").getByText("2 项待你确认").click();
   const createReview = phone.getByRole("dialog", { name: "核对新会话" });
   const section = createReview.locator("dt").filter({ hasText: /^分组$/u }).locator("+ dd");
   await phoneRows.getByRole("button", { name: "同名分组的提案 新建会话", exact: true }).click();

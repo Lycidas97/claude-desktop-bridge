@@ -5,6 +5,7 @@ const http = require('node:http');
 const { writeFileSync } = require('node:fs');
 const { join } = require('node:path');
 const [directory, port] = process.argv.slice(2);
+const debuggerLabel = process.env.FIXTURE_DEBUGGER_LABEL || 'Enable Main Process Debugger';
 app.setPath('userData', directory);
 app.setName('Bridge Inspector Startup Fixture');
 protocol.registerSchemesAsPrivileged([{ scheme: 'app', privileges: { standard: true, secure: true } }]);
@@ -26,7 +27,7 @@ app.whenReady().then(async () => {
   const server = http.createServer((request, response) => {
     if (request.url === '/ready') {
       const menu = Menu.buildFromTemplate([{ label: 'Developer', submenu: [{
-        id: 'main-debugger', label: 'Enable Main Process Debugger', type: 'checkbox', checked: false,
+        id: 'main-debugger', label: debuggerLabel, type: 'checkbox', checked: false,
         click(item) {
           presses++;
           if (permitted && !inspector.url()) inspector.open(Number(port), '127.0.0.1');

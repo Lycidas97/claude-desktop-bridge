@@ -18,7 +18,13 @@ type ResultState = Exclude<ExecutionState, "executing">;
 type ProposalRow = { ordinal: number; id: string; revision: number; session_id: string; payload: string; hash: string;
   state: ProposalState | null; rejected: string | null; failure: string | null; creation: string | null };
 
-const projection = `SELECT p.rowid AS ordinal, p.id, p.revision, p.session_id, p.payload, p.hash, e.state,
+const mailAttachmentKindSuffix = ".attachments.v1";
+// Current readers recover the public action kind. Older readers keep the stored tag and refuse revisions.
+const projection = `SELECT p.rowid AS ordinal, p.id, p.revision, p.session_id,
+  CASE json_extract(p.payload, '$.action.kind')
+    WHEN 'mail.send${mailAttachmentKindSuffix}' THEN json_set(p.payload, '$.action.kind', 'mail.send')
+    WHEN 'mail.reply${mailAttachmentKindSuffix}' THEN json_set(p.payload, '$.action.kind', 'mail.reply')
+    ELSE p.payload END AS payload, p.hash, e.state,
   CASE WHEN e.state = 'delivery_partial' THEN json_extract(s.result, '$.rejected') END AS rejected,
   json_extract(s.result, '$.failure') AS failure, c.result AS creation
   FROM action_proposals p LEFT JOIN proposal_executions e ON p.id = e.id AND p.revision = e.revision
@@ -82,7 +88,9 @@ export class ProposalStore {
   }
 
   insert(sessionId: string, id: string, revision: number, payload: ProposalPayload): StoredProposal {
-    const json = JSON.stringify(payload);
+    const json = JSON.stringify(payload.intent.backend === "smtp" && payload.intent.attachmentSources
+      ? { ...payload, action: { ...payload.action, kind: `${payload.action.kind}${mailAttachmentKindSuffix}` } }
+      : payload);
     const payloadHash = createHash("sha256").update(json).digest("hex");
     this.db.prepare("INSERT INTO action_proposals VALUES (?, ?, ?, ?, ?, ?)").run(id, revision, sessionId, json, payloadHash, Date.now());
     return { ...payload, proposalId: id, revision, payloadHash, sessionId, state: "pending" };

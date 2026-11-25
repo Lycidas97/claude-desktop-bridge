@@ -156,17 +156,26 @@ it("sends only the reviewed output bytes and refuses legacy confirmation or chan
   expect(send.mock.calls[0]?.[2]).toMatchObject({ attachmentContents: [{ filename: "report.csv", content }] });
 });
 
-it("stores an SMTP binding that an older host refuses before claiming an attachment draft", async () => {
-  const action = { ...draft, to: [...draft.to], cc: [...draft.cc] };
+it.each(["mail.send", "mail.reply"] as const)("stores %s with attachments so a legacy host cannot silently revise or send it", async kind => {
+  const fields = { ...draft, to: [...draft.to], cc: [...draft.cc] };
+  const action = kind === "mail.reply" ? { ...fields, kind, mailRefId: originalId } : { ...fields, kind };
   const attachment = (await mail.readEvent(originalId))!.attachments[0]!;
   const plain = await executor.create("bound", action);
   const attached = await executor.create("bound", { ...action, attachments: [{ mailRefId: originalId, attachmentId: attachment.attachmentId }] });
   const currentVersion = mail.smtpAccount(accountKey)!.smtp.version;
-  // The older executor compares the persisted channelVersion with the configured UUID before claiming.
-  expect(ledger.requirePending(plain).intent).toMatchObject({ backend: "smtp", channelVersion: currentVersion });
-  expect(ledger.requirePending(attached).intent).toMatchObject({ backend: "smtp", channelVersion: `mail-attachments.v1:${currentVersion}` });
+  const legacyRead = db.prepare(`SELECT json_extract(payload, '$.action.kind') AS kind,
+    json_extract(payload, '$.intent.backend') AS backend, json_extract(payload, '$.intent.channelVersion') AS channelVersion
+    FROM action_proposals WHERE id = ? ORDER BY revision DESC LIMIT 1`);
+  // The legacy store exposes the raw kind, and its executor checks kind on revise and the SMTP UUID on commit.
+  expect(legacyRead.get(plain.proposalId)).toEqual({ kind, backend: "smtp", channelVersion: currentVersion });
+  const incompatible = { kind: `${kind}.attachments.v1`, backend: "smtp", channelVersion: `mail-attachments.v1:${currentVersion}` };
+  expect(legacyRead.get(attached.proposalId)).toEqual(incompatible);
+  expect(executor.pending(attached).action.kind).toBe(kind);
   const edited = await executor.revise(attached, { ...action, subject: "Revised" });
-  expect(ledger.requirePending(edited).intent).toMatchObject({ backend: "smtp", channelVersion: `mail-attachments.v1:${currentVersion}` });
+  expect(legacyRead.get(edited.proposalId)).toEqual(incompatible);
+  expect(executor.pending(edited).action).toMatchObject({ kind, subject: "Revised", attachments: [{ filename: "names.csv" }] });
+  expect(executor.resolve("bound", [attached], true, true)).toEqual([]);
+  expect(executor.resolve("bound", [attached], true, true, false, false, false, true)).toEqual([edited]);
   expect(db.prepare("SELECT * FROM proposal_executions").all()).toEqual([]);
 });
 

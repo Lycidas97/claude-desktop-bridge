@@ -413,7 +413,7 @@ export async function startNativeApprovalHost(options: {
     } : undefined, options.onProposalsChanged ? assistantSessionProposalBackend(broker, state, sessionId => {
       const binding = assistantMail?.service.binding();
       return binding?.nativeSessionId === sessionId && Boolean(binding.managed);
-    }, cwd => workspace!.matches(cwd)) : undefined) : undefined;
+    }, cwd => workspace!.matches(cwd), cwd => workspace!.contains(cwd)) : undefined) : undefined;
   assistantMail?.agenda.on("changed", snapshot => options.onAgendaChanged?.(snapshot));
   const proposals = options.onProposalsChanged ? assistantMail!.proposals : undefined;
   proposals?.on("changed", options.onProposalsChanged!);

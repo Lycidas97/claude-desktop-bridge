@@ -4,6 +4,7 @@ import type { BridgeDeliveryState } from "./types.js";
 export const ASSISTANT_PROPOSAL_CAPABILITY = "assistant.proposal.v1";
 export const ASSISTANT_MEMORY_PROPOSAL_CAPABILITY = "assistant.proposal.memory.v1";
 export const ASSISTANT_SESSION_PROPOSAL_CAPABILITY = "assistant.proposal.session.v1";
+export const ASSISTANT_SESSION_CREATE_PROPOSAL_CAPABILITY = "assistant.proposal.session-create.v1";
 
 export type AgendaProposalAction =
   | { kind: "todo.create"; sourceId: string; value: AgendaTodoInput }
@@ -42,9 +43,21 @@ export type MailProposalAction = {
       foreignReplyTo: boolean; inReplyTo?: string; references?: string[] }
 );
 
+export type SessionCreateProposalAction = {
+  kind: "session.create";
+  cwd: string;
+  projectId: string | null;
+  model: string;
+  title?: string | undefined;
+  text?: string | undefined;
+};
+
 export type SessionProposalAction =
   | { kind: "session.open"; targetSessionId: string }
-  | { kind: "session.send"; targetSessionId: string; text: string };
+  | { kind: "session.send"; targetSessionId: string; text: string }
+  | SessionCreateProposalAction;
+
+export const SESSION_CREATE_OPTIONS_TOOL = "proposal.session_create_options";
 
 export type ProposalDraftAction = AgendaProposalAction | MailProposalDraft | MemoryRuleProposalAction | SessionProposalAction;
 
@@ -65,6 +78,8 @@ export interface BridgeActionProposal extends ProposalRevisionRef {
   sessionId: string;
   action: AgendaProposalAction | MailProposalAction | MemoryRuleProposalAction | SessionProposalAction;
   sessionTarget?: { title: string; cwd: string };
+  sessionCreateTarget?: { projectName: string; modelName: string };
+  sessionCreation?: { sessionId?: string; failure?: "trust-required" | "create" | "model" };
   sessionDelivery?: Extract<BridgeDeliveryState, "submitted" | "session-received" | "queued" | "running" | "completed" | "failed" | "cancelled" | "uncertain">;
   sourceId: string;
   sourceLabel: string;
@@ -81,6 +96,7 @@ export interface BridgeProposalSnapshot {
   pendingMailCount?: number;
   pendingMemoryCount?: number;
   pendingSessionCount?: number;
+  pendingSessionCreateCount?: number;
   sources: { id: string; label: string; kinds: ("todo" | "calendar")[] }[];
 }
 
@@ -89,4 +105,4 @@ export interface BridgeProposalPage {
   nextCursor?: string;
 }
 
-export const PROPOSAL_TOOLS = ["proposal.create", "proposal.update_pending", "proposal.list"] as const;
+export const PROPOSAL_TOOLS = ["proposal.create", "proposal.update_pending", "proposal.list", SESSION_CREATE_OPTIONS_TOOL] as const;

@@ -5,6 +5,7 @@ import { once } from "node:events";
 import { join } from "node:path";
 import { z } from "zod";
 import { ASSISTANT_DIRECTORY_TOOL } from "../../packages/protocol/src/assistant-mail.js";
+import { SESSION_CREATE_OPTIONS_TOOL } from "../../packages/protocol/src/assistant-proposal.js";
 import type { AssistantAgendaService } from "./agenda.js";
 import { AgendaExpansionLimitError } from "./agenda-ical.js";
 import { AssistantError } from "./assistant-error.js";
@@ -24,7 +25,7 @@ export async function serveAssistantMailTools(options: {
   userDataPath: string;
   service: MailTools;
   agenda?: Pick<AssistantAgendaService, "listTodos" | "listEvents" | "freeSlots">;
-  proposals?: Pick<ProposalExecutor, "create" | "reviseFromTool" | "page" | "snapshot" | "smtpAccounts">;
+  proposals?: Pick<ProposalExecutor, "create" | "reviseFromTool" | "page" | "snapshot" | "smtpAccounts"> & Partial<Pick<ProposalExecutor, "sessionCreateOptions">>;
   lookupMemory?: (sessionId: string, entryId: string) => { path: string } | undefined;
   directoryAccess?: {
     grants(sessionId: string, token: string): { workspace: string; directories: readonly string[] } | undefined;
@@ -101,6 +102,10 @@ export async function serveAssistantMailTools(options: {
             mailAccounts: options.proposals.smtpAccounts() };
           break;
         } else break;
+        case SESSION_CREATE_OPTIONS_TOOL:
+          result = await options.proposals?.sessionCreateOptions?.(sessionId!, input.arguments.field);
+          assertManagedToken();
+          break;
         case "memory.lookup_entry": result = options.lookupMemory?.(sessionId!, input.arguments.entryId); break;
         case ASSISTANT_DIRECTORY_TOOL: {
           const access = options.directoryAccess;

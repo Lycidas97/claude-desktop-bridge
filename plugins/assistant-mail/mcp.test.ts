@@ -652,7 +652,8 @@ it("reports partial calendar coverage to MCP and refuses to return gaps", async 
 it("allows only the managed token to draft proposals and passes its bound session to the ledger", async () => {
   await channel!.close();
   const ref = { proposalId: "00000000-0000-4000-8000-000000000000", revision: 1, payloadHash: "a".repeat(64) };
-  const proposals = { create: vi.fn(async () => ref), reviseFromTool: vi.fn(), page: vi.fn(), snapshot: vi.fn(), smtpAccounts: vi.fn(() => []) };
+  const proposals = { create: vi.fn(async () => ref), reviseFromTool: vi.fn(), page: vi.fn(), snapshot: vi.fn(), smtpAccounts: vi.fn(() => []),
+    sessionCreateOptions: vi.fn(async () => ({ options: [{ value: "fixture-model", label: "Fixture model" }] })) };
   const managedToken = "proposal-managed-token";
   channel = await serveAssistantMailTools({ userDataPath: root, service, proposals,
     authorizeManagedToken: token => token === managedToken ? "local_fixture" : undefined });
@@ -671,6 +672,20 @@ it("allows only the managed token to draft proposals and passes its bound sessio
   expect(draftedSession.source).toMatchObject({ kind: "proposal", authorizesActions: false });
   expect(draftedSession.result).toEqual(ref);
   expect(proposals.create).toHaveBeenLastCalledWith("local_fixture", sessionDraft, expect.any(Function));
+  const createAction = { kind: "session.create", cwd: "/fixture/project", projectId: "fixture-section", model: "fixture-model", text: sessionDraft.text };
+  const draftedCreation = await (await post({ name: "proposal.create", arguments: { action: createAction } }, managedToken)).json();
+  expect(draftedCreation).toMatchObject({ source: { kind: "proposal", authorizesActions: false }, result: ref });
+  expect(proposals.create).toHaveBeenLastCalledWith("local_fixture", createAction, expect.any(Function));
+  const options = { name: "proposal.session_create_options", arguments: { field: "model" } };
+  expect((await post(options)).status).toBe(403);
+  expect(await (await post(options, managedToken)).json()).toMatchObject({ source: { authorizesActions: false },
+    result: { options: [{ value: "fixture-model", label: "Fixture model" }] } });
+  expect(proposals.sessionCreateOptions).toHaveBeenCalledExactlyOnceWith("local_fixture", "model");
+  expect((await post({ name: "proposal.create", arguments: { action: createAction } })).status).toBe(403);
+  for (const action of [{ ...createAction, cwd: undefined }, { ...createAction, projectId: undefined },
+    { ...createAction, model: undefined }, { ...createAction, text: "/model default" }, { ...createAction, trustWorkspace: true }]) {
+    expect((await post({ name: "proposal.create", arguments: { action } }, managedToken)).status).toBe(400);
+  }
   for (const action of [{ ...sessionDraft, text: "   " }, { ...sessionDraft, text: " /rename another title" },
     { ...sessionDraft, text: "!printf synthetic" }, { ...sessionDraft, targetTitle: "Forged title" },
     { ...sessionDraft, attachments: ["fixture.txt"] }, { ...sessionDraft, kind: "session.open" }]) {

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { ASSISTANT_MEMORY_POLICY, ASSISTANT_WORKSPACE_POLICY, type AssistantWorkspacePolicy, type BridgeSmtpChannel } from "../../packages/protocol/src/assistant-mail.js";
-import type { AgendaProposalAction, BridgeActionProposal, BridgeProposalSnapshot, MemoryRuleProposalAction, ProposalDraftAction, ProposalRevisionRef, SessionProposalAction } from "../../packages/protocol/src/assistant-proposal.js";
+import type { AgendaProposalAction, BridgeActionProposal, BridgeProposalSnapshot, MemoryRuleProposalAction, ProposalDraftAction, ProposalRevisionRef, SessionCreateProposalAction, SessionProposalAction } from "../../packages/protocol/src/assistant-proposal.js";
 import type { AgendaCredentials } from "./agenda.js";
 import { agendaInstant } from "./agenda-time.js";
 import type { AssistantMemory } from "./assistant-memory.js";
@@ -17,12 +17,19 @@ import { submitSmtp, type SmtpResult } from "./smtp.js";
 export const ASSISTANT_SESSION_SEND_KEY_PREFIX = "assistant-session-proposal:";
 const sessionSendKey = (ref: ProposalRevisionRef) => `${ASSISTANT_SESSION_SEND_KEY_PREFIX}${ref.proposalId}:${ref.revision}`;
 type SessionDelivery = NonNullable<BridgeActionProposal["sessionDelivery"]>;
+type SessionCreateField = "cwd" | "project" | "model";
+type CreationFailure = NonNullable<NonNullable<BridgeActionProposal["sessionCreation"]>["failure"]>;
 
 export interface SessionProposalBackend {
   ownsDraft(sessionId: string): boolean;
-  target(action: SessionProposalAction): Promise<(NonNullable<BridgeActionProposal["sessionTarget"]> & { turnRunning: boolean }) | undefined>;
+  target(action: Exclude<SessionProposalAction, SessionCreateProposalAction>): Promise<(NonNullable<BridgeActionProposal["sessionTarget"]> & { turnRunning: boolean }) | undefined>;
   send(action: Extract<SessionProposalAction, { kind: "session.send" }>, key: string, turnRunning: boolean): Promise<void>;
   delivery(key: string): SessionDelivery | "dispatching" | undefined;
+  creation?: {
+    options(field: SessionCreateField): Promise<{ value: string | null; label: string }[]>;
+    prepare(action: SessionCreateProposalAction): Promise<NonNullable<BridgeActionProposal["sessionCreateTarget"]>>;
+    create(action: SessionCreateProposalAction, onCreated: (sessionId: string) => void): Promise<{ sessionId: string } | { failure: CreationFailure } | { uncertain: true }>;
+  };
 }
 
 const refOf = ({ proposalId, revision, payloadHash }: ProposalRevisionRef): ProposalRevisionRef => ({ proposalId, revision, payloadHash });
@@ -45,6 +52,12 @@ export class ProposalExecutor extends EventEmitter {
   ) { super(); }
 
   get supportsSessionActions(): boolean { return this.sessions !== undefined; }
+  get supportsSessionCreation(): boolean { return this.sessions?.creation !== undefined; }
+
+  async sessionCreateOptions(sessionId: string, field: SessionCreateField) {
+    if (!this.sessions?.creation || !this.sessions.ownsDraft(sessionId)) throw new AssistantError("UNSUPPORTED", "当前托管助理不能新建会话。");
+    return { options: await this.sessions.creation.options(field) };
+  }
 
   snapshot(): BridgeProposalSnapshot {
     return { changeToken: this.changeToken, ...this.store.pendingCounts(), sources: this.agenda.proposalSources() };
@@ -52,7 +65,7 @@ export class ProposalExecutor extends EventEmitter {
 
   async create(sessionId: string, action: ProposalDraftAction, assertAuthorized?: () => void): Promise<ProposalRevisionRef> {
     const id = randomUUID();
-    const payload = "targetSessionId" in action ? await this.freezeSession(action, sessionId)
+    const payload = action.kind === "session.create" || "targetSessionId" in action ? await this.freezeSession(action, sessionId)
       : "accountKey" in action ? await freezeMailDraft(this.mailService(), action) : this.freeze(action, id, sessionId);
     assertAuthorized?.();
     const proposal = this.store.insert(sessionId, id, 1, payload);
@@ -61,7 +74,7 @@ export class ProposalExecutor extends EventEmitter {
   }
 
   async revise(ref: ProposalRevisionRef, action: ProposalDraftAction, sessionId?: string, assertAuthorized?: () => void): Promise<BridgeActionProposal> {
-    const externalPayload = "targetSessionId" in action ? await this.freezeSession(action, this.store.requirePending(ref, sessionId).sessionId)
+    const externalPayload = action.kind === "session.create" || "targetSessionId" in action ? await this.freezeSession(action, this.store.requirePending(ref, sessionId).sessionId)
       : "accountKey" in action ? await freezeMailDraft(this.mailService(), action) : undefined;
     assertAuthorized?.();
     const proposal = this.store.transaction(() => {
@@ -88,19 +101,20 @@ export class ProposalExecutor extends EventEmitter {
   }
 
   page(query: Parameters<ProposalStore["page"]>[0], sessionId?: string) {
-    const page = this.store.page(sessionId === undefined ? query : { ...query, includeSession: false,
+    const page = this.store.page(sessionId === undefined ? query : { ...query, includeSession: false, includeSessionCreate: false,
       includeMemory: this.profile?.policy(sessionId) === ASSISTANT_MEMORY_POLICY }, sessionId);
-    return query.includeSession ? { ...page, proposals: page.proposals.map(proposal => this.withSessionDelivery(proposal)) } : page;
+    return query.includeSession || query.includeSessionCreate ? { ...page, proposals: page.proposals.map(proposal => this.withSessionDelivery(proposal)) } : page;
   }
   resolve(...params: Parameters<ProposalStore["resolve"]>) {
     return this.store.resolve(...params).map(proposal => this.withSessionDelivery(proposal));
   }
   pending(ref: ProposalRevisionRef, sessionId?: string) { return publicProposal(this.store.requirePending(ref, sessionId)); }
 
-  dismiss(ref: ProposalRevisionRef & { includeMemory?: true | undefined; includeSession?: true | undefined }, actor: string) {
+  dismiss(ref: ProposalRevisionRef & { includeMemory?: true | undefined; includeSession?: true | undefined; includeSessionCreate?: true | undefined }, actor: string) {
     const proposal = this.store.transaction(() => {
       const proposal = this.store.requirePending(ref);
-      if ((proposal.intent.backend === "profile" && !ref.includeMemory) || (proposal.intent.backend === "session" && !ref.includeSession)) throw new AssistantError("NOT_FOUND", "找不到此提案。");
+      if ((proposal.intent.backend === "profile" && !ref.includeMemory) || (proposal.intent.backend === "session" && !ref.includeSession) ||
+        (proposal.intent.backend === "session-create" && !ref.includeSessionCreate)) throw new AssistantError("NOT_FOUND", "找不到此提案。");
       this.store.claim(proposal, actor, "dismissed");
       return publicProposal({ ...proposal, state: "dismissed" });
     });
@@ -108,8 +122,24 @@ export class ProposalExecutor extends EventEmitter {
     return proposal;
   }
 
-  async commit(ref: ProposalRevisionRef & { confirmMail?: true | undefined; confirmMemory?: true | undefined; confirmSession?: true | undefined }, actor: string): Promise<BridgeActionProposal> {
+  async commit(ref: ProposalRevisionRef & { confirmMail?: true | undefined; confirmMemory?: true | undefined; confirmSession?: true | undefined; confirmSessionCreate?: true | undefined }, actor: string): Promise<BridgeActionProposal> {
     const pending = this.store.requirePending(ref);
+    if (pending.action.kind === "session.create") {
+      if (!ref.confirmSessionCreate) throw new AssistantError("INVALID_PARAMS", "请在支持新建会话提案的 Bridge 中核对并确认。");
+      const { sessionCreateTarget } = await this.freezeSession(pending.action, pending.sessionId);
+      if (sessionCreateTarget?.projectName !== pending.sessionCreateTarget?.projectName ||
+        sessionCreateTarget?.modelName !== pending.sessionCreateTarget?.modelName) {
+        throw new AssistantError("CONFLICT", "分组或模型已变更，请让助理修订提案后重新核对。");
+      }
+      const proposal = this.store.transaction(() => {
+        const current = this.store.requirePending(ref);
+        this.store.claim(current, actor, "executing");
+        return publicProposal({ ...current, state: "executing" });
+      });
+      this.changed();
+      void this.track(this.applySessionCreate(pending, pending.action)).catch(error => this.emit("error", error));
+      return proposal;
+    }
     if ("targetSessionId" in pending.action) {
       if (!ref.confirmSession) throw new AssistantError("INVALID_PARAMS", "请在 Bridge 中核对并确认会话动作。");
       const target = await this.sessions?.target(pending.action);
@@ -208,11 +238,28 @@ export class ProposalExecutor extends EventEmitter {
   sessionDeliveryChanged() { this.changed(); }
 
   private async freezeSession(action: SessionProposalAction, sessionId: string): Promise<ProposalPayload> {
+    if (action.kind === "session.create") {
+      const target = await this.sessions?.creation?.prepare(action);
+      if (!target || !this.sessions!.ownsDraft(sessionId)) throw new AssistantError("UNSUPPORTED", "当前托管助理不能新建会话。");
+      return { action, sourceId: "session", sourceLabel: "原生会话", sessionCreateTarget: target, intent: { backend: "session-create" } };
+    }
     const target = await this.sessions?.target(action);
     if (!target || !this.sessions!.ownsDraft(sessionId)) {
       throw new AssistantError("UNSUPPORTED", "只能为同一台电脑上可用的现有会话草拟动作。");
     }
     return { action, sourceId: "session", sourceLabel: "原生会话", sessionTarget: { title: target.title, cwd: target.cwd }, intent: { backend: "session" } };
+  }
+
+  private async applySessionCreate(proposal: StoredProposal, action: SessionCreateProposalAction) {
+    const result = await this.sessions!.creation!.create(action, sessionId => {
+      this.store.saveSessionCreation(proposal, { sessionId });
+    });
+    if ("sessionId" in result && action.text !== undefined) {
+      return this.applySessionSend(proposal, { kind: "session.send", targetSessionId: result.sessionId, text: action.text }, false);
+    }
+    if ("failure" in result) this.store.saveSessionCreation(proposal, { ...proposal.sessionCreation, failure: result.failure });
+    this.store.finish(proposal, "failure" in result ? "failed" : "uncertain" in result ? "uncertain" : "applied");
+    this.changed();
   }
 
   private async applySessionSend(proposal: StoredProposal, action: Extract<SessionProposalAction, { kind: "session.send" }>, turnRunning: boolean) {
@@ -229,7 +276,8 @@ export class ProposalExecutor extends EventEmitter {
   }
 
   private withSessionDelivery(proposal: BridgeActionProposal): BridgeActionProposal {
-    if (proposal.action.kind !== "session.send" || proposal.state === "pending" || proposal.state === "dismissed") return proposal;
+    if (!(proposal.action.kind === "session.send" || (proposal.action.kind === "session.create" && proposal.action.text !== undefined)) ||
+      proposal.state === "pending" || proposal.state === "dismissed") return proposal;
     const delivery = this.sessions?.delivery(sessionSendKey(proposal));
     return delivery && delivery !== "dispatching" ? { ...proposal, sessionDelivery: delivery } : proposal;
   }
@@ -334,6 +382,12 @@ export class ProposalExecutor extends EventEmitter {
       return result;
     }
     if (intent.backend === "session") return this.finishSessionSend(proposal);
+    if (intent.backend === "session-create") {
+      if (this.sessions?.delivery(sessionSendKey(proposal))) return this.finishSessionSend(proposal);
+      const result = this.store.finish(proposal, proposal.sessionCreation?.failure ? "failed" : "uncertain");
+      this.changed();
+      return result;
+    }
     if (intent.backend === "smtp") return this.finishSmtp(proposal, { state: "delivery_uncertain", failure: { reason: "interrupted" } });
     if (intent.backend !== "caldav") throw new Error("A local proposal cannot have an interrupted execution");
     const credentials = this.remoteCredentials(proposal, intent.collection);

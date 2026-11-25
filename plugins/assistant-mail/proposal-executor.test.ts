@@ -257,6 +257,63 @@ it.each([undefined, "queued", "dispatching"] as const)("recovers a claimed sessi
   await expect(service.commit({ ...ref, confirmSession: true }, "desktop")).rejects.toMatchObject({ code: "CONFLICT" });
 });
 
+it("only executes the latest creation approved by a compatible client and sends the approved text after configuration", async () => {
+  db.close();
+  let configured!: () => void;
+  const configuration = new Promise<void>(resolve => { configured = resolve; });
+  const create = vi.fn(async (_action, onCreated: (id: string) => void) => {
+    onCreated("local_created");
+    await configuration;
+    return { sessionId: "local_created" };
+  });
+  const send = vi.fn();
+  open({ ownsDraft: id => id === "bound-session", target: vi.fn(), send, delivery: () => "submitted", creation: {
+    options: vi.fn(), prepare: async () => ({ projectName: "Review", modelName: "Fixture 1M" }), create,
+  } });
+  const action = { kind: "session.create", cwd: join(directory, "work"), projectId: "review", model: "fixture[1m]", text: "  Verify\n\nverbatim.  " } as const;
+  const first = await service.create("bound-session", { ...action, text: "Earlier draft" });
+  const ref = await service.reviseFromTool("bound-session", first, action, () => {});
+  expect(service.snapshot()).toMatchObject({ pendingCount: 0, pendingSessionCount: 0, pendingSessionCreateCount: 1 });
+  expect(service.page({ limit: 10, includeSession: true }).proposals).toEqual([]);
+  expect(service.page({ limit: 10, includeSessionCreate: true }, "bound-session").proposals).toEqual([]);
+  expect(service.resolve("bound-session", [ref], true, true, true, true)).toEqual([]);
+  expect(service.resolve("bound-session", [ref], false, false, false, false, true)[0]).toMatchObject({ action, sessionCreateTarget: { projectName: "Review", modelName: "Fixture 1M" } });
+  expect(() => service.dismiss({ ...ref, includeSession: true }, "old-phone")).toThrow("找不到此提案");
+  await expect(service.commit({ ...ref, confirmSession: true }, "old-phone")).rejects.toMatchObject({ code: "INVALID_PARAMS" });
+  await expect(service.commit({ ...first, confirmSessionCreate: true }, "phone")).rejects.toMatchObject({ code: "CONFLICT" });
+  expect(create).not.toHaveBeenCalled();
+  try {
+    await expect(service.commit({ ...ref, confirmSessionCreate: true }, "phone")).resolves.toMatchObject({ state: "executing" });
+    expect(create).toHaveBeenCalledExactlyOnceWith(action, expect.any(Function));
+    await expect(service.commit({ ...ref, confirmSessionCreate: true }, "desktop")).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(send).not.toHaveBeenCalled();
+  } finally { configured(); }
+  await service.close();
+  expect(send).toHaveBeenCalledExactlyOnceWith({ kind: "session.send", targetSessionId: "local_created", text: action.text }, `${ASSISTANT_SESSION_SEND_KEY_PREFIX}${ref.proposalId}:2`, false);
+  expect(service.page({ limit: 10, history: true, includeSessionCreate: true }).proposals[0]).toMatchObject({ ...ref,
+    state: "applied", sessionCreation: { sessionId: "local_created" }, sessionDelivery: "submitted" });
+});
+
+it.each([undefined, "queued"] as const)("recovers an interrupted creation with its saved ID and receipt %s without writing to Native", async receipt => {
+  db.close();
+  const backend: SessionProposalBackend = { ownsDraft: () => true, target: vi.fn(), send: vi.fn(), delivery: () => receipt,
+    creation: { options: vi.fn(), prepare: async () => ({ projectName: "Ungrouped", modelName: "Fixture" }), create: vi.fn() } };
+  open(backend);
+  const ref = await service.create("bound-session", { kind: "session.create", cwd: directory, projectId: null, model: "fixture", text: "Approved text" });
+  const draft = ledger.requirePending(ref);
+  ledger.claim(draft, "phone", "executing");
+  ledger.saveSessionCreation(draft, { sessionId: "local_created" });
+  db.close();
+  open(backend);
+  service.start();
+  await service.close();
+  expect(service.page({ limit: 10, history: true, includeSessionCreate: true }).proposals[0]).toMatchObject({
+    ...ref, state: receipt ? "applied" : "uncertain", sessionCreation: { sessionId: "local_created" },
+  });
+  expect(backend.creation!.create).not.toHaveBeenCalled();
+  expect(backend.send).not.toHaveBeenCalled();
+});
+
 it("stores immutable snapshots, rejects stale, wrong hash and repeat approvals, and attributes the one successful write", async () => {
   const first = await service.create("bound-session", { kind: "todo.create", sourceId: "local", value: { title: "Draft", status: "pending" } });
   const updated = await service.revise(first, { kind: "todo.create", sourceId: "local", value: { title: "Revised", status: "pending" } });

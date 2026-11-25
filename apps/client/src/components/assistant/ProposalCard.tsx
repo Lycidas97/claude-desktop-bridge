@@ -17,7 +17,7 @@ export const proposalKindLabel: Record<BridgeActionProposal["action"]["kind"], s
   "calendar.create": "新建日程", "calendar.reschedule": "调整日程", "calendar.delete": "删除日程",
   "mail.reply": "回复邮件", "mail.send": "外发邮件",
   "memory.rule_upsert": "助理规则",
-  "session.open": "打开会话", "session.send": "发送会话消息",
+  "session.open": "打开会话", "session.send": "发送会话消息", "session.create": "新建会话",
 };
 const proposalStateLabel: Record<ProposalState, string> = {
   pending: "待确认", executing: "正在写入…", applied: "已写入", dismissed: "已忽略",
@@ -53,6 +53,20 @@ function mailFailureSummary(failure: MailSendFailure | undefined) {
 
 export function proposalStatus(proposal: BridgeActionProposal): string {
   if (proposal.action.kind === "session.open" && proposal.state === "applied") return "已批准打开";
+  if (proposal.action.kind === "session.create") {
+    const { state, sessionCreation, sessionDelivery } = proposal;
+    if (sessionDelivery) return sessionDeliveryLabel[sessionDelivery];
+    if (state === "executing") return "正在新建会话…";
+    if (state === "applied") return "已新建会话";
+    if (state === "delivery_uncertain") return "会话已建，首条消息投递不确定，不会自动重发。";
+    if (state === "uncertain") return sessionCreation?.sessionId ? "会话已建，后续结果未确认。" : "创建结果不确定，请查看会话列表。";
+    if (state === "failed") {
+      if (sessionCreation?.failure === "trust-required") return "目录尚未获 Claude Desktop 信任，请先在 Claude Desktop 中确认。";
+      if (sessionCreation?.failure === "model") return "会话已建，但模型未确认应用。";
+      if (sessionCreation?.failure === "create") return sessionCreation.sessionId ? "会话已建，但未能完成分组或加载。" : "未能完成新建会话。";
+      return "会话已建，未能提交首条消息。";
+    }
+  }
   if (proposal.action.kind === "session.send") {
     if (proposal.sessionDelivery) return sessionDeliveryLabel[proposal.sessionDelivery];
     if (proposal.state === "executing") return "正在提交给 Claude Desktop…";
@@ -76,6 +90,7 @@ export function proposalTitle(proposal: BridgeActionProposal): string {
   if (action.kind === "memory.rule_upsert") return `${action.category} / ${action.ruleId}`;
   if ("accountKey" in action) return action.subject || "（无主题）";
   if ("targetSessionId" in action) return proposal.sessionTarget?.title ?? action.targetSessionId;
+  if (action.kind === "session.create") return action.title ?? proposal.sessionCreateTarget?.projectName ?? action.cwd;
   return "value" in action ? action.value.title : proposal.before?.title ?? proposalKindLabel[action.kind];
 }
 
@@ -122,7 +137,9 @@ export function ProposalCard({ proposal, mobile, review = false, replaced = fals
   const memory = action.kind === "memory.rule_upsert";
   const mail = "accountKey" in action;
   const failure = mail ? mailFailureSummary(current.mailSendFailure) : undefined;
-  const session = "targetSessionId" in action;
+  const create = action.kind === "session.create";
+  const session = create || "targetSessionId" in action;
+  const createdSessionId = current.sessionCreation?.sessionId;
   const Icon = session ? MessageSquare : mail ? Mail : memory ? FilePenLine : calendar ? CalendarDays : ListTodo;
   const disabled = !controller?.online || busy || replaced;
   const desired = "value" in action ? action.value : action.kind === "todo.complete" && current.before && "status" in current.before
@@ -132,7 +149,8 @@ export function ProposalCard({ proposal, mobile, review = false, replaced = fals
     setBusy(true);
     setError("");
     try {
-      const review = session ? method === "assistant.proposal.commit" ? { confirmSession: true } : { includeSession: true }
+      const review = create ? method === "assistant.proposal.commit" ? { confirmSessionCreate: true } : { includeSessionCreate: true }
+        : session ? method === "assistant.proposal.commit" ? { confirmSession: true } : { includeSession: true }
         : memory ? method === "assistant.proposal.commit" ? { confirmMemory: true } : { includeMemory: true } : {};
       const { proposal: result } = mailResult<{ proposal: BridgeActionProposal }>(await controller!.request(method, { ...proposalRef(pinned), ...review }));
       setOutcome(result);
@@ -173,10 +191,10 @@ export function ProposalCard({ proposal, mobile, review = false, replaced = fals
       : proposalStateDetail[state] ?? proposalStatus(current)}</p>}
     {error && !sessionSheet && <p role="alert">{error}</p>}
     {state === "pending" && !editing && <div className="proposal-actions">
-      {session ? <button type="button" className="primary-button" disabled={disabled || !current.sessionTarget} onClick={() => {
+      {session ? <button type="button" className="primary-button" disabled={disabled || !(create ? current.sessionCreateTarget : current.sessionTarget)} onClick={() => {
         setError("");
         setSessionSheet(current);
-      }}>{action.kind === "session.send" ? "核对会话消息…" : "核对目标会话…"}</button> : mail ? <>
+      }}>{create ? "核对新会话…" : action.kind === "session.send" ? "核对会话消息…" : "核对目标会话…"}</button> : mail ? <>
         <button type="button" className="primary-button" disabled={disabled} onClick={() => setMailSheet({ proposal: current, mode: "send" })}>核对并发送…</button>
         <button type="button" className="secondary-button" disabled={disabled} onClick={() => setMailSheet({ proposal: current, mode: "edit" })}>编辑</button>
       </> : <button type="button" className="primary-button" disabled={disabled} onClick={() => void decide("assistant.proposal.commit")}>
@@ -185,8 +203,14 @@ export function ProposalCard({ proposal, mobile, review = false, replaced = fals
       {"value" in action && <button type="button" className="secondary-button" disabled={disabled} onClick={() => setEditing(current)}>调整</button>}
       <button type="button" className="assistant-session-link" disabled={disabled} onClick={() => void decide("assistant.proposal.dismiss")}>忽略</button>
     </div>}
-    {action.kind === "session.send" && state !== "pending" && <div className="proposal-actions">
-      <button type="button" className="secondary-button" onClick={() => setSessionSheet(current)}>查看消息原文</button>
+    {state !== "pending" && (create || action.kind === "session.send") && <div className="proposal-actions">
+      {createdSessionId && <button type="button" className="primary-button" disabled={disabled} onClick={() => {
+        try { controller!.openSession(createdSessionId); }
+        catch (reason) { setError(reason instanceof Error ? reason.message : "无法打开会话。"); }
+      }}>打开新会话</button>}
+      <button type="button" className="secondary-button" onClick={() => { setError(""); setSessionSheet(current); }}>
+        {create ? "查看新会话提案" : "查看消息原文"}
+      </button>
     </div>}
     {sessionSheet && <SessionProposalSheet proposal={sessionSheet} hostName={controller!.hostName} mobile={mobile}
       onClose={() => { setSessionSheet(undefined); setError(""); }}
@@ -214,27 +238,38 @@ function SessionProposalSheet({ proposal, hostName, mobile, onClose, confirmatio
   useEffect(() => {
     if (mobile) return registerMobileBackHandler(() => { if (!busy) onClose(); return true; }, 150);
   }, [mobile, busy, onClose]);
-  const { action, sessionTarget } = proposal;
-  if (!("targetSessionId" in action) || !sessionTarget) return null;
+  const { action, sessionTarget, sessionCreateTarget, sessionCreation } = proposal;
+  const create = action.kind === "session.create";
+  if (!create && (!("targetSessionId" in action) || !sessionTarget)) return null;
   const send = action.kind === "session.send";
-  return <Sheet title={confirmation ? (send ? "核对会话消息" : "核对目标会话") : "会话消息原文"} fullScreen={mobile} manageFocus busy={busy} onClose={onClose}
+  const text = create || send ? action.text : undefined;
+  return <Sheet title={create ? confirmation ? "核对新会话" : "新会话提案"
+    : confirmation ? send ? "核对会话消息" : "核对目标会话" : "会话消息原文"} fullScreen={mobile} manageFocus busy={busy} onClose={onClose}
     footer={confirmation ? <div className="proposal-actions">
       <button type="button" className="secondary-button" disabled={busy} onClick={onClose}>取消</button>
       <button type="button" className="primary-button" disabled={busy || confirmation.stale || confirmation.offline} onClick={confirmation.confirm}>
-        {busy ? "处理中…" : send ? "确认发送消息" : "确认打开会话"}
+        {busy ? "处理中…" : create ? text ? "确认新建并发送" : "确认新建会话" : send ? "确认发送消息" : "确认打开会话"}
       </button>
-    </div> : send && <div className="proposal-actions"><MessageCopyButton text={action.text} label="复制消息原文" buttonText="复制原文" /></div>}>
+    </div> : text && <div className="proposal-actions"><MessageCopyButton text={text} label="复制消息原文" buttonText="复制原文" /></div>}>
     <div className="session-proposal-review">
       <dl className="proposal-fields">
         <dt>电脑</dt><dd>{hostName}</dd>
-        <dt>目标会话</dt><dd>{sessionTarget.title}</dd>
-        <dt>工作目录</dt><dd>{sessionTarget.cwd}</dd>
-        <dt>会话 ID</dt><dd><bdi>{action.targetSessionId}</bdi></dd>
+        {create ? <>
+          {action.title && <><dt>标题</dt><dd>{action.title}</dd></>}
+          <dt>工作目录</dt><dd><bdi>{action.cwd}</bdi></dd>
+          <dt>分组</dt><dd>{sessionCreateTarget?.projectName}</dd>
+          <dt>模型</dt><dd>{sessionCreateTarget?.modelName}</dd>
+          {sessionCreation?.sessionId && <><dt>会话 ID</dt><dd><bdi>{sessionCreation.sessionId}</bdi></dd></>}
+        </> : <>
+          <dt>目标会话</dt><dd>{sessionTarget!.title}</dd>
+          <dt>工作目录</dt><dd>{sessionTarget!.cwd}</dd>
+          <dt>会话 ID</dt><dd><bdi>{action.targetSessionId}</bdi></dd>
+        </>}
         <dt>版本</dt><dd>{proposal.revision}</dd>
       </dl>
-      {send && <pre aria-label="完整消息正文">{action.text}</pre>}
+      {text !== undefined && <pre aria-label={create ? "完整首条消息" : "完整消息正文"}>{text}</pre>}
       {confirmation && <>
-        <p>{send ? "发送可能启动一轮对话，仍使用目标会话的权限。" : "仅在此客户端打开会话，不发送消息。"}</p>
+        {!create && <p>{send ? "发送可能启动一轮对话，仍使用目标会话的权限。" : "仅在此客户端打开会话，不发送消息。"}</p>}
         {confirmation.stale && <p role="status">提案已更新或处理。关闭后重新核对。</p>}
         {confirmation.offline && <p role="status">连接电脑后可确认。</p>}
         {confirmation.error && <p role="alert">{confirmation.error}</p>}

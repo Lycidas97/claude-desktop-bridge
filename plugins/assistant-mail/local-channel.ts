@@ -103,7 +103,7 @@ export async function serveAssistantMailTools(options: {
           break;
         } else break;
         case SESSION_CREATE_OPTIONS_TOOL:
-          result = await options.proposals?.sessionCreateOptions?.(sessionId!, input.arguments.field);
+          result = await options.proposals?.sessionCreateOptions?.(sessionId!, input.arguments);
           assertManagedToken();
           break;
         case "memory.lookup_entry": result = options.lookupMemory?.(sessionId!, input.arguments.entryId); break;

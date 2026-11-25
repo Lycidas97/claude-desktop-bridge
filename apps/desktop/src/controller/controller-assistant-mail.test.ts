@@ -1023,6 +1023,26 @@ it.each(["session.command", "turn.start", "turn.steer"] as const)("reserves the 
   }
 });
 
+it("finds known working directories by name before the recent list limit and preserves same-name choices", async () => {
+  await run.request("plugin.assistant-mail.workspace.initialize", { workspacePath: run.workspace.path });
+  const recent = join(root, "recent", "Northstar");
+  const older = join(root, "older", "northstar");
+  run.sessions.unshift(nativeSession("recent-northstar", { cwd: recent }),
+    ...Array.from({ length: 11 }, (_, index) => nativeSession(`known-${index}`, { cwd: join(root, `known-${index}`) })),
+    nativeSession("older-northstar", { cwd: older }));
+  const defaults = await run.proposals.sessionCreateOptions("local-managed", { field: "cwd" });
+  expect(defaults.options).toHaveLength(12);
+  expect(defaults.options.some(option => option.value === older)).toBe(false);
+  const query = { field: "cwd", name: "northstar" } as const;
+  await expect(run.proposals.sessionCreateOptions("local-managed", query)).resolves.toEqual({ options: [
+    { value: recent, label: "Northstar" }, { value: older, label: "northstar" },
+  ] });
+  run.sessions[0]!.cwd = join(root, "recent", "different");
+  await expect(run.proposals.sessionCreateOptions("local-managed", query)).resolves.toEqual({ options: [
+    { value: older, label: "northstar" },
+  ] });
+});
+
 it("rejects managed paths and unavailable choices, then creates an empty Native session without changing its permissions", async () => {
   const { workspace, broker, proposals } = run;
   await run.request("plugin.assistant-mail.workspace.initialize", { workspacePath: workspace.path });

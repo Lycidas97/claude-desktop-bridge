@@ -11,13 +11,13 @@ import { CalDavError, requestCalDavMember } from "./caldav.js";
 import { canonicalCalendarBody, proposalCalendarBody } from "./proposal-ical.js";
 import { ProposalStore, publicProposal, type ProposalPayload, type StoredProposal } from "./proposal-store.js";
 import type { AssistantMailService } from "./desktop.js";
+import type { SessionCreateOptionsQuery } from "./proposal-contract.js";
 import { freezeMailDraft } from "./proposal-mail.js";
 import { submitSmtp, type SmtpResult } from "./smtp.js";
 
 export const ASSISTANT_SESSION_SEND_KEY_PREFIX = "assistant-session-proposal:";
 const sessionSendKey = (ref: ProposalRevisionRef) => `${ASSISTANT_SESSION_SEND_KEY_PREFIX}${ref.proposalId}:${ref.revision}`;
 type SessionDelivery = NonNullable<BridgeActionProposal["sessionDelivery"]>;
-type SessionCreateField = "cwd" | "project" | "model";
 type CreationFailure = NonNullable<NonNullable<BridgeActionProposal["sessionCreation"]>["failure"]>;
 
 export interface SessionProposalBackend {
@@ -26,7 +26,7 @@ export interface SessionProposalBackend {
   send(action: Extract<SessionProposalAction, { kind: "session.send" }>, key: string, turnRunning: boolean): Promise<void>;
   delivery(key: string): SessionDelivery | "dispatching" | undefined;
   creation?: {
-    options(field: SessionCreateField): Promise<{ value: string | null; label: string }[]>;
+    options(query: SessionCreateOptionsQuery): Promise<{ value: string | null; label: string }[]>;
     prepare(action: SessionCreateProposalAction): Promise<NonNullable<BridgeActionProposal["sessionCreateTarget"]>>;
     create(action: SessionCreateProposalAction, onCreated: (sessionId: string) => void): Promise<{ sessionId: string } | { failure: CreationFailure } | { uncertain: true }>;
   };
@@ -54,9 +54,9 @@ export class ProposalExecutor extends EventEmitter {
   get supportsSessionActions(): boolean { return this.sessions !== undefined; }
   get supportsSessionCreation(): boolean { return this.sessions?.creation !== undefined; }
 
-  async sessionCreateOptions(sessionId: string, field: SessionCreateField) {
+  async sessionCreateOptions(sessionId: string, query: SessionCreateOptionsQuery) {
     if (!this.sessions?.creation || !this.sessions.ownsDraft(sessionId)) throw new AssistantError("UNSUPPORTED", "当前托管助理不能新建会话。");
-    return { options: await this.sessions.creation.options(field) };
+    return { options: await this.sessions.creation.options(query) };
   }
 
   snapshot(): BridgeProposalSnapshot {

@@ -20,15 +20,16 @@ export function assistantSessionProposalBackend(
   return {
     ownsDraft,
     creation: {
-      async options(field) {
-        if (field === "model") return modelOptions();
-        if (field === "project") return [
+      async options(query) {
+        if (query.field === "model") return modelOptions();
+        if (query.field === "project") return [
           { value: null, label: CLAUDE_UNSECTIONED_PROJECT_NAME },
           ...(broker.capabilities().includes("section.move") ? sections().map(({ projectId, name }) => ({ value: projectId, label: name })) : []),
         ];
+        const name = query.name?.toLowerCase();
         return [...new Set(broker.listSessions().filter(session => !session.archivedAt && !session.sidechat)
-          .map(session => session.cwd).filter(cwd => isAbsolute(cwd) && !isAssistantWorkspace(cwd)))].slice(0, 12)
-          .map(value => ({ value, label: basename(value) || value }));
+          .map(session => session.cwd).filter(cwd => isAbsolute(cwd) && !isAssistantWorkspace(cwd)))].map(value => ({ value, label: basename(value) || value }))
+          .filter(option => name === undefined || option.label.toLowerCase() === name).slice(0, 12);
       },
       async prepare(action) {
         const capabilities = broker.capabilities();

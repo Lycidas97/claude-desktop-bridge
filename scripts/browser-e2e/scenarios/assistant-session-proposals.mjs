@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import { desktopFixtureRequest, eventually, syncNativeSections } from "../helpers.mjs";
 import { openDesktopAssistant, openMobileAssistant } from "../assistant-helpers.mjs";
 
@@ -34,13 +34,13 @@ export async function seedAssistantSessionCreation(host) {
   const native = host.nativeApproval;
   const { project } = await native.controllerRequest(desktopFixtureRequest({ method: "section.create", params: { name: sectionName } }), "desktop");
   const directory = (await native.sectionCatalog()).sessions.find(session => session.sessionId === targetId).cwd;
-  const options = async field => (await native.callAssistantTool("proposal.session_create_options", { field })).result.options;
-  assert.ok((await options("cwd")).some(option => option.value === directory));
-  assert.ok((await options("project")).some(option => option.value === project.projectId && option.label === sectionName));
-  const { value: model } = (await options("model")).find(option => option.label === modelName);
-  const { result: ref } = await native.draftProposal({ kind: "session.create", cwd: directory, projectId: project.projectId,
-    model, title: createdTitle, text: firstText });
-  return { ref, directory, model, projectId: project.projectId };
+  const options = async query => (await native.callAssistantTool("proposal.session_create_options", query)).result.options;
+  assert.deepEqual(await options({ field: "cwd", name: basename(directory) }), [{ value: directory, label: basename(directory) }]);
+  assert.ok((await options({ field: "project" })).some(option => option.value === project.projectId && option.label === sectionName));
+  const { value: model } = (await options({ field: "model" })).find(option => option.label === modelName);
+  const action = { kind: "session.create", cwd: directory, projectId: project.projectId, model, text: firstText };
+  const { result: ref } = await native.draftProposal(action);
+  return { ref, action };
 }
 
 export async function verifyAssistantSessionProposals(phone, host, steps, directory, viewports, baseUrl) {
@@ -156,8 +156,11 @@ export async function verifyAssistantSessionProposals(phone, host, steps, direct
   steps.push("Copy Session ID works; ignored, old confirmation and replay are rejected; paired phone opens by session.open without sending, and desktop sends only the full revised message to the busy Native target");
   await desktop.close();
 
-  const { ref, directory: cwd, model, projectId } = await seedAssistantSessionCreation(host);
+  const { ref: untitled, action } = await seedAssistantSessionCreation(host);
+  const { cwd, model, projectId } = action;
   await phone.locator(".assistant-page-mobile").getByRole("button", { name: "返回", exact: true }).click();
+  await phoneRows.getByRole("button", { name: `${cwd} 新建会话`, exact: true }).waitFor();
+  const { result: ref } = await native.callAssistantTool("proposal.update_pending", { ...untitled, action: { ...action, title: createdTitle } });
   await phoneRows.getByRole("button", { name: /新建隔离评审会话.*新建会话/u }).click();
   await phone.getByRole("button", { name: "核对新会话…" }).click();
   const createReview = phone.getByRole("dialog", { name: "核对新会话" });

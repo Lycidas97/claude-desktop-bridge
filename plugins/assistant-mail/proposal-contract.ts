@@ -51,6 +51,11 @@ export const proposalRef = z.strictObject({
 });
 export const reviseProposal = z.strictObject({ ...proposalRef.shape, action: proposalAction });
 export const listProposals = z.strictObject({ cursor, limit });
+export const sessionCreateOptions = z.strictObject({
+  field: z.enum(["cwd", "project", "model"]),
+  name: z.string().trim().min(1).max(255).regex(/^[^\p{Cc}]+$/u).optional(),
+}).refine(({ field, name }) => field === "cwd" || name === undefined, { path: ["name"], message: "Only cwd accepts a folder name." });
+export type SessionCreateOptionsQuery = z.infer<typeof sessionCreateOptions>;
 const sessionVisibility = { includeSession: z.literal(true).optional(), includeSessionCreate: z.literal(true).optional() };
 export const proposalRequests = {
   "assistant.proposal.list": listProposals.extend({ history: z.boolean().default(false), includeMail: z.literal(true).optional(), includeMemory: z.literal(true).optional(), ...sessionVisibility }),

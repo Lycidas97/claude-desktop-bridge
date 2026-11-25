@@ -90,7 +90,7 @@ export function proposalTitle(proposal: BridgeActionProposal): string {
   if (action.kind === "memory.rule_upsert") return `${action.category} / ${action.ruleId}`;
   if ("accountKey" in action) return action.subject || "（无主题）";
   if ("targetSessionId" in action) return proposal.sessionTarget?.title ?? action.targetSessionId;
-  if (action.kind === "session.create") return action.title ?? proposal.sessionCreateTarget?.projectName ?? action.cwd;
+  if (action.kind === "session.create") return action.title ?? action.cwd;
   return "value" in action ? action.value.title : proposal.before?.title ?? proposalKindLabel[action.kind];
 }
 

@@ -256,6 +256,8 @@ export async function verifyDesktopConversation(page, host, steps, directory, vi
     toolDone("desktop-tool-read", "Read ok"),
     toolUse("desktop-tool-bash", { command: "git status --short" }, "Bash"),
     toolDone("desktop-tool-bash", "clean worktree"),
+    toolUse("desktop-session-proposal", { title: "复核桌面会话", initiation: "own_initiative" }, "mcp__ccd_session__start_session"),
+    toolDone("desktop-session-proposal", 'Proposed "复核桌面会话" (task_id: task_a1b2c3d4). The user sees a card and nothing runs until they start it.'),
     {
       type: "assistant",
       uuid: "desktop-assistant-reply",
@@ -277,6 +279,8 @@ export async function verifyDesktopConversation(page, host, steps, directory, vi
     await host.nativeApproval.message(message);
   }
   const queuedSeed = await host.syncNativeQueue(await host.nativeApproval.enqueue("桌面排队待处理消息"), { pushEvents: false });
+  const historyPage = host.historyPage;
+  host.historyPage = (cursor, limit) => ({ ...historyPage(cursor, limit), ...(!cursor ? { sessionProposalResults: queuedSeed.history.sessionProposalResults } : {}) });
   const subagentInfo = host.history.find(item => item.subagent?.agentId === "desktop-bg-subagent")?.subagent;
   const backgroundTasks = [{
     id: "desktop-bg-call",
@@ -308,6 +312,11 @@ export async function verifyDesktopConversation(page, host, steps, directory, vi
   assert.equal(await page.locator(".composer-mode").count(), 0, "Desktop conversation does not reintroduce a composer mode selector");
 
   const stream = page.locator(".desktop-conversation-stream");
+  const proposal = stream.getByRole("region", { name: "会话提案", exact: true });
+  await proposal.getByText("复核桌面会话", { exact: true }).waitFor({ timeout: 5_000 });
+  await proposal.getByText("只能在 Claude Desktop 里确认", { exact: true }).waitFor({ timeout: 5_000 });
+  await proposal.getByRole("button", { name: "复制提案标题", exact: true }).waitFor();
+  await proposal.screenshot({ path: resolve(directory, "desktop-session-proposal.png"), animations: "disabled" });
   const queuedBubble = stream.locator("article.conversation-item.user").filter({ hasText: "桌面排队待处理消息" });
   await queuedBubble.getByRole("button", { name: "立即发送", exact: true }).waitFor();
   await queuedBubble.getByRole("button", { name: "复制这条消息", exact: true }).waitFor();

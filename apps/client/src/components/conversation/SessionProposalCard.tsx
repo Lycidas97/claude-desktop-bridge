@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Braces, ChevronDown, GitFork } from "lucide-react";
 import type { BridgeHistoryItem } from "@bridge/protocol";
+import { MessageCopyButton } from "../common/MessageCopyButton.js";
 import { ToolCallDetailSheet } from "./ToolCallDetailSheet.js";
 
 export function SessionProposalCard({ proposal, itemId, hostId, sessionId, toolUseId, toolName, summary, supportsToolDetail }: {
@@ -33,6 +34,10 @@ export function SessionProposalCard({ proposal, itemId, hostId, sessionId, toolU
           </summary>
         </details>
       )}
+      <div className="session-proposal-actions">
+        <span>只能在 Claude Desktop 里确认</span>
+        <MessageCopyButton text={proposal.title} label="复制提案标题" buttonText="复制标题" />
+      </div>
       {detailOpen && <ToolCallDetailSheet
         {...(hostId ? { hostId } : {})}
         sessionId={sessionId}

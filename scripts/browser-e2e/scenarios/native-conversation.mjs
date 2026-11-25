@@ -847,6 +847,7 @@ export async function verifyNativeBoundaries(page, host, steps, directory) {
   const proposal = stream.getByRole("region", { name: "会话提案", exact: true });
   await proposal.getByText(proposalTitle, { exact: true }).waitFor({ timeout: 5_000 });
   await proposal.getByText(proposalBackground, { exact: true }).waitFor();
+  await proposal.getByText("只能在 Claude Desktop 里确认", { exact: true }).waitFor({ timeout: 5_000 });
   assert.equal(await readingRow.evaluate(row => Math.round(row.getBoundingClientRect().top - row.parentElement.getBoundingClientRect().top)), readingOffset, "The reader stays at the same offset when a tool above becomes a proposal card");
   const beforeProposal = stream.locator('[data-stream-key="tool-group:tool:calendar-a-read"]');
   const afterProposal = stream.locator('[data-stream-key="tool-group:tool:calendar-z-grep"]');
@@ -863,6 +864,10 @@ export async function verifyNativeBoundaries(page, host, steps, directory) {
   await proposal.screenshot({ path: resolve(directory, "native-session-proposal-expanded.png"), animations: "disabled" });
   await background.press("Enter");
   assert.equal(await visibleLines(), 3, "Keyboard activation collapses the background again");
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"], { origin: new URL(page.url()).origin });
+  await proposal.getByRole("button", { name: "复制提案标题", exact: true }).click();
+  await proposal.getByRole("button", { name: "已复制", exact: true }).waitFor();
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), proposalTitle);
   const proposalPage = await host.nativeApproval.history();
   host.history.splice(0, host.history.length, ...proposalPage.items);
   const mockHistoryPage = host.historyPage;

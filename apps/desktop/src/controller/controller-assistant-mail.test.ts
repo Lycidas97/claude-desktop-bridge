@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { mkdtemp, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   ARTIFACT_MAX_BYTES, ARTIFACT_TRANSFER_CHUNK_BYTES, ARTIFACT_TRANSFER_TTL_MS,
@@ -14,9 +14,12 @@ import { AssistantMailService } from "../../../../plugins/assistant-mail/desktop
 import { ProposalExecutor } from "../../../../plugins/assistant-mail/proposal-executor.js";
 import { ProposalStore } from "../../../../plugins/assistant-mail/proposal-store.js";
 import { AssistantMailStore } from "../../../../plugins/assistant-mail/store.js";
+import { WorkspaceTrustRequiredError } from "../claude/claude-desktop-bridge.js";
+import { InspectorDisconnectedError, NativeCallError } from "../claude/claude-desktop-inspector.js";
 import { EvidenceManager } from "../evidence/evidence-manager.js";
 import { EvidenceStore } from "../evidence/evidence-store.js";
 import type { LoadedDesktopConfig } from "../transport/config.js";
+import { assistantSessionProposalBackend } from "./assistant-session-proposals.js";
 import { WorkspaceProvisioner } from "./assistant-workspace.js";
 import { DesktopController } from "./controller.js";
 import { createControllerFixture } from "./controller-fixture.js";
@@ -56,10 +59,6 @@ async function fixture(proposalStore: ProposalStore, agenda: AgendaStore) {
   ];
   const workspace = new WorkspaceProvisioner({ userDataPath: await realpath(root), appPath: "/fixture/app", execPath: "/fixture/Bridge",
     isApprovedProfile: hash => proposalStore.isApprovedProfile(hash) });
-  const proposals = new ProposalExecutor(proposalStore, agenda, {
-    available: () => false, encrypt: () => { throw new Error("Fixture has no calendar credentials"); },
-    decrypt: () => { throw new Error("Fixture has no calendar credentials"); },
-  }, () => {}, undefined, undefined, undefined, { memory: workspace.memory, policy: sessionId => workspace.ruleProposalPolicy(service.binding(), sessionId) });
   const broker = Object.assign(new EventEmitter(), {
     initialize: vi.fn(async () => undefined), listSessions: () => [...sessions], listProjects: () => projects,
     capabilities: vi.fn((): string[] => ["turn.start"]),
@@ -71,11 +70,13 @@ async function fixture(proposalStore: ProposalStore, agenda: AgendaStore) {
     session: (id: string) => sessions.find(session => session.sessionId === id),
     readNativeSessionIdentity: vi.fn(async (id: string) => ({ cwd: sessions.find(session => session.sessionId === id)?.cwd,
       permissionMode: "dontAsk", archived: false, cliSessionId: "synthetic-cli-session" })),
-    createSession: vi.fn(async (cwd: string) => {
+    createSession: vi.fn(async (cwd: string, _title?: string, _projectId?: string, _trust?: boolean, onCreated?: (sessionId: string) => void) => {
       const created = nativeSession("local-managed", { cwd, projectName: "助理", projectId: "managed-project" });
       sessions.push(created);
+      onCreated?.(created.sessionId);
       return created;
     }),
+    defaultConfiguration: vi.fn(async () => ({ availableModels: [{ value: "fixture-model", displayName: "Fixture model" }] })),
     configureSession: vi.fn(async () => ({ nativePermissionMode: "dontAsk" })),
     refreshDesktopSession: vi.fn(async () => undefined),
     history: vi.fn(async (sessionId: string) => ({ sessionId, items: [], hasMore: false })),
@@ -107,6 +108,13 @@ async function fixture(proposalStore: ProposalStore, agenda: AgendaStore) {
   };
   const receiptStore = new ConversationStateStore({ databasePath: join(root, "receipts.sqlite") });
   await receiptStore.initialize();
+  const proposals = new ProposalExecutor(proposalStore, agenda, {
+    available: () => false, encrypt: () => { throw new Error("Fixture has no calendar credentials"); },
+    decrypt: () => { throw new Error("Fixture has no calendar credentials"); },
+  }, () => {}, undefined, undefined, undefined, { memory: workspace.memory, policy: sessionId => workspace.ruleProposalPolicy(service.binding(), sessionId) },
+  assistantSessionProposalBackend(broker as unknown as ControllerArguments[4], receiptStore,
+    id => service.binding()?.nativeSessionId === id && Boolean(service.binding()?.managed),
+    cwd => workspace.matches(cwd), cwd => workspace.contains(cwd)));
   const controller = new DesktopController(
     { getVersion: () => "synthetic", getLoginItemSettings: () => ({ openAtLogin: false }) } as ControllerArguments[0],
     { loadOrCreate: async () => config, save: vi.fn(async () => undefined) } as unknown as ControllerArguments[1],
@@ -1013,6 +1021,84 @@ it.each(["session.command", "turn.start", "turn.steer"] as const)("reserves the 
     await expect(run.request(method, params)).resolves.toMatchObject({ command: { state: "sent" } });
     expect(run.broker.runCommand).toHaveBeenCalledWith(expect.objectContaining({ idempotencyKey: "mail-key" }));
   }
+});
+
+it("finds known working directories by name before the recent list limit and preserves same-name choices", async () => {
+  await run.request("plugin.assistant-mail.workspace.initialize", { workspacePath: run.workspace.path });
+  const recent = join(root, "recent", "Northstar");
+  const older = join(root, "older", "northstar");
+  run.sessions.unshift(nativeSession("recent-northstar", { cwd: recent }),
+    ...Array.from({ length: 11 }, (_, index) => nativeSession(`known-${index}`, { cwd: join(root, `known-${index}`) })),
+    nativeSession("older-northstar", { cwd: older }));
+  const defaults = await run.proposals.sessionCreateOptions("local-managed", { field: "cwd" });
+  expect(defaults.options).toHaveLength(12);
+  expect(defaults.options.some(option => option.value === older)).toBe(false);
+  const query = { field: "cwd", name: "northstar" } as const;
+  await expect(run.proposals.sessionCreateOptions("local-managed", query)).resolves.toEqual({ options: [
+    { value: recent, label: "Northstar" }, { value: older, label: "northstar" },
+  ] });
+  run.sessions[0]!.cwd = join(root, "recent", "different");
+  await expect(run.proposals.sessionCreateOptions("local-managed", query)).resolves.toEqual({ options: [
+    { value: older, label: "northstar" },
+  ] });
+});
+
+it("rejects managed paths and unavailable choices, then creates an empty Native session without changing its permissions", async () => {
+  const { workspace, broker, proposals } = run;
+  await run.request("plugin.assistant-mail.workspace.initialize", { workspacePath: workspace.path });
+  broker.createSession.mockClear();
+  broker.configureSession.mockClear();
+  broker.capabilities.mockReturnValue(["session.create", "session.configure"]);
+  const managedChild = join(workspace.path, "outputs");
+  await mkdir(managedChild, { recursive: true });
+  const action = { kind: "session.create", cwd: root, projectId: null, model: "fixture-model" } as const;
+  for (const invalid of [{ ...action, cwd: managedChild }, { ...action, cwd: "relative" },
+    { ...action, projectId: "directory-project" }, { ...action, model: "missing-model" }]) {
+    await expect(proposals.create("local-managed", invalid)).rejects.toMatchObject({ code: "INVALID_PARAMS" });
+  }
+  const ref = await proposals.create("local-managed", action);
+  expect(broker.createSession).not.toHaveBeenCalled();
+  const params = { ...ref, confirmSessionCreate: true };
+  await expect(run.request("assistant.proposal.commit", params, "")).rejects.toMatchObject({ code: "PAIRING_REQUIRED" });
+  broker.createSession.mockImplementationOnce(async (cwd, _title, _projectId, _trust, onCreated) => {
+    const session = nativeSession("local_created", { cwd });
+    onCreated!(session.sessionId);
+    return session;
+  });
+  await run.request("assistant.proposal.commit", params);
+  await proposals.close();
+  expect(broker.createSession).toHaveBeenCalledExactlyOnceWith(root, undefined, undefined, undefined, expect.any(Function));
+  expect(broker.configureSession).toHaveBeenCalledExactlyOnceWith({ sessionId: "local_created", model: action.model });
+  expect(broker.startTurn).not.toHaveBeenCalled();
+  await expect(run.request("assistant.proposal.list", { history: true, includeSessionCreate: true }))
+    .resolves.toMatchObject({ proposals: [{ ...ref, state: "applied", sessionCreation: { sessionId: "local_created" } }] });
+});
+
+it.each(["section", "model", "trust", "disconnect"] as const)("does not submit the approved first message when %s fails", async stage => {
+  const { workspace, broker, proposals } = run;
+  await run.request("plugin.assistant-mail.workspace.initialize", { workspacePath: workspace.path });
+  broker.createSession.mockClear();
+  broker.configureSession.mockClear();
+  broker.capabilities.mockReturnValue(["session.create", "session.configure", "turn.start", "section.move"]);
+  run.projects.push({ ...run.projects[0]!, projectId: "review-section", name: "Review" });
+  const ref = await proposals.create("local-managed", { kind: "session.create", cwd: root,
+    projectId: "review-section", model: "fixture-model", text: "First message" });
+  broker.createSession.mockImplementationOnce(async (cwd, _title, _projectId, _trust, onCreated) => {
+    if (stage === "trust") throw new WorkspaceTrustRequiredError(false);
+    if (stage === "disconnect") throw new InspectorDisconnectedError("Native start response lost");
+    onCreated!("local_created");
+    if (stage === "section") throw new NativeCallError("Native rejected move");
+    return nativeSession("local_created", { cwd, projectId: "review-section" });
+  });
+  if (stage === "model") broker.configureSession.mockRejectedValueOnce(new NativeCallError("Desktop did not apply the selected model"));
+  await run.request("assistant.proposal.commit", { ...ref, confirmSessionCreate: true });
+  await proposals.close();
+  expect(broker.createSession).toHaveBeenCalledExactlyOnceWith(root, undefined, "review-section", undefined, expect.any(Function));
+  expect(broker.startTurn).not.toHaveBeenCalled();
+  const { proposals: [completed] } = await run.request<BridgeProposalPage>("assistant.proposal.list", { history: true, includeSessionCreate: true });
+  expect(completed).toMatchObject({ ...ref, state: stage === "disconnect" ? "uncertain" : "failed" });
+  expect(completed?.sessionCreation).toEqual(stage === "model" ? { sessionId: "local_created", failure: "model" }
+    : stage === "section" ? { sessionId: "local_created", failure: "create" } : stage === "trust" ? { failure: "trust-required" } : undefined);
 });
 
 it("persists the canonical workspace returned by provisioning, not the path from the request", async () => {

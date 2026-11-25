@@ -230,6 +230,7 @@ export type BridgeCapability =
   | "assistant.proposal.v1"
   | "assistant.proposal.memory.v1"
   | "assistant.proposal.session.v1"
+  | "assistant.proposal.session-create.v1"
   | "plugin.assistant-mail.v1"
   | "plugin.assistant-mail.manual-reference.v1"
   | "plugin.assistant-mail.workspace.v1"

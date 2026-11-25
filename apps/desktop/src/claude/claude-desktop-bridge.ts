@@ -745,7 +745,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
     if (!await this.refreshRuntime()) throw new NativeCallError(this.lastError);
   }
 
-  async createSession(cwd: string, title?: string, projectId?: string, trustWorkspace?: boolean): Promise<BridgeSessionInfo> {
+  async createSession(cwd: string, title?: string, projectId?: string, trustWorkspace?: boolean, onCreated?: (sessionId: string) => void): Promise<BridgeSessionInfo> {
     const explicitTitle = title?.trim() || undefined;
     const targetProjectId = projectId === CLAUDE_UNSECTIONED_PROJECT_ID ? undefined : projectId;
     if (targetProjectId && !await this.refreshRuntime()) throw new NativeCallError(this.lastError);
@@ -772,6 +772,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
     }
     const result = record(raw);
     if (typeof result.sessionId !== "string") throw new NativeCallError("Desktop did not return a session ID");
+    onCreated?.(result.sessionId);
     if (explicitTitle) {
       this.autoTitledSessions.add(result.sessionId);
       this.explicitlyTitledSessions.add(result.sessionId);

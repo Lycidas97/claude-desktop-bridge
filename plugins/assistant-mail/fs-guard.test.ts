@@ -176,13 +176,22 @@ it("permits native web search without granting fetch, shell or proposal executio
   }
 });
 
-it.each(["session.open", "session.send"])("permits only the managed main session to draft %s", async kind => {
-  const action = { kind, targetSessionId: "local_fixture", ...(kind === "session.send" ? { text: "Owned fixture text" } : {}) };
+it.each([
+  { kind: "session.open", targetSessionId: "local_fixture" },
+  { kind: "session.send", targetSessionId: "local_fixture", text: "Owned fixture text" },
+  { kind: "session.create", cwd: "/fixture/project", projectId: null, model: "fixture-model" },
+])("permits only the managed main session to draft $kind", async action => {
   for (const suffix of ["proposal_create", "proposal_update_pending"]) {
     const input = { hook_event_name: "PreToolUse", cwd: workspace, tool_name: `mcp__assistant-mail__${suffix}`, tool_input: { action } };
     await expect(allowAssistantTool(workspace, input)).resolves.toBe(true);
     await expect(allowAssistantTool(workspace, { ...input, agent_id: "helper-fixture", agent_type: "assistant-helper" })).resolves.toBe(false);
   }
+});
+
+it("allows only the managed main session to look up creation choices", async () => {
+  const input = { hook_event_name: "PreToolUse", cwd: workspace, tool_name: "mcp__assistant-mail__proposal_session_create_options", tool_input: { field: "cwd" } };
+  await expect(allowAssistantTool(workspace, input)).resolves.toBe(true);
+  await expect(allowAssistantTool(workspace, { ...input, agent_id: "helper-fixture", agent_type: "assistant-helper" })).resolves.toBe(false);
 });
 
 it.each(["proposal_create", "proposal_update_pending"])("limits Stage 1 %s rule drafts to the main session", async tool => {

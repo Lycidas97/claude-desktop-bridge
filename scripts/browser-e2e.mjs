@@ -29,7 +29,7 @@ import { verifyAssistantMailCategories } from "./browser-e2e/scenarios/assistant
 import { verifyAssistantReadDirectories } from "./browser-e2e/scenarios/assistant-read-directories.mjs";
 import { verifyAssistantReplies } from "./browser-e2e/scenarios/assistant-replies.mjs";
 import { memoryProposalFixture, seedAssistantProposals, seedMailProposal, verifyAssistantProposals } from "./browser-e2e/scenarios/assistant-proposals.mjs";
-import { seedAssistantSessionProposals, verifyAssistantSessionProposals } from "./browser-e2e/scenarios/assistant-session-proposals.mjs";
+import { seedAssistantSessionProposals, seedAssistantSessionCreation, verifyAssistantSessionProposals } from "./browser-e2e/scenarios/assistant-session-proposals.mjs";
 import { scanDesktopPairingQr } from "./browser-e2e/scenarios/pairing-qr.mjs";
 import { createPreviousPairedHost, verifyPairedHostStatus } from "./browser-e2e/scenarios/paired-host-status.mjs";
 import { incomingFileFixture, installIncomingFileFixture, verifyIncomingFile } from "./browser-e2e/scenarios/incoming-file.mjs";
@@ -85,7 +85,7 @@ async function runScenario(theme, scenario, mockHostRuntime) {
   let desktopAttachmentHost;
   let failure;
   try {
-    host = await createMockHost(mockHostRuntime, !assistantMail && !firstAttachments && !["delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "round4-boundaries", "desktop-conversation", "incoming-file"].includes(scenario), scenario !== "delivery-approval-reconnect", errors, assistantMail || firstAttachments || ["native-approvals", "native-prompts-pr", "native-messages", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "round4-boundaries", "desktop-conversation", "incoming-file"].includes(scenario), ["native-queue-actions", "desktop-conversation"].includes(scenario), ["section-manage", "round4-boundaries", "round5-ux"].includes(scenario), assistantMail, scenario === "assistant-attention" ? { initialMailCount: 0, proposals: true } : scenario === "round5-ux" ? { desktopName: "LycidasdeMac-mini", initialMailCount: 0, legacyAttention: true } : ["assistant-proposals", "assistant-session-proposals"].includes(scenario) ? { initialMailCount: 0, proposals: true, legacyAttention: true } : ["assistant-agenda", "assistant-mail-unread", "assistant-read-directories", "assistant-replies"].includes(scenario) ? { initialMailCount: 0, legacyAttention: true } : scenario === "assistant-mail-history" ? { initialMailCount: 0, initialMailHistory: 25 } : scenario === "assistant-mail-categories" ? { initialMailCount: 2 } : scenario === "assistant-mail-reference" ? { initialMailCount: 52 } : accountsScenario ? { initialMailCount: 1, legacyAttention: true } : { legacyAttention: true });
+    host = await createMockHost(mockHostRuntime, !assistantMail && !firstAttachments && !["delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "round4-boundaries", "desktop-conversation", "incoming-file"].includes(scenario), scenario !== "delivery-approval-reconnect", errors, assistantMail || firstAttachments || ["native-approvals", "native-prompts-pr", "native-messages", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "round4-boundaries", "desktop-conversation", "incoming-file"].includes(scenario), ["native-queue-actions", "desktop-conversation"].includes(scenario), ["section-manage", "round4-boundaries", "round5-ux", "assistant-session-proposals"].includes(scenario), assistantMail, scenario === "assistant-attention" ? { initialMailCount: 0, proposals: true } : scenario === "round5-ux" ? { desktopName: "LycidasdeMac-mini", initialMailCount: 0, legacyAttention: true } : ["assistant-proposals", "assistant-session-proposals"].includes(scenario) ? { initialMailCount: 0, proposals: true, legacyAttention: true } : ["assistant-agenda", "assistant-mail-unread", "assistant-read-directories", "assistant-replies"].includes(scenario) ? { initialMailCount: 0, legacyAttention: true } : scenario === "assistant-mail-history" ? { initialMailCount: 0, initialMailHistory: 25 } : scenario === "assistant-mail-categories" ? { initialMailCount: 2 } : scenario === "assistant-mail-reference" ? { initialMailCount: 52 } : accountsScenario ? { initialMailCount: 1, legacyAttention: true } : { legacyAttention: true });
     if (firstAttachments) host.snapshot.host.capabilities.push("workspace.upload.v1");
     const assistantId = {
       "assistant-agenda": "agenda-fixture",
@@ -178,7 +178,7 @@ async function runScenario(theme, scenario, mockHostRuntime) {
     await eventually(() => host.requests.some((request) => request.method === "snapshot.get"), true, "Pairing requires an encrypted snapshot handshake");
     assert.equal(await page.locator("html").getAttribute("data-theme"), process.env.BRIDGE_QA_THEME ?? theme);
     assert.equal(await page.locator("html").getAttribute("data-theme-family"), process.env.BRIDGE_QA_THEME_FAMILY ?? "sunstone");
-    assert.equal(await page.locator(".mobile-home-catalog [data-session-id]").count(), ["project-grouping", "session-catalog", "section-manage", "round4-boundaries", "round5-ux"].includes(scenario) ? 3 : 2, "Pairing must synchronize the home catalog session rows");
+    assert.equal(await page.locator(".mobile-home-catalog [data-session-id]").count(), ["project-grouping", "session-catalog", "section-manage", "round4-boundaries", "round5-ux", "assistant-session-proposals"].includes(scenario) ? 3 : 2, "Pairing must synchronize the home catalog session rows");
     assert.equal(await page.evaluate(() => Boolean(window.bridgeDesktop)), false, "Test must load the mobile App path");
     assert.equal(await page.evaluate(() => innerWidth), 375);
     steps.push("real App pairing and encrypted snapshot synchronize the session list at 375x812");
@@ -479,7 +479,7 @@ try {
     const proposalPreview = assistantMailPreview && process.env.BRIDGE_E2E_SCENARIOS === "assistant-proposals";
     const sessionProposalPreview = assistantMailPreview && process.env.BRIDGE_E2E_SCENARIOS === "assistant-session-proposals";
     const host = await createMockHost(mockHostRuntime, !nativePreview && !remotePreview, false, infrastructureErrors, nativePreview, nativePreview,
-      undefined, assistantMailPreview, proposalPreview || sessionProposalPreview ? { initialMailCount: 0, proposals: true }
+      sessionProposalPreview || sectionCreatePreview, assistantMailPreview, proposalPreview || sessionProposalPreview ? { initialMailCount: 0, proposals: true }
         : assistantMailPreview && process.env.BRIDGE_E2E_SCENARIOS === "assistant-mail-history"
         ? { initialMailCount: 0, initialMailHistory: 25 } : {});
     if (assistantMailPreview && process.env.BRIDGE_E2E_SCENARIOS === "assistant-mail") {
@@ -495,7 +495,10 @@ try {
       await host.nativeApproval.draftProposal(memoryProposalFixture);
       await seedMailProposal(host);
     }
-    if (sessionProposalPreview) await seedAssistantSessionProposals(host);
+    if (sessionProposalPreview) {
+      await seedAssistantSessionProposals(host);
+      await seedAssistantSessionCreation(host);
+    }
     if (projectGroupingPreview) {
       Object.assign(host.snapshot, await host.nativeApproval.projectCatalog());
       if (process.argv.includes("--recent-sessions-preview")) addOlderCatalogSessions(host.snapshot);

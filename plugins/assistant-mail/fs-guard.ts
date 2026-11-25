@@ -2,7 +2,7 @@ import { readFileSync, statSync, type BigIntStats } from "node:fs";
 import { lstat, readdir, realpath, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import { ASSISTANT_DIRECTORY_TOOL, ASSISTANT_MEMORY_POLICY, ASSISTANT_WORKSPACE_POLICY, isAssistantWorkspacePolicy } from "../../packages/protocol/src/assistant-mail.js";
-import { PROPOSAL_TOOLS } from "../../packages/protocol/src/assistant-proposal.js";
+import { PROPOSAL_TOOLS, SESSION_CREATE_OPTIONS_TOOL } from "../../packages/protocol/src/assistant-proposal.js";
 
 const readTools = ["Read", "Glob", "Grep"];
 export const ASSISTANT_FILE_WRITES = ["Write", "Edit", "MultiEdit"];
@@ -146,7 +146,8 @@ export async function allowAssistantTool(workspace: string, input: unknown, poli
   const params = args as Record<string, unknown>;
   const specialist = memory && typeof agentType === "string" ? ASSISTANT_SPECIALISTS.get(agentType) : undefined;
   if (memory && (specialist ? !specialist.includes(name) : agentId !== undefined)) return false;
-  if ((name === ASSISTANT_MARK_READ_TOOL || name === ASSISTANT_WEB_SEARCH_TOOL) && agentId !== undefined) return false;
+  if (agentId !== undefined && (name === ASSISTANT_MARK_READ_TOOL || name === ASSISTANT_WEB_SEARCH_TOOL ||
+    name === `mcp__${ASSISTANT_MCP}__${SESSION_CREATE_OPTIONS_TOOL.replace(".", "_")}`)) return false;
   if (name === "Agent") {
     // Resume, worktree, background and teammate modes carry a different execution scope.
     const target = params.subagent_type;
@@ -156,7 +157,7 @@ export async function allowAssistantTool(workspace: string, input: unknown, poli
   }
   if (proposalDraftTools.includes(name)) {
     const kind = (params.action as { kind?: unknown } | undefined)?.kind;
-    if (agentId !== undefined && (kind === "session.open" || kind === "session.send" || (!memory && kind === "memory.rule_upsert"))) return false;
+    if (agentId !== undefined && ((typeof kind === "string" && kind.startsWith("session.")) || (!memory && kind === "memory.rule_upsert"))) return false;
     if (specialist && (typeof kind !== "string" || !(agentType === "mail-triager" ? kind.startsWith("mail.")
       : agentType === "schedule-planner" ? /^(todo|calendar)\./.test(kind) : kind === "memory.rule_upsert"))) return false;
   }

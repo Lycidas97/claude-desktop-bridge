@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { resolve } from "node:path";
-import { desktopFixtureRequest, eventually } from "../helpers.mjs";
+import { basename, resolve } from "node:path";
+import { desktopFixtureRequest, eventually, syncNativeSections } from "../helpers.mjs";
 import { openDesktopAssistant, openMobileAssistant } from "../assistant-helpers.mjs";
 
 const targetId = "local_fixture_review_session";
@@ -10,7 +10,7 @@ const message = "  请核对 @fixture-notes。\n\n原样保留 <标记> 与缩�
 
 export async function seedAssistantSessionProposals(host) {
   const native = host.nativeApproval;
-  await native.seedSessions([{ sessionId: targetId, title: targetTitle, turnRunning: true, permissionMode: "default" }]);
+  await native.seedSessions([{ sessionId: targetId, title: targetTitle, turnRunning: true, permissionMode: "default", lastActivityAt: Date.now() }]);
   const catalog = await native.sectionCatalog();
   const target = catalog.sessions.find(session => session.sessionId === targetId);
   host.snapshot.sessions.push(target);
@@ -23,6 +23,24 @@ export async function seedAssistantSessionProposals(host) {
   await host.send({ kind: "snapshot", snapshot: host.snapshot });
   assert.equal(draft.source.authorizesActions, false);
   return { send, draft: draft.result, open: open.result };
+}
+
+const createdTitle = "新建隔离评审会话";
+const sectionName = "评审分组";
+const modelName = "隔离模型 · 长上下文";
+const firstText = "  请检查这份方案。\n\n原样保留 <标记>。  ";
+
+export async function seedAssistantSessionCreation(host) {
+  const native = host.nativeApproval;
+  const { project } = await native.controllerRequest(desktopFixtureRequest({ method: "section.create", params: { name: sectionName } }), "desktop");
+  const directory = (await native.sectionCatalog()).sessions.find(session => session.sessionId === targetId).cwd;
+  const options = async query => (await native.callAssistantTool("proposal.session_create_options", query)).result.options;
+  assert.deepEqual(await options({ field: "cwd", name: basename(directory) }), [{ value: directory, label: basename(directory) }]);
+  assert.ok((await options({ field: "project" })).some(option => option.value === project.projectId && option.label === sectionName));
+  const { value: model } = (await options({ field: "model" })).find(option => option.label === modelName);
+  const action = { kind: "session.create", cwd: directory, projectId: project.projectId, model, text: firstText };
+  const { result: ref } = await native.draftProposal(action);
+  return { ref, action };
 }
 
 export async function verifyAssistantSessionProposals(phone, host, steps, directory, viewports, baseUrl) {
@@ -137,4 +155,47 @@ export async function verifyAssistantSessionProposals(phone, host, steps, direct
   assert.equal(targetSends().length, 1);
   steps.push("Copy Session ID works; ignored, old confirmation and replay are rejected; paired phone opens by session.open without sending, and desktop sends only the full revised message to the busy Native target");
   await desktop.close();
+
+  const { ref: untitled, action } = await seedAssistantSessionCreation(host);
+  const { cwd, model, projectId } = action;
+  await phone.locator(".assistant-page-mobile").getByRole("button", { name: "返回", exact: true }).click();
+  await phoneRows.getByRole("button", { name: `${cwd} 新建会话`, exact: true }).waitFor();
+  const { result: ref } = await native.callAssistantTool("proposal.update_pending", { ...untitled, action: { ...action, title: createdTitle } });
+  await phoneRows.getByRole("button", { name: /新建隔离评审会话.*新建会话/u }).click();
+  await phone.getByRole("button", { name: "核对新会话…" }).click();
+  const createReview = phone.getByRole("dialog", { name: "核对新会话" });
+  for (const value of [host.snapshot.host.name, createdTitle, cwd, sectionName, modelName]) {
+    await createReview.getByText(value, { exact: true }).waitFor();
+  }
+  assert.equal(await createReview.locator('pre[aria-label="完整首条消息"]').textContent(), firstText);
+  assert.equal(native.calls.filter(call => call.method === "start").length, 0);
+  assert.deepEqual((await request("assistant.proposal.list", { includeSession: true })).proposals, []);
+  await assert.rejects(request("assistant.proposal.commit", { ...ref, confirmSession: true }), { code: "INVALID_PARAMS" });
+  await capture(phone, "mobile-session-create-review");
+  await createReview.getByRole("button", { name: "确认新建并发送" }).click();
+  const readCreated = async () => (await request("assistant.proposal.list", { history: true, includeSessionCreate: true })).proposals[0];
+  await eventually(async () => (await readCreated())?.state, "applied", "Native created the approved session and submitted the first message");
+  const { sessionCreation: { sessionId: createdId } } = await readCreated();
+  await syncNativeSections(host);
+  const created = host.snapshot.sessions.find(session => session.sessionId === createdId);
+  assert.equal(created.projectId, projectId);
+  const { configuration } = await request("session.configuration", { sessionId: createdId });
+  assert.equal(configuration.model, model);
+  const start = native.calls.findIndex(call => call.method === "start" && call.args[0].sessionId === createdId);
+  const setModel = native.calls.findIndex(call => call.method === "setModel" && call.args[0] === createdId);
+  const firstSend = native.calls.findIndex(call => call.method === "sendMessage" && call.args[0] === createdId);
+  assert.ok(start >= 0 && setModel > start && firstSend > setModel);
+  assert.equal(native.calls[start].args[0].withoutFirstMessage, true);
+  assert.ok(native.calls.slice(setModel + 1, firstSend).some(call => call.method === "getSession" && call.args[0] === createdId));
+  assert.equal(native.calls[firstSend].args[1], firstText);
+  assert.ok(!native.calls.some(call => call.method === "saveTrust" || (call.method === "setPermissionMode" && call.args[0] === createdId)));
+  await assert.rejects(request("assistant.proposal.commit", { ...ref, confirmSessionCreate: true }), { code: "CONFLICT" });
+  assert.equal(native.calls.filter(call => call.method === "start").length, 1);
+  assert.equal(native.calls.filter(call => call.method === "sendMessage" && call.args[0] === createdId).length, 1);
+  const { client: _client, ...phoneCommit } = host.requests.find(request => request.method === "assistant.proposal.commit" && request.params.proposalId === ref.proposalId).params;
+  assert.deepEqual(phoneCommit, { ...ref, confirmSessionCreate: true });
+  await host.send({ kind: "snapshot", snapshot: host.snapshot });
+  await phone.getByRole("button", { name: "打开新会话", exact: true }).click();
+  await eventually(() => host.requests.some(request => request.method === "session.open" && request.params.sessionId === createdId), true, "Client opens the newly created session");
+  steps.push("The paired phone reviews the cwd, Section, model and exact first message; Native confirms the model before the only send, and the recorded session opens normally");
 }

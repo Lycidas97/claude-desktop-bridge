@@ -213,9 +213,11 @@ CalDAV/VTODO 创建使用固定资源地址与 `If-None-Match: *`。修改和删
 
 ### 会话动作提案
 
-托管主会话通过现有 `proposal.create` / `proposal.update_pending` 按用户给出的精确会话 ID 草拟 `session.open` 或 `session.send`。不提供目标目录、搜索或历史读取；工具只拿到草稿版本引用，`proposal.list` 不返回会话动作记录。子代理不能草拟此类提案，`SendMessage`、`mcp__ccd_*` 和其他原生执行入口仍被阻断。
+托管主会话通过现有 `proposal.create` / `proposal.update_pending` 按用户给出的精确会话 ID 草拟 `session.open` 或 `session.send`。打开或发送仍不提供现有会话目录、搜索或历史读取。新建提案可用 `proposal.session_create_options` 按需读取近期工作目录、当前分组或模型选项，不返回会话 ID、标题、正文或文件列表。草拟只返回版本引用，`proposal.list` 不返回会话动作记录。子代理不能草拟此类提案，`SendMessage`、`mcp__ccd_*` 和其他原生执行入口仍被阻断。
 
 只有同一宿主的已配对客户端或受信任本机 IPC 可在查看宿主核验的会话标题、工作目录、ID、动作及完整正文后，用 `confirmSession: true` 确认账本中的同一版本。更改目标或正文产生新版本；更改动作类型须另建提案。宿主确认目标仍是可用的现有 Native 会话且托管绑定仍有效。归档会话、侧聊及托管工作区会话不作为目标。打开只导航到当前 Bridge 客户端的会话视图，不能控制 Claude Desktop 窗口，也不发送消息。发送仅支持纯文本，不支持附件、斜杠命令或 `!` 开头的命令输入。Bridge 不改变目标的权限模式或替用户批准 Native 权限请求。发送前持久化认领；重复确认和恢复不会再发。回执丢失时显示不确定，不把已提交或排队当成会话已接收。旧客户端仍可审批原有类型，但看不到、也不能用旧审批参数批准会话动作。
+
+`session.create` 另用 `confirmSessionCreate: true` 确认冻结的工作目录、分组、模型和可选首条正文。Bridge 不代为信任目录，不接受托管工作区或子目录作为目标。确认后先创建空会话，持久化 Desktop 返回的 ID，应用指定模型并经过原生回读，再提交首条纯文本消息。断线、失败或重启后不重建、不重发；保留已知会话 ID。
 
 ### 邮件外发提案
 

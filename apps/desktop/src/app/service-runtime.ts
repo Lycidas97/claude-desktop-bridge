@@ -196,7 +196,7 @@ export async function createServiceRuntime(options: {
     assistantSessionProposalBackend(broker, conversationState, sessionId => {
       const binding = assistantMail.binding();
       return !workspace.repairFailed && binding?.nativeSessionId === sessionId && Boolean(binding.managed);
-    }, cwd => workspace.matches(cwd)));
+    }, cwd => workspace.matches(cwd), cwd => workspace.contains(cwd)));
     proposals.on("error", () => process.stderr.write("Bridge assistant proposal execution or recovery failed.\n"));
     resources.defer("Assistant proposals", () => proposals.close());
     const mailTools = await serveAssistantMailTools({

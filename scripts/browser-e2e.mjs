@@ -479,7 +479,7 @@ try {
     const proposalPreview = assistantMailPreview && process.env.BRIDGE_E2E_SCENARIOS === "assistant-proposals";
     const sessionProposalPreview = assistantMailPreview && process.env.BRIDGE_E2E_SCENARIOS === "assistant-session-proposals";
     const host = await createMockHost(mockHostRuntime, !nativePreview && !remotePreview, false, infrastructureErrors, nativePreview, nativePreview,
-      undefined, assistantMailPreview, proposalPreview || sessionProposalPreview ? { initialMailCount: 0, proposals: true }
+      sessionProposalPreview || sectionCreatePreview, assistantMailPreview, proposalPreview || sessionProposalPreview ? { initialMailCount: 0, proposals: true }
         : assistantMailPreview && process.env.BRIDGE_E2E_SCENARIOS === "assistant-mail-history"
         ? { initialMailCount: 0, initialMailHistory: 25 } : {});
     if (assistantMailPreview && process.env.BRIDGE_E2E_SCENARIOS === "assistant-mail") {

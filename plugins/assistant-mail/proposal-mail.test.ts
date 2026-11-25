@@ -123,6 +123,34 @@ it.each(["proposal.create", "proposal.update_pending"] as const)("does not let %
   }
 });
 
+it("sends only the reviewed output bytes and refuses legacy confirmation or changed content", async () => {
+  const workspace = join(directory, "private", "assistant", "workspace");
+  await mkdir(join(workspace, "outputs"), { recursive: true });
+  mail.setBinding({ assistantId: "assistant", nativeSessionId: "bound", sectionId: null, previousSessionIds: [],
+    managed: { path: workspace, policy: "stage1-fenced-workspace", token: "fixture-token", automaticDelivery: false } });
+  const file = join(workspace, "outputs", "report.csv");
+  const content = Buffer.from("Name,Total\nOne,42\n");
+  await writeFile(file, content);
+  const selection = [{ outputPath: "outputs/report.csv" }];
+  const ref = await executor.create("bound", { ...draft, to: [...draft.to], cc: [...draft.cc], attachments: selection });
+  expect(executor.pending(ref).action).toMatchObject({ attachments: [{ filename: "report.csv", size: content.length,
+    sha256: createHash("sha256").update(content).digest("hex") }] });
+  expect(executor.page({ includeMail: true, limit: 10 }).proposals).toEqual([]);
+  expect(executor.page({ includeMail: true, includeMailAttachments: true, limit: 10 }).proposals).toHaveLength(1);
+  expect(executor.snapshot()).toMatchObject({ pendingMailCount: 0, pendingMailAttachmentCount: 1 });
+  await expect(executor.commit({ ...ref, confirmMail: true }, "legacy-phone")).rejects.toMatchObject({ code: "INVALID_PARAMS" });
+  await writeFile(file, Buffer.from("Name,Total\nOne,99\n"));
+  await expect(executor.commit({ ...ref, confirmMail: true, confirmMailAttachments: true }, "phone")).rejects.toMatchObject({ code: "CONFLICT" });
+  expect(send).not.toHaveBeenCalled();
+  expect(db.prepare("SELECT * FROM send_attempts").all()).toEqual([]);
+
+  await writeFile(file, content);
+  send.mockResolvedValueOnce({ state: "applied", accepted: [...draft.to, ...draft.cc], rejected: [] });
+  await expect(executor.commit({ ...ref, confirmMail: true, confirmMailAttachments: true }, "phone")).resolves.toMatchObject({ state: "executing" });
+  await executor.close();
+  expect(send.mock.calls[0]?.[2]).toMatchObject({ attachmentContents: [{ filename: "report.csv", content }] });
+});
+
 it.each([{ state: "applied", accepted: [...draft.to, ...draft.cc], rejected: [] },
   { state: "failed", failure: { reason: "rejected", responseCode: 550 } },
   { state: "delivery_uncertain", failure: { reason: "unconfirmed" } }] as const)("persists one exact attempt for $state", async result => {

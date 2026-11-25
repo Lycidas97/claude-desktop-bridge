@@ -12,6 +12,7 @@ export interface SmtpMessage {
   replyTo?: string;
   inReplyTo?: string;
   references?: string[];
+  attachmentContents?: { filename: string; contentType: string; content: Buffer }[];
 }
 
 export type SmtpResult =
@@ -23,6 +24,7 @@ export async function submitSmtp(channel: BridgeSmtpChannel, password: string, m
   const source = await new MailComposer({
     from: message.from, to: message.to, cc: message.cc, subject: message.subject, text: message.bodyText,
     replyTo: message.replyTo, inReplyTo: message.inReplyTo, references: message.references, messageId, newline: "windows",
+    attachments: message.attachmentContents,
   }).compile().build();
   const secure = channel.security === "tls";
   let terminatorQueued = false;

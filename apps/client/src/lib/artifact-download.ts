@@ -198,8 +198,9 @@ export async function downloadBridgeSessionFile(
   request: MediaRequest,
   onProgress: (progress: number) => void,
   resolveRelativeLink?: true,
+  save?: true,
 ): Promise<void> {
-  await runArtifactTransfer({ sessionId, path: filePath, ...(resolveRelativeLink ? { resolveRelativeLink } : {}) }, request, "open", onProgress);
+  await runArtifactTransfer({ sessionId, path: filePath, ...(resolveRelativeLink ? { resolveRelativeLink } : {}) }, request, save ? "save" : "open", onProgress);
 }
 
 export async function downloadMailAttachment(mailAttachment: BridgeMailAttachmentRef, request: MediaRequest, onProgress: (progress: number) => void): Promise<void> {

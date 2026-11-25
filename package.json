@@ -50,6 +50,7 @@
   "devDependencies": {
     "@types/html-to-text": "^9.0.4",
     "@types/node": "^24.0.0",
+    "@types/yauzl": "3.4.0",
     "axe-core": "^4.10.3",
     "concurrently": "^9.2.1",
     "playwright-core": "^1.55.0",
@@ -69,6 +70,7 @@
     "pdfjs-dist": "^6.4.299",
     "saxes": "6.0.0",
     "timezones-ical-library": "3.0.0",
+    "yauzl": "3.4.0",
     "zod": "^4.6.7"
   }
 }

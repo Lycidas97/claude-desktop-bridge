@@ -7,8 +7,9 @@ import { useMediaPreview } from "../evidence/MediaPreviewProvider.js";
 export function useSessionFileDownload(
   sessionId: string,
   isMobile: boolean,
-  onDownloadSessionFile: ((sessionId: string, filePath: string, resolveRelativeLink?: true) => Promise<void>) | undefined,
+  onDownloadSessionFile: ((sessionId: string, filePath: string, resolveRelativeLink?: true, save?: true) => Promise<void>) | undefined,
   supportsRelativeLinks: boolean,
+  saveAssistantOutputs = false,
 ) {
   const openMedia = useMediaPreview();
   const [pendingFileDownload, setPendingFileDownload] = useState<{ path: string; resolveRelativeLink?: true }>();
@@ -24,8 +25,12 @@ export function useSessionFileDownload(
     if (!fileDownloadBusy) setPendingFileDownload(undefined);
   }
 
+  function isAssistantOutput(path: string): boolean {
+    return saveAssistantOutputs && /^(?:\.\/)?outputs\//u.test(path);
+  }
+
   function openFile(filePath: string): void {
-    const kind = mediaKind(filePath);
+    const kind = isAssistantOutput(filePath) ? undefined : mediaKind(filePath);
     if (kind) {
       openMedia({
         name: filePath.split(/[\\/]/u).at(-1) || filePath,
@@ -67,7 +72,7 @@ export function useSessionFileDownload(
           if (!pendingFileDownload || !onDownloadSessionFile || fileDownloadBusy) return;
           setFileDownloadBusy(true);
           setFileDownloadError(undefined);
-          void onDownloadSessionFile(sessionId, pendingFileDownload.path, pendingFileDownload.resolveRelativeLink)
+          void onDownloadSessionFile(sessionId, pendingFileDownload.path, pendingFileDownload.resolveRelativeLink, isAssistantOutput(pendingFileDownload.path) ? true : undefined)
             .then(() => {
               setPendingFileDownload(undefined);
             })

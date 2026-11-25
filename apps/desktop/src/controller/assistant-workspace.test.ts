@@ -56,7 +56,7 @@ it("writes the exact project policy and bundled MCP launch, preserving templates
     autoMemoryEnabled: false, enableAllProjectMcpServers: false, enabledMcpjsonServers: ["assistant-mail"],
     permissions: {
       defaultMode: "dontAsk",
-      allow: expect.arrayContaining(["WebSearch"]),
+      allow: expect.arrayContaining(["WebSearch", "mcp__assistant-mail__mail_download_attachment"]),
       deny: expect.arrayContaining(["Bash", "PowerShell", "NotebookEdit", "WebFetch", "SendMessage", "mcp__ccd_*", "Read(./.mcp.json)"]),
     },
     hooks: { PreToolUse: [{ matcher: "*", hooks: [{ type: "command", onFailure: "block" }] }] },

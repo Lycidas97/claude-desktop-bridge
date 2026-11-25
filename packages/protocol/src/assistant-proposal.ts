@@ -1,5 +1,6 @@
 import type { AgendaEventInput, AgendaTodoInput } from "./assistant-agenda.js";
 import type { BridgeDeliveryState } from "./types.js";
+import type { BridgeMailAttachmentRef } from "./assistant-mail.js";
 
 export const ASSISTANT_PROPOSAL_CAPABILITY = "assistant.proposal.v1";
 export const ASSISTANT_MEMORY_PROPOSAL_CAPABILITY = "assistant.proposal.memory.v1";
@@ -23,7 +24,12 @@ export type MemoryRuleProposalAction = {
   reason: string;
 };
 
-type MailDraftFields = { accountKey: string; cc?: string[] | undefined; replyTo?: string | undefined; bodyText: string };
+export const ASSISTANT_MAIL_PROPOSAL_ATTACHMENTS_CAPABILITY = "assistant.proposal.mail-attachments.v1";
+export type MailAttachmentSelection = BridgeMailAttachmentRef | { outputPath: string };
+export type MailProposalAttachment = { filename: string; mimeType: string; size: number; sha256: string };
+
+type MailDraftFields = { accountKey: string; cc?: string[] | undefined; replyTo?: string | undefined; bodyText: string;
+  attachments?: MailAttachmentSelection[] | undefined };
 export type MailProposalDraft = MailDraftFields & (
   | { kind: "mail.reply"; mailRefId: string; to?: string[] | undefined; subject?: string | undefined }
   | { kind: "mail.send"; to: string[]; subject: string }
@@ -37,6 +43,7 @@ export type MailProposalAction = {
   replyTo?: string;
   subject: string;
   bodyText: string;
+  attachments?: MailProposalAttachment[];
 } & (
   | { kind: "mail.send" }
   | { kind: "mail.reply"; mailRefId: string; originalFrom: string[]; originalReplyTo: string[]; replyToDiffers: boolean;
@@ -94,6 +101,7 @@ export interface BridgeProposalSnapshot {
   changeToken: string;
   pendingCount: number;
   pendingMailCount?: number;
+  pendingMailAttachmentCount?: number;
   pendingMemoryCount?: number;
   pendingSessionCount?: number;
   pendingSessionCreateCount?: number;

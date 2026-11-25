@@ -4,8 +4,9 @@ import { AssistantError } from "./assistant-error.js";
 import { sharedSmtpChannel, smtpChannel } from "./account-contract.js";
 import { EventEmitter } from "node:events";
 import { renameSync, writeFileSync } from "node:fs";
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { lstat, mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
+import { basename, extname, join } from "node:path";
+import { ARTIFACT_MAX_BYTES } from "../../packages/protocol/src/types.js";
 import type { Readable } from "node:stream";
 import { ImapFlow, type ImapFlowOptions } from "imapflow";
 import { KeychainMailCredentials, type MailCredentials } from "./credentials.js";
@@ -13,7 +14,8 @@ import { MailReceiver, type MailState } from "./receiver.js";
 import { fileSentCopy, type SentCopyResult } from "./sent-copy.js";
 import { AssistantMailStore, type AssistantBinding, type MailAnalysis, type MailProcessingStatus } from "./store.js";
 import { DEFAULT_MAIL_POLL_INTERVAL, isMailPollInterval, type AssistantAttentionAcknowledgment, type BridgeMailAttachmentRef, type MailPollInterval } from "../../packages/protocol/src/assistant-mail.js";
-import { attachmentText, MAIL_TEXT_MAX_BYTES, supportsAttachmentText } from "./attachment-text.js";
+import { archiveAttachmentMember } from "./attachment-archive.js";
+import { readAttachmentRange, type AttachmentRange } from "./attachment-text.js";
 import { MailAttachmentError, parseMail } from "./mime.js";
 export { MailAttachmentError, MailBodyParseError } from "./mime.js";
 
@@ -421,12 +423,27 @@ export class AssistantMailService extends EventEmitter {
     if (!bytes || bytes.byteLength !== size) throw new MailAttachmentError("MAIL_ATTACHMENT_NOT_FOUND", "邮件附件不存在或已变化。");
     return bytes;
   }
-  async readAttachment(ref: BridgeMailAttachmentRef) {
+  async downloadAttachment({ entry, ...ref }: BridgeMailAttachmentRef & Pick<AttachmentRange, "entry">, sessionId: string, assertAuthorized: () => void) {
+    const binding = this.binding();
+    if (binding?.nativeSessionId !== sessionId || !binding.managed) throw new AssistantError("NOT_FOUND", "找不到当前助理工作区。");
     const attachment = this.attachment(ref);
-    if (!supportsAttachmentText(attachment.mimeType)) {
-      throw new MailAttachmentError("MAIL_ATTACHMENT_UNSUPPORTED", "此附件格式不支持提取文本。");
-    }
-    return { attachment, text: await attachmentText(await this.attachmentBytes(ref, MAIL_TEXT_MAX_BYTES), attachment.mimeType, this.attachmentCMapUrl, attachment.charset) };
+    const original = await this.attachmentBytes(ref, ARTIFACT_MAX_BYTES);
+    const bytes = entry === undefined ? original : await archiveAttachmentMember(original, entry);
+    const directory = join(await realpath(binding.managed.path), "mail-attachments");
+    assertAuthorized();
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    if (!(await lstat(directory)).isDirectory()) throw new AssistantError("CONFLICT", "邮件附件目录不是普通目录。");
+    const destination = await mkdtemp(join(directory, "file-"));
+    const extension = extname(entry ?? attachment.filename).toLowerCase();
+    // Never materialize an external filename as a project instruction or config file.
+    const filename = `attachment${/^\.[a-z0-9]{1,12}$/u.test(extension) ? extension : ""}`;
+    assertAuthorized();
+    await writeFile(join(destination, filename), bytes, { flag: "wx", mode: 0o600 });
+    return { attachment, path: `mail-attachments/${basename(destination)}/${filename}` };
+  }
+  async readAttachment({ offset, section, entry, ...ref }: BridgeMailAttachmentRef & AttachmentRange) {
+    const attachment = this.attachment(ref);
+    return { attachment, ...await readAttachmentRange(await this.attachmentBytes(ref, ARTIFACT_MAX_BYTES), attachment, { offset, section, entry }, this.attachmentCMapUrl) };
   }
   attention(automatic: boolean, sessionId?: string) { return this.store.attention(automatic, sessionId); }
   categories() { return this.store.categories(); }

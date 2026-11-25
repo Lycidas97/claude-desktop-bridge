@@ -27,7 +27,7 @@ export function cleanMailText(text: string): string {
   return text.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/gu, "");
 }
 
-function attachmentName(filename: string | undefined, id: string): string {
+export function attachmentName(filename: string | undefined, id: string): string {
   const name = filename?.normalize("NFC").split(/[/\\]/u).at(-1)
     ?.replace(/[\p{Cc}‪-‮⁦-⁩:*?"<>|]/gu, "_").trim().replace(/[. ]+$/u, "") ?? "";
   if (!name) return `attachment-${id}`;

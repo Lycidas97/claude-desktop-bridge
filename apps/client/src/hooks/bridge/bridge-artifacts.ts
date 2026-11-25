@@ -320,6 +320,7 @@ export async function downloadBridgeSessionPathFile(
   sessionId: string,
   filePath: string,
   resolveRelativeLink?: true,
+  save?: true,
 ): Promise<void> {
   const { setState, sendRequest } = ctx;
   const transferKey = `file:${filePath}`;
@@ -340,6 +341,7 @@ export async function downloadBridgeSessionPathFile(
         },
       })),
       resolveRelativeLink,
+      save,
     );
   } finally {
     setState((current) => {

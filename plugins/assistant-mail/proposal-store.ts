@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import type { BridgeActionProposal, BridgeProposalPage, MailSendFailure, ProposalRevisionRef, ProposalState } from "../../packages/protocol/src/assistant-proposal.js";
+import type { BridgeActionProposal, BridgeProposalPage, MailAttachmentSelection, MailSendFailure, ProposalRevisionRef, ProposalState } from "../../packages/protocol/src/assistant-proposal.js";
 import { AssistantError } from "./assistant-error.js";
 import type { CalDavWrite } from "./caldav.js";
 import { ASSISTANT_PROFILE_TEMPLATE_HASH, type ProfileIntent } from "./assistant-memory.js";
@@ -9,7 +9,7 @@ import type { SentCopyResult } from "./sent-copy.js";
 
 type Intent = { backend: "local"; baseRevision?: number } |
   { backend: "caldav"; collection: string; write: CalDavWrite } |
-  { backend: "smtp"; channelVersion: string } | { backend: "session" | "session-create" } | ProfileIntent;
+  { backend: "smtp"; channelVersion: string; attachmentSources?: MailAttachmentSelection[] } | { backend: "session" | "session-create" } | ProfileIntent;
 export type ProposalPayload = Pick<BridgeActionProposal, "action" | "sourceId" | "sourceLabel" | "before" | "profile" | "sessionTarget" | "sessionCreateTarget"> & { intent: Intent; nativeRevision?: number };
 type SessionCreation = NonNullable<BridgeActionProposal["sessionCreation"]>;
 export type StoredProposal = BridgeActionProposal & { intent: Intent; nativeRevision?: number };
@@ -26,14 +26,16 @@ const projection = `SELECT p.rowid AS ordinal, p.id, p.revision, p.session_id, p
   LEFT JOIN session_create_results c ON p.id = c.id AND p.revision = c.revision`;
 const latest = "NOT EXISTS (SELECT 1 FROM action_proposals newer WHERE newer.id = p.id AND newer.revision > p.revision)";
 const isMail = "json_extract(p.payload, '$.intent.backend') = 'smtp'";
+const hasMailAttachments = "json_type(p.payload, '$.action.attachments') IS NOT NULL";
 const isMemory = "json_extract(p.payload, '$.intent.backend') = 'profile'";
 
 const isSession = "json_extract(p.payload, '$.intent.backend') = 'session'";
 const isSessionCreate = "json_extract(p.payload, '$.intent.backend') = 'session-create'";
 
-function visibleProposals(includeMail?: boolean, includeMemory?: boolean, includeSession?: boolean, includeSessionCreate?: boolean): string {
+function visibleProposals(includeMail?: boolean, includeMemory?: boolean, includeSession?: boolean, includeSessionCreate?: boolean, includeMailAttachments?: boolean): string {
   return `${includeMail ? "" : `AND NOT (${isMail})`} ${includeMemory ? "" : `AND NOT (${isMemory})`}
-    ${includeSession ? "" : `AND NOT (${isSession})`} ${includeSessionCreate ? "" : `AND NOT (${isSessionCreate})`}`;
+    ${includeSession ? "" : `AND NOT (${isSession})`} ${includeSessionCreate ? "" : `AND NOT (${isSessionCreate})`}
+    ${includeMailAttachments ? "" : `AND NOT (${hasMailAttachments})`}`;
 }
 
 function stored(row: ProposalRow): StoredProposal {
@@ -148,19 +150,22 @@ export class ProposalStore {
 
   pendingCounts() {
     const count = this.db.prepare(`SELECT COUNT(*) AS total, COUNT(CASE WHEN ${isMail} THEN 1 END) AS mail,
+      COUNT(CASE WHEN ${hasMailAttachments} THEN 1 END) AS mailAttachments,
       COUNT(CASE WHEN ${isMemory} THEN 1 END) AS memory, COUNT(CASE WHEN ${isSession} THEN 1 END) AS session,
       COUNT(CASE WHEN ${isSessionCreate} THEN 1 END) AS sessionCreate FROM action_proposals p
       WHERE ${latest} AND NOT EXISTS (SELECT 1 FROM proposal_executions e WHERE e.id = p.id)`).get()!;
     return { pendingCount: Number(count.total) - Number(count.mail) - Number(count.memory) - Number(count.session) - Number(count.sessionCreate),
-      pendingMailCount: Number(count.mail), pendingMemoryCount: Number(count.memory), pendingSessionCount: Number(count.session),
+      pendingMailCount: Number(count.mail) - Number(count.mailAttachments), pendingMemoryCount: Number(count.memory), pendingSessionCount: Number(count.session),
+      ...(count.mailAttachments ? { pendingMailAttachmentCount: Number(count.mailAttachments) } : {}),
       ...(count.sessionCreate ? { pendingSessionCreateCount: Number(count.sessionCreate) } : {}) };
   }
 
-  page({ cursor, limit, history, includeMail, includeMemory, includeSession, includeSessionCreate }: { cursor?: string | undefined; limit: number; history?: boolean;
-    includeMail?: boolean | undefined; includeMemory?: boolean | undefined; includeSession?: boolean | undefined; includeSessionCreate?: boolean | undefined }, sessionId?: string): BridgeProposalPage {
+  page({ cursor, limit, history, includeMail, includeMemory, includeSession, includeSessionCreate, includeMailAttachments }: { cursor?: string | undefined; limit: number; history?: boolean;
+    includeMail?: boolean | undefined; includeMemory?: boolean | undefined; includeSession?: boolean | undefined; includeSessionCreate?: boolean | undefined;
+    includeMailAttachments?: boolean | undefined }, sessionId?: string): BridgeProposalPage {
     const owner = sessionId !== undefined ? "AND p.session_id = ?" : "";
     const rows = this.db.prepare(`${projection} WHERE ${latest} AND e.state IS ${history ? "NOT " : ""}NULL AND p.rowid < ? ${owner}
-      ${visibleProposals(includeMail, includeMemory, includeSession, includeSessionCreate)}
+      ${visibleProposals(includeMail, includeMemory, includeSession, includeSessionCreate, includeMailAttachments)}
       ORDER BY p.rowid DESC LIMIT ?`).all(Number(cursor ?? Number.MAX_SAFE_INTEGER), ...(sessionId === undefined ? [] : [sessionId]), limit + 1) as ProposalRow[];
     return {
       proposals: rows.slice(0, limit).map(row => publicProposal(stored(row))),
@@ -168,9 +173,9 @@ export class ProposalStore {
     };
   }
 
-  resolve(sessionId: string, refs: ProposalRevisionRef[], latestForReview = false, includeMail = false, includeMemory = false, includeSession = false, includeSessionCreate = false): BridgeActionProposal[] {
+  resolve(sessionId: string, refs: ProposalRevisionRef[], latestForReview = false, includeMail = false, includeMemory = false, includeSession = false, includeSessionCreate = false, includeMailAttachments = false): BridgeActionProposal[] {
     const query = this.db.prepare(`${projection} WHERE p.id = ? AND p.session_id = ? AND ${latest}
-      ${visibleProposals(includeMail, includeMemory, includeSession, includeSessionCreate)} AND EXISTS (
+      ${visibleProposals(includeMail, includeMemory, includeSession, includeSessionCreate, includeMailAttachments)} AND EXISTS (
       SELECT 1 FROM action_proposals proof WHERE proof.id = p.id AND proof.revision = ? AND proof.hash = ?)`);
     return refs.flatMap(({ proposalId, revision, payloadHash }) => {
       const row = query.get(proposalId, sessionId, revision, payloadHash) as ProposalRow | undefined;

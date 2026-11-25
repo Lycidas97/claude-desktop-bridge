@@ -865,7 +865,7 @@ export async function verifyNativeBoundaries(page, host, steps, directory) {
   await background.press("Enter");
   assert.equal(await visibleLines(), 3, "Keyboard activation collapses the background again");
   await page.context().grantPermissions(["clipboard-read", "clipboard-write"], { origin: new URL(page.url()).origin });
-  await proposal.getByRole("button", { name: "复制提案标题", exact: true }).click();
+  await proposal.getByRole("button", { name: "复制标题", exact: true }).click();
   await proposal.getByRole("button", { name: "已复制", exact: true }).waitFor();
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), proposalTitle);
   const proposalPage = await host.nativeApproval.history();

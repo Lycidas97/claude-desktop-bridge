@@ -36,7 +36,7 @@ export function SessionProposalCard({ proposal, itemId, hostId, sessionId, toolU
       )}
       <div className="session-proposal-actions">
         <span>只能在 Claude Desktop 里确认</span>
-        <MessageCopyButton text={proposal.title} label="复制提案标题" buttonText="复制标题" />
+        <MessageCopyButton text={proposal.title} label="复制标题" buttonText="复制标题" />
       </div>
       {detailOpen && <ToolCallDetailSheet
         {...(hostId ? { hostId } : {})}

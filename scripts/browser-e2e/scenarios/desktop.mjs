@@ -315,7 +315,7 @@ export async function verifyDesktopConversation(page, host, steps, directory, vi
   const proposal = stream.getByRole("region", { name: "会话提案", exact: true });
   await proposal.getByText("复核桌面会话", { exact: true }).waitFor({ timeout: 5_000 });
   await proposal.getByText("只能在 Claude Desktop 里确认", { exact: true }).waitFor({ timeout: 5_000 });
-  await proposal.getByRole("button", { name: "复制提案标题", exact: true }).waitFor();
+  await proposal.getByRole("button", { name: "复制标题", exact: true }).waitFor();
   await proposal.screenshot({ path: resolve(directory, "desktop-session-proposal.png"), animations: "disabled" });
   const queuedBubble = stream.locator("article.conversation-item.user").filter({ hasText: "桌面排队待处理消息" });
   await queuedBubble.getByRole("button", { name: "立即发送", exact: true }).waitFor();

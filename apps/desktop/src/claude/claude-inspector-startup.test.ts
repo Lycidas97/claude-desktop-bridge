@@ -25,41 +25,23 @@ async function fixture() {
 }
 
 describe("one native inspector action per Desktop process start", () => {
-  it("reopens a debugger Claude closed after Bridge saw it open", async () => {
+  it("does not click again after opening and then manually closing in the same process", async () => {
     const f = await fixture();
     await f.startup.check(false);
     await f.startup.check(true);
     await f.startup.check(false);
     await f.startup.check(false);
-    expect(f.menu.mock.calls.filter(([, press]) => press)).toHaveLength(2);
-  });
-
-  it("clicks once per observed open across repeated auto closures", async () => {
-    const f = await fixture();
-    await f.startup.check(false);
-    for (let cycle = 0; cycle < 2; cycle += 1) {
-      await f.startup.check(true);
-      await f.startup.check(false);
-    }
-    expect(f.menu.mock.calls.filter(([, press]) => press)).toHaveLength(3);
-  });
-
-  it("does not repeat a click that never opened the port", async () => {
-    const f = await fixture();
-    await f.startup.check(false);
-    await f.startup.check(false);
-    await f.startup.check(false);
     expect(f.menu.mock.calls.filter(([, press]) => press)).toHaveLength(1);
   });
 
-  it("records an already-open process without ever touching the menu", async () => {
+  it("records an already-open process so later manual closure is respected", async () => {
     const f = await fixture();
     expect(await f.startup.check(true)).toMatchObject({ state: "already-open", recordedAt: expect.any(Number) });
     await f.startup.check(false);
     expect(f.menu).not.toHaveBeenCalled();
   });
 
-  it("does not click from persisted records after a Bridge restart", async () => {
+  it("keeps the handled identity across a Bridge service restart after manual closure", async () => {
     const f = await fixture();
     await f.startup.check(false);
     await f.startup.check(true);

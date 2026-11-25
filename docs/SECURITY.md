@@ -75,11 +75,10 @@ Claude Desktop 内部的 Gemini、Antigravity、Magpie 等模型与额度设置�
 用户已明确选择常开 `127.0.0.1:9229` Node inspector；本次选择覆盖旧“绝不 CDP / 不附着”
 规则中针对 Claude 的限制。该本机调试端口具有进程求值能力，边界依赖本机访问控制，
 不得映射到公网或 Relay。macOS 后台复用连接监测轮询，以真实 PID、启动时间和精确
-主可执行路径识别新启动，每次观察到调试端口开放对应一次原生 Enable Main Process Debugger
-菜单点击：Claude 约 15 分钟后自动关闭端口时重开一次；需要用户
+主可执行路径识别新启动，仅触发原生 Enable Main Process Debugger 菜单一次；需要用户
 授予辅助功能与 System Events 自动化权限，原生账号/工作区策略仍由菜单回调执行。
-该回调可能打开 Chrome 调试页。已开放的端口跳过并记录；点击未打开端口或记录为失败时
-不再重复触发，已处理身份和错误写入 Bridge userData 的启动记录，重启后不凭持久记录自动点击。
+该回调可能打开 Chrome 调试页。已开放的端口跳过并记录；同进程手动关闭或实际操作失败
+不反复触发，已处理身份和错误写入 Bridge userData 的启动记录，跨后台重启保留。
 菜单尚未构建时等待；开启结果由实际端口扫描确认，失败显示在现有诊断状态中。
 自定义 BRIDGE_CLAUDE_INSPECTOR_URL 时不操作真实菜单。不修改 asar、不签 token、
 不重启 Desktop、不安装 LaunchAgent、不发 SIGUSR1 或修改调试启动参数。

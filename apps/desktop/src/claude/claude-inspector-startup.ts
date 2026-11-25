@@ -63,8 +63,17 @@ on run argv
     if not (exists menu bar 1 of (first application process whose unix id is targetPid)) then return "waiting"
     repeat with headingIndex from 1 to count of menu bar items of menu bar 1 of (first application process whose unix id is targetPid)
       if exists menu 1 of menu bar item headingIndex of menu bar 1 of (first application process whose unix id is targetPid) then
-        if exists menu item "Enable Main Process Debugger" of menu 1 of menu bar item headingIndex of menu bar 1 of (first application process whose unix id is targetPid) then
-          set debugItem to a reference to menu item "Enable Main Process Debugger" of menu 1 of menu bar item headingIndex of menu bar 1 of (first application process whose unix id is targetPid)
+        -- Newer builds append explanatory text to the item name ("…, Turns off after 15 minutes"), so match the prefix.
+        set debugItem to missing value
+        repeat with candidate in menu items of menu 1 of menu bar item headingIndex of menu bar 1 of (first application process whose unix id is targetPid)
+          try
+            if (name of candidate as text) starts with "Enable Main Process Debugger" then
+              set debugItem to candidate
+              exit repeat
+            end if
+          end try
+        end repeat
+        if debugItem is not missing value then
           -- Cancel the pressed heading; cancelling its submenu can leave tracking active.
           -- Electron refreshes checkbox state after the native menu closes.
           click menu bar item headingIndex of menu bar 1 of (first application process whose unix id is targetPid)

@@ -59,7 +59,7 @@ describe("one native inspector action per Desktop process start", () => {
     expect(f.menu).not.toHaveBeenCalled();
   });
 
-  it("keeps the handled identity across a Bridge service restart after manual closure", async () => {
+  it("does not click from persisted records after a Bridge restart", async () => {
     const f = await fixture();
     await f.startup.check(false);
     await f.startup.check(true);

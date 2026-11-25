@@ -92,9 +92,10 @@ npm run ci:run -- exec -- node scripts/claude-inspector-startup-qa.mjs output/in
 
 The launching host needs Accessibility and System Events Automation permission.
 It checks late menu construction, one actual checkbox action, real Node discovery,
-fixture LocalSessions access, checked-menu protection, manual closure across a
-recreated startup object, a new process, native policy rejection, already-open
-skip behavior, and persistent errors from a disabled native menu. Permission rejection is covered by unit injection; the QA does not
+fixture LocalSessions access, checked-menu protection, automatic reopen after the
+debugger closes, no repeat click after an attempt that left the port closed, a new
+process, native policy rejection, already-open skip behavior, and persistent errors
+from a disabled native menu. Permission rejection is covered by unit injection; the QA does not
 revoke system consent or approve dialogs. Evidence is `result.json` plus per-process
 Electron logs. It never targets real Claude Desktop, port 9229, or its event stream.
 The fixture validates the native automation path in the current host context;

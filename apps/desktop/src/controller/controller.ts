@@ -471,6 +471,7 @@ export class DesktopController extends EventEmitter {
         && Boolean(this.inspectorEnabler)
         && this.inspectorStatus?.state !== "listening";
       await (shouldEnableInspector ? lifecycle.launch({ activate: true }) : lifecycle.launch());
+      const launchNote = lifecycle.takeLaunchNote();
       let inspectorStatus = this.inspectorStatus;
       let inspectorDetail: string | undefined;
       if (shouldEnableInspector && this.inspectorEnabler) {
@@ -505,9 +506,12 @@ export class DesktopController extends EventEmitter {
       await this.broadcast({ kind: "snapshot", snapshot });
       if (!integration) return { snapshot };
       const nativeReady = integration.state === "ready";
-      const detail = inspectorStatus?.state === "listening"
-        ? (nativeReady ? undefined : integration.detail)
-        : inspectorDetail ?? inspectorStatus?.error;
+      const detail = [
+        inspectorStatus?.state === "listening"
+          ? (nativeReady ? undefined : integration.detail)
+          : inspectorDetail ?? inspectorStatus?.error,
+        launchNote,
+      ].filter(Boolean).join("\n") || undefined;
       return {
         snapshot,
         claudeActivation: {

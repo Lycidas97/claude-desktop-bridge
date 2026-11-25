@@ -10,6 +10,7 @@
 - Supervises the detached background service process (`service-runtime.ts`, `service-connection.ts`) so pairing, Relay/WebRTC connectivity, and Claude inspector monitoring survive main window closure.
 - Resolves OS-specific application bundles, executables, and user data directories across macOS (`Claude.app`, `Claude-3p`), Linux, and Windows 11 (both standard `%APPDATA%\Claude` / `%LOCALAPPDATA%` installs and MSIX `Packages\Claude_*\LocalCache\Roaming\Claude` containers).
 - Reads and enables `allowDevTools` in Claude Desktop's `developer_settings.json` (`claude-desktop-developer-settings.ts`).
+- Runs an optional macOS cold-start preparation hook (`claude-cdp-patch.ts` + `userData/claude-cdp-patch-v1.json`) immediately before opening Claude Desktop. Bridge ships no patch bytes; a failing script is reported in the launch result and never blocks the launch.
 
 ## Critical Invariants
 1. **Bundle layout & `import.meta.url` banner**: `apps/desktop/scripts/build.mjs` bundles `src/main.ts` into `dist/main.cjs` with `import.meta.url` rewritten to `dist/main.cjs`'s file URL, and stages `dist/native/inspector-process-path` (macOS) plus `dist/node_modules/node-datachannel`. Runtime asset paths resolved from `import.meta.url` are relative to `apps/desktop/dist/`, **not** `apps/desktop/src/app/` or `apps/desktop/src/claude/`.

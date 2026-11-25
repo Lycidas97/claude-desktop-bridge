@@ -26,6 +26,7 @@ import {
 import { ClaudeDesktopBridge } from "../claude/claude-desktop-bridge.js";
 import { SessionEventLog } from "../controller/session-event-log.js";
 import { ClaudeDesktopLifecycle } from "./claude-desktop-lifecycle.js";
+import { applyClaudeCdpPatch } from "./claude-cdp-patch.js";
 import { DESKTOP_APP_DEFINITIONS } from "./desktop-app-definitions.js";
 import { ElectronEvidencePreviewRenderer } from "../evidence/artifact-preview.js";
 import { EvidenceManager } from "../evidence/evidence-manager.js";
@@ -231,7 +232,22 @@ export async function createServiceRuntime(options: {
       },
     });
     resources.defer("Assistant mail tools", () => mailTools.close(options.shouldStopManagedAdapters?.()));
-    const claudeDesktop = new ClaudeDesktopLifecycle();
+    const claudeDesktop = new ClaudeDesktopLifecycle(process.platform === "darwin" ? {
+      prepareLaunch: async (target) => {
+        try {
+          const note = await applyClaudeCdpPatch({
+            configPath: join(userDataPath, "claude-cdp-patch-v1.json"),
+            target,
+          });
+          if (note) process.stderr.write(`claude-cdp-patch: ${note}\n`);
+          return note;
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          process.stderr.write(`claude-cdp-patch: ${reason}\n`);
+          return `调试补丁未应用：${reason}`;
+        }
+      },
+    } : {});
     const desktopAppControls = new Map(
       DESKTOP_APP_DEFINITIONS.map((definition) => [
         definition.id,

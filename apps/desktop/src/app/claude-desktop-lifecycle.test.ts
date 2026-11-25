@@ -113,6 +113,42 @@ describe("Claude Desktop lifecycle", () => {
     expect(launchApplication).toHaveBeenCalledTimes(2);
   });
 
+  it("prepares a cold-start bundle before opening it and skips running activations", async () => {
+    const bundle = "/Applications/Claude.app";
+    vi.mocked(access).mockImplementation(async (candidate) => {
+      if (String(candidate) !== bundle) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+    });
+    let running = false;
+    const order: string[] = [];
+    const openTarget = vi.fn(async (target: string) => {
+      order.push(`open:${target}`);
+      running = true;
+    });
+    const prepareLaunch = vi.fn(async (target: string) => {
+      order.push(`prepare:${target}`);
+      return "调试补丁未应用：anchor not found";
+    });
+    const lifecycle = new ClaudeDesktopLifecycle({
+      platform: "darwin",
+      executablePath: bundle,
+      applicationInstalled: async () => true,
+      listMainProcessIds: async () => running ? [42] : [],
+      openTarget,
+      prepareLaunch,
+      sleep: async () => undefined,
+      cacheTtlMs: 0,
+    });
+
+    await lifecycle.launch();
+    expect(order).toEqual([`prepare:${bundle}`, `open:${bundle}`]);
+    expect(lifecycle.takeLaunchNote()).toBe("调试补丁未应用：anchor not found");
+    expect(lifecycle.takeLaunchNote()).toBeUndefined();
+
+    await lifecycle.launch({ activate: true });
+    expect(prepareLaunch).toHaveBeenCalledTimes(1);
+    expect(openTarget).toHaveBeenCalledTimes(2);
+  });
+
   it("gracefully terminates only the Claude Desktop main process", async () => {
     let running = true;
     const signalProcess = vi.fn((pid: number) => {

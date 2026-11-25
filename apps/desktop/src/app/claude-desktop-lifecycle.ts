@@ -23,6 +23,8 @@ export interface ClaudeDesktopLifecycleOptions {
   listRunningExecutablePaths?(): Promise<string[]>;
   openTarget?(target: string): Promise<void>;
   launchApplication?(): Promise<void>;
+  /** Cold-start only, after the bundle is resolved; never runs while Claude is running. Must resolve with an optional note and never reject. */
+  prepareLaunch?(target: string): Promise<string | undefined>;
   signalProcess?(pid: number): void;
   sleep?(durationMs: number): Promise<void>;
   launchPollAttempts?: number;
@@ -235,6 +237,7 @@ async function launchApplication(
   preferRunning = false,
   listRunningExecutablePaths?: () => Promise<string[]>,
   openTarget?: (target: string) => Promise<void>,
+  prepareLaunch?: (target: string) => Promise<unknown>,
 ): Promise<void> {
   const target = (preferRunning
     ? await resolveRunningTarget(definition, platform, environment, executablePath, listRunningExecutablePaths).catch(() => undefined)
@@ -245,6 +248,7 @@ async function launchApplication(
       ? `未找到 ${definition.displayName} 可执行文件。`
       : `未找到 ${definition.displayName} 应用。`);
   }
+  if (!preferRunning) await prepareLaunch?.(target);
   if (openTarget) {
     await openTarget(target);
     return;
@@ -287,6 +291,7 @@ export function signalProcess(
 export class ClaudeDesktopLifecycle {
   private cached: CachedStatus | undefined;
   private statusInFlight: Promise<ClaudeDesktopAppStatus> | undefined;
+  private launchNote: string | undefined;
   readonly definition: DesktopAppDefinition;
 
   constructor(private readonly options: ClaudeDesktopLifecycleOptions = {}) {
@@ -315,6 +320,7 @@ export class ClaudeDesktopLifecycle {
 
     const platform = this.options.platform ?? process.platform;
     const environment = this.options.environment ?? process.env;
+    const prepareLaunch = this.options.prepareLaunch;
     await (this.options.launchApplication ?? (() => launchApplication(
       this.definition,
       platform,
@@ -323,10 +329,20 @@ export class ClaudeDesktopLifecycle {
       current.state === "running",
       this.options.listRunningExecutablePaths,
       this.options.openTarget,
+      prepareLaunch && (async (target) => {
+        this.launchNote = await prepareLaunch(target);
+      }),
     )))();
     return current.state === "running"
       ? current
       : this.waitForState("running", this.options.launchPollAttempts ?? 40);
+  }
+
+  /** Completion note from the last cold launch's preparation step; cleared on read. */
+  takeLaunchNote(): string | undefined {
+    const note = this.launchNote;
+    this.launchNote = undefined;
+    return note;
   }
 
   async quit(): Promise<ClaudeDesktopAppStatus> {

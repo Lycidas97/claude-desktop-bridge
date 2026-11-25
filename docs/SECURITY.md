@@ -80,8 +80,10 @@ Claude Desktop 内部的 Gemini、Antigravity、Magpie 等模型与额度设置�
 该回调可能打开 Chrome 调试页。已开放的端口跳过并记录；同进程手动关闭或实际操作失败
 不反复触发，已处理身份和错误写入 Bridge userData 的启动记录，跨后台重启保留。
 菜单尚未构建时等待；开启结果由实际端口扫描确认，失败显示在现有诊断状态中。
-自定义 BRIDGE_CLAUDE_INSPECTOR_URL 时不操作真实菜单。不修改 asar、不签 token、
-不重启 Desktop、不安装 LaunchAgent、不发 SIGUSR1 或修改调试启动参数。
+自定义 BRIDGE_CLAUDE_INSPECTOR_URL 时不操作真实菜单。Bridge 自身不修改 asar、不携带补丁
+字节；仅当用户在 Bridge userData 的 `claude-cdp-patch-v1.json` 显式配置启动前准备脚本时，
+macOS 冷启动 Claude 前执行该脚本（Claude 运行中不执行，失败不阻塞启动，失败说明进入启动
+响应）。不签 token、不重启 Desktop、不安装 LaunchAgent、不发 SIGUSR1 或修改调试启动参数。
 
 接入从 `http://127.0.0.1:9229/json/list` 动态取得 `webSocketDebuggerUrl`，不固定 WebSocket
 路径。通过 Node inspector 的 `Runtime.evaluate` 调用 `process.mainModule.require('electron')`，

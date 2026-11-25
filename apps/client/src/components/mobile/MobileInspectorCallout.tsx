@@ -80,7 +80,7 @@ export interface MobileInspectorCalloutProps {
 
 function openPortDetail(nativeReady: boolean, detail?: string): string {
   return nativeReady
-    ? "调试端口已开启，Claude 原生连接已就绪。"
+    ? `调试端口已开启，Claude 原生连接已就绪。${detail ? `\n${detail}` : ""}`
     : `调试端口已开启，Claude 原生连接未就绪。${detail ?? ""}`;
 }
 

@@ -307,6 +307,7 @@ describe("Round-4 Boundary 2A.1: Inspector checkbox toggle serialization & dedup
         canQuit: appState === "running",
       })),
       launch,
+      takeLaunchNote: vi.fn(() => undefined),
       quit: vi.fn(),
     };
     const controller = createControllerFixture({

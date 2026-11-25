@@ -30,6 +30,7 @@ function createHarness(options: {
     definition: { id: "claude-desktop" as const, displayName: "Claude Desktop" },
     status,
     launch,
+    takeLaunchNote: vi.fn(() => undefined as string | undefined),
     quit: vi.fn(async () => {
       appState = "stopped";
       return { state: appState, detail: "Claude Desktop 已退出。", canLaunch: true, canQuit: false };
@@ -86,7 +87,7 @@ function createHarness(options: {
   if (options.enableInspector) {
     controller.attachInspectorEnabler(options.enableInspector);
   }
-  return { controller, launch, status, refreshRuntime, broadcast, runtimeAttachSleep };
+  return { controller, launch, status, refreshRuntime, broadcast, runtimeAttachSleep, takeLaunchNote: claudeDesktop.takeLaunchNote };
 }
 
 describe("DesktopController app status snapshots", () => {
@@ -194,8 +195,41 @@ describe("DesktopController launchDesktopApp + explicit inspector enablement", (
     });
   });
 
-  it("returns the launch attempt's permission error even if monitoring publishes a newer status", async () => {
+  it("appends the cold-start preparation note to the activation detail", async () => {
     const enableInspector = vi.fn<() => Promise<BridgeInspectorStatus>>(async () => ({
+      platform: "darwin",
+      state: "listening",
+      port: 9229,
+      pollIntervalMs: 3_000,
+      clients: [],
+      alerts: [],
+    }));
+    const { controller, takeLaunchNote } = createHarness({
+      initialInspector: { platform: "darwin", state: "closed", port: 9229, pollIntervalMs: 3_000, clients: [], alerts: [] },
+      enableInspector,
+      runtimeStates: ["ready"],
+    });
+    takeLaunchNote.mockReturnValueOnce("调试补丁未应用：claude-cdp-patch: dRs anchor not found");
+
+    const result = await controller.handleRequest({
+      kind: "request",
+      requestId: "req-launch-note",
+      idempotencyKey: "idem-launch-note",
+      method: "desktop.app.launch",
+      params: { runtimeId: "claude-desktop" },
+    }, "mobile");
+
+    expect(result).toEqual({
+      desktopApps: [expect.objectContaining({ id: "claude-desktop", state: "running" })],
+      claudeActivation: {
+        inspectorState: "listening",
+        nativeReady: true,
+        detail: "调试补丁未应用：claude-cdp-patch: dRs anchor not found",
+      },
+    });
+  });
+
+  it("returns the launch attempt's permission error even if monitoring publishes a newer status", async () => {    const enableInspector = vi.fn<() => Promise<BridgeInspectorStatus>>(async () => ({
       platform: "darwin",
       state: "closed",
       port: 9229,

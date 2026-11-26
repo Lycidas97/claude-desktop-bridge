@@ -79,6 +79,28 @@ export async function verifyPairedHostStatus(page, previousHost, host, steps, di
   assert.equal(await retrying.count(), 0, "An authenticated reply completes the retry");
   steps.push("Same-name pairings stay separate; quick switch retry reports progress, an inline offline failure, and recovery only after an encrypted reply without navigating away");
 
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("button", { name: "连接与电脑设置" }).click();
+  const connection = page.getByRole("region", { name: "连接与同步" });
+  heldReply = undefined;
+  await connection.getByRole("button", { name: "重新连接", exact: true }).click();
+  await eventually(() => Boolean(heldReply), true, "Settings sends an encrypted snapshot request on its new connection");
+  const settingsRetrying = connection.getByRole("button", { name: "正在重连", exact: true });
+  await settingsRetrying.waitFor();
+  assert.equal(await settingsRetrying.isDisabled(), true);
+  assert.equal(await connection.getByText("离线", { exact: true }).count(), 1, "Relay presence does not complete a settings retry either");
+  await connection.screenshot({ path: resolve(directory, "reconnecting-host-settings.png") });
+  await page.clock.runFor(21_000);
+  await send(heldReply);
+  await connection.getByText("在线", { exact: true }).waitFor();
+  assert.equal(await settingsRetrying.count(), 0);
+  assert.equal(await connection.getByRole("alert").count(), 0);
+  previousHost.send = send;
+  steps.push("Settings uses the same reconnect progress and accepts an encrypted reply received 21 seconds into the handshake");
+
+  await page.getByRole("button", { name: "返回设置", exact: true }).click();
+  await page.getByRole("button", { name: "返回", exact: true }).click();
+  if (!(await switcher.isVisible())) await page.getByRole("button", { name: `当前电脑：${previousHost.pairing.desktopName}，切换电脑` }).click();
   previousHost.socket.close();
   await retry.waitFor();
   assert.equal(await relayStore.revokeDevice(previousHost.pairing.roomId, previousHost.pairing.deviceId, Date.now()), true);

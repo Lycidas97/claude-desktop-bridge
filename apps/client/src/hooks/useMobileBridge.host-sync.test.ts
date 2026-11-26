@@ -1415,7 +1415,8 @@ describe("desktop presence after a desktop restart", () => {
     vi.useFakeTimers();
     vi.stubGlobal("document", { visibilityState: "visible" });
     const bridge = useMobileBridge();
-    await bridge.retryConnection();
+    harness.store!.cryptoByRoomRef.current.set("A", hostCrypto("A"));
+    await bridge.selectHost("A");
     harness.receive(
       { payload: { kind: "snapshot", snapshot: staleOfflineSnapshot() }, header: { sentAt: Date.now() } } as DecryptedEnvelope,
       { id: "snapshot-1" } as EncryptedEnvelope,

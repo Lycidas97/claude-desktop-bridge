@@ -1,3 +1,95 @@
+## 1.3.10
+
+- Let the managed Assistant download, process, and send mail attachments. It
+  can save an inbox attachment unchanged under `mail-attachments/` in its
+  workspace, or one chosen file from a ZIP. Text, PDF, DOCX, XLSX, PPTX, and ZIP
+  files can be read in segments; images and scanned PDFs go to Native `Read`.
+  Reply, new-mail, and forward drafts can attach original MIME attachments or
+  files from `outputs/`; the confirmation drawer lists names and sizes. The
+  Assistant can also link `outputs/` files for download in a reply.
+  [PR 618](https://github.com/Lycidas97/claude-desktop-bridge/pull/618)
+- Let the Assistant draft proposals to open an existing session or send it a
+  message, and to create a new session with a chosen directory, group, model,
+  and optional first message. Each proposal shows its target and full content
+  and needs your confirmation; edits need a new confirmation. Native session
+  proposals now say that they can only be confirmed in Claude Desktop. The
+  new-session review shows the full group ID, and the Assistant's directory
+  suggestions skip unreachable and managed directories.
+  [PR 593](https://github.com/Lycidas97/claude-desktop-bridge/pull/593),
+  [PR 610](https://github.com/Lycidas97/claude-desktop-bridge/pull/610),
+  [PR 612](https://github.com/Lycidas97/claude-desktop-bridge/pull/612),
+  [PR 617](https://github.com/Lycidas97/claude-desktop-bridge/pull/617)
+- Show Assistant mail as two-line collapsed rows in the conversation, Desktop
+  inbox, and search; expanding a row shows the summary, attachments, and
+  actions. Read and copy the full original text in one reader that opens at full
+  screen on mobile. Line up the expanded action row. Keep conversation replies
+  apart from wake-up processing records, show a time on each reply, and replace
+  the Needs attention block with per-item confirmation where the item appears.
+  Batches show Native run and final states promptly, and reopening a filed
+  category retries a failed mail backfill.
+  [PR 571](https://github.com/Lycidas97/claude-desktop-bridge/pull/571),
+  [PR 573](https://github.com/Lycidas97/claude-desktop-bridge/pull/573),
+  [PR 579](https://github.com/Lycidas97/claude-desktop-bridge/pull/579),
+  [PR 584](https://github.com/Lycidas97/claude-desktop-bridge/pull/584),
+  [PR 592](https://github.com/Lycidas97/claude-desktop-bridge/pull/592),
+  [PR 595](https://github.com/Lycidas97/claude-desktop-bridge/pull/595),
+  [PR 602](https://github.com/Lycidas97/claude-desktop-bridge/pull/602),
+  [PR 606](https://github.com/Lycidas97/claude-desktop-bridge/pull/606),
+  [PR 608](https://github.com/Lycidas97/claude-desktop-bridge/pull/608)
+- File mail accepted by SMTP in the mailbox's Sent folder when the server marks
+  exactly one folder `\Sent` and has not already saved a copy. Changing the port, TLS mode, or sender address on
+  the same SMTP host keeps the shared password. After a CalDAV sync fails, the
+  undated to-do list still refreshes for open-ended repeating to-dos.
+  [PR 572](https://github.com/Lycidas97/claude-desktop-bridge/pull/572),
+  [PR 588](https://github.com/Lycidas97/claude-desktop-bridge/pull/588),
+  [PR 589](https://github.com/Lycidas97/claude-desktop-bridge/pull/589)
+- Send an existing Desktop session's message with Ctrl+Enter. A new session's
+  first message can carry attachments, and the new-session folder picker can
+  create a folder. A session file card says why a file cannot be transferred.
+  [PR 585](https://github.com/Lycidas97/claude-desktop-bridge/pull/585),
+  [PR 597](https://github.com/Lycidas97/claude-desktop-bridge/pull/597),
+  [PR 599](https://github.com/Lycidas97/claude-desktop-bridge/pull/599),
+  [PR 607](https://github.com/Lycidas97/claude-desktop-bridge/pull/607)
+- Match Claude Desktop's debugger menu item by prefix, so a native name with a
+  trailing note still matches. Bridge does not reopen the debug port after
+  Claude closes it on its own (about every 15 minutes): each reopening brought
+  Chrome to the front. Re-enable the port from the phone or the native menu.
+  An automatic reopen added after 1.3.9 was reverted before this release.
+  [PR 623](https://github.com/Lycidas97/claude-desktop-bridge/pull/623),
+  [PR 627](https://github.com/Lycidas97/claude-desktop-bridge/pull/627)
+- On mobile, the quick-switch and Connection and computer settings buttons both
+  show reconnecting until the reply to that request arrives. A reply that
+  arrives 21 seconds into the handshake window no longer leaves the button
+  stuck, and after a device is revoked the settings return to the computer list
+  so you can pair again. The macOS dogfood installer recycles the replaced app
+  and its packaging output after a verified install, and restores the previous
+  app if copying, signing, or launch fails.
+  [PR 580](https://github.com/Lycidas97/claude-desktop-bridge/pull/580),
+  [PR 581](https://github.com/Lycidas97/claude-desktop-bridge/pull/581)
+- Move mail attachment reference parsing into the artifact RPC, share the
+  Assistant browser-test helpers, and make the SMTP test fixture accept
+  expected connection resets without changing behavior. Isolate the desktop
+  host in the first-attachments browser scenario.
+  [PR 570](https://github.com/Lycidas97/claude-desktop-bridge/pull/570),
+  [PR 575](https://github.com/Lycidas97/claude-desktop-bridge/pull/575),
+  [PR 600](https://github.com/Lycidas97/claude-desktop-bridge/pull/600),
+  [PR 616](https://github.com/Lycidas97/claude-desktop-bridge/pull/616)
+
+**Upgrade compatibility.** Protocol V3 and Pairing V4 remain unchanged. The
+full original-text reader, same-host SMTP password reuse, first-message
+attachments, folder creation, the new proposal types, and mail drafts with
+attachments depend on capabilities or client markers that the computer and the
+device declare. With an older computer or device they are hidden or keep the
+earlier behavior, as described in the linked PRs. In particular, a 1.3.9 phone
+does not list or count pending reply or send drafts that carry attachments.
+
+The release candidate (`main` at `763887e` plus the version, changelog, and
+README changes) passed a full distributed CI run (Mac, Windows packaged QA, and
+Android 16 emulator checks). The maintainer waived dogfood installation and live
+phone use for this release. These checks did not cover a live upgrade from
+1.3.9, live mixed-version connections, a live Claude Desktop across a debug-port
+closure, production mail or CalDAV providers, or physical devices.
+
 ## 1.3.9
 
 - Let the managed Assistant search the web. Search queries go to the search

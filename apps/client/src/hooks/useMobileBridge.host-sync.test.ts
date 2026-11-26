@@ -782,6 +782,21 @@ describe("durable sends during transport failure", () => {
     expect(harness.addOutbox).toHaveBeenCalledOnce();
     expect(harness.saveMessage.mock.calls[0]![0]).toBe(harness.addOutbox.mock.calls[0]![0]);
   });
+  it("uses the Native create response for a first turn before catalog commit, only on its own computer", async () => {
+    harness.commitStateImmediately = false;
+    const created: BridgeSessionInfo = { ...nativeSnapshot().sessions[0]!, sessionId: "just-created" };
+    harness.respond = async (request) => request.method === "session.create" ? { session: created } : {};
+    const bridge = useMobileBridge();
+    await expect(bridge.createSession("/tmp/project")).resolves.toEqual(created);
+    expect(harness.store!.stateRef.current.snapshot?.sessions).not.toContainEqual(created);
+    await bridge.sendTurn(created.sessionId, "First turn", [], undefined, { hostId: "A", session: created });
+    expect(harness.addOutbox.mock.calls[0]![0].request).toMatchObject({ method: "turn.start", params: { sessionId: created.sessionId } });
+
+    switchHost("B");
+    await expect(bridge.sendTurn(created.sessionId, "First turn", [], undefined, { hostId: "A", session: created })).rejects.toThrow("已切换电脑");
+    expect(harness.addOutbox).toHaveBeenCalledOnce();
+  });
+
   it("keeps a persisted message queued without restoring the draft", async () => {
     const bridge = useMobileBridge();
     const send = vi.fn().mockRejectedValue(new Error("Socket is not connected"));

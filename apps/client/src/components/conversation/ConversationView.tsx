@@ -32,7 +32,7 @@ import {
   ShieldCheck,
   X,
 } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from "react";
+import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from "react";
 import {
   isClaudeNativeRelay,
   type LocalTurn,
@@ -43,6 +43,7 @@ import {
 import { sessionCommandName, useSessionCommands } from "../../hooks/useSessionCommands.js";
 import {
   aggregateFileChanges,
+  assistantConversationTimeline,
   canConfigureSession,
   canSendSession,
   conversationItems,
@@ -59,6 +60,7 @@ import { desktopRuntimeId, desktopRuntimeName } from "../../lib/runtime-labels.j
 import { sessionQueueLabel } from "../../lib/session-activity.js";
 import { useStreamEntrance } from "../../lib/stream-entrance.js";
 import { useInlineProposals } from "../assistant/AssistantProposalProvider.js";
+import { AssistantProcessing, AssistantProcessingContext } from "../assistant/AssistantProcessing.js";
 import { AssistantTriggerBatch } from "../assistant/AssistantTriggerBatch.js";
 import { MailCard } from "../assistant/MailCard.js";
 import { ProposalCard } from "../assistant/ProposalCard.js";
@@ -109,7 +111,6 @@ export interface ConversationViewProps {
   surface?: "project" | "assistant" | undefined;
   alternateStage?: ((openConfiguration?: () => void) => ReactNode) | undefined;
   hideComposer?: boolean | undefined;
-  assistantReplyTarget?: { itemId: string; done(error?: string): void } | undefined;
   hostId: string;
   session: BridgeSessionInfo;
   sessions: BridgeSessionInfo[];
@@ -152,7 +153,7 @@ export interface ConversationViewProps {
   resolveMailRefId?: (() => string | undefined) | undefined;
   onOpenSession(sessionId: string): Promise<void>;
   onLoadOlderHistory(sessionId: string): Promise<void>;
-  onDownloadSessionFile?: ((sessionId: string, filePath: string, resolveRelativeLink?: true) => Promise<void>) | undefined;
+  onDownloadSessionFile?: ((sessionId: string, filePath: string, resolveRelativeLink?: true, save?: true) => Promise<void>) | undefined;
   onUploadFile?: UploadFileHandler | undefined;
   onSendTurn(
     sessionId: string,
@@ -198,7 +199,6 @@ export function ConversationView({
   variant = "mobile",
   surface = "project",
   alternateStage,
-  assistantReplyTarget,
   hideComposer = false,
   hostId,
   session,
@@ -263,7 +263,9 @@ export function ConversationView({
 }: ConversationViewProps) {
   const isMobile = variant === "mobile";
   const isAssistant = surface === "assistant";
-  const hasAlternateStage = isAssistant && alternateStage != null;
+  const processing = useContext(AssistantProcessingContext);
+  const processingVisible = isAssistant && processing?.visible === true;
+  const hasAlternateStage = isAssistant && (alternateStage != null || processingVisible);
   const composerHidden = isAssistant && hideComposer;
   const fallbackDrafts = useConversationDrafts(hostId);
   const conversationDrafts = externalDrafts ?? fallbackDrafts;
@@ -272,7 +274,7 @@ export function ConversationView({
   const { text, attachments, sending, imageError } = draft;
   const files = useSessionFileDownload(
     session.sessionId, isMobile, onDownloadSessionFile,
-    snapshot?.host.capabilities.includes("artifact.transfer.relative-link.v1") ?? false,
+    snapshot?.host.capabilities.includes("artifact.transfer.relative-link.v1") ?? false, isAssistant && isMobile,
   );
 
   const [internalSessionView, setInternalSessionView] = useState<"conversation" | "evidence">("conversation");
@@ -456,10 +458,21 @@ export function ConversationView({
   const fileChangesSummary = useMemo(() => aggregateFileChanges(items), [items]);
   const anchors = useMemo(() => proposalAnchors(items), [items]);
   const inlineProposals = useInlineProposals(session.sessionId, anchors);
-  const timeline = useMemo(
+  const fullTimeline = useMemo(
     () => conversationTimeline(items, evidence?.items ?? [], mailCards, inlineProposals),
     [evidence?.items, items, mailCards, inlineProposals],
   );
+  const assistantTimeline = useMemo(() => isAssistant ? assistantConversationTimeline(fullTimeline) : undefined, [isAssistant, fullTimeline]);
+  // A live completion is timestamped on receipt; the matching native history carries the send time.
+  const assistantReplyTimes = useMemo(() => {
+    if (!isAssistant) return;
+    const times = new Map<string, number>();
+    for (const item of history?.items ?? []) {
+      if (item.role === "assistant" && item.createdAt > 0) times.set(item.id, item.createdAt);
+    }
+    return times;
+  }, [isAssistant, history?.items]);
+  const timeline = assistantTimeline?.chat ?? fullTimeline;
   const displayNodes = useMemo(() => groupTimelineTools(timeline), [timeline]);
   const latestMessage = displayNodes.filter((node) => node.kind === "message" && !node.item.sessionNotice
     && (node.item.role === "user" || node.item.role === "assistant")).at(-1);
@@ -474,6 +487,11 @@ export function ConversationView({
         if (delivery?.state === "queued" && delivery.commandId) inlineQueuedIds.add(delivery.commandId);
       }
     }
+  }
+  for (const { nativeMessage, cards } of assistantTimeline?.batches ?? []) {
+    const delivery = cards[0]?.nativeDelivery;
+    const commandId = nativeMessage?.commandId ?? delivery?.commandId;
+    if (commandId && (nativeMessage?.delivery ?? delivery?.state) === "queued") inlineQueuedIds.add(commandId);
   }
   const missingQueuedCount = session.pendingCount - inlineQueuedIds.size;
   const showQueueBanner = missingQueuedCount > 0
@@ -693,6 +711,7 @@ export function ConversationView({
   }, [draftKey, effectiveSessionView, composerHidden, text, visible]);
 
   const { streamRef, onScroll } = useConversationScroll({
+    assistant: isAssistant,
     sessionId: session.sessionId,
     sessionView: isAssistant ? "conversation" : effectiveSessionView,
     streamVisible: visible && !transcriptHidden,
@@ -706,25 +725,6 @@ export function ConversationView({
     streamKeys,
     onLoadOlderHistory,
   });
-
-  const replyPage = useRef<{ target: typeof assistantReplyTarget; cursor: string }>(undefined);
-  useLayoutEffect(() => {
-    if (!assistantReplyTarget || !visible || hasAlternateStage) return;
-    if (effectiveSessionView === "evidence") { setSessionView("conversation"); return; }
-    const { itemId, done } = assistantReplyTarget;
-    const element = streamRef.current?.querySelector(`article[data-stream-key="${CSS.escape(itemId)}"]`);
-    if (element) { element.scrollIntoView({ block: "center" }); done(); return; }
-    if (!isOnline) { done("连接电脑后可查找回复。"); return; }
-    if (!history || history.status === "loading") return;
-    const cursor = history.nextCursor;
-    if (!history.hasMore || !cursor) { done(history.error ?? "未找到这条回复。"); return; }
-    if (replyPage.current?.target === assistantReplyTarget && replyPage.current.cursor === cursor) {
-      done(history.error ?? "未能加载更早的对话。");
-      return;
-    }
-    replyPage.current = { target: assistantReplyTarget, cursor };
-    void onLoadOlderHistory(session.sessionId);
-  }, [assistantReplyTarget, effectiveSessionView, hasAlternateStage, history, isOnline, onLoadOlderHistory, session.sessionId, setSessionView, streamKeys, streamRef, visible]);
 
   async function sendMessage(): Promise<void> {
     await sessionDraft.submitMessage({
@@ -879,9 +879,9 @@ export function ConversationView({
       {displayNodes.length === 0
         && sessionQuestions.length === 0
         && orphanUncertainDeliveries.length === 0
-        && history?.status === "ready" && (
+        && history?.status === "ready" && (!isAssistant || !history.hasMore) && (
           <div className="conversation-empty">
-            <strong>这是一个空会话</strong>
+            <strong>{isAssistant ? "暂无对话" : "这是一个空会话"}</strong>
           </div>
         )}
       {displayNodes.map((node) => {
@@ -893,6 +893,7 @@ export function ConversationView({
             <MailCard
               key={`mail:${node.card.mailRefId}`}
               card={node.card}
+              compact
               {...(node.nativeMessage ? { nativeMessage: node.nativeMessage } : {})}
             />
           );
@@ -943,7 +944,7 @@ export function ConversationView({
         }
         if (item.sentFiles?.length && item.toolUseId) {
           return <SessionSentFiles key={item.id} item={{ ...item, sentFiles: item.sentFiles }} hostId={hostId} toolUseId={item.toolUseId}
-            isMobile={isMobile} onOpenFile={onDownloadSessionFile ? files.openFile : undefined}
+            onOpenFile={onDownloadSessionFile ? files.openFile : undefined}
             supportsToolDetail={Boolean(snapshot?.host.capabilities.includes("transcript.toolDetail.v1"))} />;
         }
         if (item.sessionNotice) {
@@ -991,6 +992,8 @@ export function ConversationView({
             key={item.id}
             item={item}
             session={session}
+            replyTimestamp={isAssistant && item.role === "assistant" && item.text.trim()
+              ? assistantReplyTimes?.get(item.id) ?? item.createdAt : undefined}
             entering={streamEntering(item.id)}
             latestMessage={node === latestMessage}
             visible={visible && !transcriptHidden && effectiveSessionView === "conversation"}
@@ -1008,6 +1011,7 @@ export function ConversationView({
             onRewind={(messageId) => setRewindTarget({ sessionId: session.sessionId, messageId })}
             onResolveUncertain={onResolveUncertain}
             {...(onDownloadSessionFile ? { onFileClick: files.openFile } : {})}
+            assistantOutputLinks={isAssistant && item.role === "assistant" ? (isMobile ? "download" : "open") : undefined}
             interactivePrompt={interactivePrompt}
           />
         );
@@ -1372,7 +1376,7 @@ export function ConversationView({
       {isAssistant ? (
         <div className="conversation-stage" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
           {transcript}
-          {!transcriptHidden && latestHistorySync && (latestHistorySync === "loading" ? (
+          {(!transcriptHidden || processingVisible) && latestHistorySync && (latestHistorySync === "loading" ? (
             <div className="latest-history-notice session-channel-warning" role="status">
               <LoaderCircle className="is-spinning" size={15} aria-hidden="true" />正在同步最新对话…
             </div>
@@ -1384,11 +1388,14 @@ export function ConversationView({
               <IconButton label="关闭同步提示" onClick={latestHistorySync.dismiss}><X size={16} aria-hidden="true" /></IconButton>
             </div>
           ))}
-          {hasAlternateStage ? (
+          {processing && assistantTimeline && <AssistantProcessing batches={assistantTimeline.batches} history={history}
+            sessionId={session.sessionId} hostId={hostId} visible={processingVisible} onDiscuss={processing.onDiscuss} onCancel={onCancelQueuedTurn}
+            onLoadOlder={onLoadOlderHistory} supportsToolDetail={Boolean(snapshot?.host.capabilities.includes("transcript.toolDetail.v1"))} />}
+          {alternateStage ? (
             <div className="conversation-alternate-stage" style={{ flex: 1, overflowY: "auto" }}>
               {alternateStage(canConfigure && isOnline ? () => setInternalConfiguration("model-effort") : undefined)}
             </div>
-          ) : evidenceView}
+          ) : !processingVisible && evidenceView}
         </div>
       ) : effectiveSessionView === "conversation" ? transcript : evidenceView}
       <div className={`permission-dock-slot ${activePermission || activeNativePrompt || otherPermission || otherNativePrompt || waitingQuestion ? "has-attention" : ""}`}>

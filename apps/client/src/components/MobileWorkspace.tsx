@@ -193,8 +193,11 @@ export function MobileWorkspace({
   onPreviewArtifact(artifactId: string): Promise<BridgeArtifactPreview>;
   onDownloadArtifact(artifact: BridgeArtifactManifest): Promise<void>;
   onDownloadSessionFile?(sessionId: string, filePath: string, resolveRelativeLink?: true): Promise<void>;
-  onUploadFile?: UploadFileHandler;
-  onSendTurn(sessionId: string, text: string, attachments: BridgeAttachment[], mailRefId?: string): Promise<{ requestId: string } | void>;
+  onUploadFile?: (...args: [...Parameters<UploadFileHandler>, expectedHostId?: string]) => ReturnType<UploadFileHandler>;
+  onSendTurn(
+    sessionId: string, text: string, attachments: BridgeAttachment[], mailRefId?: string,
+    firstTurn?: { hostId: string | undefined; session: BridgeSessionInfo },
+  ): Promise<{ requestId: string } | void>;
   onInterruptTurn(sessionId: string, commandId?: string): Promise<void>;
   onSteerQueuedTurn?(sessionId: string, commandId: string): Promise<void>;
   onCancelQueuedTurn?(sessionId: string, commandId: string): Promise<void>;
@@ -1150,6 +1153,8 @@ export function MobileWorkspace({
               onLoadSessionConfiguration={onLoadSessionConfiguration}
               onConfigureSession={onConfigureSession}
               onCreateSession={onCreateSession}
+              onUploadFile={onUploadFile ? (...args) => onUploadFile(...args, activeHostId) : undefined}
+              onSendFirstTurn={(session, text, attachments) => onSendTurn(session.sessionId, text, attachments, undefined, { hostId: activeHostId, session })}
               onSessionCreated={handleNewChatCreated}
               onActivateClaude={visible ? onActivateClaude : undefined}
             />

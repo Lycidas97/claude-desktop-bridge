@@ -244,7 +244,7 @@ async function desktopMain(): Promise<void> {
     handle("bridge:choose-directory", async (initialPath?: string) => {
       if (initialPath !== undefined && typeof initialPath !== "string") throw new Error("initialPath must be a string");
       const options: Electron.OpenDialogOptions = {
-        properties: ["openDirectory"],
+        properties: ["openDirectory", "createDirectory"],
         ...(initialPath ? { defaultPath: initialPath } : {}),
       };
       const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);

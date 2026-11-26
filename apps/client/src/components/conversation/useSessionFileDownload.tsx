@@ -1,14 +1,15 @@
 import { AlertTriangle } from "lucide-react";
 import { useState } from "react";
-import { mediaKind } from "../../lib/media-preview.js";
+import { isAssistantOutputPath, mediaKind } from "../../lib/media-preview.js";
 import { ConfirmationDialog } from "../common/ConfirmationDialog.js";
 import { useMediaPreview } from "../evidence/MediaPreviewProvider.js";
 
 export function useSessionFileDownload(
   sessionId: string,
   isMobile: boolean,
-  onDownloadSessionFile: ((sessionId: string, filePath: string, resolveRelativeLink?: true) => Promise<void>) | undefined,
+  onDownloadSessionFile: ((sessionId: string, filePath: string, resolveRelativeLink?: true, save?: true) => Promise<void>) | undefined,
   supportsRelativeLinks: boolean,
+  saveAssistantOutputs = false,
 ) {
   const openMedia = useMediaPreview();
   const [pendingFileDownload, setPendingFileDownload] = useState<{ path: string; resolveRelativeLink?: true }>();
@@ -24,8 +25,12 @@ export function useSessionFileDownload(
     if (!fileDownloadBusy) setPendingFileDownload(undefined);
   }
 
+  function shouldSave(path: string): boolean {
+    return saveAssistantOutputs && isAssistantOutputPath(path);
+  }
+
   function openFile(filePath: string): void {
-    const kind = mediaKind(filePath);
+    const kind = shouldSave(filePath) ? undefined : mediaKind(filePath);
     if (kind) {
       openMedia({
         name: filePath.split(/[\\/]/u).at(-1) || filePath,
@@ -67,7 +72,7 @@ export function useSessionFileDownload(
           if (!pendingFileDownload || !onDownloadSessionFile || fileDownloadBusy) return;
           setFileDownloadBusy(true);
           setFileDownloadError(undefined);
-          void onDownloadSessionFile(sessionId, pendingFileDownload.path, pendingFileDownload.resolveRelativeLink)
+          void onDownloadSessionFile(sessionId, pendingFileDownload.path, pendingFileDownload.resolveRelativeLink, shouldSave(pendingFileDownload.path) ? true : undefined)
             .then(() => {
               setPendingFileDownload(undefined);
             })

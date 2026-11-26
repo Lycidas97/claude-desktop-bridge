@@ -1,5 +1,6 @@
 import type { BridgeActionProposal, MailProposalAction, MailProposalDraft } from "@bridge/protocol";
 import { useEffect, useId, useState, type FormEvent } from "react";
+import { formatBytes } from "../../lib/media-preview.js";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
 import { Sheet } from "../common/Sheet.js";
 import { mailResult } from "./AssistantMailProvider.js";
@@ -27,7 +28,7 @@ export function MailProposalSheet({ proposal, action, mode, stale, mobile, onClo
     setError("");
     const ref = proposalRef(proposal);
     try {
-      let params: Record<string, unknown> = { ...ref, confirmMail: true };
+      let params: Record<string, unknown> = { ...ref, confirmMail: true, ...(action.attachments?.length ? { confirmMailAttachments: true } : {}) };
       if (editing) {
         const data = new FormData(event.currentTarget);
         const fields = {
@@ -66,6 +67,9 @@ export function MailProposalSheet({ proposal, action, mode, stale, mobile, onClo
           <dt>抄送 (Cc)</dt><dd>{action.cc.join("\n") || "无"}</dd>
           {action.replyTo && <><dt>回复地址</dt><dd>{action.replyTo}</dd></>}
         </>}
+        {action.attachments?.length ? <><dt>附件</dt><dd>
+          {action.attachments.map(({ filename, size }, index) => <div key={index}><bdi>{filename}</bdi> · {formatBytes(size)}</div>)}
+        </dd></> : null}
       </dl>
       {action.kind === "mail.reply" && action.replyToDiffers && <aside className="mail-proposal-address-warning" data-foreign={action.foreignReplyTo}>
         <strong>{action.foreignReplyTo ? "原信的 Reply-To 来自不同域名" : "原信的 Reply-To 与 From 不同"}</strong>

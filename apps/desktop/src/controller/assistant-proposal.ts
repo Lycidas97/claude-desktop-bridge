@@ -21,20 +21,22 @@ export async function handleAssistantProposal(
     switch (method) {
       case "assistant.proposal.list": return proposals.page(parse(proposalRequests[method]));
       case "assistant.proposal.resolve": {
-        const { sessionId, refs, latestForReview, includeMail, includeMemory } = parse(proposalRequests[method]);
-        return { proposals: proposals.resolve(sessionId, refs, latestForReview, includeMail, includeMemory) };
+        const { sessionId, refs, latestForReview, includeMail, includeMemory, includeSession, includeSessionCreate, includeMailAttachments } = parse(proposalRequests[method]);
+        return { proposals: proposals.resolve(sessionId, refs, latestForReview, includeMail, includeMemory, includeSession, includeSessionCreate, includeMailAttachments) };
       }
       case "assistant.proposal.commit": return { proposal: await proposals.commit(parse(proposalRequests[method]), actor) };
       case "assistant.proposal.dismiss": return { proposal: proposals.dismiss(parse(proposalRequests[method]), actor) };
       case "assistant.proposal.revise": {
         const { action, ...ref } = parse(proposalRequests[method]);
-        if (action.kind === "memory.rule_upsert") throw new BridgeRequestError("UNSUPPORTED", "请让助理修改规则提案。");
+        if (action.kind === "memory.rule_upsert" || action.kind === "session.create") throw new BridgeRequestError("UNSUPPORTED", "请让助理直接修订此提案。");
         return { proposal: await proposals.revise(ref, action) };
       }
       case "assistant.proposal.replan": {
         const { feedback, ...ref } = parse(proposalRequests[method]);
         const { sessionId, action } = proposals.pending(ref);
-        if (action.kind === "memory.rule_upsert") throw new BridgeRequestError("UNSUPPORTED", "请让助理重新核对规则提案。");
+        if (action.kind === "memory.rule_upsert" || action.kind === "session.create" || "targetSessionId" in action) {
+          throw new BridgeRequestError("UNSUPPORTED", "请让助理直接修订此提案。");
+        }
         return await replan(sessionId, [
           `请重查相关议程和空档，按以下意见调整提案。只用 proposal.update_pending 修订此版本，不要提交执行：${JSON.stringify(ref)}`,
           feedback,

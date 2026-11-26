@@ -254,6 +254,7 @@ function useDesktopConversationController(input: DesktopConversationInput): Desk
         status: "loading",
         items: current[key]?.items ?? [],
         sessionFileReceipts: current[key]?.sessionFileReceipts,
+        assistantReplyBatches: current[key]?.assistantReplyBatches,
         hasMore: current[key]?.hasMore ?? false,
         ...(current[key]?.nextCursor ? { nextCursor: current[key]!.nextCursor } : {}),
       },
@@ -278,7 +279,9 @@ function useDesktopConversationController(input: DesktopConversationInput): Desk
         params: { sessionId, limit: HISTORY_PAGE_SIZE },
       }).then((response) => unwrap<{ history: BridgeHistoryPage }>(response)).then(({ history }) => {
         if (openSeqRef.current.get(key) !== seq) return false;
-        updateHistories((current) => ({ ...current, [key]: projectHistoryPage(history) }));
+        updateHistories((current) => ({ ...current, [key]: {
+          ...projectHistoryPage(history), latestRead: { sequence: seq, completedTurnId: undefined },
+        } }));
         return true;
       }, (failure) => {
         if (openSeqRef.current.get(key) !== seq) return false;
@@ -289,6 +292,7 @@ function useDesktopConversationController(input: DesktopConversationInput): Desk
             status: "error",
             items: current[key]?.items ?? [],
             sessionFileReceipts: current[key]?.sessionFileReceipts,
+            assistantReplyBatches: current[key]?.assistantReplyBatches,
             hasMore: false,
             error: errorMessage,
           },
@@ -449,7 +453,10 @@ function useDesktopConversationController(input: DesktopConversationInput): Desk
       if (!loadingHistoryRef.current.has(key) || (openSeqRef.current.get(key) ?? 0) !== startSeq) return;
       updateHistories((value) => ({
         ...value,
-        [key]: projectHistoryPage(result.history, value[key] ?? current),
+        [key]: {
+          ...projectHistoryPage(result.history, value[key] ?? current),
+          ...(current.latestRead ? { latestRead: current.latestRead } : {}),
+        },
       }));
     } catch (failure) {
       if (!loadingHistoryRef.current.has(key) || (openSeqRef.current.get(key) ?? 0) !== startSeq) return;
@@ -939,11 +946,10 @@ export function DesktopSessionConversation({
   headerLeading,
   surface = "project",
   alternateStage,
-  assistantReplyTarget,
   hideComposer,
   conversationDrafts: externalDrafts,
   externalActionError,
-}: Pick<DesktopConversationInput, "snapshot" | "events"> & Pick<ConversationViewProps, "surface" | "alternateStage" | "hideComposer" | "assistantReplyTarget"> & {
+}: Pick<DesktopConversationInput, "snapshot" | "events"> & Pick<ConversationViewProps, "surface" | "alternateStage" | "hideComposer"> & {
   session: BridgeSessionInfo;
   onSelectSession(sessionId: string): void | Promise<void>;
   onForkCreated?(parentSessionId: string, created: BridgeSessionInfo): void;
@@ -978,7 +984,6 @@ export function DesktopSessionConversation({
       variant="desktop"
       surface={surface}
       alternateStage={alternateStage}
-      assistantReplyTarget={assistantReplyTarget}
       hideComposer={hideComposer}
       hostId={hostId}
       session={session}

@@ -4,13 +4,15 @@ import { PassThrough, Readable } from "node:stream";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
+import type { ImapFlow, ImapFlowOptions } from "imapflow";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { AgendaStore } from "./agenda-store.js";
 import { AssistantMailService } from "./desktop.js";
 import { serveAssistantMailTools } from "./local-channel.js";
 import { ProposalExecutor } from "./proposal-executor.js";
 import { ProposalStore } from "./proposal-store.js";
-import type { submitSmtp } from "./smtp.js";
+import { submitSmtp } from "./smtp.js";
+import { simpleParser } from "mailparser";
 import { AssistantMailStore } from "./store.js";
 
 const account = { host: "imap.example.com", user: "reader@example.com", port: 993, enabled: true };
@@ -18,7 +20,9 @@ const accountKey = createHash("sha256").update(JSON.stringify([account.host, acc
 const channel = { host: "smtp.example.com", port: 465, security: "tls", user: "login", from: "writer@example.com", credential: "for-test-only" } as const;
 const draft = { kind: "mail.send", accountKey, to: ["first@example.net", "second@example.net"], cc: ["copy@example.org"],
   subject: "Draft", bodyText: "Draft body\r\nSecond line" } as const;
+const csvBytes = Buffer.from([0x63, 0x61, 0x66, 0xe9, 0x2c, 0x80]);
 const send = vi.fn<typeof submitSmtp>();
+const createClient = vi.fn<(options: ImapFlowOptions) => ImapFlow>();
 const vault = new Map<string, string>();
 const deleteCredential = async (key: string) => { vault.delete(key); };
 const credentials = { supported: true, get: async (key: string) => vault.get(key), set: async (key: string, value: string) => { vault.set(key, value); },
@@ -32,13 +36,14 @@ let executor: ProposalExecutor;
 let originalId: string;
 
 async function open() {
-  mail = new AssistantMailService({ userDataPath: directory, credentials });
+  mail = new AssistantMailService({ userDataPath: directory, credentials, createClient });
   await mail.initialize(database => { db = database; ledger = new ProposalStore(db); }, false);
   executor = new ProposalExecutor(ledger, new AgendaStore(db), agendaCredentials, () => {}, undefined, mail, send);
 }
 
 beforeEach(async () => {
   send.mockReset();
+  createClient.mockReset();
   credentials.delete.mockReset();
   vault.clear();
   vault.set(accountKey, "imap-fixture-value");
@@ -50,7 +55,10 @@ beforeEach(async () => {
     const original = await store.record({ accountKey, mailbox: "INBOX", uidValidity: "1", uid: 1, subject: "Original", from: [{ address: "sender@example.net" }],
       receivedAt: new Date().toISOString(), source: Buffer.from([
         "From: Sender <sender@EXAMPLE.NET>", "Reply-To: another@example.net, other@foreign.example.org", "Subject: Original",
-        "Message-ID: <current@example.net>", "References: <parent@example.net>", "", "Original body",
+        "Message-ID: <current@example.net>", "References: <parent@example.net>", 'Content-Type: multipart/mixed; boundary="mail"', "",
+        "--mail", "Content-Type: text/plain", "", "Original body",
+        "--mail", "Content-Type: text/csv; charset=windows-1252", "Content-Disposition: attachment; filename=names.csv",
+        "Content-Transfer-Encoding: base64", "", csvBytes.toString("base64"), "--mail--", "",
       ].join("\r\n")) });
     originalId = original!.mailRefId;
     await writeFile(join(store.directory, "accounts.json"), JSON.stringify([account]));
@@ -120,6 +128,84 @@ it.each(["proposal.create", "proposal.update_pending"] as const)("does not let %
   }
 });
 
+it("sends only the reviewed output bytes and refuses legacy confirmation or changed content", async () => {
+  const workspace = join(directory, "private", "assistant", "workspace");
+  await mkdir(join(workspace, "outputs"), { recursive: true });
+  mail.setBinding({ assistantId: "assistant", nativeSessionId: "bound", sectionId: null, previousSessionIds: [],
+    managed: { path: workspace, policy: "stage1-fenced-workspace", token: "fixture-token", automaticDelivery: false } });
+  const file = join(workspace, "outputs", "report.csv");
+  const content = Buffer.from("Name,Total\nOne,42\n");
+  await writeFile(file, content);
+  const selection = [{ outputPath: "outputs/report.csv" }];
+  const ref = await executor.create("bound", { ...draft, to: [...draft.to], cc: [...draft.cc], attachments: selection });
+  expect(executor.pending(ref).action).toMatchObject({ attachments: [{ filename: "report.csv", size: content.length,
+    sha256: createHash("sha256").update(content).digest("hex") }] });
+  expect(executor.page({ includeMail: true, limit: 10 }).proposals).toEqual([]);
+  expect(executor.page({ includeMail: true, includeMailAttachments: true, limit: 10 }).proposals).toHaveLength(1);
+  expect(executor.snapshot()).toMatchObject({ pendingMailCount: 0, pendingMailAttachmentCount: 1 });
+  await expect(executor.commit({ ...ref, confirmMail: true }, "legacy-phone")).rejects.toMatchObject({ code: "INVALID_PARAMS" });
+  await writeFile(file, Buffer.from("Name,Total\nOne,99\n"));
+  await expect(executor.commit({ ...ref, confirmMail: true, confirmMailAttachments: true }, "phone")).rejects.toMatchObject({ code: "CONFLICT" });
+  expect(send).not.toHaveBeenCalled();
+  expect(db.prepare("SELECT * FROM send_attempts").all()).toEqual([]);
+
+  await writeFile(file, content);
+  send.mockResolvedValueOnce({ state: "applied", accepted: [...draft.to, ...draft.cc], rejected: [] });
+  await expect(executor.commit({ ...ref, confirmMail: true, confirmMailAttachments: true }, "phone")).resolves.toMatchObject({ state: "executing" });
+  await executor.close();
+  expect(send.mock.calls[0]?.[2]).toMatchObject({ attachmentContents: [{ filename: "report.csv", content }] });
+});
+
+it.each(["mail.send", "mail.reply"] as const)("stores %s with attachments so a legacy host cannot silently revise or send it", async kind => {
+  const fields = { ...draft, to: [...draft.to], cc: [...draft.cc] };
+  const action = kind === "mail.reply" ? { ...fields, kind, mailRefId: originalId } : { ...fields, kind };
+  const attachment = (await mail.readEvent(originalId))!.attachments[0]!;
+  const plain = await executor.create("bound", action);
+  const attached = await executor.create("bound", { ...action, attachments: [{ mailRefId: originalId, attachmentId: attachment.attachmentId }] });
+  const currentVersion = mail.smtpAccount(accountKey)!.smtp.version;
+  const legacyRead = db.prepare(`SELECT json_extract(payload, '$.action.kind') AS kind,
+    json_extract(payload, '$.intent.backend') AS backend, json_extract(payload, '$.intent.channelVersion') AS channelVersion
+    FROM action_proposals WHERE id = ? ORDER BY revision DESC LIMIT 1`);
+  // The legacy store exposes the raw kind, and its executor checks kind on revise and the SMTP UUID on commit.
+  expect(legacyRead.get(plain.proposalId)).toEqual({ kind, backend: "smtp", channelVersion: currentVersion });
+  const incompatible = { kind: `${kind}.attachments.v1`, backend: "smtp", channelVersion: `mail-attachments.v1:${currentVersion}` };
+  expect(legacyRead.get(attached.proposalId)).toEqual(incompatible);
+  expect(executor.pending(attached).action.kind).toBe(kind);
+  const edited = await executor.revise(attached, { ...action, subject: "Revised" });
+  expect(legacyRead.get(edited.proposalId)).toEqual(incompatible);
+  expect(executor.pending(edited).action).toMatchObject({ kind, subject: "Revised", attachments: [{ filename: "names.csv" }] });
+  expect(executor.resolve("bound", [attached], true, true)).toEqual([]);
+  expect(executor.resolve("bound", [attached], true, true, false, false, false, true)).toEqual([edited]);
+  expect(db.prepare("SELECT * FROM proposal_executions").all()).toEqual([]);
+});
+
+it("binds the declared charset to the review and preserves it with the original bytes in SMTP", async () => {
+  const attachment = (await mail.readEvent(originalId))!.attachments[0]!;
+  const ref = await executor.create("bound", { ...draft, to: [...draft.to], cc: [...draft.cc],
+    attachments: [{ mailRefId: originalId, attachmentId: attachment.attachmentId }] });
+  expect(executor.pending(ref).action).toMatchObject({ attachments: [{ filename: "names.csv", mimeType: "text/csv", charset: "windows-1252" }] });
+  const approval = { ...ref, confirmMail: true, confirmMailAttachments: true } as const;
+  vi.spyOn(mail, "attachment").mockReturnValueOnce({ ...attachment, charset: "utf-8" });
+  await expect(executor.commit(approval, "desktop")).rejects.toMatchObject({ code: "CONFLICT" });
+  expect(db.prepare("SELECT * FROM send_attempts").all()).toEqual([]);
+
+  const fileSentCopy = vi.spyOn(mail, "fileSentCopy").mockResolvedValueOnce("filed");
+  let sentSource: Buffer | undefined;
+  send.mockImplementationOnce((smtp, password, message, id) => submitSmtp(smtp, password, message, id,
+    () => ({ async sendMail({ raw }) {
+      sentSource = raw as Buffer;
+      const parsed = await simpleParser(sentSource);
+      expect(parsed.attachments).toHaveLength(1);
+      expect(parsed.attachments[0]!.headers.get("content-type")).toMatchObject({ value: "text/csv", params: { charset: "windows-1252" } });
+      expect(parsed.attachments[0]!.content).toEqual(csvBytes);
+      return { accepted: message.to, rejected: [] } as never;
+    }, close() {} })));
+  await expect(executor.commit(approval, "desktop")).resolves.toMatchObject({ state: "executing" });
+  await executor.close();
+  expect(db.prepare("SELECT state FROM proposal_executions").get()).toEqual({ state: "applied" });
+  expect(fileSentCopy).toHaveBeenCalledExactlyOnceWith(accountKey, expect.any(String), sentSource);
+});
+
 it.each([{ state: "applied", accepted: [...draft.to, ...draft.cc], rejected: [] },
   { state: "failed", failure: { reason: "rejected", responseCode: 550 } },
   { state: "delivery_uncertain", failure: { reason: "unconfirmed" } }] as const)("persists one exact attempt for $state", async result => {
@@ -142,6 +228,7 @@ it.each([{ state: "applied", accepted: [...draft.to, ...draft.cc], rejected: [] 
   const resolved = executor.resolve("bound", [first], false, true)[0];
   expect(resolved?.state).toBe(result.state);
   expect(resolved?.mailSendFailure).toEqual("failure" in result ? result.failure : undefined);
+  if ("failure" in result) expect(createClient).not.toHaveBeenCalled();
   expect(executor.page({ limit: 10, includeMail: true, history: true }).proposals).toEqual([resolved]);
   expect(executor.page({ limit: 10, includeMail: true }).proposals).toEqual([]);
   expect(send).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ host: channel.host }), channel.credential, approved.action,
@@ -151,6 +238,41 @@ it.each([{ state: "applied", accepted: [...draft.to, ...draft.cc], rejected: [] 
   expect(stored[0]!.finished_at).toEqual(expect.any(Number));
   expect(JSON.parse(String(stored[0]!.result))).toEqual(result.state === "applied"
     ? { ...result, accepted: ["updated@example.net", ...result.accepted] } : result);
+});
+
+it.each([
+  ["applied", true, "filed"], ["delivery_partial", true, "filed"], ["applied", false, "unconfirmed"],
+] as const)("keeps SMTP %s independent of Sent APPEND success=%s", async (state, appended, sentCopy) => {
+  const path = "邮箱/已发送";
+  const proposal = await executor.create("bound", { ...draft, to: [...draft.to], cc: [...draft.cc] });
+  const action = executor.pending(proposal).action;
+  const messageId = `<${proposal.proposalId}.1@example.com>`;
+  const source = Buffer.from(`Message-ID: ${messageId}\r\nSubject: Draft\r\n\r\nDraft body\r\n`);
+  const accepted = state === "applied" ? [...draft.to, ...draft.cc] : [...draft.to];
+  const rejected = state === "applied" ? [] : [...draft.cc];
+  const imap = {
+    on: vi.fn(), connect: vi.fn(), close: vi.fn(),
+    list: vi.fn(async () => [{ path, flags: new Set(["\\Sent"]) }]),
+    mailboxOpen: vi.fn(), search: vi.fn(async () => []), append: vi.fn(async () => {
+      expect(executor.resolve("bound", [proposal], false, true)[0]?.state).toBe(state);
+      return appended ? { destination: path } : false;
+    }),
+  };
+  createClient.mockReturnValueOnce(imap as unknown as ImapFlow);
+  send.mockResolvedValueOnce({ state, accepted, rejected, source });
+  await executor.commit({ ...proposal, confirmMail: true }, "phone");
+  await executor.close();
+  const resolved = executor.resolve("bound", [proposal], false, true)[0];
+  expect(resolved?.state).toBe(state);
+  expect(resolved?.rejectedRecipients).toEqual(rejected.length ? rejected : undefined);
+  expect(resolved?.mailSendFailure).toBeUndefined();
+  expect(createClient).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ host: account.host, port: account.port, secure: true,
+    tls: { rejectUnauthorized: true }, auth: { user: account.user, pass: vault.get(accountKey) } }));
+  expect(imap.append).toHaveBeenCalledExactlyOnceWith(path, source, ["\\Seen"]);
+  expect(send).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ host: channel.host }), channel.credential, action, messageId);
+  expect(JSON.parse(String(db.prepare("SELECT result FROM send_attempts").get()!.result))).toEqual({ state, accepted, rejected, sentCopy });
+  await expect(executor.commit({ ...proposal, confirmMail: true }, "desktop")).rejects.toMatchObject({ code: "CONFLICT" });
+  expect(send).toHaveBeenCalledOnce();
 });
 
 it("reads a legacy failed attempt with no reason", async () => {
@@ -197,7 +319,7 @@ it("keeps credentials separate and rejects mail reviewed against a changed chann
   expect([...vault]).toEqual([[accountKey, "imap-fixture-value"]]);
 });
 
-it("keeps legacy SMTP separate until conversion, then requires a new revision and uses the shared credential", async () => {
+it("requires new approval after shared authorization conversion or same-host channel edits", async () => {
   const { credential, user: _user, ...shared } = channel;
   await mail.setSmtp(accountKey, { ...channel, user: account.user });
   const before = mail.smtpAccount(accountKey)!.smtp;
@@ -220,11 +342,18 @@ it("keeps legacy SMTP separate until conversion, then requires a new revision an
   await expect(executor.commit({ ...ref, confirmMail: true }, "phone")).rejects.toMatchObject({ code: "CONFLICT" });
   expect(db.prepare("SELECT * FROM send_attempts").all()).toEqual([]);
   await expect(mail.setSmtp(accountKey, channel)).rejects.toMatchObject({ code: "UNSUPPORTED" });
+  const sharedDraft = await executor.revise(ref, action);
+  await mail.updateSharedSmtp(accountKey, { ...shared, port: 587, security: "starttls" });
+  await expect(executor.commit({ ...sharedDraft, confirmMail: true }, "phone")).rejects.toMatchObject({ code: "CONFLICT" });
+  expect(db.prepare("SELECT * FROM send_attempts").all()).toEqual([]);
+  expect(send).not.toHaveBeenCalled();
+
   send.mockResolvedValueOnce({ state: "applied", accepted: [...draft.to, ...draft.cc], rejected: [] });
-  const revised = await executor.revise(ref, action);
+  const revised = await executor.revise(sharedDraft, action);
   await executor.commit({ ...revised, confirmMail: true }, "phone");
   await executor.close();
-  expect(send).toHaveBeenCalledExactlyOnceWith(channelNow, "shared-fixture-value", revised.action, expect.any(String));
+  expect(send).toHaveBeenCalledExactlyOnceWith({ ...channelNow, port: 587, security: "starttls", version: expect.any(String) },
+    "shared-fixture-value", revised.action, expect.any(String));
 });
 
 it("rolls back a newly saved SMTP credential if account settings cannot be persisted", async () => {

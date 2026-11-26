@@ -2,7 +2,7 @@ import { readFileSync, statSync, type BigIntStats } from "node:fs";
 import { lstat, readdir, realpath, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import { ASSISTANT_DIRECTORY_TOOL, ASSISTANT_MEMORY_POLICY, ASSISTANT_WORKSPACE_POLICY, isAssistantWorkspacePolicy } from "../../packages/protocol/src/assistant-mail.js";
-import { PROPOSAL_TOOLS } from "../../packages/protocol/src/assistant-proposal.js";
+import { PROPOSAL_TOOLS, SESSION_CREATE_OPTIONS_TOOL } from "../../packages/protocol/src/assistant-proposal.js";
 
 const readTools = ["Read", "Glob", "Grep"];
 export const ASSISTANT_FILE_WRITES = ["Write", "Edit", "MultiEdit"];
@@ -13,9 +13,11 @@ export const ASSISTANT_TOKEN_ENV = "BRIDGE_ASSISTANT_SESSION_TOKEN";
 export const AGENDA_TOOLS = ["todo_list", "calendar_list_events", "calendar_find_free_slots"].map(name => `mcp__${ASSISTANT_MCP}__${name}`);
 export const PROPOSAL_NATIVE_TOOLS = PROPOSAL_TOOLS.map(name => `mcp__${ASSISTANT_MCP}__${name.replace(".", "_")}`);
 export const ASSISTANT_MARK_READ_TOOL = `mcp__${ASSISTANT_MCP}__mail_mark_read`;
+export const ASSISTANT_DOWNLOAD_ATTACHMENT_TOOL = `mcp__${ASSISTANT_MCP}__mail_download_attachment`;
 const mailTools = ["list_events", "list_unfinished_triggers", "read_event", "read_attachment", "update_analysis", "set_processing_status", "move"].map(name => `mcp__${ASSISTANT_MCP}__mail_${name}`);
 export const ASSISTANT_TOOLS = [
   ...AGENDA_TOOLS, ...PROPOSAL_NATIVE_TOOLS, ...fileTools, "Agent", "ToolSearch", "TodoWrite", ...mailTools, ASSISTANT_MARK_READ_TOOL,
+  ASSISTANT_DOWNLOAD_ATTACHMENT_TOOL,
 ];
 export const ASSISTANT_WEB_SEARCH_TOOL = "WebSearch";
 export const ASSISTANT_DIRECTORY_NATIVE_TOOL = `mcp__${ASSISTANT_MCP}__${ASSISTANT_DIRECTORY_TOOL.replace(".", "_")}`;
@@ -146,7 +148,8 @@ export async function allowAssistantTool(workspace: string, input: unknown, poli
   const params = args as Record<string, unknown>;
   const specialist = memory && typeof agentType === "string" ? ASSISTANT_SPECIALISTS.get(agentType) : undefined;
   if (memory && (specialist ? !specialist.includes(name) : agentId !== undefined)) return false;
-  if ((name === ASSISTANT_MARK_READ_TOOL || name === ASSISTANT_WEB_SEARCH_TOOL) && agentId !== undefined) return false;
+  if (agentId !== undefined && (name === ASSISTANT_MARK_READ_TOOL || name === ASSISTANT_DOWNLOAD_ATTACHMENT_TOOL || name === ASSISTANT_WEB_SEARCH_TOOL ||
+    name === `mcp__${ASSISTANT_MCP}__${SESSION_CREATE_OPTIONS_TOOL.replace(".", "_")}`)) return false;
   if (name === "Agent") {
     // Resume, worktree, background and teammate modes carry a different execution scope.
     const target = params.subagent_type;
@@ -156,7 +159,7 @@ export async function allowAssistantTool(workspace: string, input: unknown, poli
   }
   if (proposalDraftTools.includes(name)) {
     const kind = (params.action as { kind?: unknown } | undefined)?.kind;
-    if (!memory && agentId !== undefined && kind === "memory.rule_upsert") return false;
+    if (agentId !== undefined && ((typeof kind === "string" && kind.startsWith("session.")) || (!memory && kind === "memory.rule_upsert"))) return false;
     if (specialist && (typeof kind !== "string" || !(agentType === "mail-triager" ? kind.startsWith("mail.")
       : agentType === "schedule-planner" ? /^(todo|calendar)\./.test(kind) : kind === "memory.rule_upsert"))) return false;
   }

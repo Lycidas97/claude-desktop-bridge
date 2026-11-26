@@ -88,6 +88,7 @@ export interface SessionHistoryState {
   items: BridgeHistoryPage["items"];
   sessionFileReceipts?: BridgeHistoryPage["sessionFileReceipts"];
   sessionProposalResults?: string[];
+  assistantReplyBatches?: BridgeHistoryPage["assistantReplyBatches"];
   nextCursor?: string;
   hasMore: boolean;
   error?: string;
@@ -933,6 +934,8 @@ export function projectHistoryPage(
     ...(sessionProposalResults.size ? { sessionProposalResults: [...sessionProposalResults] } : {}),
     ...(existing?.sessionFileReceipts || page.sessionFileReceipts
       ? { sessionFileReceipts: { ...page.sessionFileReceipts, ...existing?.sessionFileReceipts } } : {}),
+    ...(existing?.assistantReplyBatches || page.assistantReplyBatches
+      ? { assistantReplyBatches: { ...page.assistantReplyBatches, ...existing?.assistantReplyBatches } } : {}),
     hasMore: page.hasMore,
     ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
   };

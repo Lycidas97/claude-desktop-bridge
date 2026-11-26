@@ -312,6 +312,31 @@ describe("native message delivery", () => {
     } finally { await f.close(); }
   });
 
+  it("reconciles a lost proposal send response from the matching Native history message", async () => {
+    const f = await fixture();
+    try {
+      const error = "connection lost after submission";
+      f.native.sendError = new InspectorDisconnectedError(error);
+      const receipt = await f.bridge.startTurn({ ...input, origin: "system", source: "assistant-proposal" });
+      expect(receipt).toMatchObject({ state: "uncertain", error });
+      f.native.sendError = undefined;
+      const userMessage = { type: "user", uuid: "unrelated", message: { content: input.text } };
+      f.native.page.messages = [userMessage];
+      await f.bridge.history(input.sessionId);
+      expect(f.state.nativeDesktopReceipt(input.idempotencyKey)?.state).toBe("uncertain");
+
+      f.native.page.messages = [{ ...userMessage, uuid: receipt.messageId }];
+      expect((await f.bridge.history(input.sessionId)).items[0]).toMatchObject({ id: receipt.messageId, delivery: "session-received" });
+      const persisted = f.state.nativeDesktopReceipt(input.idempotencyKey);
+      expect(persisted?.state).toBe("session-received");
+      expect(persisted?.error).toBeUndefined();
+      expect(f.eventLog.latestItem(input.sessionId, "message.delivery", receipt.messageId)?.data).toMatchObject({
+        source: "assistant-proposal", delivery: "session-received", messageId: receipt.messageId,
+      });
+      expect(f.native.calls.filter(call => call.method === "sendMessage")).toHaveLength(1);
+    } finally { await f.close(); }
+  });
+
   it.each([false, true])("projects native queued acceptance after an early echo (%s)", async echo => {
     const f = await fixture();
     let resolveSend!: (result: unknown) => void;

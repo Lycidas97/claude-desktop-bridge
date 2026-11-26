@@ -1,5 +1,5 @@
 import type { BridgeHostSnapshot, BridgeSessionInfo, BridgeSystemUpdateParams, BridgeUpdaterSnapshot } from "@bridge/protocol";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { claudeSnapshot } from "./lib/claude-snapshot.js";
 import { useClientUpdater } from "./lib/client-updater.js";
 import { useTheme, type ThemeControl } from "./hooks/useTheme.js";
@@ -37,6 +37,7 @@ import { AssistantMailProvider, useAssistantMail, viewedMailStorageKey, type Ass
 import { AssistantAgendaProvider } from "./components/assistant/AssistantAgendaProvider.js";
 import { AssistantProposalProvider } from "./components/assistant/AssistantProposalProvider.js";
 import { AssistantPage } from "./components/assistant/AssistantPage.js";
+import { AssistantProcessingContext } from "./components/assistant/AssistantProcessing.js";
 import { MailReference } from "./components/assistant/MailReference.js";
 import { ConversationDraftsProvider, type ConversationDraftsHandle } from "./components/conversation/ConversationDraftsProvider.js";
 import { EvidencePanel } from "./components/evidence/EvidencePanel.js";
@@ -51,9 +52,8 @@ function MobileAssistantConversation({
   mobile,
   onNavigateToSession,
   alternateStage,
-  assistantReplyTarget,
   hideComposer,
-}: Pick<ConversationViewProps, "alternateStage" | "hideComposer" | "assistantReplyTarget"> & {
+}: Pick<ConversationViewProps, "alternateStage" | "hideComposer"> & {
   activeHostId: string;
   session: BridgeSessionInfo;
   snapshot: BridgeHostSnapshot | undefined;
@@ -69,14 +69,15 @@ function MobileAssistantConversation({
     )) ?? []
   ), [assistantMail?.timelineCards, session.sessionId, snapshot?.assistantMail?.binding?.nativeSessionId]);
   const [refreshing, setRefreshing] = useState(false);
-  const transcriptVisible = visible && alternateStage == null;
+  const processing = useContext(AssistantProcessingContext);
+  const transcriptVisible = visible && alternateStage == null && !processing?.visible;
   const { sessionId, lastCompletedTurnId } = session;
   const { refreshLatestHistory } = mobile;
   const history = mobile.state.histories[sessionId];
   const latestRead = history?.latestRead;
   const readCompletedTurnId = latestRead?.completedTurnId;
   const hasLoadedHistory = history?.status === "ready" || (history?.status === "error" && history.items.length > 0);
-  const transcriptOnline = transcriptVisible && mobile.state.connection === "connected" && mobile.state.desktopOnline;
+  const transcriptOnline = visible && alternateStage == null && mobile.state.connection === "connected" && mobile.state.desktopOnline;
   const foregroundRevision = mobile.state.foregroundRevision;
   const lastHistorySync = useRef<{ online: boolean; turnId: string | undefined; foregroundRevision: number | undefined } | undefined>(
     hasLoadedHistory ? { online: false, turnId: readCompletedTurnId, foregroundRevision } : undefined,
@@ -128,7 +129,6 @@ function MobileAssistantConversation({
       variant="mobile"
       surface="assistant"
       alternateStage={alternateStage}
-      assistantReplyTarget={assistantReplyTarget}
       hideComposer={hideComposer}
       hostId={activeHostId}
       session={session}
@@ -236,6 +236,12 @@ function MobileApp({ themeControl }: { themeControl: ThemeControl }) {
   const snapshot = useMemo(() => mobile.state.snapshot
     ? claudeSnapshot(mobile.state.snapshot)
     : undefined, [mobile.state.snapshot]);
+  const activeAssistantSnapshot = useRef(snapshot);
+  activeAssistantSnapshot.current = snapshot;
+  function openAssistantSession(sessionId: string) {
+    setFocusRequest({ sessionId, key: Date.now() });
+    setTab("sessions");
+  }
   const [pairingOpen, setPairingOpen] = useState(false);
   const [tab, setTab] = useState<MobileTab>("sessions");
   const [computerDetailsHostId, setComputerDetailsHostId] = useState<string>();
@@ -411,7 +417,13 @@ function MobileApp({ themeControl }: { themeControl: ThemeControl }) {
       ) : (
     <AssistantMailProvider key={mobile.state.activeHostId ?? ""} hostId={mobile.state.activeHostId} snapshot={snapshot} online={mobile.state.connection === "connected" && mobile.state.desktopOnline} request={assistantRequest} loadCache={mobile.loadMailCache} saveCache={mobile.saveMailCache} onDiscuss={() => setTab("assistant")}>
     <AssistantAgendaProvider snapshot={snapshot} online={mobile.state.connection === "connected" && mobile.state.desktopOnline} request={assistantRequest}>
-    <AssistantProposalProvider snapshot={snapshot} online={mobile.state.connection === "connected" && mobile.state.desktopOnline} request={assistantRequest}>
+    <AssistantProposalProvider snapshot={snapshot} online={mobile.state.connection === "connected" && mobile.state.desktopOnline} request={assistantRequest} openSession={sessionId => {
+      const current = activeAssistantSnapshot.current;
+      if (current?.host.hostId !== snapshot?.host.hostId || !current?.sessions.some(session => session.sessionId === sessionId)) {
+        throw new Error("当前电脑的会话列表中没有此目标。会话未打开。");
+      }
+      openAssistantSession(sessionId);
+    }}>
     <MobileAppShell
       tab={tab}
       onTabChange={(next) => {
@@ -530,10 +542,7 @@ function MobileApp({ themeControl }: { themeControl: ThemeControl }) {
               snapshot={snapshot}
               mobile
               active={tab === "assistant"}
-              onOpenSession={(sessionId) => {
-                setFocusRequest({ sessionId, key: Date.now() });
-                setTab("sessions");
-              }}
+              onOpenSession={openAssistantSession}
               renderConversation={(sessionId, stage) => {
                 const boundSession = snapshot?.sessions.find((candidate) => candidate.sessionId === sessionId);
                 return boundSession ? (

@@ -77,13 +77,58 @@ export function nativePlanMessages(messages: unknown[]) {
   });
 }
 
+export function nativeReplyRoot(message: Record<string, unknown>): string | undefined {
+  if (message.type === "user" && !message.isSidechain && !message.parent_tool_use_id && typeof message.uuid === "string"
+    && visibleMessage(message)?.role === "user") return message.uuid;
+}
+
+export function nativeReplyResultRoots(message: Record<string, unknown>): string[] | undefined {
+  if (message.type !== "result" || message.isSidechain || message.parent_tool_use_id || message.isSyntheticResult === true) return;
+  return [...(Array.isArray(message.user_message_uuids) ? message.user_message_uuids : []), message.user_message_uuid]
+    .filter((id): id is string => typeof id === "string");
+}
+
+export function nativeFinalReply(message: Record<string, unknown>, body: Record<string, unknown>) {
+  if (message.type !== "assistant" || message.isSynthetic === true || body.model === "<synthetic>"
+    || (Array.isArray(body.content) && body.content.some(block => record(block).type === "tool_use"))) return;
+  const id = typeof body.id === "string" ? body.id : message.uuid;
+  const text = visibleMessage(message)?.text;
+  if (typeof id === "string" && text) return { id, text };
+}
+
 /** Shared by history pages and live events; task state is projected from native messages. */
-export function nativeHistoryItems(sessionId: string, messages: unknown[], projection: NativeMessageProjection = {}, proposalResults?: string[]): BridgeHistoryItem[] {
+export function nativeHistoryItems(sessionId: string, messages: unknown[], projection: NativeMessageProjection = {}, proposalResults?: string[], assistantTurn?: {
+  earlierRoot: string | undefined;
+  earlierReplyId: string | undefined;
+  olderReplyBatches: Map<string, string[]>;
+  batchIds(roots: string[]): string[];
+}): BridgeHistoryItem[] {
   const items = new Map<string, BridgeHistoryItem>();
+  let batchIds = assistantTurn?.earlierRoot ? assistantTurn.batchIds([assistantTurn.earlierRoot]) : undefined;
+  let finalReplyId = assistantTurn?.earlierReplyId;
   for (const raw of messages) {
     const message = record(raw);
     if (message.isSidechain === true) continue;
     const body = record(message.message);
+    if (assistantTurn && !message.parent_tool_use_id) {
+      const root = nativeReplyRoot(message);
+      const resultRoots = nativeReplyResultRoots(message);
+      if (root) {
+        batchIds = assistantTurn.batchIds([root]);
+        finalReplyId = undefined;
+      } else if (resultRoots) {
+        if (finalReplyId && resultRoots.length) {
+          const resolved = assistantTurn.batchIds(resultRoots);
+          const reply = items.get(finalReplyId);
+          if (reply) reply.assistantBatchIds = resolved;
+          else if (finalReplyId === assistantTurn.earlierReplyId) assistantTurn.olderReplyBatches.set(finalReplyId, resolved);
+        }
+        batchIds = undefined;
+        finalReplyId = undefined;
+      } else {
+        finalReplyId = nativeFinalReply(message, body)?.id ?? finalReplyId;
+      }
+    }
     const createdAt = typeof message.timestamp === "number" ? message.timestamp
       : typeof message.timestamp === "string" ? Date.parse(message.timestamp) || 0 : 0;
     if (message.type === "system" && typeof message.task_id === "string" && ["task_started", "task_progress", "task_notification"].includes(String(message.subtype))) {
@@ -143,6 +188,7 @@ export function nativeHistoryItems(sessionId: string, messages: unknown[], proje
           ? body.content.flatMap(block => typeof block === "string" ? [block] : record(block).type === "text" && typeof record(block).text === "string" ? [String(record(block).text)] : []).join("\n\n")
           : visible?.text ?? "", createdAt,
         origin: "claude-desktop", ...(attachments.length ? { attachments } : {}), ...(interactivePrompt ? { interactivePrompt } : {}),
+        ...(batchIds && visible?.role !== "user" ? { assistantBatchIds: batchIds } : {}),
       };
       items.set(id, item);
       if (interactivePrompt?.kind === "question" && interactivePrompt.toolUseId) {
@@ -183,7 +229,8 @@ export function nativeHistoryItems(sessionId: string, messages: unknown[], proje
         }
         if (wrapUp) delete projection.plan;
       } else {
-        const item: BridgeHistoryItem = { id: block.id, sessionId, role: "tool", toolName: block.name, text: summarizeNativeToolInput(block.name, block.input), createdAt, origin: "claude-desktop" };
+        const item: BridgeHistoryItem = { id: block.id, sessionId, role: "tool", toolName: block.name, text: summarizeNativeToolInput(block.name, block.input), createdAt, origin: "claude-desktop",
+          ...(batchIds ? { assistantBatchIds: batchIds } : {}) };
         if (message.type === "assistant" && block.name === "mcp__ccd_session__start_session") {
           const { initiation, title, background, prompt, proposal_id } = record(block.input);
           if (initiation === "own_initiative" && proposal_id === undefined && typeof title === "string" && title.trim()) {
@@ -290,6 +337,7 @@ export function nativeItemEventDraft(
       ...(item.attachments ? { attachments: item.attachments } : {}),
       ...(receipt ? { commandId: receipt.commandId, requestId: receipt.requestId, messageId: receipt.messageId, delivery: receipt.state === "dispatching" ? "host-received" : receipt.state } : {}),
       ...(receipt?.source ? { source: receipt.source } : {}),
+      ...(item.assistantBatchIds ? { assistantBatchIds: item.assistantBatchIds } : {}),
       ...(receipt?.queueSettled ? { queueSettled: true } : {}),
       ...(item.toolName ? { toolName: item.toolName } : {}),
       ...(item.sessionProposal ? { sessionProposal: item.sessionProposal } : {}),

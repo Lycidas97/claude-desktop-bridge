@@ -5,6 +5,7 @@ import { once } from "node:events";
 import { join } from "node:path";
 import { z } from "zod";
 import { ASSISTANT_DIRECTORY_TOOL } from "../../packages/protocol/src/assistant-mail.js";
+import { SESSION_CREATE_OPTIONS_TOOL } from "../../packages/protocol/src/assistant-proposal.js";
 import type { AssistantAgendaService } from "./agenda.js";
 import { AgendaExpansionLimitError } from "./agenda-ical.js";
 import { AssistantError } from "./assistant-error.js";
@@ -16,7 +17,7 @@ import type { ProposalExecutor } from "./proposal-executor.js";
 import { isProposalTool, MAIL_SOURCE, MAIL_TOOLS_STOP_SUFFIX, MANAGED_MAIL_TOOLS, MailCategoryCatalogParameters, MailToolRequest } from "./tool-contract.js";
 import { MailCategoryError } from "./store.js";
 
-type MailTools = Pick<AssistantMailService, "page" | "categories" | "readEvent" | "readAttachment" | "updateAnalysis" | "setProcessingStatus" | "setFolder" | "markRead" | "triggers">;
+type MailTools = Pick<AssistantMailService, "page" | "categories" | "readEvent" | "readAttachment" | "downloadAttachment" | "updateAnalysis" | "setProcessingStatus" | "setFolder" | "markRead" | "triggers">;
 class ManagedMailTokenRevoked extends Error {}
 
 /** The only listener given to mail tools; no management controller or broker is reachable here. */
@@ -24,7 +25,7 @@ export async function serveAssistantMailTools(options: {
   userDataPath: string;
   service: MailTools;
   agenda?: Pick<AssistantAgendaService, "listTodos" | "listEvents" | "freeSlots">;
-  proposals?: Pick<ProposalExecutor, "create" | "reviseFromTool" | "page" | "snapshot" | "smtpAccounts">;
+  proposals?: Pick<ProposalExecutor, "create" | "reviseFromTool" | "page" | "snapshot" | "smtpAccounts"> & Partial<Pick<ProposalExecutor, "sessionCreateOptions">>;
   lookupMemory?: (sessionId: string, entryId: string) => { path: string } | undefined;
   directoryAccess?: {
     grants(sessionId: string, token: string): { workspace: string; directories: readonly string[] } | undefined;
@@ -97,10 +98,14 @@ export async function serveAssistantMailTools(options: {
           break;
         }
         case "proposal.list": if (options.proposals) {
-          result = { ...options.proposals.page({ ...input.arguments, includeMail: true }, sessionId!), sources: options.proposals.snapshot().sources,
+          result = { ...options.proposals.page({ ...input.arguments, includeMail: true, includeMailAttachments: true }, sessionId!), sources: options.proposals.snapshot().sources,
             mailAccounts: options.proposals.smtpAccounts() };
           break;
         } else break;
+        case SESSION_CREATE_OPTIONS_TOOL:
+          result = await options.proposals?.sessionCreateOptions?.(sessionId!, input.arguments);
+          assertManagedToken();
+          break;
         case "memory.lookup_entry": result = options.lookupMemory?.(sessionId!, input.arguments.entryId); break;
         case ASSISTANT_DIRECTORY_TOOL: {
           const access = options.directoryAccess;
@@ -123,6 +128,7 @@ export async function serveAssistantMailTools(options: {
         case "mail.list_unfinished_triggers": result = options.service.triggers.unfinished(sessionId!, input.arguments.cursor); break;
         case "mail.read_event": result = await options.service.readEvent(input.arguments.mailRefId); break;
         case "mail.read_attachment": result = await options.service.readAttachment(input.arguments); break;
+        case "mail.download_attachment": result = await options.service.downloadAttachment(input.arguments, sessionId!, assertManagedToken); break;
         case "mail.update_analysis": {
           const { mailRefId, ...analysis } = input.arguments;
           result = options.service.updateAnalysis(mailRefId, analysis);

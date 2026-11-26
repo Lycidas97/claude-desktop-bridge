@@ -122,6 +122,16 @@ it("saves an inline original after Native reconciliation without requesting it f
   expect(native.saveFile).toHaveBeenCalledExactlyOnceWith({ name: "photo.png", chunks: ["YWJj"] });
 });
 
+it("saves a verified assistant output on Android without requiring a viewer", async () => {
+  native.platform = "android";
+  const request = downloadRequest("report.csv", "text/csv");
+  await downloadBridgeSessionFile("assistant-session", "outputs/report.csv", request, vi.fn(), true, true);
+  expect(request).toHaveBeenNthCalledWith(1, "artifact.transfer.open", { sessionId: "assistant-session", path: "outputs/report.csv", resolveRelativeLink: true }, expect.anything());
+  expect(native.saveFile).toHaveBeenCalledExactlyOnceWith({ name: "report.csv", chunks: ["YWJj"] });
+  expect(native.writeFile).not.toHaveBeenCalled();
+  expect(native.openFile).not.toHaveBeenCalled();
+});
+
 it("sends verified mail bytes to the Android save picker without staging or opening a file", async () => {
   native.platform = "android";
   const mailAttachment = { mailRefId: "mail", attachmentId: "2" };

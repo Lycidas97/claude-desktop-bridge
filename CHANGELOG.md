@@ -12,9 +12,9 @@
   message, and to create a new session with a chosen directory, group, model,
   and optional first message. Each proposal shows its target and full content
   and needs your confirmation; edits need a new confirmation. Native session
-  proposals now say that they can only be confirmed in Claude Desktop, and the
-  new-session review shows the full group ID and skips unreachable or managed
-  directories.
+  proposals now say that they can only be confirmed in Claude Desktop. The
+  new-session review shows the full group ID, and the Assistant's directory
+  suggestions skip unreachable and managed directories.
   [PR 593](https://github.com/Lycidas97/claude-desktop-bridge/pull/593),
   [PR 610](https://github.com/Lycidas97/claude-desktop-bridge/pull/610),
   [PR 612](https://github.com/Lycidas97/claude-desktop-bridge/pull/612),
@@ -36,8 +36,8 @@
   [PR 602](https://github.com/Lycidas97/claude-desktop-bridge/pull/602),
   [PR 606](https://github.com/Lycidas97/claude-desktop-bridge/pull/606),
   [PR 608](https://github.com/Lycidas97/claude-desktop-bridge/pull/608)
-- File mail accepted by SMTP in the mailbox's Sent folder when the server has
-  not already saved a copy. Changing the port, TLS mode, or sender address on
+- File mail accepted by SMTP in the mailbox's Sent folder when the server marks
+  exactly one folder `\Sent` and has not already saved a copy. Changing the port, TLS mode, or sender address on
   the same SMTP host keeps the shared password. After a CalDAV sync fails, the
   undated to-do list still refreshes for open-ended repeating to-dos.
   [PR 572](https://github.com/Lycidas97/claude-desktop-bridge/pull/572),
@@ -77,10 +77,11 @@
 
 **Upgrade compatibility.** Protocol V3 and Pairing V4 remain unchanged. The
 full original-text reader, same-host SMTP password reuse, first-message
-attachments, folder creation, and the new proposal types depend on
-capabilities or client markers that the computer and the device declare. With
-an older computer or device they are hidden or keep the earlier behavior, as
-described in the linked PRs.
+attachments, folder creation, the new proposal types, and mail drafts with
+attachments depend on capabilities or client markers that the computer and the
+device declare. With an older computer or device they are hidden or keep the
+earlier behavior, as described in the linked PRs. In particular, a 1.3.9 phone
+does not list or count pending reply or send drafts that carry attachments.
 
 The release candidate (`main` at `763887e` plus the version, changelog, and
 README changes) passed a full distributed CI run (Mac, Windows packaged QA, and

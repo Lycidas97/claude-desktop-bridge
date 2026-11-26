@@ -77,7 +77,7 @@ Claude Desktop 内部的 Gemini、Antigravity、Magpie 等模型与额度设置�
 不得映射到公网或 Relay。macOS 后台复用连接监测轮询，以真实 PID、启动时间和精确
 主可执行路径识别新启动，仅触发原生 Enable Main Process Debugger 菜单一次；需要用户
 授予辅助功能与 System Events 自动化权限，原生账号/工作区策略仍由菜单回调执行。
-该回调可能打开 Chrome 调试页。已开放的端口跳过并记录；同进程手动关闭或实际操作失败
+该回调可能打开 Chrome 调试页。已开放的端口跳过并记录；同进程手动关闭、Claude 自行关闭或实际操作失败
 不反复触发，已处理身份和错误写入 Bridge userData 的启动记录，跨后台重启保留。
 菜单尚未构建时等待；开启结果由实际端口扫描确认，失败显示在现有诊断状态中。
 自定义 BRIDGE_CLAUDE_INSPECTOR_URL 时不操作真实菜单。不修改 asar、不签 token、

@@ -320,7 +320,7 @@ Claude 从本机 Node inspector 发现提供 `claude.web.LocalSessions` 的 `app
 WebContents；动态 WebSocket 路径每次由 `/json/list` 获取。macOS 的现有 inspector monitor
 每3秒通过 PID、启动时间和完整可执行路径识别 Desktop 新进程，使用 System Events 触发
 一次原生主进程调试菜单；已开放时跳过，菜单未就绪时等待。已处理身份及失败记录保存在
-Bridge userData，跨后台重启尊重同进程手动关闭；自定义 inspector origin 禁用真实菜单动作。
+Bridge userData，跨后台重启尊重同进程内的手动关闭与 Claude 自行关闭；自定义 inspector origin 禁用真实菜单动作。
 端口开放后现有 Bridge 刷新自行重连。未开启、接口缺失或断连时显示不可用，不启动 CLI/SDK
 Host、不切换 provider lane、不重启 Desktop。独立 Codex、Hermes、DSH 的发现与连接已移除。
 

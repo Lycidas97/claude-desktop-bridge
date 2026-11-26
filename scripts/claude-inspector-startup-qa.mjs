@@ -118,12 +118,11 @@ try {
   assert.equal(await listening(), false);
   assert.equal(await claudeInspectorMenu(child.pid, false), 'ready', 'Native checkbox must refresh after manual closure');
   await startup.check(false);
-  assert.equal(await listening(), true, 'Bridge must reopen a debugger Claude closed on its own');
-  assert.equal((await control()).presses, 2);
   startup = new ClaudeInspectorStartup({ recordPath, processes });
-  await startup.check(true);
-  assert.equal((await control()).presses, 2, 'A restarted Bridge must not toggle again from persisted records');
-  evidence.steps.push({ step: 'auto-closed-port-reopened', presses: 2 });
+  await startup.check(false);
+  assert.equal((await control()).presses, 1);
+  assert.equal(await listening(), false);
+  evidence.steps.push({ step: 'manual-close-and-Bridge-restart', presses: 1, remainsClosed: true });
   await stop();
 
   await start({ FIXTURE_DEBUGGER_LABEL: 'Enable Main Process Debugger, Turns off after 15 minutes' });

@@ -73,27 +73,30 @@ export async function verifyAssistantMailAccounts(page, host, steps, directory, 
   assert.equal(await credential.inputValue(), "", "Stored credentials are never prefilled");
   assert.equal(await credential.getAttribute("required"), null);
   await smtpHost.fill("new-smtp.example.test");
+  const hostChangeHint = extraAccount.getByText("更换 SMTP 服务器需重新输入密码。", { exact: true });
+  await hostChangeHint.waitFor();
   assert.equal(await credential.evaluate(input => input.required), true);
-  await smtpHost.fill(smtp.host);
+  assert.equal(await credential.getAttribute("aria-describedby"), await hostChangeHint.getAttribute("id"));
+  await capture("mobile-mail-new-smtp-host");
+  await smtpHost.fill(smtp.host.toUpperCase());
+  await hostChangeHint.waitFor({ state: "hidden" });
   await smtpPort.fill("2525");
-  assert.equal(await credential.evaluate(input => input.required), true);
-  await smtpPort.fill(String(smtp.port));
+  assert.equal(await credential.evaluate(input => input.required), false, "Same-host port edits keep the saved credential");
   await extraAccount.getByLabel("加密方式").selectOption("starttls");
-  assert.equal(await credential.evaluate(input => input.required), true);
-  await extraAccount.getByLabel("加密方式").selectOption(smtp.security);
-  assert.equal(await credential.evaluate(input => input.required), false);
+  assert.equal(await credential.evaluate(input => input.required), false, "Same-host TLS edits keep the saved credential");
   const from = "alias@example.test";
   await fromAddress.fill(from);
   await capture("mobile-mail-account-inline");
   await extraAccount.getByRole("button", { name: "保存设置", exact: true }).click();
   await credential.waitFor({ state: "hidden" });
-  assert.deepEqual(host.snapshot.assistantMail.accounts.find(account => account.accountKey === accountKey)?.smtp, { ...smtp, from });
-  const { client: _fromClient, ...fromParams } = host.requests.findLast(request => request.method === "plugin.assistant-mail.account.save").params;
-  assert.deepEqual(fromParams, { accountKey, smtp: { host: smtp.host, port: smtp.port, security: smtp.security, from } });
-  steps.push("the selected account expands inline and saves its From address without submitting a stored credential; changing the SMTP connection requires a password");
+  const updatedSmtp = { host: smtp.host, port: 2525, security: "starttls", from };
+  assert.deepEqual(host.snapshot.assistantMail.accounts.find(account => account.accountKey === accountKey)?.smtp, { ...updatedSmtp, user: extraUser });
+  const { client: _smtpClient, ...smtpParams } = host.requests.findLast(request => request.method === "plugin.assistant-mail.account.save").params;
+  assert.deepEqual(smtpParams, { accountKey, smtp: { ...updatedSmtp, host: smtp.host.toUpperCase() } });
+  steps.push("same-host port, TLS and From edits save without a credential; changing the SMTP host requires a password");
   await accountSettings.click();
   await extraAccount.getByRole("button", { name: "关闭发信", exact: true }).click();
-  await extraAccount.getByText("SMTP smtp.second.example.test:465", { exact: true }).waitFor({ state: "hidden" });
+  await extraAccount.getByText("SMTP smtp.second.example.test:2525", { exact: true }).waitFor({ state: "hidden" });
   assert.equal(host.snapshot.assistantMail.accounts.find(account => account.accountKey === accountKey)?.enabled, true);
   await extraAccount.getByText("定时轮询", { exact: true }).waitFor();
   const pollInterval = extraAccount.getByRole("combobox", { name: /^备用轮询间隔/u });
@@ -184,14 +187,26 @@ export async function verifyAssistantMailAccounts(page, host, steps, directory, 
   await fromAddress.fill(from);
   await extraAccount.getByRole("button", { name: "保存设置", exact: true }).click();
   await credential.waitFor({ state: "hidden" });
-  assert.deepEqual(desktopRequests.findLast(request => request.method === "plugin.assistant-mail.account.save").params, fromParams);
-  await page.evaluate(host => window.assistantDesktopSnapshot({ host }), { ...host.snapshot.host,
-    capabilities: host.snapshot.host.capabilities.filter(capability => capability !== "plugin.assistant-mail.keep-credential.v1") });
+  assert.deepEqual(desktopRequests.findLast(request => request.method === "plugin.assistant-mail.account.save").params,
+    { accountKey, smtp: { host: smtp.host, port: smtp.port, security: smtp.security, from } });
+  const fromOnlyHost = { ...host.snapshot.host,
+    capabilities: host.snapshot.host.capabilities.filter(capability => capability !== "plugin.assistant-mail.smtp-same-host-reuse.v1") };
+  await page.evaluate(host => window.assistantDesktopSnapshot({ host }), fromOnlyHost);
+  await accountSettings.click();
+  assert.equal(await credential.evaluate(input => input.required), false, "From-only hosts allow the saved connection to keep its password");
+  await smtpPort.fill("2525");
+  assert.equal(await credential.evaluate(input => input.required), true, "From-only hosts require a password when the port changes");
+  await smtpPort.fill(String(smtp.port));
+  await extraAccount.getByLabel("加密方式").selectOption("starttls");
+  assert.equal(await credential.evaluate(input => input.required), true, "From-only hosts require a password when encryption changes");
+  await extraAccount.getByRole("button", { name: "取消", exact: true }).click();
+  await page.evaluate(host => window.assistantDesktopSnapshot({ host }), { ...fromOnlyHost,
+    capabilities: fromOnlyHost.capabilities.filter(capability => capability !== "plugin.assistant-mail.keep-credential.v1") });
   await accountSettings.click();
   assert.equal(await credential.evaluate(input => input.required), true, "Older hosts still require the password");
   await extraAccount.getByRole("button", { name: "取消", exact: true }).click();
-  await page.evaluate(host => window.assistantDesktopSnapshot({ host }), { ...host.snapshot.host,
-    capabilities: host.snapshot.host.capabilities.filter(capability => !["plugin.assistant-mail.keep-credential.v1", "plugin.assistant-mail.shared-auth.v1"].includes(capability)) });
+  await page.evaluate(host => window.assistantDesktopSnapshot({ host }), { ...fromOnlyHost,
+    capabilities: fromOnlyHost.capabilities.filter(capability => !["plugin.assistant-mail.keep-credential.v1", "plugin.assistant-mail.shared-auth.v1"].includes(capability)) });
   const legacySmtpSettings = firstAccount.getByRole("button", { name: /^配置 SMTP：/u });
   await legacySmtpSettings.click();
   const legacySmtpPassword = firstAccount.locator("form").getByLabel("SMTP 密码", { exact: true });

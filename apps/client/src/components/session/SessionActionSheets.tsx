@@ -15,6 +15,7 @@ import {
 import type { ReactNode, RefObject } from "react";
 import { conciseModelName } from "../../lib/conversation-timeline.js";
 import { desktopRuntimeId, desktopRuntimeName } from "../../lib/runtime-labels.js";
+import { MessageCopyButton } from "../common/MessageCopyButton.js";
 import { ConfirmationDialog } from "../common/ConfirmationDialog.js";
 import { Sheet, SheetAction } from "../common/Sheet.js";
 import { trapModalTabKey } from "./SectionCreateDialog.js";
@@ -206,6 +207,9 @@ export function SessionActionSheets({
                     />
                   )}
                 </div>
+              )}
+              {menuSession.transport === "claude-desktop-native" && !menuSession.archivedAt && !menuSession.sidechat && (
+                <div className="m-group"><MessageCopyButton text={menuSession.sessionId} label="复制会话 ID" buttonText="复制会话 ID" /></div>
               )}
               {prActions && <div className="m-group">{prActions}</div>}
               {supportsFork && onFork && (

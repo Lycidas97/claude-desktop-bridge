@@ -68,3 +68,18 @@
   .proposal-card .proposal-actions button, .proposal-edit-form > nav button, .m-sheet.is-fullscreen .proposal-actions button { min-height: 44px; }
   .proposal-edit-form .agenda-form-pair { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+.session-proposal-review { color: var(--text); overflow-wrap: anywhere; }
+.session-proposal-review pre {
+  margin-block: 16px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-input);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.session-proposal-review p { color: var(--muted); font-size: calc(13px * var(--font-scale)); }
+.session-proposal-review p[role="alert"] { color: var(--danger-ink); }

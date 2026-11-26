@@ -317,12 +317,21 @@ describe("native workspace paths and file delivery", () => {
         { path: join(cwd, "报告.md"), size: 8, isImage: false },
         { path: ".env.example", size: 15, isImage: false },
         { path: "large.apk", size: 20, isImage: false }, // Grew after being shared; the current size governs transport.
+        { path: "missing.pdf", size: 32, isImage: false },
         { path: "同名上传.pdf", size: 13, isImage: false, file_uuid: "uploaded-file-id" },
         { path: "project-only.pdf", size: 32, isImage: false, project_path: "项目文件夹/project-only.pdf" },
         { path: "upload-failed.md", size: 100, isImage: false, upload_error: "not delivered" },
       ] } };
-      const expected = [{ name: "报告.md", path: await realpath(inside) }, { name: "工作区外.md" }, { name: "报告.md" },
-        { name: ".env.example" }, { name: "large.apk" }, { name: "同名上传.pdf" }, { name: "project-only.pdf" }];
+      const expected = [
+        { name: "报告.md", path: await realpath(inside) },
+        { name: "工作区外.md", blockedReason: "文件不在会话工作区内" },
+        { name: "报告.md", blockedReason: "文件不在会话工作区内" },
+        { name: ".env.example", blockedReason: "环境变量文件不允许远程读取" },
+        { name: "large.apk", blockedReason: "文件超过 20 MiB 传输上限" },
+        { name: "missing.pdf", blockedReason: "找不到文件或无法读取" },
+        { name: "同名上传.pdf", blockedReason: "没有可供传输的本地文件" },
+        { name: "project-only.pdf", blockedReason: "没有可供传输的本地文件" },
+      ];
       f.native.pages.set("", { messages: [result], hasMore: true });
       f.native.pages.set(result.uuid, { messages: [call], hasMore: false });
       const latest = await f.bridge.history("local-native", undefined, 1);

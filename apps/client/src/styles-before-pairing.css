@@ -2388,7 +2388,7 @@ button:disabled {
   min-width: 0;
 }
 
-/* Codex-style continuous agent output: no bubble, no per-message header. */
+/* Ordinary sessions keep continuous agent output; Assistant chat marks each reply. */
 .conversation-item.assistant {
   width: min(100%, 680px);
   max-width: 100%;
@@ -2404,8 +2404,25 @@ button:disabled {
   line-height: 1.75;
 }
 
-.conversation-item.assistant + .conversation-item.assistant {
+.conversation-item.assistant + .conversation-item.assistant:not(.assistant-reply) {
   margin-top: -4px;
+}
+
+.assistant-reply-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: calc(11px * var(--font-scale));
+  line-height: 1.35;
+  font-variant-numeric: tabular-nums;
+}
+
+.assistant-reply-header::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid var(--line);
 }
 
 .conversation-message-actions {

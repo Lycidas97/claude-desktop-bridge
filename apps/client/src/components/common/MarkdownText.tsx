@@ -1,8 +1,9 @@
 import { Check, Copy, Download, Eye } from "lucide-react";
-import { mediaKind } from "../../lib/media-preview.js";
+import { isAssistantOutputPath, mediaKind } from "../../lib/media-preview.js";
 import { useId, useState, type ReactNode } from "react";
 
 export type TableAlign = "left" | "center" | "right" | undefined;
+export type AssistantOutputLinkMode = "open" | "download";
 
 export type MarkdownInlineNode =
   | { type: "text"; text: string }
@@ -11,7 +12,7 @@ export type MarkdownInlineNode =
   | { type: "em"; children: MarkdownInlineNode[] }
   | { type: "del"; children: MarkdownInlineNode[] }
   | { type: "link"; href: string; children: MarkdownInlineNode[] }
-  | { type: "file_link"; path: string; children: MarkdownInlineNode[] }
+  | { type: "file_link"; path: string; children: MarkdownInlineNode[]; download?: true }
   | { type: "br" };
 
 export interface MarkdownListItem {
@@ -47,7 +48,7 @@ function sanitizeHref(raw: string): string | undefined {
   }
 }
 
-export function extractDownloadableFilePath(raw: string, allowSpaces = false): string | undefined {
+export function extractDownloadableFilePath(raw: string, allowSpaces = false, allowAssistantOutput = false): string | undefined {
   const trimmed = raw.trim();
   if (!trimmed || trimmed.length > 320 || /[\r\n]/u.test(trimmed) || (!allowSpaces && /\s/u.test(trimmed))) return undefined;
   if (trimmed.startsWith("#") || trimmed.startsWith("-")) return undefined;
@@ -57,11 +58,12 @@ export function extractDownloadableFilePath(raw: string, allowSpaces = false): s
   }
   const withoutLine = trimmed.replace(/:\d+(?::\d+)?$/u, "");
   if (!withoutLine || withoutLine === "." || withoutLine === "..") return undefined;
-  if (!DOWNLOADABLE_FILE_EXT_RE.test(withoutLine) && !mediaKind(withoutLine)) return undefined;
+  if (!DOWNLOADABLE_FILE_EXT_RE.test(withoutLine) && !mediaKind(withoutLine)
+    && !(allowAssistantOutput && isAssistantOutputPath(withoutLine))) return undefined;
   return withoutLine;
 }
 
-export function parseInlineMarkdown(input: string): MarkdownInlineNode[] {
+export function parseInlineMarkdown(input: string, assistantOutputLinks?: AssistantOutputLinkMode): MarkdownInlineNode[] {
   const nodes: MarkdownInlineNode[] = [];
   let buffer = "";
   let i = 0;
@@ -120,22 +122,23 @@ export function parseInlineMarkdown(input: string): MarkdownInlineNode[] {
       const linkMatch = matchMarkdownLink(input, ch === "!" ? i + 1 : i);
       if (linkMatch) {
         const safeHref = sanitizeHref(linkMatch.href);
-        const filePath = safeHref ? undefined : extractDownloadableFilePath(linkMatch.href, true);
+        const filePath = safeHref ? undefined : extractDownloadableFilePath(linkMatch.href, true, ch === "[" && Boolean(assistantOutputLinks));
         flushText();
         if (safeHref) {
           nodes.push({
             type: "link",
             href: safeHref,
-            children: parseInlineMarkdown(linkMatch.label),
+            children: parseInlineMarkdown(linkMatch.label, assistantOutputLinks),
           });
         } else if (filePath) {
           nodes.push({
             type: "file_link",
             path: filePath,
-            children: parseInlineMarkdown(linkMatch.label),
+            ...(assistantOutputLinks === "download" && isAssistantOutputPath(filePath) ? { download: true } : {}),
+            children: parseInlineMarkdown(linkMatch.label, assistantOutputLinks),
           });
         } else {
-          nodes.push(...parseInlineMarkdown(linkMatch.label));
+          nodes.push(...parseInlineMarkdown(linkMatch.label, assistantOutputLinks));
         }
         i = linkMatch.nextIndex;
         continue;
@@ -149,7 +152,7 @@ export function parseInlineMarkdown(input: string): MarkdownInlineNode[] {
         flushText();
         nodes.push({
           type: "strong",
-          children: [{ type: "em", children: parseInlineMarkdown(input.slice(i + 3, closeIdx)) }],
+          children: [{ type: "em", children: parseInlineMarkdown(input.slice(i + 3, closeIdx), assistantOutputLinks) }],
         });
         i = closeIdx + 3;
         continue;
@@ -170,7 +173,7 @@ export function parseInlineMarkdown(input: string): MarkdownInlineNode[] {
         flushText();
         nodes.push({
           type: "strong",
-          children: parseInlineMarkdown(input.slice(i + 2, closeIdx)),
+          children: parseInlineMarkdown(input.slice(i + 2, closeIdx), assistantOutputLinks),
         });
         i = closeIdx + 2;
         continue;
@@ -184,7 +187,7 @@ export function parseInlineMarkdown(input: string): MarkdownInlineNode[] {
         flushText();
         nodes.push({
           type: "del",
-          children: parseInlineMarkdown(input.slice(i + 2, closeIdx)),
+          children: parseInlineMarkdown(input.slice(i + 2, closeIdx), assistantOutputLinks),
         });
         i = closeIdx + 2;
         continue;
@@ -202,7 +205,7 @@ export function parseInlineMarkdown(input: string): MarkdownInlineNode[] {
           flushText();
           nodes.push({
             type: "em",
-            children: parseInlineMarkdown(input.slice(i + 1, closeIdx)),
+            children: parseInlineMarkdown(input.slice(i + 1, closeIdx), assistantOutputLinks),
           });
           i = closeIdx + 1;
           continue;
@@ -441,7 +444,7 @@ function isBlockStart(lines: string[], index: number): boolean {
   return false;
 }
 
-export function parseMarkdownBlocks(markdown: string): MarkdownBlockNode[] {
+export function parseMarkdownBlocks(markdown: string, assistantOutputLinks?: AssistantOutputLinkMode): MarkdownBlockNode[] {
   const normalized = markdown.replace(/\r\n?/g, "\n");
   const lines = normalized.split("\n");
   const blocks: MarkdownBlockNode[] = [];
@@ -488,7 +491,7 @@ export function parseMarkdownBlocks(markdown: string): MarkdownBlockNode[] {
       blocks.push({
         type: "heading",
         level,
-        children: parseInlineMarkdown(headingMatch[2]!.trim()),
+        children: parseInlineMarkdown(headingMatch[2]!.trim(), assistantOutputLinks),
       });
       i += 1;
       continue;
@@ -512,7 +515,7 @@ export function parseMarkdownBlocks(markdown: string): MarkdownBlockNode[] {
       }
       blocks.push({
         type: "blockquote",
-        blocks: parseMarkdownBlocks(quoteLines.join("\n")),
+        blocks: parseMarkdownBlocks(quoteLines.join("\n"), assistantOutputLinks),
       });
       continue;
     }
@@ -529,14 +532,14 @@ export function parseMarkdownBlocks(markdown: string): MarkdownBlockNode[] {
           if (!rowLine.trim() || !rowLine.includes("|") || FENCE_OPEN_RE.test(rowLine)) break;
           const rawCells = splitTableCells(rowLine);
           const normalizedRow = headerCells.map((_, colIdx) =>
-            parseInlineMarkdown(rawCells[colIdx] ?? ""),
+            parseInlineMarkdown(rawCells[colIdx] ?? "", assistantOutputLinks),
           );
           rows.push(normalizedRow);
           i += 1;
         }
         blocks.push({
           type: "table",
-          headers: headerCells.map((cell) => parseInlineMarkdown(cell)),
+          headers: headerCells.map((cell) => parseInlineMarkdown(cell, assistantOutputLinks)),
           aligns,
           rows,
         });
@@ -633,7 +636,7 @@ export function parseMarkdownBlocks(markdown: string): MarkdownBlockNode[] {
           i += 1;
         }
 
-        const parsedItemBlocks = parseMarkdownBlocks(itemLines.join("\n"));
+        const parsedItemBlocks = parseMarkdownBlocks(itemLines.join("\n"), assistantOutputLinks);
         items.push({
           ...(checked !== undefined ? { checked } : {}),
           blocks:
@@ -661,7 +664,7 @@ export function parseMarkdownBlocks(markdown: string): MarkdownBlockNode[] {
     }
     blocks.push({
       type: "paragraph",
-      children: parseInlineMarkdown(paragraphLines.join("\n")),
+      children: parseInlineMarkdown(paragraphLines.join("\n"), assistantOutputLinks),
     });
   }
 
@@ -730,16 +733,17 @@ function renderInlineNodes(
         );
       case "file_link":
         if (onFileClick) {
+          const canPreview = !node.download && mediaKind(node.path);
           return (
             <button
               type="button"
               className="markdown-file-link"
               key={key}
-              title={`${mediaKind(node.path) ? "查看" : "打开"} ${node.path}`}
+              title={`${node.download ? "下载" : canPreview ? "查看" : "打开"} ${node.path}`}
               onClick={() => onFileClick(node.path)}
             >
               <span>{renderInlineNodes(node.children, key)}</span>
-              {mediaKind(node.path) ? <Eye size={12} className="markdown-file-icon" aria-hidden="true" /> : <Download size={12} className="markdown-file-icon" aria-hidden="true" />}
+              {canPreview ? <Eye size={12} className="markdown-file-icon" aria-hidden="true" /> : <Download size={12} className="markdown-file-icon" aria-hidden="true" />}
             </button>
           );
         }
@@ -907,17 +911,19 @@ export function MarkdownText({
   text,
   className = "conversation-text markdown-body",
   onFileClick,
+  assistantOutputLinks,
   collapsible = true,
 }: {
   text: string;
   className?: string;
   onFileClick?: (filePath: string) => void;
+  assistantOutputLinks?: AssistantOutputLinkMode | undefined;
   collapsible?: boolean;
 }) {
   const [expanded, setExpanded] = useState(!collapsible);
   const contentId = useId();
   const long = collapsible && (text.length > 2_000 || text.split("\n").length > 30);
-  const blocks = parseMarkdownBlocks(text);
+  const blocks = parseMarkdownBlocks(text, onFileClick ? assistantOutputLinks : undefined);
   if (!long) return <div className={className}>{renderBlockNodes(blocks, "blk", onFileClick)}</div>;
   return (
     <div className="expandable-message">

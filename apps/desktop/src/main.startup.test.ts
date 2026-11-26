@@ -125,10 +125,10 @@ it("exposes the native directory picker only through trusted local renderer IPC"
   const event = { senderFrame: { url: process.env.BRIDGE_DEV_SERVER_URL || "file:///bridge/index.html" } } as Electron.IpcMainInvokeEvent;
   vi.mocked(dialog.showOpenDialog).mockResolvedValueOnce({ canceled: false, filePaths: ["/chosen"] });
   await expect(choose(event, "/initial")).resolves.toBe("/chosen");
-  expect(dialog.showOpenDialog).toHaveBeenCalledWith(expect.anything(), { properties: ["openDirectory"], defaultPath: "/initial" });
+  expect(dialog.showOpenDialog).toHaveBeenCalledWith(expect.anything(), { properties: ["openDirectory", "createDirectory"], defaultPath: "/initial" });
   vi.mocked(dialog.showOpenDialog).mockResolvedValueOnce({ canceled: true, filePaths: [] });
   await expect(choose(event)).resolves.toBeUndefined();
-  expect(dialog.showOpenDialog).toHaveBeenLastCalledWith(expect.anything(), { properties: ["openDirectory"] });
+  expect(dialog.showOpenDialog).toHaveBeenLastCalledWith(expect.anything(), { properties: ["openDirectory", "createDirectory"] });
   expect(() => choose({ senderFrame: { url: "https://untrusted.invalid" } } as Electron.IpcMainInvokeEvent, "/initial")).toThrow("Untrusted renderer");
   await expect(choose(event, 42)).rejects.toThrow("initialPath must be a string");
   expect(dialog.showOpenDialog).toHaveBeenCalledTimes(2);

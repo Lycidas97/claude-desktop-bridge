@@ -80,6 +80,7 @@ export async function openBridgeSession(
           ...(current.histories[sessionId]?.latestRead ? { latestRead: current.histories[sessionId]!.latestRead } : {}),
           ...(current.histories[sessionId]?.sessionProposalResults ? { sessionProposalResults: current.histories[sessionId]!.sessionProposalResults } : {}),
           ...(current.histories[sessionId]?.sessionFileReceipts ? { sessionFileReceipts: current.histories[sessionId]!.sessionFileReceipts } : {}),
+          assistantReplyBatches: current.histories[sessionId]?.assistantReplyBatches,
           ...(current.histories[sessionId]?.nextCursor
             ? { nextCursor: current.histories[sessionId].nextCursor }
             : {}),
@@ -151,6 +152,7 @@ export async function openBridgeSession(
           ...(current.histories[sessionId]?.sessionProposalResults ? { sessionProposalResults: current.histories[sessionId]!.sessionProposalResults } : {}),
           ...(current.histories[sessionId]?.sessionFileReceipts ? { sessionFileReceipts: current.histories[sessionId]!.sessionFileReceipts } : {}),
             ...(current.histories[sessionId]?.nextCursor ? { nextCursor: current.histories[sessionId]!.nextCursor } : {}),
+            assistantReplyBatches: current.histories[sessionId]?.assistantReplyBatches,
             error: error instanceof Error ? error.message : "会话打开失败",
           },
         },
@@ -318,6 +320,7 @@ export async function downloadBridgeSessionPathFile(
   sessionId: string,
   filePath: string,
   resolveRelativeLink?: true,
+  save?: true,
 ): Promise<void> {
   const { setState, sendRequest } = ctx;
   const transferKey = `file:${filePath}`;
@@ -338,6 +341,7 @@ export async function downloadBridgeSessionPathFile(
         },
       })),
       resolveRelativeLink,
+      save,
     );
   } finally {
     setState((current) => {
@@ -386,6 +390,7 @@ export async function refreshLatestBridgeHistory(
   const newestById = new Map(pages.reverse().flatMap(({ items }) => items.map(item => [item.id, item] as const)));
   const refreshedProposalResults = pages.flatMap(page => page.sessionProposalResults ?? []);
   const refreshedFileReceipts = Object.fromEntries(pages.flatMap(page => Object.entries(page.sessionFileReceipts ?? {})));
+  const refreshedReplyBatches = Object.fromEntries(pages.flatMap(page => Object.entries(page.assistantReplyBatches ?? {})));
   const oldest = page.items.find(isTranscriptMessage)?.id;
   setState((current) => {
     if (!isCurrent()) return current;
@@ -400,6 +405,9 @@ export async function refreshLatestBridgeHistory(
     }
     if (Object.keys(refreshedFileReceipts).length) {
       history.sessionFileReceipts = { ...history.sessionFileReceipts, ...refreshedFileReceipts };
+    }
+    if (Object.keys(refreshedReplyBatches).length) {
+      history.assistantReplyBatches = { ...history.assistantReplyBatches, ...refreshedReplyBatches };
     }
     if (history.status === "error") {
       history.status = "ready";

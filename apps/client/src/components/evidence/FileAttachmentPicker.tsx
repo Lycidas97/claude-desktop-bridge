@@ -62,8 +62,12 @@ export function useFileAttachments(sessionId: string | undefined, onUploadFile: 
   };
 }
 
-export function FileAttachmentPicker({ state }: {
-  state: ReturnType<typeof useFileAttachments>;
+export function FileAttachmentPicker({ state, disabled = false }: {
+  state: {
+    entries: (Omit<FileEntry, "sessionId"> & { staged?: boolean })[];
+    remove(id: string): void;
+  };
+  disabled?: boolean;
 }) {
   if (state.entries.length === 0) return null;
   return (
@@ -71,18 +75,19 @@ export function FileAttachmentPicker({ state }: {
       <ul className="file-upload-list" aria-label="待发送文件">
         {state.entries.map((entry) => (
           <li key={entry.id} className={entry.error ? "file-upload-entry is-error" : "file-upload-entry"}>
-            {!entry.result && !entry.error ? <LoaderCircle size={16} className="is-spinning" /> : <FileUp size={16} />}
+            {!entry.staged && !entry.result && !entry.error ? <LoaderCircle size={16} className="is-spinning" /> : <FileUp size={16} />}
             <div className="file-upload-details">
               <span className="file-upload-name" title={entry.result?.path ?? entry.name}>{entry.name}</span>
               <span className="file-upload-status" role={entry.error ? "alert" : "status"}>
-                {entry.error ?? (entry.result ? "已上传，发送时附上路径" : entry.progress >= 0.99 ? "正在保存…" : `上传中 ${Math.floor(entry.progress * 100)}%`)}
+                {entry.error ?? (entry.result ? "已上传，发送时附上路径" : entry.staged ? "发送时上传" : entry.progress >= 0.99 ? "正在保存…" : `上传中 ${Math.floor(entry.progress * 100)}%`)}
                 {!entry.error && ` · ${entry.size < 1024 * 1024 ? `${(entry.size / 1024).toFixed(1)} KiB` : `${(entry.size / (1024 * 1024)).toFixed(1)} MiB`}`}
               </span>
-              {!entry.result && !entry.error && <progress value={entry.progress} max={1} aria-label={`${entry.name} 上传进度`} />}
+              {!entry.staged && !entry.result && !entry.error && <progress value={entry.progress} max={1} aria-label={`${entry.name} 上传进度`} />}
             </div>
             <IconButton
               label={`移除 ${entry.name}`}
               title={entry.result ? "从消息移除，已上传文件仍保留在会话目录" : "取消上传并移除"}
+              disabled={disabled}
               onClick={() => state.remove(entry.id)}
             ><X size={14} /></IconButton>
           </li>
@@ -102,7 +107,7 @@ export function ComposerAttachmentMenu({
   canAttachImages?: boolean;
   imageDisabled?: boolean;
   onPickImages?: () => void;
-  fileUploads?: ReturnType<typeof useFileAttachments>;
+  fileUploads?: Pick<ReturnType<typeof useFileAttachments>, "add" | "uploading">;
   fileDisabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);

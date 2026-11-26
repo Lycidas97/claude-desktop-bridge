@@ -20,12 +20,14 @@ export function isMailPollInterval(value: unknown): value is MailPollInterval {
 
 export const ASSISTANT_MAIL_SHARED_AUTH_CAPABILITY = "plugin.assistant-mail.shared-auth.v1";
 export const ASSISTANT_MAIL_KEEP_CREDENTIAL_CAPABILITY = "plugin.assistant-mail.keep-credential.v1";
+export const ASSISTANT_MAIL_SMTP_SAME_HOST_REUSE_CAPABILITY = "plugin.assistant-mail.smtp-same-host-reuse.v1";
 export const ASSISTANT_SMTP_CAPABILITY = "plugin.assistant-mail.smtp.v1";
 export const MAIL_ATTENTION_LEVELS = ["ignore", "read", "action"] as const;
 export type MailAttentionLevel = (typeof MAIL_ATTENTION_LEVELS)[number];
 export const ASSISTANT_MAIL_FILING_CAPABILITY = "plugin.assistant-mail.filing.v1";
 export const ASSISTANT_MAIL_CATEGORIES_CAPABILITY = "plugin.assistant-mail.categories.v1";
 export const ASSISTANT_MAIL_RECEIVED_ORDER_CAPABILITY = "plugin.assistant-mail.received-order.v1";
+export const ASSISTANT_MAIL_ORIGINAL_CAPABILITY = "plugin.assistant-mail.original.v1";
 export const ASSISTANT_ATTENTION_CAPABILITY = "plugin.assistant-mail.attention.v1";
 export const ASSISTANT_READ_DIRECTORIES_CAPABILITY = "plugin.assistant-mail.read-directories.v1";
 export const ASSISTANT_DIRECTORY_TOOL = "files.read";
@@ -92,6 +94,8 @@ export interface BridgeAssistantMailSnapshot {
   /** User opt-in. A missing session or invalid policy can still pause submissions. */
   automaticDelivery: boolean;
   automaticDeliveryAvailable?: boolean;
+  /** Processed mail recorded in the last 24 hours and linked to the current binding. */
+  recentlyProcessed?: number;
   attention?: AssistantAttentionItem[];
 }
 

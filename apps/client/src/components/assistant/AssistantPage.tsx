@@ -1,4 +1,4 @@
-import { ASSISTANT_MAIL_KEEP_CREDENTIAL_CAPABILITY, ASSISTANT_MAIL_SHARED_AUTH_CAPABILITY, ASSISTANT_READ_DIRECTORIES_CAPABILITY, ASSISTANT_SMTP_CAPABILITY, type BridgeActionProposal, type BridgeDirectoryListing, type BridgeHostSnapshot, type BridgeSessionInfo } from "@bridge/protocol";
+import { ASSISTANT_MAIL_KEEP_CREDENTIAL_CAPABILITY, ASSISTANT_MAIL_SHARED_AUTH_CAPABILITY, ASSISTANT_MAIL_SMTP_SAME_HOST_REUSE_CAPABILITY, ASSISTANT_READ_DIRECTORIES_CAPABILITY, ASSISTANT_SMTP_CAPABILITY, type BridgeActionProposal, type BridgeDirectoryListing, type BridgeHostSnapshot, type BridgeSessionInfo } from "@bridge/protocol";
 import { ArrowLeft, Check, ChevronRight, ListChecks, LoaderCircle, RefreshCw, Settings } from "lucide-react";
 import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
@@ -15,8 +15,7 @@ import { AgendaSources } from "./AgendaSources.js";
 import { AgendaView } from "./AgendaView.js";
 import { useAssistantAgenda } from "./AssistantAgendaProvider.js";
 import { pendingProposalCount, useAssistantProposals } from "./AssistantProposalProvider.js";
-import { AssistantAttention } from "./AssistantAttention.js";
-import { AssistantTranscriptVisibleContext } from "./AssistantTriggerBatch.js";
+import { AssistantProcessingContext } from "./AssistantProcessing.js";
 import { AssistantReadDirectories } from "./AssistantReadDirectories.js";
 import { ProposalPanel } from "./ProposalPanel.js";
 import { InboxMailList } from "./InboxMailList.js";
@@ -25,7 +24,7 @@ import { MailCategoryManager } from "./MailCategoryManager.js";
 import { MailReference } from "./MailReference.js";
 import "./assistant-mail.css";
 
-type AssistantView = "conversation" | "mail" | "filed" | "agenda" | "settings" | "proposals";
+type AssistantView = "conversation" | "processing" | "mail" | "filed" | "agenda" | "settings" | "proposals";
 
 export function AssistantPage({ snapshot, mobile = false, active = true, headerLeading, onOpenSession, renderConversation }: {
   snapshot: BridgeHostSnapshot | undefined;
@@ -33,7 +32,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
   active?: boolean;
   headerLeading?: ReactNode | undefined;
   onOpenSession(sessionId: string): void;
-  renderConversation(sessionId: string, stage: Pick<ConversationViewProps, "alternateStage" | "hideComposer" | "assistantReplyTarget">): ReactNode;
+  renderConversation(sessionId: string, stage: Pick<ConversationViewProps, "alternateStage" | "hideComposer">): ReactNode;
 }) {
   const mail = useAssistantMail();
   const agenda = useAssistantAgenda();
@@ -45,8 +44,6 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
   const [proposalReturn, setProposalReturn] = useState<Exclude<AssistantView, "proposals">>("conversation");
   const [settingsReturn, setSettingsReturn] = useState<Exclude<AssistantView, "settings">>("conversation");
   const [selectedProposal, setSelectedProposal] = useState<BridgeActionProposal>();
-  const [replyTarget, setReplyTarget] = useState<ConversationViewProps["assistantReplyTarget"]>();
-  const [replyError, setReplyError] = useState("");
   const [configuring, setConfiguring] = useState(false);
   const [selectedId, setSelectedId] = useState("");
   const [creating, setCreating] = useState(false);
@@ -69,7 +66,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
     if (selectedProposal) setSelectedProposal(undefined);
     else setView(proposalReturn);
   }
-  useEffect(() => { if (active) { setView(undefined); setSelectedProposal(undefined); setReplyTarget(undefined); setReplyError(""); } }, [active]);
+  useEffect(() => { if (active) { setView(undefined); setSelectedProposal(undefined); } }, [active]);
   const supportsFiling = mail?.supportsFiling;
   const backToInbox = () => setView("mail");
   const backFromSettings = () => setView(settingsReturn);
@@ -81,6 +78,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
     if (view === "filed" && supportsFiling) {
       return registerMobileBackHandler(() => { backToInbox(); return true; }, 110);
     }
+    if (view === "processing") return registerMobileBackHandler(() => { setView("conversation"); return true; }, 110);
     if (view === "settings") {
       return registerMobileBackHandler(() => { backFromSettings(); return true; }, 110);
     }
@@ -98,7 +96,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
     && (candidate.sessionId === binding?.nativeSessionId || candidate.projectId !== managedProjectId)) ?? [];
   const state = mail?.assistant?.bindingState;
   const fallbackView = session ? "conversation" : mail ? "mail" : "agenda";
-  const displayedView = !view || (view === "conversation" && !mail) || (view === "mail" && !mail) || (view === "agenda" && !agenda)
+  const displayedView = !view || (view === "processing" && !session) || (view === "conversation" && !mail) || (view === "mail" && !mail) || (view === "agenda" && !agenda)
     || (view === "filed" && !supportsFiling) || (view === "proposals" && !proposals) ? fallbackView : view;
   const filed = displayedView === "filed";
   const filedBack = filed && <IconButton key="filed-back" label="返回收件" autoFocus onClick={backToInbox}>
@@ -133,7 +131,11 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
 
   const refreshing = mail?.refreshStatus === "refreshing";
   const refreshed = mail?.refreshStatus === "refreshed";
-  const showMailFeedback = displayedView !== "agenda" && displayedView !== "proposals";
+  const processing = displayedView === "processing";
+  const showMailFeedback = displayedView !== "agenda" && displayedView !== "proposals" && !processing;
+  const recentlyProcessed = mail?.assistant?.binding?.nativeSessionId === session?.sessionId
+    ? mail?.assistant?.recentlyProcessed : undefined;
+  const mailToReview = mail?.attention?.filter(item => item.kind === "mail" && (item.reason === "read" || item.reason === "action")).length ?? 0;
   const viewTabs = (
     <nav className="assistant-view-tabs" aria-label="助理工作台">
       <div className="assistant-view-switch">
@@ -266,19 +268,21 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
       supportsPolling={capabilities.includes("plugin.assistant-mail.polling.v1")}
       supportsSmtp={capabilities.includes(ASSISTANT_SMTP_CAPABILITY)}
       supportsSharedAuth={capabilities.includes(ASSISTANT_MAIL_SHARED_AUTH_CAPABILITY)}
-      supportsKeepCredential={capabilities.includes(ASSISTANT_MAIL_KEEP_CREDENTIAL_CAPABILITY)}
+      smtpCredentialReuse={capabilities.includes(ASSISTANT_MAIL_SMTP_SAME_HOST_REUSE_CAPABILITY) ? "same-host"
+        : capabilities.includes(ASSISTANT_MAIL_KEEP_CREDENTIAL_CAPABILITY) ? "same-connection" : undefined}
       request={mail.request}
     />}
     {displayedView === "settings" && agenda && <AgendaSources />}
     {displayedView === "agenda" && agenda && <AgendaView />}
     {(displayedView === "mail" || filed) && mail && <>
       {!filed && !session && binding?.nativeSessionId && <MailReference sessionId={binding.nativeSessionId} />}
-      <InboxMailList mail={mail} mobile={mobile} filed={filed} canMarkJunk={!supportsFiling && capabilities.includes("plugin.assistant-mail.junk.v1")}
+      <InboxMailList mail={mail} filed={filed} canMarkJunk={!supportsFiling && capabilities.includes("plugin.assistant-mail.junk.v1")}
         onOpenFiled={() => setView("filed")} onDiscuss={() => setView("conversation")} />
     </>}
   </div>;
   return <section className={`assistant-page ${mobile ? "assistant-page-mobile" : "desktop-page"}${session ? " has-conversation" : ""}`}>
     {mobile && (filed ? <MobilePageHeader title="已收纳" leading={filedBack} actions={filedActions || undefined} />
+      : processing ? <MobilePageHeader title="处理记录" onBack={() => setView("conversation")} />
       : displayedView === "proposals" ? <MobilePageHeader title={selectedProposal ? "提案详情" : "待确认提案"} onBack={backFromProposals} />
       : displayedView === "settings" ? <MobilePageHeader title="助理设置" onBack={backFromSettings} />
       : <MobilePageHeader title="助理" {...(headerLeading ? { leading: headerLeading } : {})} actions={viewTabs} />)}
@@ -289,38 +293,39 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
           {filed ? <><div className="assistant-filed-heading">
             {filedBack}
             <h1>已收纳</h1>
-          </div>{filedActions}</> : <><h1>助理</h1>{viewTabs}</>}
+          </div>{filedActions}</> : processing ? <div className="assistant-filed-heading">
+            <IconButton label="返回对话" autoFocus onClick={() => setView("conversation")}><ArrowLeft size={16} aria-hidden="true" /></IconButton>
+            <h1>处理记录</h1>
+          </div> : <><h1>助理</h1>{viewTabs}</>}
         </header>
       </div>
     </div>}
     {mail?.error && showMailFeedback && <div className="assistant-page-content assistant-mail-feedback">
       <p role="alert">{mail.error}</p>
     </div>}
-    {proposals && !filed && displayedView !== "proposals" && (mobile || pendingCount > 0) && <div className="assistant-proposal-dock">
+    {proposals && !filed && !processing && displayedView !== "proposals" && (mobile || pendingCount > 0) && <div className="assistant-proposal-dock">
       <button type="button" className="permission-dock" data-empty={!pendingCount} onClick={openProposals}>
         <span className="permission-dock-icon"><ListChecks size={18} aria-hidden="true" /></span>
         <span><strong>{pendingCount ? `${pendingCount} 项待你确认` : "提案"}</strong></span>
         <ChevronRight size={16} aria-hidden="true" />
       </button>
     </div>}
-    {displayedView === "conversation" && (replyTarget || replyError) && <div className="assistant-page-content assistant-mail-feedback">
-      {replyError ? <p role="alert">{replyError}</p> : <p role="status">正在查找回复…</p>}
-    </div>}
-    {!filed && displayedView !== "proposals" && <AssistantAttention onReply={itemId => {
-      setView("conversation"); setReplyError("");
-      setReplyTarget({ itemId, done(error) { setReplyTarget(undefined); setReplyError(error ?? ""); } });
-    }}
-      onTodo={() => { agenda?.setCalendarOnly(false); agenda?.setAllTodosOpen(true); setView("agenda"); }} />}
     {session ? <>
-      {displayedView === "conversation" && <div className="assistant-page-content">{notices}</div>}
+      {(displayedView === "conversation" || processing) && <div className="assistant-page-content">{notices}</div>}
+      {displayedView === "conversation" && <div className="assistant-page-content assistant-processing-entry-wrap">
+        <button type="button" className="assistant-mail-filed-entry assistant-processing-entry" onClick={() => setView("processing")}>
+          <span>处理记录</span>{recentlyProcessed !== undefined && <small>最近处理 {recentlyProcessed} 封</small>}<ChevronRight size={16} aria-hidden="true" />
+        </button>
+        {mailToReview > 0 && <button type="button" className="assistant-session-link assistant-review-mail-entry" aria-label={`收件，${mailToReview} 封待你看`}
+          onClick={() => setView("mail")}>{mailToReview} 封待你看</button>}
+      </div>}
       <div className="assistant-conversation">
-        <AssistantTranscriptVisibleContext.Provider value={displayedView === "conversation"}>
+        <AssistantProcessingContext.Provider value={{ visible: processing, onDiscuss: () => setView("conversation") }}>
           {renderConversation(session.sessionId, {
-            alternateStage: displayedView === "conversation" ? undefined : stage,
-            assistantReplyTarget: replyTarget,
-            hideComposer: filed || displayedView === "settings" || displayedView === "agenda" || displayedView === "proposals" || workspace?.repairFailed === true,
+            alternateStage: displayedView === "conversation" || processing ? undefined : stage,
+            hideComposer: filed || processing || displayedView === "settings" || displayedView === "agenda" || displayedView === "proposals" || workspace?.repairFailed === true,
           })}
-        </AssistantTranscriptVisibleContext.Provider>
+        </AssistantProcessingContext.Provider>
       </div>
     </> : stage()}
     {creating && snapshot && mail && <SessionCreateDialog snapshot={snapshot} connected={mail.online}

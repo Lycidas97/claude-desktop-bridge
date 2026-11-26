@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, stat, truncate, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { ARTIFACT_MAX_BYTES } from "../../../packages/protocol/dist/index.js";
 import { sessionId, originalTitle } from "../config.mjs";
 import { eventually, openMobileDrawer, openMobileSession, selectCustomOption, customSelectValue } from "../helpers.mjs";
 
@@ -411,12 +412,17 @@ export async function verifyNativeBoundaries(page, host, steps, directory) {
   const outsideFile = resolve(host.nativeApproval.harnessCwd, "../../../../工作区外的文件.txt");
   await writeFile(outsideFile, "This file must stay on the host.");
   await writeFile(resolve(host.nativeApproval.harnessCwd, ".env.example"), "EXAMPLE=fixture");
+  const largeName = "Bridge-演示安装包.dmg";
+  const largeFile = resolve(host.nativeApproval.harnessCwd, largeName);
+  await writeFile(largeFile, "");
+  await truncate(largeFile, ARTIFACT_MAX_BYTES + 1);
   const initial = [
-    tool("boundary-send-file", { files: ["说明 notes.md", archiveName, outsideFile, ".env.example", "未发送.bin"] }, "SendUserFile"),
+    tool("boundary-send-file", { files: ["说明 notes.md", archiveName, outsideFile, ".env.example", largeName, "未发送.bin"] }, "SendUserFile"),
     { type: "user", uuid: "boundary-send-file-result", timestamp: Date.now(), message: { content: [{
       type: "tool_result", tool_use_id: "boundary-send-file", content: [{ type: "text", text: "Files sent" }],
     }] }, toolUseResult: { attachments: [
       ...["说明 notes.md", archiveName, outsideFile, ".env.example"].map(path => ({ path, size: 32, isImage: false })),
+      { path: largeName, size: ARTIFACT_MAX_BYTES + 1, isImage: false },
       { path: "未发送.bin", size: 12, isImage: false, upload_error: "Native delivery failed" },
     ] } },
     tool("boundary-plan", { scope: "first_task", items: planItems }),
@@ -499,13 +505,27 @@ export async function verifyNativeBoundaries(page, host, steps, directory) {
   await sentFiles.getByRole("button", { name: "说明 notes.md", exact: true }).click({ timeout: 5_000 });
   await page.locator(".media-viewer").getByRole("heading", { name: "Worktree preview", exact: true }).waitFor();
   await page.getByRole("button", { name: "关闭查看器", exact: true }).click();
-  for (const blockedName of ["工作区外的文件.txt", ".env.example"]) {
-    assert.equal(await sentFiles.getByRole("button", { name: blockedName, exact: true }).count(), 0);
-    assert.ok((await sentFiles.innerText()).includes(`${blockedName}\n请在电脑端打开`));
+  for (const [name, reason] of [
+    ["工作区外的文件.txt", "文件不在会话工作区内"],
+    [".env.example", "环境变量文件不允许远程读取"],
+    [largeName, "文件超过 20 MiB 传输上限"],
+  ]) {
+    const row = sentFiles.getByRole("listitem").filter({ hasText: name });
+    assert.equal(await row.getByRole("button").count(), 0);
+    await row.getByText(reason, { exact: true }).waitFor();
   }
   assert.equal(await sentFiles.getByText("未发送.bin", { exact: true }).count(), 0);
   assert.equal((await sentFiles.innerText()).includes(outsideFile), false);
+  const detailRequests = () => host.requests.filter(request => request.method === "session.tool.detail");
+  assert.equal(detailRequests().length, 0, "The sent-file card does not prefetch tool details");
+  const detail = sentFiles.getByRole("button", { name: "查看工具详情", exact: true });
+  assert.equal(await detail.innerText(), "查看工具详情");
   await sentFiles.screenshot({ path: resolve(directory, "native-sent-files.png"), animations: "disabled" });
+  await detail.click();
+  const detailDialog = page.getByRole("dialog", { name: "SendUserFile", exact: true });
+  await detailDialog.getByRole("region", { name: "入参", exact: true }).getByText(largeName, { exact: false }).waitFor();
+  assert.deepEqual(detailRequests().map(({ params }) => params.toolUseId), ["boundary-send-file"]);
+  await detailDialog.getByRole("button", { name: "关闭工具详情", exact: true }).click();
   const beforeDownload = host.requests.length;
   await sentFiles.getByRole("button", { name: archiveName, exact: true }).click();
   const downloadPrompt = page.getByRole("alertdialog", { name: "确认下载远程文件到手机？", exact: true });
@@ -734,7 +754,7 @@ export async function verifyNativeBoundaries(page, host, steps, directory) {
   await page.reload({ waitUntil: "domcontentloaded" });
   await openMobileSession(page);
   await eventually(async () => (await toolRows.locator("strong").allTextContents()).sort(), ["Bash", "Edit", "Read", "Write"], "Native history and replay keep one named row per original call after reload");
-  assert.equal(host.requests.filter(request => request.method === "session.tool.detail").length, 0, "Timeline rendering never eagerly fetches full tool outputs");
+  assert.equal(detailRequests().length, 1, "Timeline rendering never eagerly fetches full tool outputs");
   await stream.locator(".conversation-tool-group").last().locator("summary").click();
   await toolRows.filter({ hasText: "pwd" }).click();
   const toolDetailDialog = page.getByRole("dialog", { name: "Bash", exact: true });
@@ -744,10 +764,7 @@ export async function verifyNativeBoundaries(page, host, steps, directory) {
     return text.includes("已完成") && text.includes("pwd") && text.includes("Completed");
   }, true, "Clicking a tool row lazily fetches full input and execution output");
   assert.deepEqual(
-    host.requests.filter(request => request.method === "session.tool.detail").map(request => ({
-      sessionId: request.params.sessionId,
-      toolUseId: request.params.toolUseId,
-    })),
+    detailRequests().slice(1).map(({ params: { sessionId, toolUseId } }) => ({ sessionId, toolUseId })),
     [{ sessionId, toolUseId: "completion-only-Bash" }],
   );
   await page.screenshot({ path: resolve(directory, "native-tool-detail-sheet.png"), fullPage: true });
@@ -755,7 +772,7 @@ export async function verifyNativeBoundaries(page, host, steps, directory) {
   await toolDetailDialog.waitFor({ state: "hidden" });
   await toolRows.filter({ hasText: "pwd" }).click();
   await toolDetailDialog.waitFor();
-  assert.equal(host.requests.filter(request => request.method === "session.tool.detail").length, 1, "Completed tool detail reuses the in-memory session cache");
+  assert.equal(detailRequests().length, 2, "Completed tool detail reuses the in-memory session cache");
   await toolDetailDialog.getByRole("button", { name: "关闭工具详情", exact: true }).click();
   await toolDetailDialog.waitFor({ state: "hidden" });
   steps.push("Read/Bash/Edit/Write keep names and input summaries when only completion events reach the phone, reload merges native history without anonymous or duplicate rows, and clicking a tool row lazily loads and caches full tool input/output via session.tool.detail");
@@ -830,6 +847,7 @@ export async function verifyNativeBoundaries(page, host, steps, directory) {
   const proposal = stream.getByRole("region", { name: "会话提案", exact: true });
   await proposal.getByText(proposalTitle, { exact: true }).waitFor({ timeout: 5_000 });
   await proposal.getByText(proposalBackground, { exact: true }).waitFor();
+  await proposal.getByText("只能在 Claude Desktop 里确认", { exact: true }).waitFor({ timeout: 5_000 });
   assert.equal(await readingRow.evaluate(row => Math.round(row.getBoundingClientRect().top - row.parentElement.getBoundingClientRect().top)), readingOffset, "The reader stays at the same offset when a tool above becomes a proposal card");
   const beforeProposal = stream.locator('[data-stream-key="tool-group:tool:calendar-a-read"]');
   const afterProposal = stream.locator('[data-stream-key="tool-group:tool:calendar-z-grep"]');
@@ -846,6 +864,10 @@ export async function verifyNativeBoundaries(page, host, steps, directory) {
   await proposal.screenshot({ path: resolve(directory, "native-session-proposal-expanded.png"), animations: "disabled" });
   await background.press("Enter");
   assert.equal(await visibleLines(), 3, "Keyboard activation collapses the background again");
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"], { origin: new URL(page.url()).origin });
+  await proposal.getByRole("button", { name: "复制标题", exact: true }).click();
+  await proposal.getByRole("button", { name: "已复制", exact: true }).waitFor();
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), proposalTitle);
   const proposalPage = await host.nativeApproval.history();
   host.history.splice(0, host.history.length, ...proposalPage.items);
   const mockHistoryPage = host.historyPage;
@@ -999,8 +1021,11 @@ export async function verifyNativeSessionNotices(page, host, steps, directory) {
   assert.equal(host.requests.filter(request => ["turn.start", "turn.steer", "session.rewind", "permission.resolve"].includes(request.method)).length, 0);
   steps.push("Native report and idle notices stay compact in history, live updates and replay; original text remains readable, quoted examples keep user controls, and no Native mutation is sent");
 
+  host.snapshot.host.capabilities.push("directory.mkdir.v1");
+  await host.send({ kind: "snapshot", snapshot: host.snapshot });
   await openMobileDrawer(page);
-  const { untrustedDir, manualTrustDir } = host.nativeApproval;
+  const { untrustedDir: untrustedParent, manualTrustDir } = host.nativeApproval;
+  const untrustedDir = resolve(untrustedParent, "new-work-folder");
   const newChatCanvas = page.locator(".new-chat-canvas");
   const folderDialog = page.locator(".session-create-dialog");
   const chooseFolderByPath = async (targetDir) => {
@@ -1019,7 +1044,25 @@ export async function verifyNativeSessionNotices(page, host, steps, directory) {
 
   await page.locator('.mobile-home-catalog button[aria-label^="新建会话："]').first().click();
   await newChatCanvas.waitFor();
-  await chooseFolderByPath(untrustedDir);
+  await chooseFolderByPath(untrustedParent);
+  const newChatDraft = newChatCanvas.locator("textarea");
+  await newChatDraft.fill("保留新会话草稿");
+  await newChatCanvas.getByRole("button", { name: "选择文件夹", exact: true }).click();
+  assert.equal(await folderDialog.getByRole("button", { name: "最近使用", exact: true }).getAttribute("aria-pressed"), "true");
+  await folderDialog.getByRole("button", { name: "新建文件夹", exact: true }).click();
+  await folderDialog.getByText(untrustedParent, { exact: true }).waitFor();
+  await folderDialog.getByLabel("新文件夹名称").fill("new-work-folder");
+  await folderDialog.getByRole("button", { name: "创建并使用", exact: true }).click();
+  await folderDialog.waitFor({ state: "hidden" });
+  assert.deepEqual(host.requests.filter(request => request.method === "directory.mkdir").map(({ params: { parentPath, name } }) => ({ parentPath, name })), [
+    { parentPath: untrustedParent, name: "new-work-folder" },
+  ]);
+  assert.ok((await stat(untrustedDir)).isDirectory());
+  assert.equal(await newChatDraft.inputValue(), "保留新会话草稿");
+  assert.match(await newChatCanvas.locator(".new-chat-dir-path").innerText(), /[\\/]new-work-folder$/u);
+  assert.equal(host.requests.filter(request => request.method === "session.create").length, 0);
+  steps.push("a new mobile working folder is created from Recents, selected immediately, and keeps the draft without creating a session");
+  await newChatDraft.fill("");
   await newChatCanvas.getByRole("button", { name: "创建空会话", exact: true }).click();
 
   const trustAlert = newChatCanvas.getByRole("alert");

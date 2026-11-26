@@ -10,6 +10,7 @@ import type {
 import { ClaudeDesktopBridge } from "../../apps/desktop/src/claude/claude-desktop-bridge.js";
 import { InspectorDisconnectedError } from "../../apps/desktop/src/claude/claude-desktop-inspector.js";
 import { ConversationStateStore } from "../../apps/desktop/src/controller/conversation-state-store.js";
+import { assistantSessionProposalBackend } from "../../apps/desktop/src/controller/assistant-session-proposals.js";
 import { createControllerFixture } from "../../apps/desktop/src/controller/controller-fixture.js";
 import { SessionEventLog } from "../../apps/desktop/src/controller/session-event-log.js";
 import { EvidenceManager } from "../../apps/desktop/src/evidence/evidence-manager.js";
@@ -108,6 +109,7 @@ export async function startNativeApprovalHost(options: {
   ];
   const calls: Array<{ method: string; args: unknown[] }> = [];
   const messages: Record<string, unknown>[] = [];
+  const assistantHistories = new Map<string, Record<string, unknown>[]>();
   const pending = new Map<string, (reply: NativeApprovalResult) => void>();
   const replies = new Map<string, NativeApprovalResult>();
   const queued = new Set<string>();
@@ -122,6 +124,7 @@ export async function startNativeApprovalHost(options: {
   let keepUntrustedAfterSave = false;
   let applyPrWrites = true;
   let choicesAvailable = true;
+  let rejectedPermissionMode: BridgeSDKPermissionMode | undefined;
   const preferences = { onlyOwnPrs: false };
   let nextPrBranch: string | undefined;
   const nativeEvents: Record<string, unknown>[] = [];
@@ -253,14 +256,17 @@ export async function startNativeApprovalHost(options: {
           messages.push({ type: "user", uuid: args[7], timestamp: Date.now(), message: { content: args[1] } });
           return reportQueued ? { delivered: true, queued: true } : { delivered: true };
         }
+        if (target.turnRunning) {
+          assert.equal(args[5], "later");
+          queued.add(String(args[7]));
+          return { delivered: true, queued: true };
+        }
         if (textArg.startsWith("助理事件批次 ")) {
-          if (target.turnRunning) {
-            assert.equal(args[5], "later");
-            queued.add(String(args[7]));
-            return { delivered: true, queued: true };
-          }
-          inspector.emit("event", { type: "message", sessionId: target.sessionId,
-            message: { type: "user", uuid: args[7], timestamp: Date.now(), message: { content: args[1] } } });
+          const history = assistantHistories.get(target.sessionId) ?? [];
+          const message = { type: "user", uuid: args[7], timestamp: Date.now(), message: { content: args[1] } };
+          history.push(message);
+          assistantHistories.set(target.sessionId, history);
+          inspector.emit("event", { type: "message", sessionId: target.sessionId, message });
         }
         return { delivered: true };
       }
@@ -272,11 +278,12 @@ export async function startNativeApprovalHost(options: {
         return accepted;
       }
       if (method === "interrupt") throw new Error("Queue actions must never interrupt the synthetic native turn");
-      if (method === "getTranscript") return structuredClone(messages);
-      if (method === "getTranscriptPage") {
-        const end = args[1] ? messages.findIndex(message => message.uuid === args[1]) : messages.length;
+      if (method === "getTranscript" || method === "getTranscriptPage") {
+        const history = assistantHistories.get(String(args[0])) ?? messages;
+        if (method === "getTranscript") return structuredClone(history);
+        const end = args[1] ? history.findIndex(message => message.uuid === args[1]) : history.length;
         const start = Math.max(0, end - Number(args[2]));
-        return { messages: structuredClone(messages.slice(start, end)), hasMore: start > 0 };
+        return { messages: structuredClone(history.slice(start, end)), hasMore: start > 0 };
       }
       if (method === "getSupportedCommands") return {
         commands: [
@@ -342,6 +349,7 @@ export async function startNativeApprovalHost(options: {
       if (method === "setPermissionMode") {
         const target = nativeSessions.find(candidate => candidate.sessionId === args[0]);
         assert.ok(target, "Native permission mode must target an existing session");
+        if (args[1] === rejectedPermissionMode) throw new Error("隔离权限模式未应用");
         target.permissionMode = args[1] as BridgeSDKPermissionMode;
         if (target === native) options.onModeChanged?.(target.permissionMode);
         return;
@@ -402,7 +410,10 @@ export async function startNativeApprovalHost(options: {
     options.onProposalsChanged ? {
       memory: workspace!.memory,
       policy: (sessionId: string): AssistantWorkspacePolicy | undefined => workspace!.ruleProposalPolicy(assistantMail?.service.binding(), sessionId),
-    } : undefined) : undefined;
+    } : undefined, options.onProposalsChanged ? assistantSessionProposalBackend(broker, state, sessionId => {
+      const binding = assistantMail?.service.binding();
+      return binding?.nativeSessionId === sessionId && Boolean(binding.managed);
+    }, cwd => workspace!.matches(cwd), cwd => workspace!.contains(cwd)) : undefined) : undefined;
   assistantMail?.agenda.on("changed", snapshot => options.onAgendaChanged?.(snapshot));
   const proposals = options.onProposalsChanged ? assistantMail!.proposals : undefined;
   proposals?.on("changed", options.onProposalsChanged!);
@@ -435,10 +446,11 @@ export async function startNativeApprovalHost(options: {
   assistantMailCoordinator?.startTriggers();
   eventLog.on("event", event => {
     // The live host logs the native event before appending any derived mail change.
-    if ((event.type === "user.message.accepted" || event.type === "message.delivery") && event.data.source === "assistant-trigger") {
+    if (event.data.assistantBatchIds || ((event.type === "user.message.accepted" || event.type === "message.delivery") && event.data.source === "assistant-trigger")) {
       options.onTriggerMessage?.(event);
     }
     assistantMailCoordinator?.observeDelivery(event);
+    if (event.data.source === "assistant-proposal") proposals?.sessionDeliveryChanged();
   });
   const mailSnapshot = () => assistantMailCoordinator?.snapshot();
   const controller = createControllerFixture({
@@ -595,7 +607,11 @@ export async function startNativeApprovalHost(options: {
     },
     files: (request: BridgeRequest) => controller.handleRequest(request, "mobile", options.deviceId),
     history: (limit?: number) => broker.history(options.sessionId, undefined, limit),
-    appendHistory(entries: Array<Record<string, unknown>>) { messages.push(...entries); },
+    appendHistory(entries: Array<Record<string, unknown>>, sessionId = options.sessionId) {
+      const history = sessionId === options.sessionId ? messages : assistantHistories.get(sessionId);
+      assert.ok(history);
+      history.push(...entries);
+    },
     session: () => structuredClone(broker.session(options.sessionId)!),
     receipts: () => state.listNativeDesktopReceipts(),
     queuedReply(enabled: boolean) { reportQueued = enabled; },
@@ -603,6 +619,27 @@ export async function startNativeApprovalHost(options: {
       const target = nativeSessions.find(session => session.sessionId === sessionId);
       assert.ok(target);
       target.turnRunning = busy;
+    },
+    async finishAssistantWake(sessionId: string, text: string) {
+      const history = assistantHistories.get(sessionId);
+      const user = history?.filter(message => message.type === "user").at(-1);
+      assert.ok(history && user);
+      const now = Date.now();
+      const toolUseId = randomUUID();
+      const tool = { type: "assistant", uuid: randomUUID(), timestamp: now, message: {
+        content: [{ type: "tool_use", id: toolUseId, name: "mcp__assistant-mail__mail_update_analysis", input: {} }],
+      } };
+      const toolResult = { type: "user", uuid: randomUUID(), timestamp: now + 1, message: {
+        content: [{ type: "tool_result", tool_use_id: toolUseId, content: "Recorded" }],
+      } };
+      const reply = { type: "assistant", uuid: randomUUID(), timestamp: now + 2, message: { content: [{ type: "text", text }] } };
+      const result = { type: "result", uuid: randomUUID(), user_message_uuid: user.uuid, is_error: false };
+      for (const message of [tool, toolResult, reply, result]) {
+        const changed = once(broker, "changed");
+        history.push(message);
+        inspector.emit("event", { type: "message", sessionId, message });
+        await changed;
+      }
     },
     async advanceAssistantTrigger(sessionId: string, messageId: string, state: "started" | "completed" | "failed") {
       assert.ok(queued.delete(messageId), "Advance a queued assistant trigger");
@@ -671,6 +708,7 @@ export async function startNativeApprovalHost(options: {
     },
     commands: (request: BridgeRequest) => controller.handleRequest(request, "mobile", options.deviceId),
     configuration: (request: BridgeRequest) => controller.handleRequest(request, "mobile", options.deviceId),
+    rejectPermissionMode(mode?: BridgeSDKPermissionMode) { rejectedPermissionMode = mode; },
     async rewind(request: BridgeRequest) {
       const after = eventLog.latestSeq();
       let result;

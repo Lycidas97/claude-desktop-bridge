@@ -38,6 +38,7 @@ import { ConversationStateStore } from "../controller/conversation-state-store.j
 import { MagpieConnectionRepository } from "../claude/magpie-connection.js";
 import { DesktopUpdater } from "../updater/desktop-updater.js";
 import { ServiceResources } from "./service-resources.js";
+import { assistantSessionProposalBackend } from "../controller/assistant-session-proposals.js";
 import { WorkspaceProvisioner } from "../controller/assistant-workspace.js";
 import { diagnostics } from "./diag.js";
 import type { MemoryRecorder } from "./memory-recorder.js";
@@ -180,9 +181,22 @@ export async function createServiceRuntime(options: {
     const managed = assistantMail.binding()?.managed;
     const assistantWorkspacePath = managed ? await workspace.restore(managed.token, managed.path, managed.policy) : workspace.path;
     const ruleProposalPolicy = (sessionId: string) => workspace.ruleProposalPolicy(assistantMail.binding(), sessionId);
+    const broker = new ClaudeDesktopBridge({
+      settingsPath: connectorPaths().claudeSettings,
+      eventLog,
+      conversationState,
+      magpieConnection: new MagpieConnectionRepository(join(userDataPath, "magpie-connection-v1.json"), safeStorage),
+      evidence,
+      assistantWorkspacePath,
+    });
+    resources.defer("Claude Desktop bridge", () => broker.close());
     const proposals = new ProposalExecutor(proposalStore, agendaStore, agendaCredentials, sourceId => {
       void assistantAgenda.proposalChanged(sourceId).catch(error => assistantAgenda.emit("error", error));
-    }, undefined, assistantMail, undefined, { memory: workspace.memory, policy: ruleProposalPolicy });
+    }, undefined, assistantMail, undefined, { memory: workspace.memory, policy: ruleProposalPolicy },
+    assistantSessionProposalBackend(broker, conversationState, sessionId => {
+      const binding = assistantMail.binding();
+      return !workspace.repairFailed && binding?.nativeSessionId === sessionId && Boolean(binding.managed);
+    }, cwd => workspace.matches(cwd), cwd => workspace.contains(cwd)));
     proposals.on("error", () => process.stderr.write("Bridge assistant proposal execution or recovery failed.\n"));
     resources.defer("Assistant proposals", () => proposals.close());
     const mailTools = await serveAssistantMailTools({
@@ -217,15 +231,6 @@ export async function createServiceRuntime(options: {
       },
     });
     resources.defer("Assistant mail tools", () => mailTools.close(options.shouldStopManagedAdapters?.()));
-    const broker = new ClaudeDesktopBridge({
-      settingsPath: connectorPaths().claudeSettings,
-      eventLog,
-      conversationState,
-      magpieConnection: new MagpieConnectionRepository(join(userDataPath, "magpie-connection-v1.json"), safeStorage),
-      evidence,
-      assistantWorkspacePath,
-    });
-    resources.defer("Claude Desktop bridge", () => broker.close());
     const claudeDesktop = new ClaudeDesktopLifecycle();
     const desktopAppControls = new Map(
       DESKTOP_APP_DEFINITIONS.map((definition) => [

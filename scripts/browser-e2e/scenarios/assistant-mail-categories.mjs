@@ -90,7 +90,9 @@ export async function verifyAssistantMailCategories(page, host, steps, directory
   await page.getByRole("button", { name: "已收纳 0 封" }).waitFor();
   const restored = await expandInboxMail(card(page.getByLabel("邮件输入")));
   await restored.getByText("原文", { exact: true }).click();
-  await restored.locator("details[open] pre").waitFor();
+  const reader = page.getByRole("dialog").filter({ has: page.locator(".assistant-mail-original-body") });
+  await reader.waitFor();
+  await reader.getByRole("button", { name: "关闭", exact: true }).click();
 
   const start = host.requests.length;
   host.snapshot.host.capabilities = host.snapshot.host.capabilities.filter(value => value !== "plugin.assistant-mail.categories.v1");

@@ -177,6 +177,47 @@ export async function verifyDesktopQuota(page, host, steps, directory, viewports
   steps.push("First-read errors are visible; absent capability disables refresh and makes no request, including after returning to quota");
 }
 
+function toDesktopSnapshot(current) {
+  return {
+    ...structuredClone(current),
+    connection: "connected",
+    launchAtLogin: false,
+    diagnosticsEnabled: false,
+    managedDesktopEnabled: false,
+    claudeDesktop: { state: "running", detail: "隔离 Native 宿主", canLaunch: false, canQuit: true },
+  };
+}
+
+export async function installDesktopConversationFixture(page, host) {
+  await page.exposeFunction("desktopBridgeRequest", input => host.desktopRequest(input));
+  await page.exposeFunction("desktopBridgeGetSnapshot", () => toDesktopSnapshot(host.snapshot));
+  host.onDesktopPayload = async payload => {
+    if (payload.kind === "snapshot") {
+      await page.evaluate(next => window.__desktopReceiveSnapshot?.(next), toDesktopSnapshot(payload.snapshot)).catch(() => {});
+    } else if (payload.kind === "event") {
+      await page.evaluate(event => window.__desktopReceiveEvent?.(event), payload.event).catch(() => {});
+    }
+  };
+  await page.addInitScript(initialSnapshot => {
+    window.__desktopSnapshot = initialSnapshot;
+    window.bridgeDesktop = {
+      getSnapshot: () => window.desktopBridgeGetSnapshot(),
+      onSnapshot: receive => {
+        window.__desktopReceiveSnapshot = next => {
+          window.__desktopSnapshot = next;
+          receive(structuredClone(next));
+        };
+        return () => { delete window.__desktopReceiveSnapshot; };
+      },
+      onEvent: receive => {
+        window.__desktopReceiveEvent = event => receive(structuredClone(event));
+        return () => { delete window.__desktopReceiveEvent; };
+      },
+      request: input => window.desktopBridgeRequest(input),
+    };
+  }, toDesktopSnapshot(host.snapshot));
+}
+
 export async function verifyDesktopConversation(page, host, steps, directory, viewports, baseUrl) {
   await page.emulateMedia({ reducedMotion: "reduce" });
   const axeSource = await readFile(resolve(root, "node_modules/axe-core/axe.min.js"), "utf8");
@@ -215,6 +256,8 @@ export async function verifyDesktopConversation(page, host, steps, directory, vi
     toolDone("desktop-tool-read", "Read ok"),
     toolUse("desktop-tool-bash", { command: "git status --short" }, "Bash"),
     toolDone("desktop-tool-bash", "clean worktree"),
+    toolUse("desktop-session-proposal", { title: "复核桌面会话", initiation: "own_initiative" }, "mcp__ccd_session__start_session"),
+    toolDone("desktop-session-proposal", 'Proposed "复核桌面会话" (task_id: task_a1b2c3d4). The user sees a card and nothing runs until they start it.'),
     {
       type: "assistant",
       uuid: "desktop-assistant-reply",
@@ -236,6 +279,8 @@ export async function verifyDesktopConversation(page, host, steps, directory, vi
     await host.nativeApproval.message(message);
   }
   const queuedSeed = await host.syncNativeQueue(await host.nativeApproval.enqueue("桌面排队待处理消息"), { pushEvents: false });
+  const historyPage = host.historyPage;
+  host.historyPage = (cursor, limit) => ({ ...historyPage(cursor, limit), ...(!cursor ? { sessionProposalResults: queuedSeed.history.sessionProposalResults } : {}) });
   const subagentInfo = host.history.find(item => item.subagent?.agentId === "desktop-bg-subagent")?.subagent;
   const backgroundTasks = [{
     id: "desktop-bg-call",
@@ -257,41 +302,7 @@ export async function verifyDesktopConversation(page, host, steps, directory, vi
     return result;
   };
 
-  const toDesktopSnapshot = current => ({
-    ...structuredClone(current),
-    connection: "connected",
-    launchAtLogin: false,
-    diagnosticsEnabled: false,
-    managedDesktopEnabled: false,
-    claudeDesktop: { state: "running", detail: "隔离 Native 宿主", canLaunch: false, canQuit: true },
-  });
-  await page.exposeFunction("desktopBridgeRequest", input => host.desktopRequest(input));
-  await page.exposeFunction("desktopBridgeGetSnapshot", () => toDesktopSnapshot(host.snapshot));
-  host.onDesktopPayload = async payload => {
-    if (payload.kind === "snapshot") {
-      await page.evaluate(next => window.__desktopReceiveSnapshot?.(next), toDesktopSnapshot(payload.snapshot)).catch(() => {});
-    } else if (payload.kind === "event") {
-      await page.evaluate(event => window.__desktopReceiveEvent?.(event), payload.event).catch(() => {});
-    }
-  };
-  await page.addInitScript(initialSnapshot => {
-    window.__desktopSnapshot = initialSnapshot;
-    window.bridgeDesktop = {
-      getSnapshot: () => window.desktopBridgeGetSnapshot(),
-      onSnapshot: receive => {
-        window.__desktopReceiveSnapshot = next => {
-          window.__desktopSnapshot = next;
-          receive(structuredClone(next));
-        };
-        return () => { delete window.__desktopReceiveSnapshot; };
-      },
-      onEvent: receive => {
-        window.__desktopReceiveEvent = event => receive(structuredClone(event));
-        return () => { delete window.__desktopReceiveEvent; };
-      },
-      request: input => window.desktopBridgeRequest(input),
-    };
-  }, toDesktopSnapshot(host.snapshot));
+  await installDesktopConversationFixture(page, host);
 
   await page.setViewportSize({ width: 1280, height: 820 });
   await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
@@ -301,6 +312,11 @@ export async function verifyDesktopConversation(page, host, steps, directory, vi
   assert.equal(await page.locator(".composer-mode").count(), 0, "Desktop conversation does not reintroduce a composer mode selector");
 
   const stream = page.locator(".desktop-conversation-stream");
+  const proposal = stream.getByRole("region", { name: "会话提案", exact: true });
+  await proposal.getByText("复核桌面会话", { exact: true }).waitFor({ timeout: 5_000 });
+  await proposal.getByText("只能在 Claude Desktop 里确认", { exact: true }).waitFor({ timeout: 5_000 });
+  await proposal.getByRole("button", { name: "复制标题", exact: true }).waitFor();
+  await proposal.screenshot({ path: resolve(directory, "desktop-session-proposal.png"), animations: "disabled" });
   const queuedBubble = stream.locator("article.conversation-item.user").filter({ hasText: "桌面排队待处理消息" });
   await queuedBubble.getByRole("button", { name: "立即发送", exact: true }).waitFor();
   await queuedBubble.getByRole("button", { name: "复制这条消息", exact: true }).waitFor();
@@ -575,4 +591,18 @@ export async function verifyDesktopConversation(page, host, steps, directory, vi
   await sessionMenuSheet.waitFor({ state: "hidden" });
   assert.equal(await menuTrigger.evaluate(node => node === document.activeElement), true, "Closing 会话操作 Sheet restores focus to 会话操作 trigger");
   steps.push("Desktop 会话操作 Sheet supports 同步此会话 and keyboard focus trap/restore across 删除会话 ConfirmationDialog");
+
+  const composer = page.locator(".desktop-conversation .composer-form textarea");
+  const turnStarts = () => host.requests.filter(request => request.method === "turn.start");
+  await composer.fill("桌面快捷键第一行");
+  await composer.press("Enter");
+  assert.equal(await composer.inputValue(), "桌面快捷键第一行\n", "Plain Enter inserts a newline");
+  assert.equal(turnStarts().length, 0, "Plain Enter does not send the existing session draft");
+  await page.keyboard.insertText("第二行");
+  await composer.press("Control+Enter");
+  await eventually(() => turnStarts().length, 1, "Ctrl+Enter sends the existing desktop session draft exactly once");
+  assert.equal(turnStarts()[0].params.sessionId, sessionId);
+  assert.equal(turnStarts()[0].params.text, "桌面快捷键第一行\n第二行");
+  await eventually(() => composer.inputValue(), "", "The normal send path clears the submitted draft");
+  steps.push("Desktop existing session keeps plain Enter as a newline and submits the multiline draft once with Ctrl+Enter");
 }

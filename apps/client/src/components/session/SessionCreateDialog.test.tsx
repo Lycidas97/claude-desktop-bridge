@@ -271,6 +271,28 @@ describe("strict browse-only directory creation", () => {
     expect(onCreateDirectory).not.toHaveBeenCalled();
   });
 
+  it("creates and selects a working folder from the picker's recent view without starting a session", async () => {
+    const input = {
+      ...props(snapshot([directory])), initialCwd: "/work", onPickDirectory: vi.fn(),
+      onBrowseDirectory: vi.fn().mockResolvedValue(listing),
+      onCreateDirectory: vi.fn().mockResolvedValue("/work/new-project"),
+    };
+    render(input); await settle();
+    expect(button(render(input), "最近使用").props["aria-pressed"]).toBe(true);
+    const tree = await click(input, "新建文件夹");
+    expect(button(tree, "浏览电脑").props["aria-pressed"]).toBe(true);
+    expect(text(tree)).toContain("在「work」下新建文件夹");
+    expect(input.onCreateDirectory).not.toHaveBeenCalled();
+    change(tree, "新文件夹名称", "new-project");
+    expect(button(render(input), "创建并使用").props.type).toBe("submit");
+    submit(render(input)); await settle();
+    expect(input.onCreateDirectory).toHaveBeenCalledExactlyOnceWith("/work", "new-project");
+    expect(input.onPickDirectory).toHaveBeenCalledExactlyOnceWith("/work/new-project");
+    expect(input.onClose).toHaveBeenCalledOnce();
+    expect(input.onCreate).not.toHaveBeenCalled();
+    expect(input.onBrowseDirectory).toHaveBeenCalledExactlyOnceWith("/work");
+  });
+
   it("hides mkdir on legacy hosts without onCreateDirectory and while editing manual paths", async () => {
     const legacy = { ...props(), onBrowseDirectory: vi.fn().mockResolvedValue(listing) };
     let tree = await click(legacy, "选择文件夹");

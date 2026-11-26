@@ -229,6 +229,9 @@ export type BridgeCapability =
   | "plugin.assistant-agenda.day.v1"
   | "assistant.proposal.v1"
   | "assistant.proposal.memory.v1"
+  | "assistant.proposal.session.v1"
+  | "assistant.proposal.session-create.v1"
+  | "assistant.proposal.mail-attachments.v1"
   | "plugin.assistant-mail.v1"
   | "plugin.assistant-mail.manual-reference.v1"
   | "plugin.assistant-mail.workspace.v1"
@@ -237,10 +240,12 @@ export type BridgeCapability =
   | "plugin.assistant-mail.smtp.v1"
   | "plugin.assistant-mail.shared-auth.v1"
   | "plugin.assistant-mail.keep-credential.v1"
+  | "plugin.assistant-mail.smtp-same-host-reuse.v1"
   | "plugin.assistant-mail.polling.v1"
   | "plugin.assistant-mail.attachments.v1"
   | "plugin.assistant-mail.history.v1"
   | "plugin.assistant-mail.received-order.v1"
+  | "plugin.assistant-mail.original.v1"
   | "plugin.assistant-mail.junk.v1"
   | "plugin.assistant-mail.filing.v1"
   | "plugin.assistant-mail.categories.v1"
@@ -974,6 +979,8 @@ export interface BridgeHistoryItem {
   requestId?: string;
   /** Set by the host from its receipt, not inferred from transcript text. */
   source?: "assistant-trigger";
+  /** Native wake batches responsible for an output. An empty list identifies a user turn. */
+  assistantBatchIds?: string[];
   /** Last native delivery stage observed for this exact session and user UUID. */
   delivery?: BridgeDeliveryState;
   /** Desktop observed an idle, drained queue after acknowledging this input. */
@@ -1010,6 +1017,8 @@ export interface BridgeSentFile {
   name: string;
   /** Present only for a confirmed local file eligible for workspace transfer. */
   path?: string;
+  /** User-facing reason when workspace transfer is unavailable; omitted by older hosts. */
+  blockedReason?: string;
 }
 
 export interface BridgeHistoryPage {
@@ -1019,6 +1028,8 @@ export interface BridgeHistoryPage {
   sessionFileReceipts?: Record<string, BridgeSentFile[]>;
   /** Successful proposal receipts on this page. The matching calls may be on older pages. */
   sessionProposalResults?: string[];
+  /** Native result attribution by reply item ID when the reply is on an older page. */
+  assistantReplyBatches?: Record<string, string[]>;
   nextCursor?: string;
   hasMore: boolean;
 }

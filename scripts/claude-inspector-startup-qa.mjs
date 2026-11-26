@@ -41,13 +41,13 @@ const processes = async () => {
   evidence.lastProcessObservation = { stdout, expectedExecutable: electron };
   return parseInspectorDesktopProcesses(stdout, [electron]);
 };
-async function start() {
+async function start(environment = {}) {
   const reserved = createServer().listen(0, '127.0.0.1');
   await once(reserved, 'listening');
   port = reserved.address().port;
   await new Promise(resolve => reserved.close(resolve));
   const directory = await mkdtemp(join(output, 'electron-'));
-  const env = recycleEnv();
+  const env = { ...recycleEnv(), ...environment };
   delete env.ELECTRON_RUN_AS_NODE;
   child = spawn(electron, [resolve('scripts/fixtures/inspector-startup-host.cjs'), directory, String(port)], { env, stdio: ['ignore', 'pipe', 'pipe'] });
   let logs = '';
@@ -123,6 +123,14 @@ try {
   assert.equal((await control()).presses, 1);
   assert.equal(await listening(), false);
   evidence.steps.push({ step: 'manual-close-and-Bridge-restart', presses: 1, remainsClosed: true });
+  await stop();
+
+  await start({ FIXTURE_DEBUGGER_LABEL: 'Enable Main Process Debugger, Turns off after 15 minutes' });
+  await control('/ready');
+  assert.equal(await claudeInspectorMenu(child.pid, true), 'clicked');
+  assert.equal(await listening(), true, 'A native label with an explanatory suffix must still be matched');
+  assert.equal((await control()).presses, 1);
+  evidence.steps.push({ step: 'suffixed-native-label-matched', presses: 1 });
   await stop();
 
   await start();

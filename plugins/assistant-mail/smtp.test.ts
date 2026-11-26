@@ -12,6 +12,19 @@ const message = {
 };
 const messageId = "<attempt@example.com>";
 
+it("composes the exact verified attachment bytes into the transmitted and archived MIME", async () => {
+  const content = Buffer.from([0, 255, 9, 10]);
+  const result = await submitSmtp({ host: "smtp.example.test", port: 465, security: "tls", user: "fixture", from: message.from },
+    "fixture-password", { ...message, attachmentContents: [{ filename: "report.bin", contentType: "application/octet-stream", content }] }, messageId,
+    () => ({ async sendMail({ raw }) {
+      const parsed = await simpleParser(raw as Buffer);
+      expect(parsed.attachments).toMatchObject([{ filename: "report.bin", contentType: "application/octet-stream", content }]);
+      return { accepted: message.to, rejected: [] } as never;
+    }, close() {} }));
+  expect(result.state).toBe("applied");
+  expect((await simpleParser(result.source!)).attachments[0]?.content).toEqual(content);
+});
+
 it.each([
   ["acceptance", "220 capture ESMTP", "250 accepted", false, "applied", undefined, undefined],
   ["partial acceptance", "220 capture ESMTP", "250 accepted", true, "delivery_partial", undefined, undefined],
@@ -32,6 +45,10 @@ it.each([
   const messages: string[] = [];
   let stoppedAt: "MAIL FROM" | "DATA" | "STARTTLS" | undefined;
   const server = createServer(socket => {
+    // A peer reset already closes the socket and should not escape the fixture.
+    socket.on("error", (error: NodeJS.ErrnoException) => {
+      if (error.code !== "ECONNRESET") throw error;
+    });
     let buffered = "";
     let data: string[] | undefined;
     socket.setEncoding("utf8");
@@ -86,9 +103,11 @@ it.each([
       if (setup === "starttls-timeout") return createTransport({ ...options, greetingTimeout: 1_000 });
       return createTransport(setup === "tls" || setup === "starttls" ? options : { ...options, requireTLS: false });
     });
-    expect(result).toEqual(state === "delivery_partial" ? { state, accepted: message.to, rejected: message.cc }
+    const { source, ...delivery } = result;
+    expect(delivery).toEqual(state === "delivery_partial" ? { state, accepted: message.to, rejected: message.cc }
       : state === "applied" ? { state, accepted: [...message.to, ...message.cc], rejected: [] }
       : { state, failure: { reason, ...(responseCode !== undefined ? { responseCode } : {}) } });
+    expect(source).toEqual(state === "applied" || state === "delivery_partial" ? Buffer.from(`${messages[0]}\r\n`) : undefined);
     if (setup || greeting !== "220 capture ESMTP") {
       if (setup === "MAIL FROM" || setup === "DATA" || setup === "starttls-timeout") {
         expect(stoppedAt).toBe(setup === "starttls-timeout" ? "STARTTLS" : setup);
